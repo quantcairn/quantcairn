@@ -6,5 +6,6 @@ logs/
 *.log
 snapshots.log
 trading-*.log
+config.local.yaml
 
 .DS_Store

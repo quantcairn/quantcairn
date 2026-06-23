@@ -16,6 +16,12 @@ cp config.sample.yaml config.local.yaml
 #    support_price: 28.50   (你观察到的买入区间)
 #    resistance_price: 30.50 (你观察到的卖出区间)
 
+# 4. 运行测试
+python run_tests.py
+
+# 5. 可选安装开发依赖
+pip install -r dev-requirements.txt
+
 # 3. 验证配置
 python run.py --dry-run
 

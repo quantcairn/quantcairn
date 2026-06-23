@@ -82,18 +82,23 @@ Environment variables:
     setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
 
     # Load configuration from the most appropriate file.
-    default_paths = [
-        args.config,
-        os.path.join(os.path.dirname(__file__), "config.local.yaml"),
-        os.path.join(os.path.dirname(__file__), "config.yaml"),
-        os.path.join(os.path.dirname(__file__), "config.sample.yaml"),
-    ]
-    config_path = next((p for p in default_paths if p and os.path.exists(p)), None)
+    if args.config:
+        if not os.path.exists(args.config):
+            print(f"\n❌ Config file not found: {args.config}")
+            sys.exit(1)
+        config_path = args.config
+    else:
+        candidate_paths = [
+            os.path.join(os.path.dirname(__file__), "config.local.yaml"),
+            os.path.join(os.path.dirname(__file__), "config.yaml"),
+            os.path.join(os.path.dirname(__file__), "config.sample.yaml"),
+        ]
+        config_path = next((p for p in candidate_paths if os.path.exists(p)), None)
 
-    if config_path is None:
-        print("\n❌ No configuration file found.")
-        print("   Create config.local.yaml or config.yaml from config.sample.yaml.\n")
-        sys.exit(1)
+        if config_path is None:
+            print("\n❌ No configuration file found.")
+            print("   Create config.local.yaml or config.yaml from config.sample.yaml.\n")
+            sys.exit(1)
 
     config = load_config(config_path)
 
