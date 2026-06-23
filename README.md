@@ -8,7 +8,11 @@ SOXS（三倍做空半导体ETF）的区间震荡套利系统。在震荡行情�
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 编辑 config.yaml，设置你的支撑位和阻力位
+# 2. 复制配置样例并编辑
+cp config.sample.yaml config.local.yaml
+# 或将 config.sample.yaml 复制为 config.yaml
+
+# 3. 编辑 config.local.yaml 或 config.yaml，设置你的 range 参数
 #    support_price: 28.50   (你观察到的买入区间)
 #    resistance_price: 30.50 (你观察到的卖出区间)
 
