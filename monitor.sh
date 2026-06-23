@@ -13,7 +13,7 @@ if [ -z "$STATUS" ]; then
     exit 1
 fi
 
-python3 - <<'PY' >> "$SNAPSHOT_FILE"
+printf '%s' "$STATUS" | python3 - <<'PY' >> "$SNAPSHOT_FILE"
 import json
 from datetime import datetime
 import sys
