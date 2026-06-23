@@ -169,6 +169,25 @@ soxs-range-arbitrage/
     └── soxs_range_strategy.pine  # Pine Script
 ```
 
+## 自动启动（可选）
+
+推荐将 `launchd/com.soxs.arbitrage.plist` 与 `launchd/com.soxs.arbitrage.stop.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。示例如下：
+
+```bash
+# 使用 launchd（示例）
+mkdir -p ~/Library/LaunchAgents
+cp launchd/com.soxs.arbitrage.plist ~/Library/LaunchAgents/
+cp launchd/com.soxs.arbitrage.stop.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.plist
+launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.stop.plist
+
+# 或使用 crontab（示例）
+# 每天 21:25 启动
+25 21 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh start
+# 每天 04:05 停止
+5 4 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh stop
+```
+
 ## 免责声明
 
 本系统仅供学习和研究用途。使用本系统进行实盘交易的风险由用户自行承担。请确保在实盘前充分测试，并设置合理的风控参数。

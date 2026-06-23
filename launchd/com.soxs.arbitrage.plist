@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.soxs.arbitrage</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/chenwei/soxs-range-arbitrage/.venv/bin/python</string>
+    <string>/Users/chenwei/soxs-range-arbitrage/run.py</string>
+    <string>--paper</string>
+    <string>--dashboard</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>21</integer>
+    <key>Minute</key>
+    <integer>25</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/chenwei/soxs-range-arbitrage/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/chenwei/soxs-range-arbitrage/logs/launchd.err.log</string>
+  <key>WorkingDirectory</key>
+  <string>/Users/chenwei/soxs-range-arbitrage</string>
+  <key>KeepAlive</key>
+  <false/>
+</dict>
+</plist>
