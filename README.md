@@ -85,6 +85,47 @@ SOXS_SUPPORT=28.00 SOXS_RESISTANCE=29.50 python run.py --paper
 SOXS_SIZE=200 python run.py --paper
 ```
 
+## 测试与验证
+
+推荐使用项目自带的 `run_tests.py`，避免依赖 `pytest` 环境。示例：
+
+```bash
+.venv/bin/python run_tests.py
+```
+
+如果需要验证配置文件合法性：
+
+```bash
+.venv/bin/python run.py --dry-run
+```
+
+## 配置文件加载顺序
+
+`run.py` 会按以下优先级加载配置文件：
+
+1. `config.local.yaml`
+2. `config.yaml`
+3. `config.sample.yaml`
+
+如果希望指定特定配置文件，请使用：
+
+```bash
+python run.py --config path/to/config.yaml
+```
+
+## 监控与健康检查
+
+- `health_check.sh`：检查 `launchd` 服务、API 端口、文件描述符和日志中的错误痕迹
+- `monitor.sh`：每 15 分钟记录系统快照到 `snapshots.log`
+
+运行方式：
+
+```bash
+bash health_check.sh
+bash monitor.sh
+```
+
+如果要持续监控，可以通过 macOS `launchd` 或 cron 调度 `monitor.sh` 定期执行，并将 `snapshots.log` 归档或发送告警。
 ## 实盘交易（谨慎！）
 
 ```bash

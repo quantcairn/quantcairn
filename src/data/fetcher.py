@@ -59,8 +59,10 @@ class PriceFetcher:
         self._cached_quote: Optional[Quote] = None
 
     def _call_with_retries(self, func, attempts: int = 3, base_delay: float = 0.5):
-        """Call *func* with retries and exponential backoff. Returns result or
-        raises the last exception if all attempts fail.
+        """Call *func* with retries and exponential backoff.
+
+        This wrapper protects against transient yfinance/http failures while
+        preserving the original exception when retries are exhausted.
         """
         last_exc = None
         for i in range(attempts):
@@ -68,9 +70,41 @@ class PriceFetcher:
                 return func()
             except Exception as e:
                 last_exc = e
-                logger.debug("yfinance call failed (attempt %d/%d) for %s: %s", i + 1, attempts, self.ticker, e)
+                logger.debug(
+                    "yfinance call failed (attempt %d/%d) for %s: %s",
+                    i + 1,
+                    attempts,
+                    self.ticker,
+                    e,
+                )
                 time.sleep(base_delay * (2 ** i))
         raise last_exc
+
+    def _get_safe_fast_info(self) -> dict[str, float]:
+        """Safely extract numeric fast_info fields without triggering lazy yfinance fetches."""
+        try:
+            fast = self._call_with_retries(lambda: self._ticker_obj.fast_info, attempts=1, base_delay=0.25)
+        except Exception as e:
+            logger.debug("fast_info unavailable for %s: %s", self.ticker, e)
+            return {}
+
+        result = {}
+        for key in (
+            "regularMarketPreviousClose",
+            "bid",
+            "ask",
+            "lastPrice",
+            "regularMarketPrice",
+            "lastVolume",
+        ):
+            try:
+                value = fast.get(key) if hasattr(fast, "get") else getattr(fast, key, None)
+            except Exception as e:
+                logger.debug("fast_info field %s failed for %s: %s", key, self.ticker, e)
+                value = None
+            result[key] = value
+
+        return result
 
     def _fetch_history(self, period: str, interval: str, prepost: bool = True):
         """Fetch historical data with retries and pre/post-market support."""
@@ -97,11 +131,7 @@ class PriceFetcher:
             return self._cached_quote
 
         try:
-            # fast_info may intermittently raise; use retries to reduce noise
-            try:
-                fast = self._call_with_retries(lambda: self._ticker_obj.fast_info, attempts=2, base_delay=0.25)
-            except Exception:
-                fast = {}
+            fast = self._get_safe_fast_info()
 
             prev_close = _positive_float(fast.get("regularMarketPreviousClose"))
             bid = _positive_float(fast.get("bid"))
@@ -150,22 +180,33 @@ class PriceFetcher:
                 except Exception:
                     pass
 
+            # ── Layer 1d: fallback to daily history for tickers with no recent intraday bars ──
+            if price <= 0:
+                try:
+                    hist = self._fetch_history(period="max", interval="1d", prepost=False)
+                    if hist is not None and not hist.empty:
+                        last_row = hist.iloc[-1]
+                        price = float(last_row["Close"])
+                        volume = int(_positive_float(last_row.get("Volume", 0)))
+                        high_1m = float(last_row["High"])
+                        low_1m = float(last_row["Low"])
+                except Exception:
+                    pass
+
             # ── Layer 2: pre-market / post-market prices ──
             if price <= 0:
                 try:
-                    try:
-                        info = self._call_with_retries(lambda: self._ticker_obj.info, attempts=2, base_delay=0.25)
-                    except Exception:
-                        info = {}
+                    price_info = self._call_with_retries(lambda: self._ticker_obj.info, attempts=1, base_delay=0.25)
+                except Exception as e:
+                    logger.debug("info unavailable for %s: %s", self.ticker, e)
+                    price_info = {}
 
-                    pre = _positive_float(info.get("preMarketPrice"))
-                    post = _positive_float(info.get("postMarketPrice"))
-                    if pre > 0:
-                        price = pre
-                    elif post > 0:
-                        price = post
-                except Exception:
-                    pass
+                pre = _positive_float(price_info.get("preMarketPrice"))
+                post = _positive_float(price_info.get("postMarketPrice"))
+                if pre > 0:
+                    price = pre
+                elif post > 0:
+                    price = post
 
             # ── Layer 3: fast_info ──
             if price <= 0:

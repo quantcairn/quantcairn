@@ -222,8 +222,16 @@ def validate_config(config: AppConfig) -> list[str]:
         ):
             issues.append("[ERROR] support_price must be < resistance_price")
 
-    if config.mode == "live" and not config.broker.longbridge.enabled:
-        issues.append("[WARN] live mode selected but longbridge broker is disabled")
+    if config.mode == "live":
+        if not config.broker.longbridge.enabled:
+            issues.append("[ERROR] live mode selected but longbridge broker is disabled")
+        if config.broker.longbridge.enabled:
+            if not config.broker.longbridge.app_key:
+                issues.append("[ERROR] live mode requires longbridge app_key")
+            if not config.broker.longbridge.app_secret:
+                issues.append("[ERROR] live mode requires longbridge app_secret")
+            if not config.broker.longbridge.access_token:
+                issues.append("[ERROR] live mode requires longbridge access_token")
 
     spread_pct = (
         (config.range.resistance_price - config.range.support_price)
