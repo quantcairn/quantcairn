@@ -1,0 +1,201 @@
+// ============================================================
+// SOXS Range Arbitrage Strategy — TradingView Pine Script v5
+// 三倍做空半导体ETF 区间套利策略
+// ============================================================
+// Usage:
+//   1. Add to SOXS chart on TradingView
+//   2. Set Support and Resistance price levels in settings
+//   3. Enable alerts for BUY/SELL signals
+//   4. (Optional) Enable webhook for automated alerts
+// ============================================================
+
+//@version=5
+strategy("SOXS Range Arbitrage", overlay=true, margin_long=100, margin_short=0,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=30,
+     commission_value=0.005, commission_type=strategy.commission.cash_per_contract)
+
+// ═══════════════════════════════════════════════════════
+// INPUTS — Adjust these in Settings
+// ═══════════════════════════════════════════════════════
+
+// Range Mode
+rangeMode = input.string("Manual", "Range Mode", options=["Manual", "Auto"])
+
+// Manual range levels
+supportPrice = input.float(28.50, "Support Price (Buy Zone)", minval=0.01, step=0.05, group="Manual Range")
+resistancePrice = input.float(30.50, "Resistance Price (Sell Zone)", minval=0.01, step=0.05, group="Manual Range")
+tolerancePct = input.float(0.3, "Tolerance %", minval=0.05, maxval=5.0, step=0.05, group="Manual Range") / 100
+
+// Auto range detection
+autoLookback = input.int(50, "Auto: Lookback Bars", minval=10, maxval=200, group="Auto Range")
+autoInterval = input.string("15", "Auto: Timeframe (minutes)", options=["1", "5", "15", "30", "60"], group="Auto Range")
+
+// Position sizing
+sharesPerTrade = input.int(100, "Shares Per Trade", minval=10, step=10, group="Position")
+maxPosition = input.int(300, "Max Position Shares", minval=10, step=10, group="Position")
+
+// Risk management
+stopLossPct = input.float(2.0, "Stop Loss % Below Support", minval=0.5, maxval=10.0, step=0.5, group="Risk") / 100
+enableStopLoss = input.bool(true, "Enable Stop Loss", group="Risk")
+
+// Alerts
+enableBuyAlerts = input.bool(true, "Buy Signal Alerts", group="Alerts")
+enableSellAlerts = input.bool(true, "Sell Signal Alerts", group="Alerts")
+enableStopAlerts = input.bool(true, "Stop Loss Alerts", group="Alerts")
+
+// ═══════════════════════════════════════════════════════
+// RANGE CALCULATION
+// ═══════════════════════════════════════════════════════
+
+var float support = na
+var float resistance = na
+
+if rangeMode == "Manual"
+    support := supportPrice
+    resistance := resistancePrice
+else
+    // Auto: use lowest/highest of last N bars
+    support := ta.lowest(low, autoLookback)
+    resistance := ta.highest(high, autoLookback)
+
+// Validate range
+validRange = not na(support) and not na(resistance) and support > 0 and resistance > support
+rangeSpread = validRange ? resistance - support : na
+rangeSpreadPct = validRange ? (rangeSpread / support) * 100 : na
+
+// ═══════════════════════════════════════════════════════
+// PRICE POSITION IN RANGE
+// ═══════════════════════════════════════════════════════
+
+pricePosition = validRange ? ((close - support) / (resistance - support)) * 100 : 50
+pricePosition := math.max(0, math.min(100, pricePosition))
+
+// Distance to boundaries
+distToSupport = validRange ? ((close - support) / support) * 100 : na
+distToResistance = validRange ? ((resistance - close) / resistance) * 100 : na
+
+// ═══════════════════════════════════════════════════════
+// SIGNAL GENERATION
+// ═══════════════════════════════════════════════════════
+
+// Buy: price near support + we don't already have full position
+buySignal = validRange and distToSupport <= tolerancePct * 100 and strategy.position_size < maxPosition
+
+// Sell: price near resistance + we have a position
+sellSignal = validRange and distToResistance <= tolerancePct * 100 and strategy.position_size > 0
+
+// Stop loss: price breaks below support by stopLossPct
+stopPrice = support * (1 - stopLossPct)
+stopLossSignal = validRange and enableStopLoss and close <= stopPrice and strategy.position_size > 0
+
+// ═══════════════════════════════════════════════════════
+// STRATEGY EXECUTION
+// ═══════════════════════════════════════════════════════
+
+if buySignal
+    strategy.entry("Long", strategy.long, qty=sharesPerTrade, comment="BUY @" + str.tostring(close, "#.##"))
+
+if sellSignal
+    strategy.close("Long", comment="SELL @" + str.tostring(close, "#.##"))
+
+if stopLossSignal
+    strategy.close("Long", comment="STOP LOSS @" + str.tostring(close, "#.##"))
+
+// ═══════════════════════════════════════════════════════
+// VISUAL ELEMENTS
+// ═══════════════════════════════════════════════════════
+
+// Range zone fill
+supportLine = validRange ? support : na
+resistanceLine = validRange ? resistance : na
+midLine = validRange ? (support + resistance) / 2 : na
+
+// Draw range zone
+bgcolor(validRange ? color.new(color.blue, 93) : na, title="Range Zone Background")
+fill(plot(supportLine, "Support", color=color.green, linewidth=2, style=plot.style_linebr),
+     plot(resistanceLine, "Resistance", color=color.red, linewidth=2, style=plot.style_linebr),
+     color=color.new(color.blue, 95), title="Range Fill")
+
+// Midline
+plot(midLine, "Mid Range", color=color.gray, linewidth=1, style=plot.style_dashed)
+
+// Price labels at boundaries
+var label buyLabel = na
+var label sellLabel = na
+
+// Clear old labels on new signals
+if buySignal
+    if not na(buyLabel)
+        label.delete(buyLabel)
+    buyLabel := label.new(bar_index, low, "⬆ BUY\n$" + str.tostring(close, "#.##"),
+         color=color.green, textcolor=color.white, style=label.style_label_up, yloc=yloc.belowbar, size=size.small)
+    alert("SOXS BUY Signal — Price: $" + str.tostring(close, "#.##") + " near Support: $" + str.tostring(support, "#.##"), freq=alert.freq_once_per_bar_close)
+
+if sellSignal
+    if not na(sellLabel)
+        label.delete(sellLabel)
+    sellLabel := label.new(bar_index, high, "⬇ SELL\n$" + str.tostring(close, "#.##"),
+         color=color.red, textcolor=color.white, style=label.style_label_down, yloc=yloc.abovebar, size=size.small)
+    alert("SOXS SELL Signal — Price: $" + str.tostring(close, "#.##") + " near Resistance: $" + str.tostring(resistance, "#.##"), freq=alert.freq_once_per_bar_close)
+
+if stopLossSignal
+    alert("SOXS STOP LOSS — Price: $" + str.tostring(close, "#.##") + " broke below Stop: $" + str.tostring(stopPrice, "#.##"), freq=alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════
+// PERFORMANCE TABLE (right side of chart)
+// ═══════════════════════════════════════════════════════
+
+// Build stats table
+var table statsTable = na
+
+if barstate.islast
+    if not na(statsTable)
+        table.delete(statsTable)
+
+    statsTable := table.new(position.top_right, 7, 2,
+         border_width=1, border_color=color.gray, frame_color=color.gray, frame_width=1)
+
+    grossProfit = strategy.grossprofit
+    grossLoss = strategy.grossloss
+    netProfit = strategy.netprofit
+    totalTrades = strategy.closedtrades
+    winRate = totalTrades > 0 ? (strategy.wintrades / totalTrades) * 100 : 0
+    profitFactor = grossLoss != 0 ? math.abs(grossProfit / grossLoss) : na
+
+    col1 = "📊 SOXS Range Stats"
+    col2 = ""
+    table.cell(statsTable, 0, 0, col1, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 0, col2, text_color=color.white, text_size=size.small)
+
+    rows = [
+        ["Support", "$" + str.tostring(support, "#.##")],
+        ["Resistance", "$" + str.tostring(resistance, "#.##")],
+        ["Range Spread", "$" + str.tostring(rangeSpread, "#.##") + " (" + str.tostring(rangeSpreadPct, "#.##") + "%)"],
+        ["Total Trades", str.tostring(totalTrades)],
+        ["Win Rate", str.tostring(winRate, "#.#") + "%"],
+        ["Net Profit", "$" + str.tostring(netProfit, "#.##")],
+    ]
+
+    for i = 0 to 5
+        table.cell(statsTable, 0, i + 1, rows[i].get(0), text_color=color.gray, text_size=size.small)
+        table.cell(statsTable, 1, i + 1, rows[i].get(1), text_color=color.white, text_size=size.small)
+
+// ═══════════════════════════════════════════════════════
+// WEBHOOK ALERTS (for connecting to Python backend)
+// ═══════════════════════════════════════════════════════
+// To use:
+//   1. Create an Alert in TradingView
+//   2. Condition: "SOXS Range Arbitrage" > "Buy Signal" / "Sell Signal"
+//   3. Webhook URL: http://your-server:8080/webhook
+//   4. Message format: JSON with ticker, signal, price
+
+// Example webhook message (copy into TradingView alert message box):
+//
+// {
+//   "ticker": "{{ticker}}",
+//   "signal": "{{strategy.order.action}}",
+//   "price": {{close}},
+//   "support": {{plot("Support")}},
+//   "resistance": {{plot("Resistance")}},
+//   "time": "{{timenow}}"
+// }
