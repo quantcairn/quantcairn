@@ -43,7 +43,16 @@ class DummyTicker:
         return {}
 
 
-def test_get_quote_from_history(monkeypatch):
+def test_get_quote_from_history(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, name, value):
+                module_name, attr_name = target.rsplit('.', 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
     monkeypatch.setattr('yfinance.Ticker', DummyTicker)
     pf = PriceFetcher('FOO')
     q = pf.get_quote()
@@ -52,6 +61,9 @@ def test_get_quote_from_history(monkeypatch):
     assert q.volume == 100
 
 
+def run_test_direct():
+    test_get_quote_from_history()
+
+
 if __name__ == '__main__':
-    # allow running this test directly without pytest
-    test_get_quote_from_history(__import__('types').SimpleNamespace(setattr=lambda *a, **k: None))
+    run_test_direct()

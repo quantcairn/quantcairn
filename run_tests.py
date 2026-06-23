@@ -7,16 +7,14 @@ import importlib.util
 import sys
 
 
-def run_module(name):
-    mod = importlib.import_module(name)
-    return mod
-
-
 def main():
-    # Run our single test module
     try:
-        m = run_module('tests.test_fetcher')
-        print('tests.test_fetcher executed successfully')
+        import tests.test_fetcher as tf
+        if hasattr(tf, 'run_test_direct'):
+            tf.run_test_direct()
+            print('tests.test_fetcher executed successfully')
+        else:
+            raise RuntimeError('run_test_direct() not found in tests.test_fetcher')
     except Exception as e:
         print('Test run failed:', e)
         raise

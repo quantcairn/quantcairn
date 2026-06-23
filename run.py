@@ -81,12 +81,18 @@ Environment variables:
     # Setup logging
     setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
 
-    # Load configuration
-    config_path = args.config or os.path.join(os.path.dirname(__file__), "config.yaml")
+    # Load configuration from the most appropriate file.
+    default_paths = [
+        args.config,
+        os.path.join(os.path.dirname(__file__), "config.local.yaml"),
+        os.path.join(os.path.dirname(__file__), "config.yaml"),
+        os.path.join(os.path.dirname(__file__), "config.sample.yaml"),
+    ]
+    config_path = next((p for p in default_paths if p and os.path.exists(p)), None)
 
-    if not os.path.exists(config_path):
-        print(f"\n❌ Config file not found: {config_path}")
-        print("   Copy and edit config.yaml to set your range parameters.\n")
+    if config_path is None:
+        print("\n❌ No configuration file found.")
+        print("   Create config.local.yaml or config.yaml from config.sample.yaml.\n")
         sys.exit(1)
 
     config = load_config(config_path)
@@ -98,6 +104,12 @@ Environment variables:
         config.mode = "backtest"
     elif args.paper:
         config.mode = "paper"
+
+    if args.paper and config.mode == "live":
+        logging.warning("Paper mode forced by CLI; live config settings will be ignored.")
+
+    if args.live and config.mode != "live":
+        logging.warning("LIVE CLI flag overrides config.mode. Please verify live broker credentials.")
 
     # Validate config
     issues = validate_config(config)

@@ -23,6 +23,24 @@ check_port() {
     fi
 }
 
+check_fd() {
+    local port="$1"
+    local name="$2"
+    local pid
+    pid=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fp 2>/dev/null | tr -d 'p' | head -n 1)
+    if [[ -n "$pid" ]]; then
+        local fd_count
+        fd_count=$(lsof -p "$pid" 2>/dev/null | wc -l)
+        if [[ "$fd_count" -gt 250 ]]; then
+            echo "WARN high FD usage on $name ($pid): $fd_count open files)"
+        else
+            echo "OK   $name FD count: $fd_count"
+        fi
+    else
+        echo "WARN cannot determine pid for $name on port $port"
+    fi
+}
+
 check_api() {
     local port="$1"
     local name="$2"
@@ -61,9 +79,13 @@ check_launchd "com.soxs.arbitrage.stop"
 echo
 echo "== ports =="
 check_port 8080 "DRIP"
+check_fd 8080 "DRIP"
 check_port 8081 "AMC"
+check_fd 8081 "AMC"
 check_port 8082 "SMR"
+check_fd 8082 "SMR"
 check_port 8090 "combined"
+check_fd 8090 "combined"
 
 echo
 echo "== APIs =="
