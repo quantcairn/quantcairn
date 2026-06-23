@@ -269,7 +269,9 @@ def start_dashboard(engine, host: str = "0.0.0.0", port: int = 8080) -> Thread:
     """Start the dashboard server in a background thread."""
     set_engine(engine)
 
-    thread = Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False), daemon=True)
+    # Run single-threaded to limit concurrent thread/socket creation which
+    # may exhaust file descriptors in long-running environments.
+    thread = Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=False), daemon=True)
     thread.start()
 
     logger.info(f"📊 Dashboard running at http://localhost:{port}")
