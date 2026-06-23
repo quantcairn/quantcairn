@@ -1,9 +1,24 @@
-import pandas as pd
 import pytest
 
-import datetime
-
 from src.data.fetcher import PriceFetcher
+
+
+class DummyHist:
+    empty = False
+
+    def __init__(self):
+        self._row = {"Close": 10.0, "Volume": 100, "High": 10.1, "Low": 9.9}
+
+    @property
+    def iloc(self):
+        class _I:
+            def __init__(self, row):
+                self._row = row
+
+            def __getitem__(self, idx):
+                return self._row
+
+        return _I(self._row)
 
 
 class DummyTicker:
@@ -11,9 +26,7 @@ class DummyTicker:
         self.ticker = ticker
 
     def history(self, period, interval):
-        idx = pd.date_range(end=pd.Timestamp.now(), periods=1, freq='1min')
-        df = pd.DataFrame({'Close': [10.0], 'Volume': [100], 'High': [10.1], 'Low': [9.9]}, index=idx)
-        return df
+        return DummyHist()
 
     @property
     def fast_info(self):
@@ -35,5 +48,10 @@ def test_get_quote_from_history(monkeypatch):
     pf = PriceFetcher('FOO')
     q = pf.get_quote()
     assert q is not None
-    assert q.price == pytest.approx(10.0)
+    assert abs(q.price - 10.0) < 1e-6
     assert q.volume == 100
+
+
+if __name__ == '__main__':
+    # allow running this test directly without pytest
+    test_get_quote_from_history(__import__('types').SimpleNamespace(setattr=lambda *a, **k: None))
