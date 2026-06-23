@@ -58,6 +58,20 @@ class PriceFetcher:
         self._last_fetch_time: float = 0
         self._cached_quote: Optional[Quote] = None
 
+    def _call_with_retries(self, func, attempts: int = 3, base_delay: float = 0.5):
+        """Call *func* with retries and exponential backoff. Returns result or
+        raises the last exception if all attempts fail.
+        """
+        last_exc = None
+        for i in range(attempts):
+            try:
+                return func()
+            except Exception as e:
+                last_exc = e
+                logger.debug("yfinance call failed (attempt %d/%d) for %s: %s", i + 1, attempts, self.ticker, e)
+                time.sleep(base_delay * (2 ** i))
+        raise last_exc
+
     def get_quote(self) -> Optional[Quote]:
         """Get current real-time quote. Cached for poll_interval seconds.
 
@@ -71,7 +85,12 @@ class PriceFetcher:
             return self._cached_quote
 
         try:
-            fast = self._ticker_obj.fast_info
+            # fast_info may intermittently raise; use retries to reduce noise
+            try:
+                fast = self._call_with_retries(lambda: self._ticker_obj.fast_info, attempts=2, base_delay=0.25)
+            except Exception:
+                fast = {}
+
             prev_close = _positive_float(fast.get("regularMarketPreviousClose"))
             bid = _positive_float(fast.get("bid"))
             ask = _positive_float(fast.get("ask"))
@@ -83,20 +102,30 @@ class PriceFetcher:
 
             # ── Layer 1: 5-day 1-minute history (works during & after hours) ──
             try:
-                hist = self._ticker_obj.history(period="5d", interval="1m")
-                if not hist.empty:
+                hist = None
+                try:
+                    hist = self._call_with_retries(lambda: self._ticker_obj.history(period="5d", interval="1m"), attempts=3, base_delay=0.25)
+                except Exception:
+                    hist = None
+
+                if hist is not None and not hist.empty:
                     last_row = hist.iloc[-1]
                     price = float(last_row["Close"])
                     volume = int(last_row["Volume"])
                     high_1m = float(last_row["High"])
                     low_1m = float(last_row["Low"])
             except Exception:
+                # keep going to other fallbacks
                 pass
 
             # ── Layer 2: pre-market / post-market prices ──
             if price <= 0:
                 try:
-                    info = self._ticker_obj.info
+                    try:
+                        info = self._call_with_retries(lambda: self._ticker_obj.info, attempts=2, base_delay=0.25)
+                    except Exception:
+                        info = {}
+
                     pre = _positive_float(info.get("preMarketPrice"))
                     post = _positive_float(info.get("postMarketPrice"))
                     if pre > 0:
