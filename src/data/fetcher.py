@@ -72,6 +72,18 @@ class PriceFetcher:
                 time.sleep(base_delay * (2 ** i))
         raise last_exc
 
+    def _fetch_history(self, period: str, interval: str, prepost: bool = True):
+        """Fetch historical data with retries and pre/post-market support."""
+        try:
+            return self._call_with_retries(
+                lambda: self._ticker_obj.history(period=period, interval=interval, prepost=prepost),
+                attempts=3,
+                base_delay=0.25,
+            )
+        except Exception as e:
+            logger.debug("History fetch failed for %s (%s %s): %s", self.ticker, period, interval, e)
+            return None
+
     def get_quote(self) -> Optional[Quote]:
         """Get current real-time quote. Cached for poll_interval seconds.
 
@@ -102,12 +114,7 @@ class PriceFetcher:
 
             # ── Layer 1: 5-day 1-minute history (works during & after hours) ──
             try:
-                hist = None
-                try:
-                    hist = self._call_with_retries(lambda: self._ticker_obj.history(period="5d", interval="1m"), attempts=3, base_delay=0.25)
-                except Exception:
-                    hist = None
-
+                hist = self._fetch_history(period="5d", interval="1m", prepost=True)
                 if hist is not None and not hist.empty:
                     last_row = hist.iloc[-1]
                     price = float(last_row["Close"])
@@ -115,8 +122,33 @@ class PriceFetcher:
                     high_1m = float(last_row["High"])
                     low_1m = float(last_row["Low"])
             except Exception:
-                # keep going to other fallbacks
                 pass
+
+            # ── Layer 1b: fallback to 1d 5m history if 1m unavailable ──
+            if price <= 0:
+                try:
+                    hist = self._fetch_history(period="1d", interval="5m", prepost=True)
+                    if hist is not None and not hist.empty:
+                        last_row = hist.iloc[-1]
+                        price = float(last_row["Close"])
+                        volume = int(last_row["Volume"])
+                        high_1m = float(last_row["High"])
+                        low_1m = float(last_row["Low"])
+                except Exception:
+                    pass
+
+            # ── Layer 1c: fallback to 1d 1m history if 5m unavailable ──
+            if price <= 0:
+                try:
+                    hist = self._fetch_history(period="1d", interval="1m", prepost=True)
+                    if hist is not None and not hist.empty:
+                        last_row = hist.iloc[-1]
+                        price = float(last_row["Close"])
+                        volume = int(last_row["Volume"])
+                        high_1m = float(last_row["High"])
+                        low_1m = float(last_row["Low"])
+                except Exception:
+                    pass
 
             # ── Layer 2: pre-market / post-market prices ──
             if price <= 0:
@@ -179,10 +211,14 @@ class PriceFetcher:
             period: yfinance period string (1d, 5d, 1mo, etc.)
             interval: yfinance interval string (1m, 5m, 15m, 1h, etc.)
         """
-        try:
-            hist = self._ticker_obj.history(period=period, interval=interval)
-            candles = []
-            for idx, row in hist.iterrows():
+        hist = self._fetch_history(period=period, interval=interval, prepost=True)
+        if hist is None or hist.empty:
+            logger.error(f"Failed to fetch OHLCV for {self.ticker}: no data returned")
+            return []
+
+        candles = []
+        for idx, row in hist.iterrows():
+            try:
                 candles.append(OHLCV(
                     timestamp=idx.to_pydatetime(),
                     open=float(row["Open"]),
@@ -191,10 +227,9 @@ class PriceFetcher:
                     close=float(row["Close"]),
                     volume=int(row["Volume"]),
                 ))
-            return candles
-        except Exception as e:
-            logger.error(f"Failed to fetch OHLCV for {self.ticker}: {e}")
-            return []
+            except Exception as e:
+                logger.debug("Skipping invalid OHLCV row for %s: %s", self.ticker, e)
+        return candles
 
     def get_recent_range(self, lookback_bars: int = 50, interval: str = "5m") -> tuple[float, float]:
         """Calculate recent high/low range from last N bars."""
