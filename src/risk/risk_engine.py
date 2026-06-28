@@ -258,6 +258,44 @@ class RiskEngine:
             return True
         return bool(_lookup(portfolio_state, "reduce_only", "reduce_only_mode", default=False))
 
+    def derive_session_state(self, portfolio_state: Any) -> dict[str, Any]:
+        positions_summary = self.summarize_positions(portfolio_state, capital=_lookup(portfolio_state, "capital", default=None))
+        available_funds = self._resolve_available_funds(portfolio_state, positions_summary)
+        daily_loss = _as_float(_lookup(portfolio_state, "daily_loss_pct", "loss_pct", default=0.0))
+        drawdown = _as_float(_lookup(portfolio_state, "drawdown_pct", "max_drawdown_pct", default=0.0))
+        consecutive_losses = int(_as_float(_lookup(portfolio_state, "consecutive_losses", "loss_streak", default=0.0)))
+
+        reasons: list[str] = []
+        reduce_only = self._reduce_only_mode(portfolio_state)
+
+        if available_funds is not None and available_funds < min(self.min_open_capital, self.min_open_buying_power):
+            reduce_only = True
+            reasons.append("low_funds")
+        if daily_loss > self.max_daily_loss:
+            reduce_only = True
+            reasons.append("daily_loss")
+        if drawdown > self.max_drawdown:
+            reduce_only = True
+            reasons.append("drawdown")
+        if consecutive_losses >= 3:
+            reduce_only = True
+            reasons.append("loss_streak")
+
+        return {
+            "capital": positions_summary.get("capital", _lookup(portfolio_state, "capital", default=0.0)),
+            "account_mode": positions_summary.get("account_mode", _lookup(portfolio_state, "account_mode", default="unknown")),
+            "account_channel": positions_summary.get("account_channel", _lookup(portfolio_state, "account_channel", default=None)),
+            "available_funds": available_funds,
+            "daily_loss_pct": daily_loss,
+            "drawdown_pct": drawdown,
+            "consecutive_losses": consecutive_losses,
+            "reduce_only": reduce_only,
+            "reduce_only_mode": reduce_only,
+            "new_entries_allowed": not reduce_only,
+            "risk_pause_reasons": reasons,
+            "risk_pause_reason": ",".join(reasons) if reasons else "",
+        }
+
     def check_trade_allowed(self, signal: Any, portfolio_state: Any) -> bool:
         regime = str(_lookup(signal, "regime", default=_lookup(portfolio_state, "regime", default=""))).upper()
         if regime == "EVENT":

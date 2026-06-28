@@ -132,3 +132,20 @@ def test_risk_engine_blocks_new_buys_after_loss_streak():
     portfolio_state = {"capital": 1000, "consecutive_losses": 3}
     assert not engine.check_trade_allowed({"regime": "TREND", "ticker": "AAPL.US", "trade_action": "buy", "estimated_position_pct": 0.05}, portfolio_state)
     assert engine.check_trade_allowed({"regime": "TREND", "ticker": "AAPL.US", "trade_action": "sell", "estimated_position_pct": 0.05}, portfolio_state)
+
+
+def test_risk_engine_derives_reduce_only_session_state():
+    engine = RiskEngine(min_open_capital=1000, min_open_buying_power=1000)
+    session = engine.derive_session_state({"capital": 850, "account_mode": "live"})
+    assert session["reduce_only"] is True
+    assert session["new_entries_allowed"] is False
+    assert "low_funds" in session["risk_pause_reasons"]
+
+
+def test_risk_engine_session_state_reflects_pause_reasons():
+    engine = RiskEngine()
+    session = engine.derive_session_state({"capital": 1000, "daily_loss_pct": 0.05, "consecutive_losses": 4})
+    assert session["reduce_only"] is True
+    assert session["new_entries_allowed"] is False
+    assert "daily_loss" in session["risk_pause_reasons"]
+    assert "loss_streak" in session["risk_pause_reasons"]

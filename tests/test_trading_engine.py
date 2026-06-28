@@ -114,6 +114,8 @@ def test_trading_engine_loads_positions_into_risk_state():
     assert portfolio_state["positions_snapshot"]["account_mode"] == "live"
     assert portfolio_state["available_buying_power"] == 850.0
     assert portfolio_state["capital"] == 850.0
+    assert portfolio_state["reduce_only"] is False
+    assert portfolio_state["new_entries_allowed"] is True
 
 
 def test_trading_engine_uses_buying_power_for_position_sizing():
@@ -157,6 +159,7 @@ def test_trading_engine_blocks_new_buys_when_buying_power_low():
 
     assert result["signals"][0]["risk_approval"] is False
     assert result["executions"] == []
+    assert result["execution_mode"] in {"paper", "live"}
 
 
 def test_trading_engine_writes_trade_log_and_marks_execution_mode(tmp_path):

@@ -187,6 +187,7 @@ class TradingEngine:
 
         capital_base = self._effective_capital(state)
         state["capital"] = capital_base
+        state.update(self.risk_engine.derive_session_state(state))
 
         approved: list[dict[str, Any]] = []
         decisions: list[dict[str, Any]] = []
@@ -212,6 +213,8 @@ class TradingEngine:
                     "risk_approval": allowed,
                     "position_size": 0.0,
                     "trade_signal": trade_signal,
+                    "reduce_only": bool(state.get("reduce_only", False)),
+                    "risk_pause_reason": state.get("risk_pause_reason", ""),
                 }
             )
             if allowed and regime != "EVENT":
@@ -227,6 +230,8 @@ class TradingEngine:
                     "position_size": 0.0,
                     "trade_signal": trade_signal,
                     "execution_mode": execution_mode,
+                    "reduce_only": bool(state.get("reduce_only", False)),
+                    "risk_pause_reason": state.get("risk_pause_reason", ""),
                 }
             )
 
@@ -284,6 +289,8 @@ class TradingEngine:
                     "position_size": item["position_size"],
                     "trade_signal": trade_signal,
                     "execution_mode": execution_mode,
+                    "reduce_only": bool(state.get("reduce_only", False)),
+                    "risk_pause_reason": state.get("risk_pause_reason", ""),
                     "order": order,
                     "response": response,
                 }
