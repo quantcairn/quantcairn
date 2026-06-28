@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.soxs.ai_selector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/chenwei/Documents/Codex/2026-06-21/all-10-checks-passed-no-errors/work/longbridge_patch/scripts/run_ai_stock_selection.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/chenwei/Documents/Codex/2026-06-21/all-10-checks-passed-no-errors/work/longbridge_patch</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>20</integer>
+    <key>Minute</key>
+    <integer>55</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/chenwei/Documents/Codex/2026-06-21/all-10-checks-passed-no-errors/work/longbridge_patch/logs/ai_selector.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/chenwei/Documents/Codex/2026-06-21/all-10-checks-passed-no-errors/work/longbridge_patch/logs/ai_selector.err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
