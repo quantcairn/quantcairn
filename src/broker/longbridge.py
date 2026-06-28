@@ -150,6 +150,53 @@ def _extract_account_channel(positions: Any) -> Optional[str]:
     return None
 
 
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _account_balance_summary(balance: Any) -> Dict[str, Any]:
+    if isinstance(balance, list):
+        balance = balance[0] if balance else {}
+    if hasattr(balance, "__dict__") and not isinstance(balance, dict):
+        balance = vars(balance)
+    if not isinstance(balance, dict):
+        return {}
+
+    available_buying_power = _first_non_none(
+        balance.get("available_buying_power"),
+        balance.get("buying_power"),
+        balance.get("buying_power_usd"),
+    )
+    cash_balance = _first_non_none(
+        balance.get("cash_balance"),
+        balance.get("available_cash"),
+        balance.get("free_cash"),
+        balance.get("cash"),
+    )
+    equity = _first_non_none(
+        balance.get("equity"),
+        balance.get("net_liquidation"),
+        balance.get("net_liquidation_value"),
+        balance.get("total_equity"),
+    )
+
+    summary: Dict[str, Any] = {}
+    if available_buying_power is not None:
+        summary["available_buying_power"] = available_buying_power
+        summary["buying_power"] = available_buying_power
+    if cash_balance is not None:
+        summary["cash_balance"] = cash_balance
+        summary["available_cash"] = cash_balance
+    if equity is not None:
+        summary["equity"] = equity
+        summary["net_liquidation"] = equity
+        summary["total_equity"] = equity
+    return summary
+
+
 class LongBridgeBroker(BrokerInterface):
     """LongBridge broker adapter using the legacy API-key path by default.
 
@@ -635,6 +682,7 @@ class LongBridgeBroker(BrokerInterface):
         if self.dry_run:
             response = self._simulate_response("get_account_balance", payload)
             response["account_balance"] = {}
+            response["account_balance_summary"] = {}
             return response
         self._ensure_contexts()
         trace_id = f"lb-{uuid.uuid4().hex}"
@@ -663,11 +711,15 @@ class LongBridgeBroker(BrokerInterface):
                 "response": error,
             })
             raise
+        account_balance = _jsonable(result)
+        summary = _account_balance_summary(account_balance)
         response = {
             "trace_id": trace_id,
             "ok": True,
-            "account_balance": _jsonable(result),
+            "account_balance": account_balance,
+            "account_balance_summary": summary,
         }
+        response.update(summary)
         self._write_audit({
             "trace_id": trace_id,
             "action": "get_account_balance",

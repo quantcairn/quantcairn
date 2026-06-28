@@ -78,6 +78,14 @@ class FakeBroker:
                 "cash_balance": 850.0,
                 "equity": 850.0,
             },
+            "account_balance_summary": {
+                "available_buying_power": 850.0,
+                "cash_balance": 850.0,
+                "equity": 850.0,
+            },
+            "available_buying_power": 850.0,
+            "cash_balance": 850.0,
+            "equity": 850.0,
         }
 
     def place_order(self, order):
@@ -102,6 +110,31 @@ def test_trading_engine_loads_positions_into_risk_state():
     assert "positions_snapshot" in portfolio_state
     assert portfolio_state["positions_snapshot"]["account_mode"] == "live"
     assert portfolio_state["available_buying_power"] == 850.0
+    assert portfolio_state["capital"] == 850.0
+
+
+def test_trading_engine_uses_buying_power_for_position_sizing():
+    class BuySelector:
+        def get_signals(self):
+            return [{"ticker": "AAPL", "score": 100.0, "volatility": 0.02, "regime": "TREND"}]
+
+    class RecordingBroker(FakeBroker):
+        def __init__(self):
+            super().__init__()
+            self.orders = []
+
+    broker = RecordingBroker()
+    engine = TradingEngine(
+        capital=1000,
+        selector=BuySelector(),
+        broker=broker,
+        risk_engine=RiskEngine(min_open_capital=100, min_open_buying_power=100),
+    )
+
+    result = engine.run(_range_frame())
+
+    assert result["signals"][0]["position_size"] <= 850.0
+    assert broker.orders == [] or all(order["qty"] >= 0 for order in broker.orders)
 
 
 def test_trading_engine_blocks_new_buys_when_buying_power_low():

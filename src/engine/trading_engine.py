@@ -16,6 +16,55 @@ RISK_MULTIPLIERS = {
 }
 
 
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _balance_summary_from_snapshot(snapshot: Any) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    summary = snapshot.get("account_balance_summary")
+    if isinstance(summary, dict):
+        return dict(summary)
+    raw = snapshot.get("account_balance")
+    if isinstance(raw, dict):
+        return {
+            key: raw[key]
+            for key in (
+                "available_buying_power",
+                "buying_power",
+                "cash_balance",
+                "available_cash",
+                "equity",
+                "net_liquidation",
+                "net_liquidation_value",
+                "total_equity",
+            )
+            if key in raw and raw[key] is not None
+        }
+    if isinstance(raw, list) and raw:
+        first = raw[0]
+        if isinstance(first, dict):
+            return {
+                key: first[key]
+                for key in (
+                    "available_buying_power",
+                    "buying_power",
+                    "cash_balance",
+                    "available_cash",
+                    "equity",
+                    "net_liquidation",
+                    "net_liquidation_value",
+                    "total_equity",
+                )
+                if key in first and first[key] is not None
+            }
+    return {}
+
+
 class TradingEngine:
     def __init__(
         self,
@@ -64,6 +113,22 @@ class TradingEngine:
             return float(value)
         return 0.0
 
+    def _effective_capital(self, portfolio_state: dict[str, Any]) -> float:
+        return float(
+            _first_non_none(
+                portfolio_state.get("available_buying_power"),
+                portfolio_state.get("buying_power"),
+                portfolio_state.get("cash_balance"),
+                portfolio_state.get("available_cash"),
+                portfolio_state.get("equity"),
+                portfolio_state.get("net_liquidation"),
+                portfolio_state.get("total_equity"),
+                portfolio_state.get("capital"),
+                self.capital,
+            )
+            or self.capital
+        )
+
     def run(self, market_df: Any, signal_frames: dict[str, Any] | None = None, portfolio_state: dict[str, Any] | None = None) -> dict[str, Any]:
         raw_signals = list(self.selector.get_signals())
         market_regime = detect_market_regime(market_df)
@@ -95,11 +160,11 @@ class TradingEngine:
                 balance_snapshot = None
             if isinstance(balance_snapshot, dict):
                 state["account_balance_snapshot"] = balance_snapshot
-                snapshot_body = balance_snapshot.get("account_balance") if isinstance(balance_snapshot, dict) else None
-                if isinstance(snapshot_body, dict):
-                    for key in ("available_buying_power", "buying_power", "cash_balance", "available_cash", "equity", "net_liquidation", "total_equity"):
-                        if key in snapshot_body and snapshot_body[key] is not None:
-                            state.setdefault(key, snapshot_body[key])
+                for key, value in _balance_summary_from_snapshot(balance_snapshot).items():
+                    state.setdefault(key, value)
+
+        capital_base = self._effective_capital(state)
+        state["capital"] = capital_base
 
         approved: list[dict[str, Any]] = []
         decisions: list[dict[str, Any]] = []
@@ -136,7 +201,7 @@ class TradingEngine:
             ticker = item["ticker"]
             alloc = allocation.get(ticker, {})
             weight = float(alloc.get("position_size", 0.0))
-            dollar_size = weight * self.capital * RISK_MULTIPLIERS.get(regime, 0.0)
+            dollar_size = weight * capital_base * RISK_MULTIPLIERS.get(regime, 0.0)
             item["position_size"] = round(dollar_size, 2)
             results.append(item)
 
@@ -158,7 +223,12 @@ class TradingEngine:
             price = self._latest_price(frame)
             if price <= 0:
                 continue
-            quantity = max(int(item["position_size"] / price), 1)
+            quantity = int(item["position_size"] / price)
+            if quantity <= 0:
+                if item.get("trade_signal", {}).get("action") == "sell":
+                    quantity = 1
+                else:
+                    continue
             order = {
                 "symbol": item["ticker"],
                 "side": trade_signal["action"],

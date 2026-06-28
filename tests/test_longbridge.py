@@ -198,3 +198,58 @@ def test_longbridge_get_positions_marks_live_account(monkeypatch, tmp_path):
     assert response["account_mode"] == "live"
     assert response["account_mode_label"] == "实盘"
     assert response["is_paper_trading"] is False
+
+
+def test_longbridge_account_balance_exposes_normalized_funds(monkeypatch, tmp_path):
+    class FakeConfig:
+        @staticmethod
+        def from_apikey(api_key, api_secret, **kwargs):
+            return {
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "kwargs": kwargs,
+            }
+
+    class FakeTradeContext:
+        def __init__(self, config):
+            self.config = config
+
+        def account_balance(self):
+            return [
+                {
+                    "available_buying_power": 703.30,
+                    "cash_balance": 703.30,
+                    "equity": 1632.35,
+                }
+            ]
+
+        def stock_positions(self, symbols=None):
+            return {"channels": []}
+
+    class FakeQuoteContext:
+        def __init__(self, config):
+            self.config = config
+
+    fake_lb = type("FakeLB", (), {
+        "Config": FakeConfig,
+        "TradeContext": FakeTradeContext,
+        "QuoteContext": FakeQuoteContext,
+    })()
+
+    monkeypatch.setattr(longbridge_module, "lb", fake_lb, raising=False)
+
+    broker = LongBridgeBroker(
+        auth_mode="apikey",
+        api_key="key-123",
+        api_secret="secret-123",
+        access_token="token-123",
+        dry_run=False,
+        log_dir=str(tmp_path),
+    )
+
+    balance = broker.get_account_balance()
+    assert balance["ok"] is True
+    assert balance["available_buying_power"] == 703.30
+    assert balance["cash_balance"] == 703.30
+    assert balance["equity"] == 1632.35
+    assert balance["account_balance_summary"]["buying_power"] == 703.30
