@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from src.ai_selector.integration import AISelector
@@ -65,6 +68,10 @@ def _balance_summary_from_snapshot(snapshot: Any) -> dict[str, Any]:
     return {}
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 class TradingEngine:
     def __init__(
         self,
@@ -73,12 +80,24 @@ class TradingEngine:
         broker: Any | None = None,
         allocator: PortfolioAllocator | None = None,
         risk_engine: RiskEngine | None = None,
+        log_dir: str | None = None,
     ):
         self.capital = capital
         self.selector = selector or AISelector()
         self.broker = broker
         self.allocator = allocator or PortfolioAllocator()
         self.risk_engine = risk_engine or RiskEngine()
+        self._trade_log_dir = Path(log_dir) if log_dir else Path(__file__).resolve().parents[2] / "logs"
+        self._trade_log_dir.mkdir(parents=True, exist_ok=True)
+
+    def _trade_log_path(self) -> Path:
+        return self._trade_log_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
+
+    def _write_trade_log(self, record: dict[str, Any]) -> None:
+        payload = dict(record)
+        payload.setdefault("timestamp", _utc_now())
+        with self._trade_log_path().open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
     def _signal_frame(self, ticker: str, market_df: Any, signal_frames: dict[str, Any] | None) -> Any:
         if signal_frames and ticker in signal_frames:
@@ -135,11 +154,14 @@ class TradingEngine:
         router = select_strategy(market_df)
         strategy = router.get("strategy_object") or router["strategy"]
         regime = market_regime
+        execution_mode = str(getattr(self.broker, "runtime_mode", "paper") if self.broker is not None else "paper")
+        is_live_execution = execution_mode == "live"
 
         provisional = self._provisional_weights(raw_signals)
         state = dict(portfolio_state or {})
         state["regime"] = regime
         state.setdefault("capital", self.capital)
+        state.setdefault("execution_mode", execution_mode)
 
         broker_positions = None
         if self.broker is not None and "positions" not in state and "positions_snapshot" not in state:
@@ -194,6 +216,19 @@ class TradingEngine:
             )
             if allowed and regime != "EVENT":
                 approved.append(candidate)
+            self._write_trade_log(
+                {
+                    "phase": "decision",
+                    "ticker": ticker,
+                    "regime": regime,
+                    "strategy": strategy.__class__.__name__,
+                    "score": float(candidate.get("score", 0.0)),
+                    "risk_approval": allowed,
+                    "position_size": 0.0,
+                    "trade_signal": trade_signal,
+                    "execution_mode": execution_mode,
+                }
+            )
 
         allocation = self.allocator.allocate(approved)
         results: list[dict[str, Any]] = []
@@ -238,6 +273,21 @@ class TradingEngine:
             response = None
             if self.broker is not None:
                 response = self.broker.place_order(order)
+            self._write_trade_log(
+                {
+                    "phase": "execution",
+                    "ticker": item["ticker"],
+                    "regime": regime,
+                    "strategy": item["strategy"],
+                    "score": item["score"],
+                    "risk_approval": item["risk_approval"],
+                    "position_size": item["position_size"],
+                    "trade_signal": trade_signal,
+                    "execution_mode": execution_mode,
+                    "order": order,
+                    "response": response,
+                }
+            )
             executions.append(
                 {
                     "ticker": item["ticker"],
@@ -253,4 +303,6 @@ class TradingEngine:
             "signals": results,
             "allocation": allocation,
             "executions": executions,
+            "execution_mode": execution_mode,
+            "is_live_execution": is_live_execution,
         }

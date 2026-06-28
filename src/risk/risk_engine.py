@@ -247,6 +247,17 @@ class RiskEngine:
             return _as_float(position_size) / max(_as_float(capital), 1e-9)
         return 0.0
 
+    def _reduce_only_mode(self, portfolio_state: Any) -> bool:
+        if _env_bool("RISK_FORCE_REDUCE_ONLY", False):
+            return True
+        if _env_bool("RISK_DISABLE_NEW_BUYS", False):
+            return True
+        if _env_bool("RISK_ONLY_SELL", False):
+            return True
+        if _env_bool("RISK_PAUSE_NEW_ENTRIES", False):
+            return True
+        return bool(_lookup(portfolio_state, "reduce_only", "reduce_only_mode", default=False))
+
     def check_trade_allowed(self, signal: Any, portfolio_state: Any) -> bool:
         regime = str(_lookup(signal, "regime", default=_lookup(portfolio_state, "regime", default=""))).upper()
         if regime == "EVENT":
@@ -260,6 +271,9 @@ class RiskEngine:
             return False
         if symbol and trade_action == "sell" and symbol in position_symbols:
             return True
+
+        if self._reduce_only_mode(portfolio_state):
+            return trade_action == "sell"
 
         available_funds = self._resolve_available_funds(portfolio_state, positions_summary)
         if trade_action == "buy":
@@ -281,6 +295,7 @@ class RiskEngine:
         )
         daily_loss = _as_float(_lookup(portfolio_state, "daily_loss_pct", "loss_pct", default=0.0))
         drawdown = _as_float(_lookup(portfolio_state, "drawdown_pct", "max_drawdown_pct", default=0.0))
+        consecutive_losses = int(_as_float(_lookup(portfolio_state, "consecutive_losses", "loss_streak", default=0.0)))
 
         if max(candidate_pct, current_single) > self.max_single_position:
             return False
@@ -289,5 +304,7 @@ class RiskEngine:
         if daily_loss > self.max_daily_loss:
             return False
         if drawdown > self.max_drawdown:
+            return False
+        if consecutive_losses >= 3 and trade_action == "buy":
             return False
         return True

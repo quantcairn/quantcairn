@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from src.engine.trading_engine import TradingEngine
 from src.risk.risk_engine import RiskEngine
 
@@ -154,3 +157,23 @@ def test_trading_engine_blocks_new_buys_when_buying_power_low():
 
     assert result["signals"][0]["risk_approval"] is False
     assert result["executions"] == []
+
+
+def test_trading_engine_writes_trade_log_and_marks_execution_mode(tmp_path):
+    broker = FakeBroker()
+    engine = TradingEngine(
+        capital=1000,
+        selector=FakeSelector(),
+        broker=broker,
+        risk_engine=CapturingRiskEngine(),
+        log_dir=str(tmp_path),
+    )
+
+    result = engine.run(_range_frame())
+
+    assert result["execution_mode"] in {"paper", "live"}
+    logs = list(Path(tmp_path).glob("trades-*.jsonl"))
+    assert logs
+    rows = [json.loads(line) for line in logs[0].read_text(encoding="utf-8").splitlines()]
+    assert any(row["phase"] == "decision" for row in rows)
+    assert any(row["phase"] == "execution" for row in rows)

@@ -118,3 +118,17 @@ def test_risk_engine_allows_reduce_only_exit_even_when_overexposed():
 
     assert engine.summarize_positions(portfolio_state, capital=1000)["current_total_exposure_pct"] > 1.0
     assert engine.check_trade_allowed({"regime": "TREND", "ticker": "SOXS.US", "trade_action": "sell", "estimated_position_pct": 0.05}, portfolio_state)
+
+
+def test_risk_engine_blocks_new_buys_when_reduce_only_mode_is_active():
+    engine = RiskEngine()
+    portfolio_state = {"capital": 1000, "reduce_only": True}
+    assert not engine.check_trade_allowed({"regime": "TREND", "ticker": "AAPL.US", "trade_action": "buy", "estimated_position_pct": 0.05}, portfolio_state)
+    assert engine.check_trade_allowed({"regime": "TREND", "ticker": "AAPL.US", "trade_action": "sell", "estimated_position_pct": 0.05}, portfolio_state)
+
+
+def test_risk_engine_blocks_new_buys_after_loss_streak():
+    engine = RiskEngine()
+    portfolio_state = {"capital": 1000, "consecutive_losses": 3}
+    assert not engine.check_trade_allowed({"regime": "TREND", "ticker": "AAPL.US", "trade_action": "buy", "estimated_position_pct": 0.05}, portfolio_state)
+    assert engine.check_trade_allowed({"regime": "TREND", "ticker": "AAPL.US", "trade_action": "sell", "estimated_position_pct": 0.05}, portfolio_state)
