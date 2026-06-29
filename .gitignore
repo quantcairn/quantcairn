@@ -1,7 +1,17 @@
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Secrets and local environment
 .env
 .env.*
+!.env.example
+
+# Python
 .venv/
+venv/
+env/
+ENV/
 __pycache__/
 *.pyc
 *.pyo
@@ -9,6 +19,40 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-tmp*/
-*.log
+.coverage
+coverage.xml
+htmlcov/
 
+# Logs and runtime output
+logs/
+*.log
+*.out
+*.err
+tmp*/
+tmp/
+temp/
+
+# Build / packaging
+build/
+dist/
+site/
+*.egg-info/
+.eggs/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS / app metadata
+Thumbs.db
+Desktop.ini
+
+# Project local artifacts
+outputs/*.json
+outputs/*.md
+outputs/*.csv
+*.sqlite3
+*.db
