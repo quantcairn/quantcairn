@@ -15,6 +15,7 @@ import requests
 import subprocess
 from pathlib import Path
 
+from src.ai_selector.settings import load_runtime_settings
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -44,6 +45,13 @@ def _restart_top_engines() -> int:
     ).returncode
 
 def main():
+    runtime_settings = load_runtime_settings()
+    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(runtime_settings.get("min_price", 10.0)))
+    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(runtime_settings.get("max_price", 200.0)))
+    os.environ.setdefault(
+        "AI_SELECTOR_AUTO_REFRESH_MINUTES",
+        str(runtime_settings.get("auto_refresh_minutes", 5)),
+    )
     sel = AIStrategySelector()
     out = sel.run_selection()
     timestamp = datetime.now().isoformat()

@@ -87,7 +87,7 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
 
 def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
-    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0})
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
     monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
         "ticker": name.replace(".yaml", ""),
@@ -100,6 +100,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
         "settings": {
             "min_price": 10.0,
             "max_price": 200.0,
+            "auto_refresh_minutes": 5,
             "max_symbols": 50,
             "data_mode": "live",
         },
@@ -142,6 +143,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "AI 区间选股" in html
     assert "最新选股时间：2026-06-30T09:29:00" in html
     assert "价格范围：$10.00 - $200.00" in html
+    assert "自动刷新：5 分钟" in html
     assert "扫描数量：50" in html
     assert "数据模式：live" in html
     assert "NVDA" in html
@@ -160,7 +162,7 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
         "TOP5.yaml": "AMD",
     }
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
-    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0})
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
     monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
         "execution_mode": "paper",
@@ -357,31 +359,33 @@ def test_combined_dashboard_buy_trigger_shows_pause_when_new_entries_disabled(mo
 
 def test_combined_dashboard_updates_ai_selector_settings(monkeypatch):
     saved = {}
-    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0})
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "save_runtime_settings", lambda data: saved.update(data))
     monkeypatch.setattr(combined, "_run_ai_selector_now", lambda: None)
 
     with combined.app.test_client() as client:
-        resp = client.post("/ai-selector-settings", data={"min_price": "12", "max_price": "35.5"})
+        resp = client.post("/ai-selector-settings", data={"min_price": "12", "max_price": "35.5", "auto_refresh_minutes": "9"})
 
     assert resp.status_code == 302
     assert saved["min_price"] == 12.0
     assert saved["max_price"] == 35.5
+    assert saved["auto_refresh_minutes"] == 9
 
 
 def test_combined_dashboard_reruns_ai_selector_from_settings_form(monkeypatch):
     saved = {}
     rerun = {"called": False}
-    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0})
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "save_runtime_settings", lambda data: saved.update(data))
     monkeypatch.setattr(combined, "_run_ai_selector_now", lambda: rerun.__setitem__("called", True))
 
     with combined.app.test_client() as client:
-        resp = client.post("/ai-selector-settings", data={"min_price": "11", "max_price": "44.0", "action": "rerun"})
+        resp = client.post("/ai-selector-settings", data={"min_price": "11", "max_price": "44.0", "auto_refresh_minutes": "12", "action": "rerun"})
 
     assert resp.status_code == 302
     assert saved["min_price"] == 11.0
     assert saved["max_price"] == 44.0
+    assert saved["auto_refresh_minutes"] == 12
     assert rerun["called"] is True
 
 

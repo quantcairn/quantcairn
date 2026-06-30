@@ -615,6 +615,7 @@ HTML = """<!DOCTYPE html>
                 最新选股时间：{{ ai_selection.timestamp }}
                 {% if ai_selection.settings %}
                     · 价格范围：${{ "%.2f"|format(ai_selection.settings.min_price or 0) }} - ${{ "%.2f"|format(ai_selection.settings.max_price or 0) }}
+                    · 自动刷新：{{ ai_selection.settings.auto_refresh_minutes or 0 }} 分钟
                     · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
                     · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
                     {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
@@ -631,6 +632,10 @@ HTML = """<!DOCTYPE html>
             <div class="settings-field">
                 <label for="max_price">价格上限</label>
                 <input id="max_price" name="max_price" type="number" min="1" max="500" step="0.01" value="{{ runtime_settings.max_price }}">
+            </div>
+            <div class="settings-field">
+                <label for="auto_refresh_minutes">自动刷新间隔（分钟）</label>
+                <input id="auto_refresh_minutes" name="auto_refresh_minutes" type="number" min="1" max="1440" step="1" value="{{ runtime_settings.auto_refresh_minutes }}">
             </div>
             <button class="settings-button" type="submit" name="action" value="save">保存设置</button>
             <button class="settings-button secondary" type="submit" name="action" value="rerun">保存并立即重选</button>
@@ -1065,6 +1070,7 @@ def index():
         runtime_settings={
             "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),
             "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 200.0)) or 200.0),
+            "auto_refresh_minutes": int(runtime_settings.get("auto_refresh_minutes", ai_selection.get("settings", {}).get("auto_refresh_minutes", 5)) or 5),
         },
         active_symbols=active_symbols,
         nearest_buy_trigger_name=nearest_buy_trigger_name,
@@ -1083,8 +1089,12 @@ def index():
 def _run_ai_selector_now() -> None:
     project_dir = str(PROJECT_DIR)
     env = os.environ.copy()
+    settings = load_runtime_settings()
     env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
     env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
+    env.setdefault("AI_SELECTOR_MIN_PRICE", str(settings.get("min_price", 10.0)))
+    env.setdefault("AI_SELECTOR_MAX_PRICE", str(settings.get("max_price", 200.0)))
+    env.setdefault("AI_SELECTOR_AUTO_REFRESH_MINUTES", str(settings.get("auto_refresh_minutes", 5)))
     python_bin = PROJECT_DIR / ".venv" / "bin" / "python"
     if not python_bin.exists():
         python_bin = Path(os.environ.get("PYTHON", "")) if os.environ.get("PYTHON") else Path("python3")
@@ -1101,6 +1111,7 @@ def _run_ai_selector_now() -> None:
 def update_ai_selector_settings():
     raw_min_price = str(request.form.get("min_price", "")).strip()
     raw_max_price = str(request.form.get("max_price", "")).strip()
+    raw_auto_refresh_minutes = str(request.form.get("auto_refresh_minutes", "")).strip()
     action = str(request.form.get("action", "save")).strip().lower()
     settings = load_runtime_settings()
     try:
@@ -1111,13 +1122,19 @@ def update_ai_selector_settings():
         max_price = float(raw_max_price)
     except (TypeError, ValueError):
         max_price = float(settings.get("max_price", 200.0) or 200.0)
+    try:
+        auto_refresh_minutes = int(raw_auto_refresh_minutes)
+    except (TypeError, ValueError):
+        auto_refresh_minutes = int(settings.get("auto_refresh_minutes", 5) or 5)
     min_price = min(500.0, max(1.0, min_price))
     max_price = min(500.0, max(1.0, max_price))
     if min_price > max_price:
         min_price, max_price = max_price, min_price
     min_price = round(min_price, 2)
+    auto_refresh_minutes = max(1, min(1440, auto_refresh_minutes))
     settings["max_price"] = round(max_price, 2)
     settings["min_price"] = min_price
+    settings["auto_refresh_minutes"] = auto_refresh_minutes
     save_runtime_settings(settings)
     if action == "rerun":
         _run_ai_selector_now()

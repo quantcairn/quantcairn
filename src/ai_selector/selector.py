@@ -7,6 +7,7 @@ import numpy as np
 from src.universe.universe import Universe
 from src.scoring.scorer import Scorer
 from src.news_agent.news_collector import NewsCollector
+from src.ai_selector.settings import load_runtime_settings
 
 
 class AIStrategySelector:
@@ -99,6 +100,7 @@ class AIStrategySelector:
             "settings": {
                 "max_price": float(round(self.scorer.max_price, 2)),
                 "min_price": float(round(self.scorer.min_price, 2)),
+                "auto_refresh_minutes": int(load_runtime_settings().get("auto_refresh_minutes", 5) or 5),
                 "top_k": self.selection_size,
                 "max_symbols": self.max_symbols,
                 "data_mode": data_mode,
