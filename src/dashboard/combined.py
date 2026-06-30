@@ -511,6 +511,7 @@ HTML = """<!DOCTYPE html>
                     · 价格上限：${{ "%.2f"|format(ai_selection.settings.max_price or 0) }}
                     · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
                     · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
+                    {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
                 {% endif %}
             {% else %}
                 暂无 AI 选股报告。
@@ -569,6 +570,7 @@ HTML = """<!DOCTYPE html>
                 </div>
                 <div class="badges">
                     {% if card.halted %}<span class="badge halted">已暂停</span>{% endif %}
+                    {% if card.range_ready %}<span class="badge live">区间就绪</span>{% else %}<span class="badge halted">区间未就绪</span>{% endif %}
                     {% if card.online %}<span class="badge live">在线</span>{% else %}<span class="badge offline">离线</span>{% endif %}
                 </div>
             </div>
@@ -768,6 +770,8 @@ def index():
                 "support": supp,
                 "resistance": res,
                 "spread_pct": d.get("spread_pct", 0),
+                "range_ready": bool(d.get("range_ready")),
+                "range_source": d.get("range_source", "unknown"),
                 "pos_pct": pos_pct,
                 "sparkline": sparkline,
                 "signal": d.get("last_signal", "N/A"),
@@ -794,6 +798,7 @@ def index():
                 "day_high": 0, "day_low": 0,
                 "bid": 0, "ask": 0, "vol_display": "0",
                 "support": defaults["support"], "resistance": defaults["resistance"], "spread_pct": 0,
+                "range_ready": False, "range_source": "offline",
                 "pos_pct": 50,
                 "sparkline": _build_sparkline([], 0),
                 "signal": "OFFLINE", "signal_cn": _signal_cn("OFFLINE"), "shares": 0,

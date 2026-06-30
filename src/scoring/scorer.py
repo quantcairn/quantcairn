@@ -37,6 +37,7 @@ class Scorer:
     EVENT_NEWS_SCORE = 80.0
     DEFAULT_MARKET_TIMEOUT = 2.0
     DEFAULT_SCORE_WORKERS = 8
+    DEFAULT_MIN_SPREAD_DOLLARS = 1.0
 
     FALLBACK_PROFILES = {
         "NVDA": {"score": 74.0, "range_low": 118.0, "range_high": 154.0, "volume": 220_000_000},
@@ -106,6 +107,7 @@ class Scorer:
         self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", get_float_setting("max_price", self.MAX_PRICE))
         self.market_timeout = self._env_float("AI_SELECTOR_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
         self.score_workers = max(1, self._env_int("AI_SELECTOR_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
+        self.min_spread_dollars = self._env_float("AI_SELECTOR_MIN_SPREAD_DOLLARS", self.DEFAULT_MIN_SPREAD_DOLLARS)
 
     def _env_float(self, name: str, default: float) -> float:
         raw = os.environ.get(name)
@@ -479,6 +481,8 @@ class Scorer:
         )
 
         support, resistance, support_meta, resistance_meta = self._estimate_range(df, atr)
+        if (resistance - support) < self.min_spread_dollars:
+            return None
         price_mid = (support + resistance) / 2.0 if resistance > support else last_close
 
         return {
@@ -535,6 +539,8 @@ class Scorer:
         resistance = float(profile["range_high"])
         price_mid = (support + resistance) / 2.0
         if price_mid < self.min_price or price_mid > self.max_price:
+            return None
+        if (resistance - support) < self.min_spread_dollars:
             return None
         band_pct = ((resistance - support) / price_mid * 100.0) if price_mid else 0.0
         news_score = self._news_score(list(news_items))

@@ -7,9 +7,11 @@ Flow:
 
 Runs in paper or live mode.
 """
+import json
 import logging
 import time
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional
 
 import pytz
@@ -24,6 +26,7 @@ from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
 
 logger = logging.getLogger(__name__)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 # Try to import pytz, fall back if not available
 try:
@@ -127,8 +130,48 @@ class TradingEngine:
                 f"Seeded auto range: ${rs.support:.2f} – ${rs.resistance:.2f} "
                 f"({rs.spread_pct:.1f}% spread)"
             )
-        else:
-            logger.warning("Could not seed auto range — waiting for live data")
+            return
+
+        if self._seed_auto_range_from_report():
+            rs = self.strategy.get_range_state()
+            logger.warning(
+                "Seeded auto range from AI report fallback: $%.2f – $%.2f (%.1f%% spread)",
+                rs.support,
+                rs.resistance,
+                rs.spread_pct,
+            )
+            return
+
+        logger.warning("Could not seed auto range — waiting for live data")
+
+    def _seed_auto_range_from_report(self) -> bool:
+        report_path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
+        if not report_path.exists():
+            return False
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        candidates = data.get("top5") if isinstance(data, dict) else None
+        if not isinstance(candidates, list):
+            return False
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("ticker") or "").strip().upper() != self.ticker.upper():
+                continue
+            try:
+                support = float(item.get("range_low"))
+                resistance = float(item.get("range_high"))
+            except (TypeError, ValueError):
+                return False
+            return self.strategy.apply_auto_range(
+                support,
+                resistance,
+                confidence=0.2,
+                source="ai_report_fallback",
+            )
+        return False
 
     # ---- Main Loop ----
 

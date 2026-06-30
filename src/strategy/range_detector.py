@@ -44,6 +44,7 @@ class RangeState:
     midpoint: float
     is_valid: bool
     support_confidence: float = 0.0
+    source: str = "unknown"
     detected_at: datetime = field(default_factory=datetime.now)
 
 
@@ -85,6 +86,7 @@ class RangeDetector:
         self._auto_support: Optional[float] = None
         self._auto_resistance: Optional[float] = None
         self._last_auto_refresh: Optional[datetime] = None
+        self._range_source: str = "manual" if mode == "manual" else "uninitialized"
 
         # Price history for auto-detection + trend calculation
         self._price_history: list[float] = []
@@ -133,7 +135,7 @@ class RangeDetector:
         if s is None or r is None or s <= 0:
             return RangeState(
                 support=0, resistance=0, spread_dollars=0,
-                spread_pct=0, midpoint=0, is_valid=False,
+                spread_pct=0, midpoint=0, is_valid=False, source=self._range_source,
             )
 
         spread = r - s
@@ -146,7 +148,19 @@ class RangeDetector:
             midpoint=round((s + r) / 2, 2),
             is_valid=spread > 0,
             support_confidence=self._support_confidence,
+            source=self._range_source,
         )
+
+    def apply_auto_range(self, support: float, resistance: float, confidence: float = 0.3, source: str = "auto") -> bool:
+        """Apply a validated auto range from any source."""
+        if not self._is_range_tradeable(support, resistance):
+            return False
+        self._auto_support = round(float(support), 2)
+        self._auto_resistance = round(float(resistance), 2)
+        self._support_confidence = max(0.0, min(1.0, float(confidence)))
+        self._range_source = source
+        self._last_auto_refresh = datetime.now()
+        return True
 
     def feed_price(self, price: float) -> None:
         """Feed a new price point for auto-detection and trend tracking."""
@@ -343,10 +357,7 @@ class RangeDetector:
         if self._volume_profile and len(self._volume_profile) >= 10:
             supp, res, supp_conf, res_conf = self._calc_volume_weighted_range()
             if self._is_range_tradeable(supp, res):
-                self._auto_support = supp
-                self._auto_resistance = res
-                self._support_confidence = supp_conf
-                self._last_auto_refresh = datetime.now()
+                self.apply_auto_range(supp, res, confidence=supp_conf, source="volume_profile")
 
                 spread = res - supp
                 spread_pct = (spread / supp * 100) if supp > 0 else 0
@@ -361,10 +372,7 @@ class RangeDetector:
         if self._price_history and len(self._price_history) >= 10:
             supp, res, _, _ = self._percentile_range()
             if self._is_range_tradeable(supp, res):
-                self._auto_support = supp
-                self._auto_resistance = res
-                self._support_confidence = 0.3
-                self._last_auto_refresh = datetime.now()
+                self.apply_auto_range(supp, res, confidence=0.3, source="percentile")
                 spread = res - supp
                 spread_pct = (spread / supp * 100) if supp > 0 else 0
                 logger.info(
@@ -413,10 +421,7 @@ class RangeDetector:
             )
             return False
 
-        self._auto_support = supp
-        self._auto_resistance = res
-        self._support_confidence = supp_conf
-        self._last_auto_refresh = datetime.now()
+        self.apply_auto_range(supp, res, confidence=supp_conf, source="seeded_history")
 
         spread = res - supp
         spread_pct = (spread / supp * 100) if supp > 0 else 0
