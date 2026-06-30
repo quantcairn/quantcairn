@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from src.dashboard import server
 
 
-def test_live_dashboard_uses_strategy_capital_basis():
+def test_live_dashboard_uses_live_account_basis():
     engine = SimpleNamespace(
         ticker="MSFT",
         mode="live",
@@ -29,7 +29,7 @@ def test_live_dashboard_uses_strategy_capital_basis():
         ),
         broker=SimpleNamespace(
             get_position_for_ticker=lambda ticker: None,
-            get_account=lambda: SimpleNamespace(cash=707.61, equity=1558.11),
+            get_account=lambda: SimpleNamespace(cash=707.61, equity=1558.11, buying_power=707.43),
         ),
         risk=SimpleNamespace(
             get_stats=lambda: {
@@ -53,9 +53,9 @@ def test_live_dashboard_uses_strategy_capital_basis():
     finally:
         server._engine = original_engine
 
-    assert data["initial_capital"] == 1000.0
-    assert data["cash"] == 1000.0
-    assert data["equity"] == 1000.0
+    assert data["initial_capital"] == 707.43
+    assert data["cash"] == 707.61
+    assert data["equity"] == 1558.11
 
 
 def test_dashboard_keeps_last_valid_price_when_quote_is_temporarily_empty():
@@ -85,7 +85,7 @@ def test_dashboard_keeps_last_valid_price_when_quote_is_temporarily_empty():
         ),
         broker=SimpleNamespace(
             get_position_for_ticker=lambda ticker: None,
-            get_account=lambda: SimpleNamespace(cash=707.61, equity=1558.11),
+            get_account=lambda: SimpleNamespace(cash=707.61, equity=1558.11, buying_power=707.43),
         ),
         risk=SimpleNamespace(
             get_stats=lambda: {
@@ -117,7 +117,7 @@ def test_dashboard_keeps_last_valid_price_when_quote_is_temporarily_empty():
 
 
 def run_test_direct():
-    test_live_dashboard_uses_strategy_capital_basis()
+    test_live_dashboard_uses_live_account_basis()
     test_dashboard_keeps_last_valid_price_when_quote_is_temporarily_empty()
 
 

@@ -229,9 +229,11 @@ def get_dashboard_data() -> dict:
             acct = _engine.broker.get_account()
 
         if _engine.mode == "live":
-            market_value = float(pos.market_value) if pos else float(position_shares * price)
-            equity = initial_capital + daily_pnl + float(unrealized_pnl or 0.0)
-            cash = equity - market_value
+            initial_capital = float(getattr(acct, "buying_power", 0.0) or 0.0)
+            if initial_capital <= 0:
+                initial_capital = float(getattr(acct, "cash", 0.0) or 0.0)
+            cash = float(getattr(acct, "cash", 0.0) or 0.0)
+            equity = float(getattr(acct, "equity", 0.0) or 0.0)
         else:
             cash = acct.cash
             equity = acct.equity
