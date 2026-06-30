@@ -1,9 +1,9 @@
 ticker: TSLA
 mode: live
 range:
-  mode: manual
-  support_price: 393.31
-  resistance_price: 430.37
+  mode: auto
+  support_price: null
+  resistance_price: null
   auto_lookback: 30
   auto_refresh_minutes: 5
   trend_filter:

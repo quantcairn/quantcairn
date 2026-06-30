@@ -1,9 +1,9 @@
 ticker: NVDA
 mode: live
 range:
-  mode: manual
-  support_price: 188.15
-  resistance_price: 201.79
+  mode: auto
+  support_price: null
+  resistance_price: null
   auto_lookback: 30
   auto_refresh_minutes: 5
   trend_filter:

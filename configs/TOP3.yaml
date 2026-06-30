@@ -1,9 +1,9 @@
 ticker: AAPL
 mode: live
 range:
-  mode: manual
-  support_price: 274.7
-  resistance_price: 288.78
+  mode: auto
+  support_price: null
+  resistance_price: null
   auto_lookback: 30
   auto_refresh_minutes: 5
   trend_filter:

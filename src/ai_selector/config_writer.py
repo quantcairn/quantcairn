@@ -48,9 +48,9 @@ def write_top_configs(top3):
             "ticker": item["ticker"],
             "mode": mode,
             "range": {
-                "mode": "manual",
-                "support_price": round(support, 2),
-                "resistance_price": round(resistance, 2),
+                "mode": "auto",
+                "support_price": None,
+                "resistance_price": None,
                 "auto_lookback": 30,
                 "auto_refresh_minutes": 5,
                 "trend_filter": {
