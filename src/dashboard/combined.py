@@ -352,26 +352,26 @@ HTML = """<!DOCTYPE html>
         padding:16px;border-radius:14px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06);
         color:var(--muted);font-size:13px;
     }
-    .section-meta{margin-bottom:12px;color:var(--muted);font-size:12px}
+    .section-meta{margin-bottom:10px;color:var(--muted);font-size:12px}
     .settings-form{
-        display:flex;gap:10px;align-items:end;flex-wrap:wrap;
-        margin-bottom:14px;padding:14px;border-radius:14px;
+        display:flex;gap:8px;align-items:end;flex-wrap:wrap;
+        margin-bottom:12px;padding:10px 12px;border-radius:14px;
         background:var(--panel-strong);border:1px solid rgba(255,255,255,.06)
     }
-    .settings-field{display:flex;flex-direction:column;gap:6px;min-width:180px}
-    .settings-field label{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+    .settings-field{display:flex;flex-direction:column;gap:5px;min-width:145px}
+    .settings-field label{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
     .settings-field input{
         border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);color:#fff;
-        border-radius:10px;padding:10px 12px;font-size:14px;font-weight:600
+        border-radius:10px;padding:9px 10px;font-size:14px;font-weight:600
     }
     .settings-button{
         border:1px solid rgba(52,211,153,.24);background:rgba(52,211,153,.12);color:#b8f5d0;
-        border-radius:10px;padding:10px 14px;font-size:13px;font-weight:800;cursor:pointer
+        border-radius:10px;padding:9px 12px;font-size:13px;font-weight:800;cursor:pointer
     }
     .settings-button.secondary{
         border-color:rgba(125,211,252,.24);background:rgba(125,211,252,.12);color:#d7f0ff
     }
-    .settings-note{color:var(--muted);font-size:12px}
+    .settings-note{color:var(--muted);font-size:11px;margin-left:auto}
     .stat-box{
         padding:14px;border-radius:14px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06)
     }
@@ -493,6 +493,8 @@ HTML = """<!DOCTYPE html>
         body{padding:14px}
         .topbar{flex-direction:column}
         .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.runtime-strip,.overview-layout,.featured-grid{grid-template-columns:1fr}
+        .settings-form{align-items:stretch}
+        .settings-note{margin-left:0;width:100%}
         .price{font-size:30px}
         .selector-head{display:none}
         .selector-row{grid-template-columns:repeat(2,minmax(0,1fr))}
