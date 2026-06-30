@@ -181,12 +181,12 @@ class PriceFetcher:
                     _positive_float(meta.get("regularMarketVolume")),
                 )),
                 "high": _positive_float(
-                    _last(quote.get("high")),
-                    _positive_float(meta.get("regularMarketDayHigh")),
+                    meta.get("regularMarketDayHigh"),
+                    _positive_float(_last(quote.get("high"))),
                 ),
                 "low": _positive_float(
-                    _last(quote.get("low")),
-                    _positive_float(meta.get("regularMarketDayLow")),
+                    meta.get("regularMarketDayLow"),
+                    _positive_float(_last(quote.get("low"))),
                 ),
             }
         except Exception as e:

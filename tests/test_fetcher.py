@@ -1,5 +1,6 @@
 from src.data.fetcher import PriceFetcher
 import os
+import src.data.fetcher as fetcher_mod
 
 
 class DummyHist:
@@ -75,8 +76,6 @@ def test_validate_live_mode_requires_longbridge_credentials():
 
 
 def test_synthetic_market_fallback(monkeypatch=None):
-    import src.data.fetcher as fetcher_mod
-
     env_keys = {
         "SOXS_SYNTHETIC_MARKET": os.environ.get("SOXS_SYNTHETIC_MARKET"),
         "SOXS_SYNTHETIC_START_PRICE": os.environ.get("SOXS_SYNTHETIC_START_PRICE"),
@@ -114,10 +113,60 @@ def test_synthetic_market_fallback(monkeypatch=None):
                 os.environ[key] = value
 
 
+def test_fetch_chart_quote_prefers_day_high_low_from_meta():
+    original_session = fetcher_mod.requests.Session
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {
+                            "regularMarketPrice": 101.5,
+                            "previousClose": 100.0,
+                            "regularMarketVolume": 123456,
+                            "regularMarketDayHigh": 105.25,
+                            "regularMarketDayLow": 97.75,
+                        },
+                        "indicators": {
+                            "quote": [{
+                                "close": [101.5],
+                                "volume": [123456],
+                                "high": [101.5],
+                                "low": [101.5],
+                            }]
+                        },
+                    }]
+                }
+            }
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, *args, **kwargs):
+            return DummyResponse()
+
+    try:
+        fetcher_mod.requests.Session = DummySession
+        pf = PriceFetcher("MSFT")
+        quote = pf._fetch_chart_quote()
+    finally:
+        fetcher_mod.requests.Session = original_session
+
+    assert quote["price"] == 101.5
+    assert quote["high"] == 105.25
+    assert quote["low"] == 97.75
+
+
 def run_test_direct():
     test_get_quote_from_history()
     test_validate_live_mode_requires_longbridge_credentials()
     test_synthetic_market_fallback()
+    test_fetch_chart_quote_prefers_day_high_low_from_meta()
 
 
 if __name__ == '__main__':
