@@ -80,9 +80,9 @@ def main():
     py = VENV_PY if os.path.exists(VENV_PY) else sys.executable
     cmd = [py, SELECTOR]
     env = os.environ.copy()
-    env.setdefault("AI_SELECTOR_LIVE_DATA", "0")
+    env.setdefault("AI_SELECTOR_LIVE_DATA", "1")
     env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
-    env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "20")
+    env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
     os.makedirs(os.path.dirname(OUT_LOG), exist_ok=True)
     with open(OUT_LOG, 'a') as out, open(ERR_LOG, 'a') as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err, cwd=PROJECT_DIR, env=env)

@@ -96,6 +96,11 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     })
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: {
         "timestamp": "2026-06-30T09:29:00",
+        "settings": {
+            "max_price": 50.0,
+            "max_symbols": 50,
+            "data_mode": "live",
+        },
         "report": [
             {
                 "rank": 1,
@@ -134,6 +139,9 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
 
     assert "AI 区间选股" in html
     assert "最新选股时间：2026-06-30T09:29:00" in html
+    assert "价格上限：$50.00" in html
+    assert "扫描数量：50" in html
+    assert "数据模式：live" in html
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html

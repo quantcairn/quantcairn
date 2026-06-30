@@ -1,5 +1,6 @@
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -32,6 +33,8 @@ class Scorer:
     MAX_ATR_PCT = 12.0
     GAP_LIMIT_PCT = 5.0
     EVENT_NEWS_SCORE = 80.0
+    DEFAULT_MARKET_TIMEOUT = 2.0
+    DEFAULT_SCORE_WORKERS = 8
 
     FALLBACK_PROFILES = {
         "NVDA": {"score": 74.0, "range_low": 118.0, "range_high": 154.0, "volume": 220_000_000},
@@ -95,6 +98,26 @@ class Scorer:
         "NIO": "Consumer Discretionary",
         "SMR": "Energy",
     }
+
+    def __init__(self):
+        self.min_price = self._env_float("AI_SELECTOR_MIN_PRICE", self.MIN_PRICE)
+        self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", self.MAX_PRICE)
+        self.market_timeout = self._env_float("AI_SELECTOR_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
+        self.score_workers = max(1, self._env_int("AI_SELECTOR_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
+
+    def _env_float(self, name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        try:
+            return float(raw) if raw not in (None, "") else float(default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _env_int(self, name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        try:
+            return int(raw) if raw not in (None, "") else int(default)
+        except (TypeError, ValueError):
+            return int(default)
 
     def _longbridge_symbol(self, symbol: str) -> str:
         return symbol if "." in symbol else f"{symbol}.US"
@@ -175,8 +198,7 @@ class Scorer:
             try:
                 session = requests.Session()
                 session.trust_env = trust_env
-                timeout = float(os.environ.get("AI_SELECTOR_MARKET_TIMEOUT", "2"))
-                resp = session.get(url, params=params, headers=headers, timeout=timeout)
+                resp = session.get(url, params=params, headers=headers, timeout=self.market_timeout)
                 resp.raise_for_status()
                 break
             except Exception as exc:
@@ -264,8 +286,7 @@ class Scorer:
                 }
                 session = requests.Session()
                 session.trust_env = trust_env
-                timeout = float(os.environ.get("AI_SELECTOR_MARKET_TIMEOUT", "2"))
-                resp = session.get(url, params=params, headers=headers, timeout=timeout)
+                resp = session.get(url, params=params, headers=headers, timeout=self.market_timeout)
                 resp.raise_for_status()
                 result = (resp.json().get("chart", {}).get("result") or [None])[0] or {}
                 meta = result.get("meta") or {}
@@ -324,32 +345,44 @@ class Scorer:
 
     def score_universe(self, symbols: List[str], news_map: Dict[str, List[str]]):
         scored = []
-        for symbol in symbols:
-            try:
-                df = self._load_history(symbol)
-                if df.empty or len(df) < self.MIN_HISTORY_ROWS:
-                    fallback = self._fallback_profile_for_symbol(symbol)
-                    if fallback:
-                        item = self._fallback_scored_item(symbol, fallback, news_map.get(symbol, []))
-                        if item:
-                            scored.append(item)
-                    continue
-
-                item = self.score_frame(symbol=symbol, df=df, news_items=news_map.get(symbol, []))
+        if len(symbols) <= 1:
+            for symbol in symbols:
+                item = self._score_symbol(symbol, news_map.get(symbol, []))
                 if item:
                     scored.append(item)
-            except Exception:
-                fallback = self._fallback_profile_for_symbol(symbol)
-                if fallback:
-                    item = self._fallback_scored_item(symbol, fallback, news_map.get(symbol, []))
+        else:
+            with ThreadPoolExecutor(max_workers=min(self.score_workers, len(symbols))) as executor:
+                futures = {
+                    executor.submit(self._score_symbol, symbol, news_map.get(symbol, [])): symbol
+                    for symbol in symbols
+                }
+                for future in as_completed(futures):
+                    try:
+                        item = future.result()
+                    except Exception:
+                        item = None
                     if item:
                         scored.append(item)
-                continue
 
         if not scored:
             return self._fallback_scores(symbols, news_map)
 
         return scored
+
+    def _score_symbol(self, symbol: str, news_items: Sequence[str]) -> Optional[dict]:
+        try:
+            df = self._load_history(symbol)
+            if df.empty or len(df) < self.MIN_HISTORY_ROWS:
+                fallback = self._fallback_profile_for_symbol(symbol)
+                if fallback:
+                    return self._fallback_scored_item(symbol, fallback, news_items)
+                return None
+            return self.score_frame(symbol=symbol, df=df, news_items=list(news_items))
+        except Exception:
+            fallback = self._fallback_profile_for_symbol(symbol)
+            if fallback:
+                return self._fallback_scored_item(symbol, fallback, news_items)
+            return None
 
     def score_frame(
         self,
@@ -377,9 +410,9 @@ class Scorer:
         avg_volume_20 = float(volume.rolling(20).mean().iloc[-1]) if len(volume) >= 20 else float(volume.mean())
         avg_volume_60 = float(volume.rolling(60).mean().iloc[-1]) if len(volume) >= 60 else float(volume.mean())
 
-        if last_close < self.MIN_PRICE:
+        if last_close < self.min_price:
             return None
-        if last_close > self.MAX_PRICE:
+        if last_close > self.max_price:
             return None
         if avg_volume_20 < self.MIN_AVG_VOLUME:
             return None
@@ -499,7 +532,7 @@ class Scorer:
         support = float(profile["range_low"])
         resistance = float(profile["range_high"])
         price_mid = (support + resistance) / 2.0
-        if price_mid < self.MIN_PRICE or price_mid > self.MAX_PRICE:
+        if price_mid < self.min_price or price_mid > self.max_price:
             return None
         band_pct = ((resistance - support) / price_mid * 100.0) if price_mid else 0.0
         news_score = self._news_score(list(news_items))

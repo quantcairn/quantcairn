@@ -40,3 +40,36 @@ def test_top5_selection_spreads_across_sectors():
     assert len(set(sectors)) == 5
     assert selected[0]["ticker"] == "A1"
     assert selected[-1]["ticker"] == "E1"
+
+
+def test_selector_falls_back_when_live_scoring_returns_too_few(monkeypatch):
+    selector = AIStrategySelector()
+    monkeypatch.setenv("AI_SELECTOR_LIVE_DATA", "1")
+    monkeypatch.setenv("AI_SELECTOR_TOP_K", "3")
+    selector.selection_size = 3
+    monkeypatch.setattr("src.ai_selector.config_writer.write_top_configs", lambda top_items: None)
+
+    selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
+    selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
+
+    live_item = _candidate("AAA", "Technology", 90.0, 1)
+    fallback_items = [
+        _candidate("AAA", "Technology", 90.0, 1),
+        _candidate("BBB", "Energy", 88.0, 2),
+        _candidate("CCC", "Financials", 87.0, 3),
+    ]
+
+    calls = []
+
+    def fake_score(symbols, news_map, live_enabled):
+        calls.append(live_enabled)
+        return [live_item] if live_enabled else fallback_items
+
+    selector._score_with_live_flag = fake_score
+
+    result = selector.run_selection()
+
+    assert calls == [True, False]
+    assert len(result["top5"]) == 3
+    assert result["settings"]["fallback_used"] is True
+    assert result["settings"]["data_mode"] == "mixed"

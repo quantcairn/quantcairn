@@ -49,6 +49,7 @@ def main():
         'top5': selected,
         'top3': out.get('top3', []),
         'report': out.get('report', []),
+        'settings': out.get('settings', {}),
     }
 
     _write_reports(summary)

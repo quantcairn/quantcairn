@@ -1,4 +1,4 @@
-ticker: LYFT
+ticker: SOFI
 mode: live
 range:
   mode: auto
@@ -15,7 +15,7 @@ range:
   min_range_width_pct: 0.8
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 38
+  size_per_trade: 31
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0

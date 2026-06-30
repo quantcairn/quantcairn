@@ -109,11 +109,11 @@ def _fetch_live_account_summary():
 def _load_ai_selection_report():
     path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
     if not path.exists():
-        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": []}
+        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": []}
+            return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
         rows = data.get("report") if isinstance(data.get("report"), list) else []
         return {
             "timestamp": data.get("timestamp"),
@@ -121,9 +121,10 @@ def _load_ai_selection_report():
             "top5": data.get("top5") if isinstance(data.get("top5"), list) else [],
             "top3": data.get("top3") if isinstance(data.get("top3"), list) else [],
             "top10": data.get("top10") if isinstance(data.get("top10"), list) else [],
+            "settings": data.get("settings") if isinstance(data.get("settings"), dict) else {},
         }
     except Exception:
-        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": []}
+        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
 
 
 def _desired_audit_mode() -> str:
@@ -486,6 +487,11 @@ HTML = """<!DOCTYPE html>
         <div class="section-meta">
             {% if ai_selection and ai_selection.timestamp %}
                 最新选股时间：{{ ai_selection.timestamp }}
+                {% if ai_selection.settings %}
+                    · 价格上限：${{ "%.2f"|format(ai_selection.settings.max_price or 0) }}
+                    · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
+                    · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
+                {% endif %}
             {% else %}
                 暂无 AI 选股报告。
             {% endif %}

@@ -15,6 +15,7 @@ class AIStrategySelector:
         self.news = NewsCollector()
         self.scorer = Scorer()
         self.selection_size = self._selection_size_from_env()
+        self.max_symbols = self._max_symbols_from_env()
 
     def _selection_size_from_env(self) -> int:
         raw = os.environ.get("AI_SELECTOR_TOP_K", "5")
@@ -24,6 +25,30 @@ class AIStrategySelector:
             return 5
         return max(1, value)
 
+    def _max_symbols_from_env(self) -> int:
+        raw = os.environ.get("AI_SELECTOR_MAX_SYMBOLS", "50")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 50
+        return max(1, value)
+
+    def _live_data_requested(self) -> bool:
+        return os.environ.get("AI_SELECTOR_LIVE_DATA", "1") != "0"
+
+    def _score_with_live_flag(self, symbols: List[str], news_map: Dict[str, List[str]], live_enabled: bool) -> List[dict]:
+        previous = os.environ.get("AI_SELECTOR_LIVE_DATA")
+        os.environ["AI_SELECTOR_LIVE_DATA"] = "1" if live_enabled else "0"
+        try:
+            self.scorer = Scorer()
+            return self.scorer.score_universe(symbols, news_map)
+        finally:
+            if previous is None:
+                os.environ.pop("AI_SELECTOR_LIVE_DATA", None)
+            else:
+                os.environ["AI_SELECTOR_LIVE_DATA"] = previous
+            self.scorer = Scorer()
+
     def run_selection(self):
         # 1. build universe
         source = os.environ.get("AI_SELECTOR_UNIVERSE", "sample")
@@ -32,8 +57,7 @@ class AIStrategySelector:
         else:
             symbols = self.universe.build_universe(source=source)
 
-        max_symbols = int(os.environ.get("AI_SELECTOR_MAX_SYMBOLS", "50"))
-        symbols = symbols[:max_symbols]
+        symbols = symbols[:self.max_symbols]
 
         # 2. collect data & news. News scraping is optional because it can be
         # slow/unreliable before the open; technical/volume scoring still works.
@@ -43,7 +67,19 @@ class AIStrategySelector:
             news_map = {symbol: [] for symbol in symbols}
 
         # 3. score
-        scored = self.scorer.score_universe(symbols, news_map)
+        live_requested = self._live_data_requested()
+        scored = self._score_with_live_flag(symbols, news_map, live_enabled=live_requested)
+        data_mode = "live" if live_requested else "fallback"
+        fallback_used = False
+
+        if live_requested and len(scored) < self.selection_size:
+            fallback_scored = self._score_with_live_flag(symbols, news_map, live_enabled=False)
+            if fallback_scored:
+                fallback_used = True
+                existing = {item.get("ticker") for item in scored}
+                scored.extend(item for item in fallback_scored if item.get("ticker") not in existing)
+                scored.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+                data_mode = "mixed" if existing else "fallback"
 
         # 4. sort by base score, then diversify TopK by sector/correlation
         scored_sorted = sorted(scored, key=lambda x: x.get("score", 0.0), reverse=True)
@@ -60,6 +96,14 @@ class AIStrategySelector:
             "top5": topk,
             "top3": topk[:3],
             "report": report_rows,
+            "settings": {
+                "max_price": float(round(self.scorer.max_price, 2)),
+                "min_price": float(round(self.scorer.min_price, 2)),
+                "top_k": self.selection_size,
+                "max_symbols": self.max_symbols,
+                "data_mode": data_mode,
+                "fallback_used": fallback_used,
+            },
         }
 
     def _select_diversified_top_k(self, candidates: List[dict], max_items: int) -> List[dict]:
