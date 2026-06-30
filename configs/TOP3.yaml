@@ -1,9 +1,9 @@
-ticker: NFLX
+ticker: AAPL
 mode: live
 range:
   mode: manual
-  support_price: 71.2
-  resistance_price: 76.36
+  support_price: 274.7
+  resistance_price: 288.78
   auto_lookback: 30
   auto_refresh_minutes: 5
   trend_filter:
@@ -14,7 +14,7 @@ range:
   min_profit_per_trade: 1.0
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 10
+  size_per_trade: 2
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 1000.0

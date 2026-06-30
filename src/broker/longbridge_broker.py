@@ -147,8 +147,10 @@ class LongBridgeBroker(BrokerBase):
         self._positions_cache: list[Position] = []
         self._account_cache_fetched_at = 0.0
         self._positions_cache_fetched_at = 0.0
-        self._account_cache_ttl_seconds = 8.0
-        self._positions_cache_ttl_seconds = 8.0
+        ttl_env = os.environ.get("LONGBRIDGE_CACHE_TTL_SECONDS")
+        ttl_seconds = float(ttl_env) if ttl_env else 30.0
+        self._account_cache_ttl_seconds = max(5.0, ttl_seconds)
+        self._positions_cache_ttl_seconds = max(5.0, ttl_seconds)
 
     def _audit_path(self) -> Path:
         return self._audit_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"

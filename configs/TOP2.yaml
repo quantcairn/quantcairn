@@ -1,9 +1,9 @@
-ticker: AMD
+ticker: TSLA
 mode: live
 range:
   mode: manual
-  support_price: 495.35
-  resistance_price: 561.07
+  support_price: 393.31
+  resistance_price: 430.37
   auto_lookback: 30
   auto_refresh_minutes: 5
   trend_filter:

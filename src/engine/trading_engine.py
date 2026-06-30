@@ -107,6 +107,9 @@ class TradingEngine:
         self._position_shares: int = 0
         self._last_signal_type: Optional[SignalType] = None
         self._start_time: Optional[datetime] = None
+        self._latest_account = None
+        self._latest_position = None
+        self._latest_snapshot_at: Optional[datetime] = None
 
         # NY timezone
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
@@ -190,6 +193,9 @@ class TradingEngine:
 
                 # 6. Sync equity for risk calculations
                 acct = self.broker.get_account()
+                self._latest_position = pos
+                self._latest_account = acct
+                self._latest_snapshot_at = datetime.now()
                 self.risk.update_equity(acct.equity)
 
                 # 6b. Update broker price (for P&L calc)

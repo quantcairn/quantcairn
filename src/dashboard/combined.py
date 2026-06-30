@@ -1,5 +1,6 @@
 """Combined dashboard aggregating the selected TOP3 trading engines."""
 import json, os, subprocess, urllib.request
+import time
 from datetime import datetime
 from pathlib import Path
 from flask import Flask
@@ -18,6 +19,9 @@ TICKERS = [
 ]
 
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
+_LIVE_ACCOUNT_CACHE = None
+_LIVE_ACCOUNT_CACHE_AT = 0.0
+_LIVE_ACCOUNT_CACHE_TTL = 30.0
 
 
 def _env(name: str, default: str = "") -> str:
@@ -51,12 +55,18 @@ def _has_live_account_env() -> bool:
 
 def _fetch_live_account_summary():
     """Read live buying power from LongBridge if credentials are present."""
+    global _LIVE_ACCOUNT_CACHE, _LIVE_ACCOUNT_CACHE_AT
+    now = time.time()
+    if _LIVE_ACCOUNT_CACHE and (now - _LIVE_ACCOUNT_CACHE_AT) < _LIVE_ACCOUNT_CACHE_TTL:
+        return _LIVE_ACCOUNT_CACHE
     if not _has_live_account_env():
         return None
     try:
         from src.broker.longbridge_broker import LongBridgeBroker
     except Exception:
         return None
+    summary = None
+    broker = None
     try:
         broker = LongBridgeBroker(
             app_key=_env("LONGBRIDGE_APP_KEY") or _env("LONGBRIDGE_API_KEY"),
@@ -73,7 +83,7 @@ def _fetch_live_account_summary():
             return None
         positions = broker.get_positions()
         account = broker.get_account()
-        return {
+        summary = {
             "cash": float(getattr(account, "cash", 0.0) or 0.0),
             "equity": float(getattr(account, "equity", 0.0) or 0.0),
             "buying_power": float(getattr(account, "buying_power", 0.0) or 0.0),
@@ -82,6 +92,16 @@ def _fetch_live_account_summary():
         }
     except Exception:
         return None
+    finally:
+        if broker is not None:
+            try:
+                broker.disconnect()
+            except Exception:
+                pass
+    if summary is not None:
+        _LIVE_ACCOUNT_CACHE = summary
+        _LIVE_ACCOUNT_CACHE_AT = now
+    return summary
 
 
 def _load_ai_selection_report():

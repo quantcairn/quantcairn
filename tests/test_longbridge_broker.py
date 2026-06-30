@@ -331,8 +331,102 @@ def test_longbridge_broker_account_balance_handles_list_response(tmp_path, monke
     assert account.buying_power == 3456.78
 
 
+def test_longbridge_broker_reuses_cached_positions_and_account(tmp_path, monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    from src.broker import longbridge_broker as module
+
+    class FakeConfig:
+        @staticmethod
+        def from_apikey(*args, **kwargs):
+            return SimpleNamespace(args=args, kwargs=kwargs)
+
+    class FakeTradeContext:
+        def __init__(self, config):
+            self.config = config
+            self.positions_calls = 0
+            self.balance_calls = 0
+
+        def stock_positions(self):
+            self.positions_calls += 1
+            return SimpleNamespace(
+                channels=[
+                    SimpleNamespace(
+                        positions=[
+                            SimpleNamespace(symbol="AAPL", quantity=2, cost_price=10.0)
+                        ]
+                    )
+                ]
+            )
+
+        def account_balance(self):
+            self.balance_calls += 1
+            return SimpleNamespace(total_cash=100.0, net_assets=120.0, buy_power=150.0)
+
+    class FakeQuoteContext:
+        def __init__(self, config):
+            self.config = config
+
+    fake_lb = SimpleNamespace(
+        Config=FakeConfig,
+        TradeContext=FakeTradeContext,
+        QuoteContext=FakeQuoteContext,
+        OrderSide=SimpleNamespace(Buy="Buy", Sell="Sell"),
+        OrderType=SimpleNamespace(MO="MO", LO="LO"),
+        TimeInForceType=SimpleNamespace(Day="Day"),
+        OpenApiException=RuntimeError,
+        OrderStatus=SimpleNamespace(
+            Filled="Filled",
+            PartialFilled="PartialFilled",
+            Rejected="Rejected",
+            Canceled="Canceled",
+            Expired="Expired",
+            New="New",
+            PendingCancel="PendingCancel",
+            WaitToNew="WaitToNew",
+        ),
+    )
+
+    monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        environment="sandbox",
+        http_url="https://sandbox.example/http",
+        quote_ws_url="wss://sandbox.example/quote",
+        trade_ws_url="wss://sandbox.example/trade",
+        audit_dir=str(tmp_path / "logs"),
+    )
+
+    assert broker.connect() is True
+
+    first_positions = broker.get_positions()
+    first_account = broker.get_account()
+    second_positions = broker.get_positions()
+    second_account = broker.get_account()
+
+    assert len(first_positions) == 1
+    assert first_positions[0].ticker == "AAPL"
+    assert first_account.cash == 100.0
+    assert second_positions[0].ticker == "AAPL"
+    assert second_account.cash == 100.0
+    assert broker._trade_ctx.positions_calls == 1
+    assert broker._trade_ctx.balance_calls == 1
+
+
 def run_test_direct():
     tmp_root = Path(tempfile.mkdtemp(prefix="longbridge-broker-test-"))
     test_longbridge_env_aliases_and_sandbox_config(tmp_root)
     test_trading_engine_passes_longbridge_fields()
     test_longbridge_broker_audit_log_records_trade(tmp_root)
+    test_longbridge_broker_account_balance_handles_list_response(tmp_root)
+    test_longbridge_broker_reuses_cached_positions_and_account(tmp_root)

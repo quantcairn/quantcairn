@@ -194,14 +194,18 @@ def get_dashboard_data() -> dict:
         position_in_range = ((price - support) / (resistance - support) * 100) if (resistance and support and resistance != support) else 50
         position_in_range = max(0, min(100, position_in_range))
 
-        # Position
-        pos = _engine.broker.get_position_for_ticker(_engine.ticker)
+        # Position/account snapshots are maintained by the engine loop.
+        # Falling back to the broker here keeps the dashboard usable on startup.
+        pos = getattr(_engine, "_latest_position", None)
+        if pos is None:
+            pos = _engine.broker.get_position_for_ticker(_engine.ticker)
         position_shares = pos.quantity if pos else 0
         entry_price = pos.avg_entry_price if pos and pos.quantity > 0 else 0.0
         unrealized_pnl = pos.unrealized_pnl if pos else 0.0
 
-        # Account
-        acct = _engine.broker.get_account()
+        acct = getattr(_engine, "_latest_account", None)
+        if acct is None:
+            acct = _engine.broker.get_account()
         initial_capital = _engine.config.position.initial_capital
         cash = acct.cash
         equity = acct.equity
