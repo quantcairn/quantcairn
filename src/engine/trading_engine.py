@@ -63,6 +63,7 @@ class TradingEngine:
             trend_enabled=config.trend_filter.enabled,
             trend_min_strength=config.trend_filter.min_trend_strength,
             min_profit_per_trade=config.range.min_profit_per_trade,
+            min_range_width_pct=config.range.min_range_width_pct,
             quick_stop_pct=config.range.quick_stop_pct,
         )
 

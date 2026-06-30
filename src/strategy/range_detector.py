@@ -71,6 +71,7 @@ class RangeDetector:
         trend_enabled: bool = True,
         trend_min_strength: float = 0.5,
         min_profit_per_trade: float = 1.0,
+        min_range_width_pct: float = 0.8,
         quick_stop_pct: float = 3.0,
     ):
         self.ticker = ticker
@@ -100,6 +101,7 @@ class RangeDetector:
 
         # Profit / risk filter
         self.min_profit_per_trade = min_profit_per_trade
+        self.min_range_width_pct = min_range_width_pct
         self.quick_stop_pct = quick_stop_pct
         self._entry_price: Optional[float] = None  # Last entry for quick stop
 
@@ -274,6 +276,18 @@ class RangeDetector:
         resistance = sorted_prices[min(n - 1, int(n * 0.95))]
         return (round(support, 2), round(resistance, 2), 0.3, 0.3)
 
+    def _is_range_tradeable(self, support: float, resistance: float) -> bool:
+        """Reject ranges that are too narrow to cover slippage and fees."""
+        if support <= 0 or resistance <= support:
+            return False
+        spread = resistance - support
+        spread_pct = (spread / support * 100) if support > 0 else 0.0
+        if spread < self.min_profit_per_trade:
+            return False
+        if spread_pct < self.min_range_width_pct:
+            return False
+        return True
+
     def _update_trend(self) -> None:
         """Calculate SMA and determine trend direction."""
         period = self.trend_ma_period
@@ -328,7 +342,7 @@ class RangeDetector:
         # ── Option A: Volume Profile ──
         if self._volume_profile and len(self._volume_profile) >= 10:
             supp, res, supp_conf, res_conf = self._calc_volume_weighted_range()
-            if supp > 0 and res > supp:
+            if self._is_range_tradeable(supp, res):
                 self._auto_support = supp
                 self._auto_resistance = res
                 self._support_confidence = supp_conf
@@ -346,7 +360,7 @@ class RangeDetector:
         # ── Option B: Percentile Fallback ──
         if self._price_history and len(self._price_history) >= 10:
             supp, res, _, _ = self._percentile_range()
-            if supp > 0 and res > supp:
+            if self._is_range_tradeable(supp, res):
                 self._auto_support = supp
                 self._auto_resistance = res
                 self._support_confidence = 0.3
@@ -392,8 +406,11 @@ class RangeDetector:
         # ── Try Volume Profile first, fall back to percentile ──
         supp, res, supp_conf, res_conf = self._calc_volume_weighted_range() if self._volume_profile and len(self._volume_profile) >= 10 else self._percentile_range()
 
-        if supp <= 0 or res <= supp:
-            logger.warning("Could not seed auto range for %s: invalid derived range", self.ticker)
+        if not self._is_range_tradeable(supp, res):
+            logger.warning(
+                "Could not seed auto range for %s: derived range too narrow or invalid",
+                self.ticker,
+            )
             return False
 
         self._auto_support = supp
@@ -525,8 +542,24 @@ class RangeDetector:
                     )
 
                 # Minimum profit check: ensure the spread covers costs
+                spread_dollars = resistance - support
+                spread_pct = (spread_dollars / support * 100) if support > 0 else 0.0
                 est_profit = (resistance - current_price) / current_price * 100  # % return
                 commission_pct = 0.0012  # ~0.12% round-trip commission on 2 trades
+
+                if spread_dollars < self.min_profit_per_trade or spread_pct < self.min_range_width_pct:
+                    return Signal(
+                        type=SignalType.HOLD,
+                        ticker=self.ticker,
+                        price=current_price,
+                        support=support,
+                        resistance=resistance,
+                        reason=(
+                            f"Range too narrow (spread ${spread_dollars:.2f}, {spread_pct:.1f}%) "
+                            f"< min ${self.min_profit_per_trade:.2f} / {self.min_range_width_pct:.1f}%"
+                        ),
+                        confidence=0.0,
+                    )
 
                 # Support confidence check: only buy at "real" supports (volume-tested)
                 if self.mode != "manual" and self._support_confidence < 0.15:

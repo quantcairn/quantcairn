@@ -51,9 +51,11 @@ def test_auto_range_seed_succeeds_with_valid_ohlcv():
         mode="auto",
         auto_lookback=10,
         trend_enabled=False,
+        min_profit_per_trade=0.5,
+        min_range_width_pct=0.5,
     )
     candles = [
-        DummyCandle(high=101 + i * 0.1, low=99 + i * 0.1, close=100 + i * 0.05, volume=1_000 + i * 10)
+        DummyCandle(high=103 + i * 0.2, low=99 + i * 0.1, close=101 + i * 0.1, volume=1_000 + i * 10)
         for i in range(10)
     ]
 
@@ -88,6 +90,26 @@ def test_auto_range_seed_rejects_flat_invalid_range():
 
     assert seeded is False
     assert state.is_valid is False
+
+
+def test_auto_range_seed_rejects_too_narrow_range():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="auto",
+        auto_lookback=10,
+        trend_enabled=False,
+        min_profit_per_trade=1.0,
+        min_range_width_pct=0.8,
+    )
+    candles = [
+        DummyCandle(high=100.20, low=100.00, close=100.10, volume=1_000 + i * 10)
+        for i in range(10)
+    ]
+
+    seeded = detector.seed_from_ohlcv(candles)
+
+    assert seeded is False
+    assert detector.get_range_state().is_valid is False
 
 
 def test_auto_range_buy_is_blocked_when_support_confidence_is_weak():

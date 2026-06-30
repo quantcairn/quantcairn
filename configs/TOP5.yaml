@@ -4,7 +4,7 @@ range:
   mode: auto
   support_price: null
   resistance_price: null
-  auto_lookback: 30
+  auto_lookback: 78
   auto_refresh_minutes: 5
   trend_filter:
     enabled: true
@@ -12,6 +12,7 @@ range:
     min_trend_strength: 0.3
   tolerance_pct: 0.3
   min_profit_per_trade: 1.0
+  min_range_width_pct: 0.8
   quick_stop_pct: 3.0
 position:
   size_per_trade: 1

@@ -51,7 +51,7 @@ def write_top_configs(top_items):
                 "mode": "auto",
                 "support_price": None,
                 "resistance_price": None,
-                "auto_lookback": 30,
+                "auto_lookback": 78,
                 "auto_refresh_minutes": 5,
                 "trend_filter": {
                     "enabled": True,
@@ -60,6 +60,7 @@ def write_top_configs(top_items):
                 },
                 "tolerance_pct": 0.3,
                 "min_profit_per_trade": 1.0,
+                "min_range_width_pct": 0.8,
                 "quick_stop_pct": 3.0,
             },
             "position": {

@@ -19,6 +19,7 @@ class RangeConfig:
     auto_refresh_minutes: int = 15
     tolerance_pct: float = 0.3
     min_profit_per_trade: float = 1.0
+    min_range_width_pct: float = 0.8
     quick_stop_pct: float = 3.0
 
 
@@ -142,6 +143,7 @@ def _parse_config(raw: dict) -> AppConfig:
         auto_refresh_minutes=r.get("auto_refresh_minutes", 15),
         tolerance_pct=r.get("tolerance_pct", 0.3),
         min_profit_per_trade=r.get("min_profit_per_trade", 1.0),
+        min_range_width_pct=r.get("min_range_width_pct", 0.8),
         quick_stop_pct=r.get("quick_stop_pct", 3.0),
     )
 
