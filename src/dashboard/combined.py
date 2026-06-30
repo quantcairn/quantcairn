@@ -24,7 +24,7 @@ TICKERS = [
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
 _LIVE_ACCOUNT_CACHE = None
 _LIVE_ACCOUNT_CACHE_AT = 0.0
-_LIVE_ACCOUNT_CACHE_TTL = 30.0
+_LIVE_ACCOUNT_CACHE_TTL = 120.0
 
 
 def _env(name: str, default: str = "") -> str:

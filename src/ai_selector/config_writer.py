@@ -68,7 +68,7 @@ def write_top_configs(top_items):
                     "ma_period": 20,
                     "min_trend_strength": 0.3,
                 },
-                "tolerance_pct": 0.3,
+                "tolerance_pct": 0.8,
                 "min_profit_per_trade": 1.0,
                 "min_range_width_pct": 0.8,
                 "quick_stop_pct": 3.0,

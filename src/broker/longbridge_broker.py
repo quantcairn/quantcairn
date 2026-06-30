@@ -147,10 +147,13 @@ class LongBridgeBroker(BrokerBase):
         self._positions_cache: list[Position] = []
         self._account_cache_fetched_at = 0.0
         self._positions_cache_fetched_at = 0.0
+        self._account_retry_not_before = 0.0
+        self._positions_retry_not_before = 0.0
         ttl_env = os.environ.get("LONGBRIDGE_CACHE_TTL_SECONDS")
-        ttl_seconds = float(ttl_env) if ttl_env else 30.0
-        self._account_cache_ttl_seconds = max(5.0, ttl_seconds)
-        self._positions_cache_ttl_seconds = max(5.0, ttl_seconds)
+        ttl_seconds = float(ttl_env) if ttl_env else 120.0
+        self._account_cache_ttl_seconds = max(30.0, ttl_seconds)
+        self._positions_cache_ttl_seconds = max(30.0, ttl_seconds)
+        self._cache_retry_backoff_seconds = max(30.0, min(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds))
 
     def _audit_path(self) -> Path:
         return self._audit_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
@@ -419,6 +422,8 @@ class LongBridgeBroker(BrokerBase):
     def get_positions(self) -> list[Position]:
         request = {}
         now = time.time()
+        if now < self._positions_retry_not_before:
+            return list(self._positions_cache)
         if self._positions_cache and (now - self._positions_cache_fetched_at) < self._positions_cache_ttl_seconds:
             return list(self._positions_cache)
         if not self.is_connected():
@@ -442,10 +447,12 @@ class LongBridgeBroker(BrokerBase):
                     )
             self._positions_cache = positions
             self._positions_cache_fetched_at = now
+            self._positions_retry_not_before = now
             self._write_audit("get_positions", request, {"positions": positions}, ok=True)
             return positions
         except Exception as e:
             logger.error(f"Get positions failed: {e}")
+            self._positions_retry_not_before = now + self._cache_retry_backoff_seconds
             self._write_audit("get_positions", request, {"error": str(e)}, ok=False, error=str(e))
             return list(self._positions_cache)
 
@@ -458,6 +465,8 @@ class LongBridgeBroker(BrokerBase):
     def get_account(self) -> AccountInfo:
         request = {}
         now = time.time()
+        if now < self._account_retry_not_before:
+            return self._account_cache
         if (
             (self._account_cache.cash > 0 or self._account_cache.equity > 0 or self._account_cache.buying_power > 0)
             and (now - self._account_cache_fetched_at) < self._account_cache_ttl_seconds
@@ -488,10 +497,12 @@ class LongBridgeBroker(BrokerBase):
             if account.cash > 0 or account.equity > 0 or account.buying_power > 0 or account.positions:
                 self._account_cache = account
                 self._account_cache_fetched_at = now
+            self._account_retry_not_before = now
             self._write_audit("get_account", request, account, ok=True)
             return self._account_cache
         except Exception as e:
             logger.error(f"Get account failed: {e}")
+            self._account_retry_not_before = now + self._cache_retry_backoff_seconds
             self._write_audit("get_account", request, {"error": str(e)}, ok=False, error=str(e))
             return self._account_cache
 
