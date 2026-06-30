@@ -91,6 +91,27 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
     assert updated5["ticker"] == "AMZN"
 
 
+def test_config_writer_uses_auto_refresh_env_override(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setenv("AI_SELECTOR_AUTO_REFRESH_MINUTES", "12")
+
+    write_top_configs([
+        {
+            "ticker": "NVDA",
+            "range_low": 118.0,
+            "range_high": 154.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 5,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    assert updated["range"]["auto_refresh_minutes"] == 12
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:

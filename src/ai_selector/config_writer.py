@@ -5,6 +5,15 @@ BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
 
 
+def _auto_refresh_minutes() -> int:
+    raw = os.environ.get("AI_SELECTOR_AUTO_REFRESH_MINUTES", "5")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 5
+    return max(1, value)
+
+
 def _default_top_mode() -> str:
     mode = str(os.environ.get("AI_SELECTOR_TOP_MODE", "")).strip().lower()
     if mode in {"live", "paper"}:
@@ -53,7 +62,7 @@ def write_top_configs(top_items):
                 "support_price": None,
                 "resistance_price": None,
                 "auto_lookback": 78,
-                "auto_refresh_minutes": 5,
+                "auto_refresh_minutes": _auto_refresh_minutes(),
                 "trend_filter": {
                     "enabled": True,
                     "ma_period": 20,

@@ -1095,12 +1095,6 @@ def _run_ai_selector_now() -> None:
         env=env,
         check=False,
     )
-    subprocess.run(
-        ["/bin/bash", str(PROJECT_DIR / "multi_launch.sh"), "restart-top"],
-        cwd=project_dir,
-        env=env,
-        check=False,
-    )
 
 
 @app.route("/ai-selector-settings", methods=["POST"])

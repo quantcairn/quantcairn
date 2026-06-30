@@ -23,7 +23,6 @@ SELECTOR = os.path.join(PROJECT_DIR, 'scripts', 'run_ai_selector.py')
 OUT_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.out.log')
 ERR_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.err.log')
 STATE_DIR = os.path.join(PROJECT_DIR, 'state')
-MULTI_LAUNCH = os.path.join(PROJECT_DIR, 'multi_launch.sh')
 
 
 def is_market_time(now_et: datetime) -> bool:
@@ -46,16 +45,6 @@ def mark_ran_today(now_et: datetime) -> None:
     marker = os.path.join(STATE_DIR, f"ai_selector_{now_et.date().isoformat()}.done")
     with open(marker, "w") as f:
         f.write(datetime.now().isoformat() + "\n")
-
-
-def restart_top_engines() -> int:
-    if os.environ.get("AI_SELECTOR_RESTART_TOP", "1") == "0":
-        print("AI_SELECTOR_RESTART_TOP=0; not restarting TOP engines.")
-        return 0
-    if not os.path.exists(MULTI_LAUNCH):
-        print(f"Missing launcher: {MULTI_LAUNCH}")
-        return 1
-    return subprocess.run(["/bin/bash", MULTI_LAUNCH, "restart-top"], cwd=PROJECT_DIR).returncode
 
 
 def main():
@@ -90,11 +79,6 @@ def main():
     if proc.returncode != 0:
         print(f'AI selector failed with exit code {proc.returncode}.')
         sys.exit(proc.returncode)
-
-    restart_code = restart_top_engines()
-    if restart_code != 0:
-        print(f'TOP restart failed with exit code {restart_code}.')
-        sys.exit(restart_code)
 
     mark_ran_today(now_et)
     print(f'AI selector completed and TOP engines refreshed for ET date {now_et.date().isoformat()}.')

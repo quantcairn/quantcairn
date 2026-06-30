@@ -28,6 +28,21 @@ def _write_reports(summary: dict):
     latest_json.write_text(payload, encoding="utf-8")
     dated_json.write_text(payload, encoding="utf-8")
 
+
+def _restart_top_engines() -> int:
+    if os.environ.get("AI_SELECTOR_RESTART_TOP", "1") == "0":
+        print("AI_SELECTOR_RESTART_TOP=0; skipping TOP engine restart.")
+        return 0
+    multi_launch = PROJECT_DIR / "multi_launch.sh"
+    if not multi_launch.exists():
+        print(f"Missing launcher: {multi_launch}")
+        return 1
+    return subprocess.run(
+        ["/bin/bash", str(multi_launch), "restart-top"],
+        cwd=PROJECT_DIR,
+        check=False,
+    ).returncode
+
 def main():
     sel = AIStrategySelector()
     out = sel.run_selection()
@@ -53,6 +68,11 @@ def main():
     }
 
     _write_reports(summary)
+
+    restart_code = _restart_top_engines()
+    if restart_code != 0:
+        print(f"TOP restart failed with exit code {restart_code}.")
+        sys.exit(restart_code)
 
     if webhook:
         try:
