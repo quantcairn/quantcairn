@@ -81,6 +81,8 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     assert "风控与交易审计" in html
     assert "仅减仓" in html
     assert "low_funds" in html
+    assert "总本金：$850.00" in html
+    assert "总权益：$1200.00" in html
 
 
 def test_combined_dashboard_renders_ai_selection_report(monkeypatch):

@@ -760,6 +760,10 @@ def index():
             total_capital += initial_capital
             total_equity += initial_capital
 
+    if live_account and live_account.get("mode") == "live":
+        total_capital = float(live_account.get("cash") or 0.0)
+        total_equity = float(live_account.get("equity") or 0.0)
+
     active_symbols = " / ".join(
         card["name"].split("·", 1)[-1].strip() if "·" in card["name"] else str(card["name"]).strip()
         for card in cards
