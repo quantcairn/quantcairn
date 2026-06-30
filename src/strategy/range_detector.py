@@ -59,6 +59,8 @@ class RangeDetector:
         Refreshes every auto_refresh_minutes.
     """
 
+    BUY_ZONE_MAX_POSITION_PCT = 55.0
+
     def __init__(
         self,
         ticker: str,
@@ -533,7 +535,9 @@ class RangeDetector:
                 )
         else:
             # No position → look to buy
-            if 0 <= dist_to_support <= tol:
+            position_in_range = ((current_price - support) / (resistance - support) * 100) if resistance != support else 50
+            in_buy_zone = position_in_range <= self.BUY_ZONE_MAX_POSITION_PCT
+            if 0 <= dist_to_support <= tol or in_buy_zone:
                 if trend_blocked:
                     pct_ma = trend_info["pct_from_ma"]
                     return Signal(
@@ -579,7 +583,6 @@ class RangeDetector:
                     )
 
                 if est_profit < commission_pct * 2 + 0.1:  # need at least 0.34% above costs
-                    pos_in_range = ((current_price - support) / (resistance - support) * 100) if resistance != support else 50
                     return Signal(
                         type=SignalType.HOLD,
                         ticker=self.ticker,
@@ -596,9 +599,12 @@ class RangeDetector:
                     price=current_price,
                     support=support,
                     resistance=resistance,
-                    reason=f"Price ${current_price:.2f} near support ${support:.2f} "
-                           f"({dist_to_support:.1f}% above), est return {est_profit:.1f}%",
-                    confidence=min(1.0, 1.0 - dist_to_support / tol),
+                    reason=(
+                        f"Price ${current_price:.2f} "
+                        f"{'near support' if dist_to_support <= tol else 'in lower range'} "
+                        f"(pos {position_in_range:.0f}%), est return {est_profit:.1f}%"
+                    ),
+                    confidence=max(0.0, min(1.0, 1.0 - dist_to_support / tol)),
                 )
 
         # --- Default: HOLD ---
