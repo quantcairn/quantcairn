@@ -172,8 +172,10 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     class FakeTradeContext:
         def __init__(self, config):
             self.config = config
+            self.submit_kwargs = None
 
         def submit_order(self, **kwargs):
+            self.submit_kwargs = kwargs
             return SimpleNamespace(order_id="LB-12345")
 
         def cancel_order(self, **kwargs):
@@ -255,6 +257,7 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     assert records[1]["action"] == "place_order"
     assert records[1]["request"]["ticker"] == "AAPL"
     assert records[1]["response"]["order_id"] == "LB-12345"
+    assert broker._trade_ctx.submit_kwargs["symbol"] == "AAPL.US"
 
 
 def test_longbridge_broker_account_balance_handles_list_response(tmp_path, monkeypatch=None):
@@ -360,7 +363,7 @@ def test_longbridge_broker_reuses_cached_positions_and_account(tmp_path, monkeyp
                 channels=[
                     SimpleNamespace(
                         positions=[
-                            SimpleNamespace(symbol="AAPL", quantity=2, cost_price=10.0)
+                            SimpleNamespace(symbol="AAPL.US", quantity=2, cost_price=10.0)
                         ]
                     )
                 ]
@@ -419,6 +422,7 @@ def test_longbridge_broker_reuses_cached_positions_and_account(tmp_path, monkeyp
     assert first_account.cash == 100.0
     assert second_positions[0].ticker == "AAPL"
     assert second_account.cash == 100.0
+    assert broker.get_position_for_ticker("AAPL").quantity == 2
     assert broker._trade_ctx.positions_calls == 1
     assert broker._trade_ctx.balance_calls == 1
 

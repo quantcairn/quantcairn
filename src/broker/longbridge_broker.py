@@ -87,6 +87,17 @@ def _balance_field(value, *names, default=0.0):
     return default
 
 
+def _normalize_base_symbol(symbol: str) -> str:
+    return str(symbol or "").strip().upper().split(".")[0]
+
+
+def _longbridge_symbol(symbol: str) -> str:
+    base = _normalize_base_symbol(symbol)
+    if not base:
+        return ""
+    return base if "." in base else f"{base}.US"
+
+
 class LongBridgeBroker(BrokerBase):
     """Long Bridge Securities live broker with sandbox support and audits."""
 
@@ -308,6 +319,7 @@ class LongBridgeBroker(BrokerBase):
             submit_price = limit_price
             if lb_type == lb.OrderType.MO and not submit_price:
                 submit_price = current_ask if side == OrderSide.BUY else current_bid
+            lb_symbol = _longbridge_symbol(ticker)
 
             logger.info(
                 "🔴 [LIVE/%s] %s %s %s @ %s",
@@ -319,7 +331,7 @@ class LongBridgeBroker(BrokerBase):
             )
 
             result: lb.SubmitOrderResponse = self._trade_ctx.submit_order(
-                symbol=ticker,
+                symbol=lb_symbol,
                 order_type=lb_type,
                 side=lb_side,
                 submitted_quantity=quantity,
@@ -436,7 +448,7 @@ class LongBridgeBroker(BrokerBase):
                 for p in channel.positions or []:
                     positions.append(
                         Position(
-                            ticker=p.symbol,
+                            ticker=_normalize_base_symbol(p.symbol),
                             quantity=p.quantity,
                             avg_entry_price=p.cost_price,
                             current_price=0.0,
@@ -457,8 +469,9 @@ class LongBridgeBroker(BrokerBase):
             return list(self._positions_cache)
 
     def get_position_for_ticker(self, ticker: str) -> Optional[Position]:
+        target = _normalize_base_symbol(ticker)
         for p in self.get_positions():
-            if p.ticker.upper() == ticker.upper():
+            if _normalize_base_symbol(p.ticker) == target:
                 return p
         return None
 
@@ -512,7 +525,7 @@ class LongBridgeBroker(BrokerBase):
             self._write_audit("get_realtime_quote", request, {"quote": None}, ok=False, error="Not connected")
             return None
         try:
-            resp = self._quote_ctx.quote(symbols=[ticker])
+            resp = self._quote_ctx.quote(symbols=[_longbridge_symbol(ticker)])
             self._write_audit("get_realtime_quote", request, {"quote": resp}, ok=True)
             return resp
         except Exception as e:
