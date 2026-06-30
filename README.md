@@ -184,7 +184,7 @@ soxs-range-arbitrage/
 
 ## 自动启动（可选）
 
-推荐将 `launchd/com.soxs.arbitrage.plist` 与 `launchd/com.soxs.arbitrage.stop.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。启动后系统会先由 `scripts/ai_selector_wrapper.py` 刷新 TOP3，再只启动这 3 只。示例如下：
+推荐将 `launchd/com.soxs.arbitrage.plist` 与 `launchd/com.soxs.arbitrage.stop.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。启动后系统会先由 `scripts/ai_selector_wrapper.py` 刷新 TOP5，再启动这 5 只。示例如下：
 
 ```bash
 # 使用 launchd（示例）
@@ -195,7 +195,7 @@ launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.plist
 launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.stop.plist
 
 # 或使用 crontab（示例）
-# 每天 21:25 启动（开盘前刷新并启动 TOP3）
+# 每天 21:25 启动（开盘前刷新并启动 TOP5）
 25 21 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh start
 # 每天 04:05 停止
 5 4 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh stop
@@ -204,7 +204,7 @@ launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.stop.plist
 ## AI 选股日报
 
 - 每日 AI 选股报告保存在 `reports/`，文件名格式 `ai_selection_YYYYMMDD.md`。
-- Top3 自动生成的配置文件位于 `configs/TOP1.yaml`, `configs/TOP2.yaml`, `configs/TOP3.yaml`。
+- Top5 自动生成的配置文件位于 `configs/TOP1.yaml` 到 `configs/TOP5.yaml`。
 - 本项目包含一个 AI 选股演示脚本 `scripts/run_ai_selector.py`（在线）和 `scripts/generate_offline_demo.py`（离线合成示例），可以用于验证从选股到配置写入的完整流程。
 
 示例：

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick operational health check for the three-engine paper trading system.
+# Quick operational health check for the five-engine trading system.
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 LOG_DIR="$PROJECT_DIR/logs"
@@ -85,6 +85,10 @@ check_port 8092 "TOP2"
 check_fd 8092 "TOP2"
 check_port 8093 "TOP3"
 check_fd 8093 "TOP3"
+check_port 8094 "TOP4"
+check_fd 8094 "TOP4"
+check_port 8095 "TOP5"
+check_fd 8095 "TOP5"
 check_port 8090 "combined"
 check_fd 8090 "combined"
 
@@ -93,10 +97,14 @@ echo "== APIs =="
 check_api 8091 "TOP1"
 check_api 8092 "TOP2"
 check_api 8093 "TOP3"
+check_api 8094 "TOP4"
+check_api 8095 "TOP5"
 
 echo
 echo "== logs =="
 check_log_risks "$LOG_DIR/top1.log" "TOP1"
 check_log_risks "$LOG_DIR/top2.log" "TOP2"
 check_log_risks "$LOG_DIR/top3.log" "TOP3"
+check_log_risks "$LOG_DIR/top4.log" "TOP4"
+check_log_risks "$LOG_DIR/top5.log" "TOP5"
 check_log_risks "$LOG_DIR/combined.log" "combined"

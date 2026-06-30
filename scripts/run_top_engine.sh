@@ -17,10 +17,20 @@ cfg_path = sys.argv[1]
 with open(cfg_path, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 mode = str(cfg.get("mode", "paper")).strip().lower()
-support = float(cfg["range"]["support_price"])
-resistance = float(cfg["range"]["resistance_price"])
-mid = (support + resistance) / 2.0
-amp = (((resistance - support) / 2.0) / mid * 100.0) + 2.0
+range_cfg = cfg.get("range") or {}
+support = range_cfg.get("support_price")
+resistance = range_cfg.get("resistance_price")
+mid = 100.0
+amp = 3.0
+try:
+    support = float(support) if support is not None else None
+    resistance = float(resistance) if resistance is not None else None
+except (TypeError, ValueError):
+    support = None
+    resistance = None
+if support is not None and resistance is not None and support > 0 and resistance > support:
+    mid = (support + resistance) / 2.0
+    amp = (((resistance - support) / 2.0) / mid * 100.0) + 2.0
 print(f"{mode} {mid:.4f} {amp:.4f}")
 PY
 )
