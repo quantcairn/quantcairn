@@ -184,21 +184,22 @@ def _latest_trade_line(trade_audit: dict) -> str | None:
     return None
 
 
-def _nearest_trigger(cards: list[dict]) -> tuple[str, str]:
+def _nearest_trigger(cards: list[dict], side: str) -> tuple[str, str]:
     best_name = "暂无"
-    best_hint = "暂无接近触发的标的"
+    if side == "buy":
+        best_hint = "暂无接近买点的标的"
+    else:
+        best_hint = "暂无接近卖点的标的"
     best_distance = None
     for card in cards:
         if not card.get("online"):
             continue
         pos_pct = float(card.get("pos_pct", 50) or 50)
-        buy_distance = pos_pct
-        sell_distance = abs(100 - pos_pct)
-        if buy_distance <= sell_distance:
-            distance = buy_distance
+        if side == "buy":
+            distance = pos_pct
             hint = f"{card['name']} 接近买点"
         else:
-            distance = sell_distance
+            distance = abs(100 - pos_pct)
             hint = f"{card['name']} 接近卖点"
         if best_distance is None or distance < best_distance:
             best_distance = distance
@@ -450,8 +451,12 @@ HTML = """<!DOCTYPE html>
             <span class="runtime-value">{{ update_time }}</span>
         </div>
         <div class="runtime-item">
-            <span class="runtime-label">最接近触发</span>
-            <span class="runtime-value {% if nearest_trigger_mode == 'buy' %}live{% elif nearest_trigger_mode == 'sell' %}warn{% endif %}">{{ nearest_trigger }}</span>
+            <span class="runtime-label">最近触发买点</span>
+            <span class="runtime-value live">{{ nearest_buy_trigger }}</span>
+        </div>
+        <div class="runtime-item">
+            <span class="runtime-label">最近触发卖点</span>
+            <span class="runtime-value warn">{{ nearest_sell_trigger }}</span>
         </div>
     </div>
 
@@ -768,12 +773,8 @@ def index():
         card["name"].split("·", 1)[-1].strip() if "·" in card["name"] else str(card["name"]).strip()
         for card in cards
     ) or "N/A"
-    nearest_trigger_name, nearest_trigger = _nearest_trigger(cards)
-    nearest_trigger_mode = "neutral"
-    if "买点" in nearest_trigger:
-        nearest_trigger_mode = "buy"
-    elif "卖点" in nearest_trigger:
-        nearest_trigger_mode = "sell"
+    nearest_buy_trigger_name, nearest_buy_trigger = _nearest_trigger(cards, "buy")
+    nearest_sell_trigger_name, nearest_sell_trigger = _nearest_trigger(cards, "sell")
 
     from flask import render_template_string
     return render_template_string(HTML,
@@ -781,9 +782,10 @@ def index():
         live_account=live_account,
         ai_selection=ai_selection,
         active_symbols=active_symbols,
-        nearest_trigger_name=nearest_trigger_name,
-        nearest_trigger=nearest_trigger,
-        nearest_trigger_mode=nearest_trigger_mode,
+        nearest_buy_trigger_name=nearest_buy_trigger_name,
+        nearest_buy_trigger=nearest_buy_trigger,
+        nearest_sell_trigger_name=nearest_sell_trigger_name,
+        nearest_sell_trigger=nearest_sell_trigger,
         trade_audit=trade_audit,
         total_pnl=round(total_pnl, 2),
         total_capital=round(total_capital, 2),

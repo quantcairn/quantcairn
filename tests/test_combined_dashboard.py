@@ -141,11 +141,103 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "TOP5" in html
 
 
+def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
+    ticker_map = {
+        "TOP1.yaml": "NVDA",
+        "TOP2.yaml": "TSLA",
+        "TOP3.yaml": "MSFT",
+        "TOP4.yaml": "GOOGL",
+        "TOP5.yaml": "AMD",
+    }
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": ticker_map.get(name, name.replace(".yaml", "")),
+        "initial_capital": 1000.0,
+        "support": 100.0,
+        "resistance": 110.0,
+    })
+
+    statuses = {
+        8091: {
+            "ticker": "TOP1 · NVDA",
+            "online": True,
+            "price": 102.0,
+            "price_change": 0.5,
+            "day_high": 103.0,
+            "day_low": 99.0,
+            "bid": 101.9,
+            "ask": 102.1,
+            "volume": 1000000,
+            "support": 100.0,
+            "resistance": 110.0,
+            "spread_pct": 10.0,
+            "pos_pct": 20.0,
+            "sparkline": [],
+            "signal": "MONITORING",
+            "shares": 0,
+            "initial_capital": 1000.0,
+            "cash": 1000.0,
+            "pnl": 0.0,
+            "equity": 1000.0,
+            "trades_today": 0,
+            "halted": False,
+        },
+        8092: {
+            "ticker": "TOP2 · TSLA",
+            "online": True,
+            "price": 108.5,
+            "price_change": 1.0,
+            "day_high": 109.0,
+            "day_low": 104.0,
+            "bid": 108.4,
+            "ask": 108.6,
+            "volume": 2000000,
+            "support": 100.0,
+            "resistance": 110.0,
+            "spread_pct": 10.0,
+            "pos_pct": 85.0,
+            "sparkline": [],
+            "signal": "MONITORING",
+            "shares": 0,
+            "initial_capital": 1000.0,
+            "cash": 1000.0,
+            "pnl": 0.0,
+            "equity": 1000.0,
+            "trades_today": 0,
+            "halted": False,
+        },
+    }
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: statuses.get(port))
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "最近触发买点" in html
+    assert "TOP1 · NVDA 接近买点" in html
+    assert "最近触发卖点" in html
+    assert "TOP2 · TSLA 接近卖点" in html
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:
         test_combined_dashboard_renders_live_account_summary(monkeypatch)
         test_combined_dashboard_renders_ai_selection_report(monkeypatch)
+        test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch)
     finally:
         monkeypatch.restore()
 
