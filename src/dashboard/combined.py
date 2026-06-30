@@ -287,11 +287,26 @@ HTML = """<!DOCTYPE html>
     }
     .pill.live{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22);color:#b8f5d0}
     .pill.warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.24);color:#fde68a}
+    .overview-layout{
+        display:grid;grid-template-columns:1.25fr .95fr;gap:12px;margin-bottom:18px;
+    }
+    .overview-panel{
+        padding:18px;border-radius:18px;border:1px solid var(--line);
+        background:linear-gradient(180deg, rgba(15,22,40,.92), rgba(9,13,24,.88));
+        box-shadow:var(--shadow);backdrop-filter:blur(14px)
+    }
+    .panel-head{
+        display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:14px
+    }
+    .panel-head h2{
+        font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#dbe7ff
+    }
+    .panel-head .hint{color:var(--muted);font-size:12px}
     .summary{
-        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px;
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;
     }
     .runtime-strip{
-        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:18px;
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;
     }
     .runtime-item{
         padding:14px 16px;border-radius:16px;background:rgba(255,255,255,.035);border:1px solid var(--line)
@@ -366,6 +381,17 @@ HTML = """<!DOCTYPE html>
         font-variant-numeric:tabular-nums;word-break:break-word
     }
     .stat-value.muted{color:var(--muted);font-weight:500}
+    .cards-section{margin-bottom:18px}
+    .cards-section-head{
+        display:flex;justify-content:space-between;gap:12px;align-items:flex-end;margin-bottom:12px
+    }
+    .cards-section-head h2{
+        font-size:15px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#dbe7ff
+    }
+    .cards-section-head p{color:var(--muted);font-size:12px;line-height:1.35}
+    .featured-grid{
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:14px
+    }
     .cards{
         display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;align-items:stretch
     }
@@ -375,12 +401,31 @@ HTML = """<!DOCTYPE html>
             linear-gradient(180deg, rgba(16,24,44,.96), rgba(9,13,24,.88)),
             radial-gradient(circle at top right, rgba(125,211,252,.06), transparent 34%);
     }
+    .card.featured-buy{
+        border-color:rgba(52,211,153,.28);
+        box-shadow:0 24px 80px rgba(0,0,0,.45), 0 0 0 1px rgba(52,211,153,.10) inset;
+    }
+    .card.featured-sell{
+        border-color:rgba(251,113,133,.28);
+        box-shadow:0 24px 80px rgba(0,0,0,.45), 0 0 0 1px rgba(251,113,133,.10) inset;
+    }
+    .card.featured-dual{
+        border-color:rgba(125,211,252,.32);
+        box-shadow:0 24px 80px rgba(0,0,0,.45), 0 0 0 1px rgba(125,211,252,.12) inset;
+    }
     .card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
     .card-title{min-width:0}
     .card-title .ticker{
         display:block;font-size:19px;font-weight:800;letter-spacing:.02em;line-height:1.1
     }
     .card-title .desc{display:block;margin-top:6px;color:var(--muted);font-size:12px;line-height:1.35}
+    .card-spot{
+        display:inline-flex;align-items:center;gap:6px;margin-top:8px;padding:5px 9px;border-radius:999px;
+        font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase
+    }
+    .card-spot.buy{background:rgba(52,211,153,.12);color:#b8f5d0}
+    .card-spot.sell{background:rgba(251,113,133,.12);color:#fecdd3}
+    .card-spot.dual{background:rgba(125,211,252,.12);color:#d7f0ff}
     .badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
     .badge{
         display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:700;
@@ -439,7 +484,7 @@ HTML = """<!DOCTYPE html>
     .refresh{text-align:right;color:var(--muted);font-size:11px;margin-top:8px}
     .offline{opacity:.72}
     @media (max-width:1180px){
-        .summary,.sections,.cards{grid-template-columns:1fr}
+        .overview-layout,.sections,.cards,.featured-grid{grid-template-columns:1fr}
         .runtime-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
         .account-grid,.audit-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
         .selector-head,.selector-row{grid-template-columns:repeat(5,minmax(0,1fr))}
@@ -447,7 +492,7 @@ HTML = """<!DOCTYPE html>
     @media (max-width:760px){
         body{padding:14px}
         .topbar{flex-direction:column}
-        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.runtime-strip{grid-template-columns:1fr}
+        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.runtime-strip,.overview-layout,.featured-grid{grid-template-columns:1fr}
         .price{font-size:30px}
         .selector-head{display:none}
         .selector-row{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -481,49 +526,62 @@ HTML = """<!DOCTYPE html>
         </div>
     </div>
 
-    <div class="summary">
-        <div class="metric">
-            <span class="metric-label">可用现金</span>
-            <span class="metric-value">{% if live_account and live_account.cash is not none %}${{ "%.2f"|format(live_account.cash) }}{% else %}暂无{% endif %}</span>
+    <div class="overview-layout">
+        <div class="overview-panel">
+            <div class="panel-head">
+                <h2>账户概览</h2>
+                <span class="hint">可用资金与持仓基线</span>
+            </div>
+            <div class="summary">
+                <div class="metric">
+                    <span class="metric-label">可用现金</span>
+                    <span class="metric-value">{% if live_account and live_account.cash is not none %}${{ "%.2f"|format(live_account.cash) }}{% else %}暂无{% endif %}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">账户权益</span>
+                    <span class="metric-value">{% if live_account and live_account.equity is not none %}${{ "%.2f"|format(live_account.equity) }}{% else %}暂无{% endif %}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">购买力</span>
+                    <span class="metric-value">{% if live_account and live_account.buying_power is not none %}${{ "%.2f"|format(live_account.buying_power) }}{% else %}暂无{% endif %}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">持仓数量</span>
+                    <span class="metric-value small">{% if live_account and live_account.positions_count is not none %}{{ live_account.positions_count }}{% else %}暂无{% endif %}</span>
+                </div>
+            </div>
         </div>
-        <div class="metric">
-            <span class="metric-label">账户权益</span>
-            <span class="metric-value">{% if live_account and live_account.equity is not none %}${{ "%.2f"|format(live_account.equity) }}{% else %}暂无{% endif %}</span>
-        </div>
-        <div class="metric">
-            <span class="metric-label">购买力</span>
-            <span class="metric-value">{% if live_account and live_account.buying_power is not none %}${{ "%.2f"|format(live_account.buying_power) }}{% else %}暂无{% endif %}</span>
-        </div>
-        <div class="metric">
-            <span class="metric-label">持仓数量</span>
-            <span class="metric-value small">{% if live_account and live_account.positions_count is not none %}{{ live_account.positions_count }}{% else %}暂无{% endif %}</span>
-        </div>
-    </div>
-
-    <div class="runtime-strip">
-        <div class="runtime-item">
-            <span class="runtime-label">当前模式</span>
-            <span class="runtime-value {% if trade_audit.execution_mode == 'live' %}live{% else %}warn{% endif %}">{{ trade_audit.execution_mode|upper }}</span>
-        </div>
-        <div class="runtime-item">
-            <span class="runtime-label">当前标的</span>
-            <span class="runtime-value">{{ active_symbols }}</span>
-        </div>
-        <div class="runtime-item">
-            <span class="runtime-label">新开仓</span>
-            <span class="runtime-value {% if trade_audit.new_entries_allowed %}live{% else %}warn{% endif %}">{% if trade_audit.new_entries_allowed %}允许{% else %}暂停{% endif %}</span>
-        </div>
-        <div class="runtime-item">
-            <span class="runtime-label">最近更新</span>
-            <span class="runtime-value">{{ update_time }}</span>
-        </div>
-        <div class="runtime-item">
-            <span class="runtime-label">最近触发买点</span>
-            <span class="runtime-value live">{{ nearest_buy_trigger }}</span>
-        </div>
-        <div class="runtime-item">
-            <span class="runtime-label">最近触发卖点</span>
-            <span class="runtime-value warn">{{ nearest_sell_trigger }}</span>
+        <div class="overview-panel">
+            <div class="panel-head">
+                <h2>运行状态</h2>
+                <span class="hint">策略与触发信号</span>
+            </div>
+            <div class="runtime-strip">
+                <div class="runtime-item">
+                    <span class="runtime-label">当前模式</span>
+                    <span class="runtime-value {% if trade_audit.execution_mode == 'live' %}live{% else %}warn{% endif %}">{{ trade_audit.execution_mode|upper }}</span>
+                </div>
+                <div class="runtime-item">
+                    <span class="runtime-label">当前标的</span>
+                    <span class="runtime-value">{{ active_symbols }}</span>
+                </div>
+                <div class="runtime-item">
+                    <span class="runtime-label">新开仓</span>
+                    <span class="runtime-value {% if trade_audit.new_entries_allowed %}live{% else %}warn{% endif %}">{% if trade_audit.new_entries_allowed %}允许{% else %}暂停{% endif %}</span>
+                </div>
+                <div class="runtime-item">
+                    <span class="runtime-label">最近更新</span>
+                    <span class="runtime-value">{{ update_time }}</span>
+                </div>
+                <div class="runtime-item">
+                    <span class="runtime-label">最近触发买点</span>
+                    <span class="runtime-value live">{{ nearest_buy_trigger }}</span>
+                </div>
+                <div class="runtime-item">
+                    <span class="runtime-label">最近触发卖点</span>
+                    <span class="runtime-value warn">{{ nearest_sell_trigger }}</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -606,13 +664,87 @@ HTML = """<!DOCTYPE html>
         {% endif %}
     </div>
 
-    <div class="cards">
-    {% for card in cards %}
-        <div class="card {% if not card.online %}offline{% endif %}">
+    <div class="cards-section">
+        <div class="cards-section-head">
+            <div>
+                <h2>重点标的</h2>
+                <p>最接近当前买点和卖点的两只标的会先显示。</p>
+            </div>
+        </div>
+        <div class="featured-grid">
+        {% for card in featured_cards %}
+            <div class="card {% if not card.online %}offline{% endif %} {{ card.featured_class }}">
+                <div class="card-head">
+                    <div class="card-title">
+                        <span class="ticker">{{ card.name }}</span>
+                        <span class="desc">{{ card.desc }}</span>
+                        {% if card.featured_label %}<span class="card-spot {{ card.featured_class }}">{{ card.featured_label }}</span>{% endif %}
+                    </div>
+                    <div class="badges">
+                        {% if card.halted %}<span class="badge halted">已暂停</span>{% endif %}
+                        {% if card.range_ready %}<span class="badge live">区间就绪</span>{% else %}<span class="badge halted">区间未就绪</span>{% endif %}
+                        {% if card.online %}<span class="badge live">在线</span>{% else %}<span class="badge offline">离线</span>{% endif %}
+                    </div>
+                </div>
+
+                <div class="price-row">
+                    <span class="price {{ 'green' if card.price_change >= 0 else 'red' }}">${{ "%.2f"|format(card.price) }}</span>
+                    <span class="change {{ 'green' if card.price_change >= 0 else 'red' }}">
+                        {{ '+' if card.price_change >= 0 else '' }}{{ "%.2f"|format(card.price_change) }}%
+                    </span>
+                </div>
+
+                <div class="grid-quote">
+                    <div class="quote-item"><span class="label">日内高点</span><span class="val green">${{ "%.2f"|format(card.day_high) }}</span></div>
+                    <div class="quote-item"><span class="label">日内低点</span><span class="val red">${{ "%.2f"|format(card.day_low) }}</span></div>
+                    <div class="quote-item"><span class="label">买一</span><span class="val">${{ "%.2f"|format(card.bid) }}</span></div>
+                    <div class="quote-item"><span class="label">卖一</span><span class="val">${{ "%.2f"|format(card.ask) }}</span></div>
+                </div>
+
+                <div class="sparkline">
+                    {% for bar in card.sparkline %}
+                    <div class="spark-bar" style="height:{{ bar.height }}%;background:{{ bar.color }}"></div>
+                    {% endfor %}
+                </div>
+
+                <div class="range-block">
+                    <div class="row"><span class="label">区间</span><span class="val">${{ "%.2f"|format(card.support) }} - ${{ "%.2f"|format(card.resistance) }} ({{ "%.1f"|format(card.spread_pct) }}%)</span></div>
+                    <div class="range-bar">
+                        <div class="range-fill" style="width:{{ card.pos_pct }}%;background:{% if card.pos_pct > 70 %}#fb7185{% elif card.pos_pct < 30 %}#34d399{% else %}#fbbf24{% endif %}"></div>
+                    </div>
+                    <div class="row" style="margin-top:8px"><span class="label">区间位置</span><span class="val">{{ "%.0f"|format(card.pos_pct) }}%</span></div>
+                </div>
+
+                <div class="signal {% if card.signal == 'BUY' %}sig-buy{% elif card.signal == 'SELL' %}sig-sell{% elif 'TREND' in card.signal %}sig-block{% else %}sig-hold{% endif %}">
+                    {{ card.signal_cn }}
+                </div>
+
+                <div class="pnl-grid">
+                    <div class="quote-item"><span class="label">持股</span><span class="val">{{ card.shares }}</span></div>
+                    <div class="quote-item"><span class="label">当日盈亏</span><span class="val {{ 'green' if card.pnl >= 0 else 'red' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
+                    <div class="quote-item"><span class="label">成交笔数</span><span class="val">{{ card.trades }}</span></div>
+                    <div class="quote-item"><span class="label">区间来源</span><span class="val {{ 'muted' if not card.range_ready else '' }}">{{ card.range_source }}</span></div>
+                </div>
+            </div>
+        {% endfor %}
+        </div>
+    </div>
+
+    <div class="cards-section">
+        <div class="cards-section-head">
+            <div>
+                <h2>其余标的</h2>
+                <p>按 AI 排名继续展示，方便横向比较。</p>
+            </div>
+        </div>
+        <div class="cards">
+    {% for card in other_cards %}
+            <div class="card {% if not card.online %}offline{% endif %} {{ card.featured_class }}">
             <div class="card-head">
                 <div class="card-title">
                     <span class="ticker">{{ card.name }}</span>
                     <span class="desc">{{ card.desc }}</span>
+                    {% if card.featured_label %}<span class="card-spot {{ card.featured_class }}">{{ card.featured_label }}</span>{% endif %}
                 </div>
                 <div class="badges">
                     {% if card.halted %}<span class="badge halted">已暂停</span>{% endif %}
@@ -661,6 +793,7 @@ HTML = """<!DOCTYPE html>
             </div>
         </div>
     {% endfor %}
+        </div>
     </div>
 
     <div class="refresh">每 5 秒自动刷新 · {{ update_time }}</div>
@@ -874,8 +1007,51 @@ def index():
     )
     nearest_sell_trigger_name, nearest_sell_trigger = _nearest_trigger(cards, "sell")
 
+    highlight_names = []
+    if nearest_buy_trigger_name and nearest_buy_trigger_name not in {"暂无", "暂无可买", "暂停开仓"}:
+        highlight_names.append(nearest_buy_trigger_name)
+    if (
+        nearest_sell_trigger_name
+        and nearest_sell_trigger_name not in {"暂无", "暂无可买", "暂停开仓"}
+        and nearest_sell_trigger_name not in highlight_names
+    ):
+        highlight_names.append(nearest_sell_trigger_name)
+
+    featured_cards = []
+    featured_set = set()
+    for name in highlight_names:
+        for card in cards:
+            if card["name"] != name or name in featured_set:
+                continue
+            labels = []
+            classes = []
+            if name == nearest_buy_trigger_name:
+                labels.append("最接近买点")
+                classes.append("featured-buy")
+            if name == nearest_sell_trigger_name:
+                labels.append("最接近卖点")
+                classes.append("featured-sell")
+            if len(labels) > 1:
+                labels = ["买卖都接近"]
+                classes = ["featured-dual"]
+            card["featured_label"] = " / ".join(labels)
+            card["featured_class"] = " ".join(classes)
+            featured_cards.append(card)
+            featured_set.add(name)
+            break
+
+    for card in cards:
+        if card["name"] in featured_set:
+            continue
+        card["featured_label"] = ""
+        card["featured_class"] = ""
+
+    other_cards = [card for card in cards if card["name"] not in featured_set]
+
     return render_template_string(HTML,
         cards=cards,
+        featured_cards=featured_cards,
+        other_cards=other_cards,
         account_labels=account_labels,
         footer_buying_power=footer_buying_power,
         live_account=live_account,

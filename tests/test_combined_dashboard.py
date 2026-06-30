@@ -240,6 +240,10 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
     assert "TOP1 · NVDA 距买点 $2.00 (2.0%)" in html
     assert "最近触发卖点" in html
     assert "TOP2 · TSLA 距卖点 $1.50 (1.4%)" in html
+    assert "重点标的" in html
+    assert "其余标的" in html
+    assert "最接近买点" in html
+    assert "最接近卖点" in html
 
 
 def test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch):
