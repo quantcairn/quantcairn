@@ -249,6 +249,40 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
     assert "最接近卖点" in html
 
 
+def test_combined_status_fetch_needs_consecutive_failures_before_offline(monkeypatch):
+    combined._STATUS_CACHE.clear()
+    combined._STATUS_FAILURES.clear()
+
+    responses = [
+        b'{"running": true, "status_line": "TOP2 ok"}',
+    ]
+
+    class FakeResponse:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def read(self):
+            return self._payload
+
+    class FakeOpener:
+        def open(self, url, timeout=1):
+            if responses:
+                return FakeResponse(responses.pop(0))
+            raise OSError("temporary failure")
+
+    monkeypatch.setattr(combined.urllib.request, "build_opener", lambda *args, **kwargs: FakeOpener())
+
+    first = combined._fetch_status(8092)
+    second = combined._fetch_status(8092)
+    third = combined._fetch_status(8092)
+    fourth = combined._fetch_status(8092)
+
+    assert first == {"running": True, "status_line": "TOP2 ok"}
+    assert second == {"running": True, "status_line": "TOP2 ok"}
+    assert third == {"running": True, "status_line": "TOP2 ok"}
+    assert fourth is None
+
+
 def test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0})
@@ -392,6 +426,7 @@ def test_combined_dashboard_reruns_ai_selector_from_settings_form(monkeypatch):
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:
+        test_combined_status_fetch_needs_consecutive_failures_before_offline(monkeypatch)
         test_combined_dashboard_renders_live_account_summary(monkeypatch)
         test_combined_dashboard_renders_ai_selection_report(monkeypatch)
         test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch)

@@ -25,6 +25,9 @@ IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
 _LIVE_ACCOUNT_CACHE = None
 _LIVE_ACCOUNT_CACHE_AT = 0.0
 _LIVE_ACCOUNT_CACHE_TTL = 120.0
+_STATUS_CACHE: dict[int, dict] = {}
+_STATUS_FAILURES: dict[int, int] = {}
+_STATUS_OFFLINE_THRESHOLD = 3
 
 
 def _env(name: str, default: str = "") -> str:
@@ -815,11 +818,19 @@ HTML = """<!DOCTYPE html>
 
 def _fetch_status(port):
     """Fetch /api/status JSON from an engine."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         req = opener.open(f"http://127.0.0.1:{port}/api/status", timeout=1)
-        return json.loads(req.read().decode())
+        data = json.loads(req.read().decode())
+        if isinstance(data, dict):
+            _STATUS_CACHE[port] = data
+        _STATUS_FAILURES[port] = 0
+        return data
     except Exception:
+        failures = _STATUS_FAILURES.get(port, 0) + 1
+        _STATUS_FAILURES[port] = failures
+        if failures < _STATUS_OFFLINE_THRESHOLD and port in _STATUS_CACHE:
+            return _STATUS_CACHE[port]
         return None
 
 
