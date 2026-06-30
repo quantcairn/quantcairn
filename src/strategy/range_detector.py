@@ -108,6 +108,9 @@ class RangeDetector:
         self._support_touch_count: int = 0     # times price bounced off support
         self._resistance_touch_count: int = 0  # times price hit resistance
 
+        if self.mode == "manual" and self._manual_support is not None and self._manual_resistance is not None:
+            self._support_confidence = 1.0
+
     @property
     def support(self) -> Optional[float]:
         """Current support level."""
@@ -506,7 +509,7 @@ class RangeDetector:
                 )
         else:
             # No position → look to buy
-            if dist_to_support <= tol:
+            if 0 <= dist_to_support <= tol:
                 if trend_blocked:
                     pct_ma = trend_info["pct_from_ma"]
                     return Signal(
@@ -524,7 +527,7 @@ class RangeDetector:
                 commission_pct = 0.0012  # ~0.12% round-trip commission on 2 trades
 
                 # Support confidence check: only buy at "real" supports (volume-tested)
-                if self._support_confidence < 0.15:
+                if self.mode != "manual" and self._support_confidence < 0.15:
                     return Signal(
                         type=SignalType.HOLD,
                         ticker=self.ticker,

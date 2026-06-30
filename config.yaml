@@ -61,3 +61,8 @@ broker:
     access_token: ""
     region: "cn"
     enabled: false
+    environment: "prod"
+    http_url: null
+    quote_ws_url: null
+    trade_ws_url: null
+    log_path: null

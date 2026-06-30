@@ -44,7 +44,22 @@ def _first_non_empty(*values: Any) -> Any:
     return None
 
 
-def summarize_trade_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _filter_records_by_mode(records: list[dict[str, Any]], mode: str | None = None) -> list[dict[str, Any]]:
+    if not mode:
+        return records
+    normalized = str(mode).strip().lower()
+    if not normalized:
+        return records
+    filtered = [
+        record
+        for record in records
+        if str(record.get("execution_mode", "")).strip().lower() == normalized
+    ]
+    return filtered if filtered else records
+
+
+def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = None) -> dict[str, Any]:
+    records = _filter_records_by_mode(records, mode=mode)
     phase_counts = Counter(str(record.get("phase", "unknown")) for record in records)
     decision_records = [record for record in records if str(record.get("phase")) == "decision"]
     execution_records = [record for record in records if str(record.get("phase")) == "execution"]
@@ -114,17 +129,18 @@ def summarize_trade_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             latest_record.get("risk_pause_reasons"),
             [],
         ),
+        "mode_filter": mode or "",
     }
 
 
-def summarize_trade_log(log_dir: str | Path | None = None, day: str | None = None) -> dict[str, Any]:
+def summarize_trade_log(log_dir: str | Path | None = None, day: str | None = None, mode: str | None = None) -> dict[str, Any]:
     path = trade_log_path(log_dir, day)
     records = load_trade_records(log_dir, day)
-    summary = summarize_trade_records(records)
+    summary = summarize_trade_records(records, mode=mode)
     summary["path"] = str(path)
     summary["exists"] = path.exists()
     return summary
 
 
-def daily_trade_report(log_dir: str | Path | None = None, day: str | None = None) -> dict[str, Any]:
-    return summarize_trade_log(log_dir=log_dir, day=day)
+def daily_trade_report(log_dir: str | Path | None = None, day: str | None = None, mode: str | None = None) -> dict[str, Any]:
+    return summarize_trade_log(log_dir=log_dir, day=day, mode=mode)

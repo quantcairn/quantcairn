@@ -82,6 +82,11 @@ class TradingEngine:
                 app_secret=config.broker.longbridge.app_secret,
                 access_token=config.broker.longbridge.access_token,
                 region=config.broker.longbridge.region,
+                environment=config.broker.longbridge.environment,
+                http_url=config.broker.longbridge.http_url,
+                quote_ws_url=config.broker.longbridge.quote_ws_url,
+                trade_ws_url=config.broker.longbridge.trade_ws_url,
+                log_path=config.broker.longbridge.log_path,
             )
             logger.info("Using Long Bridge (LIVE) broker")
         else:

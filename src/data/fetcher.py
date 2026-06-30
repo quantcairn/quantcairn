@@ -2,11 +2,14 @@
 Price data fetcher: wraps yfinance for real-time and historical data.
 """
 import time
+import math
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -57,6 +60,11 @@ class PriceFetcher:
         self._ticker_obj = yf.Ticker(ticker)
         self._last_fetch_time: float = 0
         self._cached_quote: Optional[Quote] = None
+        self._synthetic_market = os.environ.get("SOXS_SYNTHETIC_MARKET", "").strip().lower() in {"1", "true", "yes", "on"}
+        self._synthetic_start_price = _positive_float(os.environ.get("SOXS_SYNTHETIC_START_PRICE"), 100.0)
+        self._synthetic_amplitude_pct = _positive_float(os.environ.get("SOXS_SYNTHETIC_AMPLITUDE_PCT"), 2.0)
+        self._synthetic_period_seconds = max(15, int(_positive_float(os.environ.get("SOXS_SYNTHETIC_PERIOD_SECONDS"), 120.0)))
+        self._synthetic_started_at = time.time()
 
     def _call_with_retries(self, func, attempts: int = 3, base_delay: float = 0.5):
         """Call *func* with retries and exponential backoff.
@@ -118,6 +126,103 @@ class PriceFetcher:
             logger.debug("History fetch failed for %s (%s %s): %s", self.ticker, period, interval, e)
             return None
 
+    def _fetch_chart_quote(self) -> dict:
+        """Fetch a lightweight Yahoo chart quote without inherited proxy settings."""
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{self.ticker}"
+        session = requests.Session()
+        session.trust_env = False
+        last_exc = None
+        for attempt in range(3):
+            try:
+                resp = session.get(
+                    url,
+                    params={"range": "1d", "interval": "1m", "includePrePost": "true"},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=8,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception as e:
+                last_exc = e
+                time.sleep(0.25 * (2 ** attempt))
+        else:
+            logger.debug("Yahoo chart fallback failed for %s: %s", self.ticker, last_exc)
+            return {}
+
+        try:
+            result = ((data.get("chart") or {}).get("result") or [None])[0]
+            if not result:
+                return {}
+
+            meta = result.get("meta") or {}
+            quote = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
+
+            def _last(values):
+                if not values:
+                    return None
+                for value in reversed(values):
+                    if value is not None:
+                        return value
+                return None
+
+            price = _positive_float(meta.get("regularMarketPrice"))
+            if price <= 0:
+                price = _positive_float(_last(quote.get("close")))
+
+            return {
+                "price": price,
+                "previous_close": _positive_float(
+                    meta.get("previousClose"),
+                    _positive_float(meta.get("chartPreviousClose")),
+                ),
+                "volume": int(_positive_float(
+                    _last(quote.get("volume")),
+                    _positive_float(meta.get("regularMarketVolume")),
+                )),
+                "high": _positive_float(
+                    _last(quote.get("high")),
+                    _positive_float(meta.get("regularMarketDayHigh")),
+                ),
+                "low": _positive_float(
+                    _last(quote.get("low")),
+                    _positive_float(meta.get("regularMarketDayLow")),
+                ),
+            }
+        except Exception as e:
+            logger.debug("Yahoo chart fallback parse failed for %s: %s", self.ticker, e)
+            return {}
+
+    def _synthetic_quote(self) -> Quote:
+        """Generate a deterministic synthetic quote when all live data sources fail."""
+        now = time.time()
+        if self._cached_quote and self._cached_quote.price > 0:
+            base = self._synthetic_start_price or self._cached_quote.price
+        else:
+            base = self._synthetic_start_price
+
+        elapsed = now - self._synthetic_started_at
+        phase = (elapsed / self._synthetic_period_seconds) * 2 * math.pi
+        swing = math.sin(phase)
+        amplitude = base * (self._synthetic_amplitude_pct / 100.0)
+        price = max(0.01, base + amplitude * swing)
+        spread = max(price * 0.001, 0.01)
+        prev_close = self._cached_quote.price if self._cached_quote else base
+        quote = Quote(
+            ticker=self.ticker,
+            price=round(price, 4),
+            bid=round(price - spread, 4),
+            ask=round(price + spread, 4),
+            volume=int(100000 + abs(swing) * 50000),
+            change_pct=round(((price - prev_close) / prev_close * 100) if prev_close else 0.0, 2),
+            timestamp=datetime.now(),
+            high_1m=round(price + spread, 4),
+            low_1m=round(price - spread, 4),
+        )
+        self._cached_quote = quote
+        self._last_fetch_time = now
+        return quote
+
     def get_quote(self) -> Optional[Quote]:
         """Get current real-time quote. Cached for poll_interval seconds.
 
@@ -131,28 +236,39 @@ class PriceFetcher:
             return self._cached_quote
 
         try:
-            fast = self._get_safe_fast_info()
+            chart = self._fetch_chart_quote()
+            fast = {} if _positive_float(chart.get("price")) > 0 else self._get_safe_fast_info()
 
-            prev_close = _positive_float(fast.get("regularMarketPreviousClose"))
+            prev_close = _positive_float(
+                chart.get("previous_close"),
+                _positive_float(fast.get("regularMarketPreviousClose")),
+            )
             bid = _positive_float(fast.get("bid"))
             ask = _positive_float(fast.get("ask"))
 
-            price = 0.0
-            volume = 0
-            high_1m = None
-            low_1m = None
+            price = _positive_float(chart.get("price"))
+            volume = int(_positive_float(chart.get("volume")))
+            high_1m = chart.get("high") or None
+            low_1m = chart.get("low") or None
+
+            if price > 0:
+                if bid <= 0:
+                    bid = price
+                if ask <= 0:
+                    ask = price
 
             # ── Layer 1: 5-day 1-minute history (works during & after hours) ──
-            try:
-                hist = self._fetch_history(period="5d", interval="1m", prepost=True)
-                if hist is not None and not hist.empty:
-                    last_row = hist.iloc[-1]
-                    price = float(last_row["Close"])
-                    volume = int(last_row["Volume"])
-                    high_1m = float(last_row["High"])
-                    low_1m = float(last_row["Low"])
-            except Exception:
-                pass
+            if price <= 0:
+                try:
+                    hist = self._fetch_history(period="5d", interval="1m", prepost=True)
+                    if hist is not None and not hist.empty:
+                        last_row = hist.iloc[-1]
+                        price = float(last_row["Close"])
+                        volume = int(last_row["Volume"])
+                        high_1m = float(last_row["High"])
+                        low_1m = float(last_row["Low"])
+                except Exception:
+                    pass
 
             # ── Layer 1b: fallback to 1d 5m history if 1m unavailable ──
             if price <= 0:
@@ -200,6 +316,8 @@ class PriceFetcher:
                 except Exception as e:
                     logger.debug("info unavailable for %s: %s", self.ticker, e)
                     price_info = {}
+                if price_info is None:
+                    price_info = {}
 
                 pre = _positive_float(price_info.get("preMarketPrice"))
                 post = _positive_float(price_info.get("postMarketPrice"))
@@ -216,12 +334,18 @@ class PriceFetcher:
                 )
                 volume = int(_positive_float(fast.get("lastVolume")))
 
-            # ── Layer 4: stale cache ──
+            # ── Layer 4: synthetic fallback or stale cache ──
+            if price <= 0 and self._synthetic_market:
+                return self._synthetic_quote()
             if price <= 0 and self._cached_quote:
                 return self._cached_quote
 
             if prev_close <= 0:
                 prev_close = price
+            if bid <= 0 and price > 0:
+                bid = price
+            if ask <= 0 and price > 0:
+                ask = price
 
             change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
 
@@ -243,6 +367,8 @@ class PriceFetcher:
 
         except Exception as e:
             logger.warning(f"Failed to fetch quote for {self.ticker}: {e}")
+            if self._synthetic_market:
+                return self._synthetic_quote()
             return self._cached_quote  # Return stale cache if available
 
     def get_ohlcv(self, period: str = "1d", interval: str = "5m") -> list[OHLCV]:

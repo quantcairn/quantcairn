@@ -1,0 +1,46 @@
+ticker: NFLX
+mode: live
+range:
+  mode: manual
+  support_price: 71.2
+  resistance_price: 76.36
+  auto_lookback: 30
+  auto_refresh_minutes: 5
+  trend_filter:
+    enabled: true
+    ma_period: 20
+    min_trend_strength: 0.3
+  tolerance_pct: 0.3
+  min_profit_per_trade: 1.0
+  quick_stop_pct: 3.0
+position:
+  size_per_trade: 10
+  max_position: 9999
+  cool_down_seconds: 30
+  initial_capital: 1000.0
+risk:
+  stop_loss_pct: 1.5
+  take_profit_pct: null
+  daily_loss_limit: 60.0
+  max_consecutive_losses: 3
+  max_drawdown_pct: 8.0
+trading_hours:
+  timezone: America/New_York
+  start: 09:30
+  end: '16:00'
+  early_close: '13:00'
+data:
+  provider: yfinance
+  poll_interval_seconds: 10
+notifications:
+  console: true
+  macos_notification: true
+  webhook_url: null
+  trade_summary_interval: 3
+broker:
+  longbridge:
+    app_key: ''
+    app_secret: ''
+    access_token: ''
+    region: cn
+    enabled: true

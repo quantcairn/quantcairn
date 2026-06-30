@@ -74,28 +74,29 @@ check_log_risks() {
 
 echo "== launchd =="
 check_launchd "com.soxs.arbitrage"
+check_launchd "com.soxs.ai_selector"
 check_launchd "com.soxs.arbitrage.stop"
 
 echo
 echo "== ports =="
-check_port 8080 "DRIP"
-check_fd 8080 "DRIP"
-check_port 8081 "AMC"
-check_fd 8081 "AMC"
-check_port 8082 "SMR"
-check_fd 8082 "SMR"
+check_port 8091 "TOP1"
+check_fd 8091 "TOP1"
+check_port 8092 "TOP2"
+check_fd 8092 "TOP2"
+check_port 8093 "TOP3"
+check_fd 8093 "TOP3"
 check_port 8090 "combined"
 check_fd 8090 "combined"
 
 echo
 echo "== APIs =="
-check_api 8080 "DRIP"
-check_api 8081 "AMC"
-check_api 8082 "SMR"
+check_api 8091 "TOP1"
+check_api 8092 "TOP2"
+check_api 8093 "TOP3"
 
 echo
 echo "== logs =="
-check_log_risks "$LOG_DIR/drip.log" "DRIP"
-check_log_risks "$LOG_DIR/amc.log" "AMC"
-check_log_risks "$LOG_DIR/smr.log" "SMR"
+check_log_risks "$LOG_DIR/top1.log" "TOP1"
+check_log_risks "$LOG_DIR/top2.log" "TOP2"
+check_log_risks "$LOG_DIR/top3.log" "TOP3"
 check_log_risks "$LOG_DIR/combined.log" "combined"

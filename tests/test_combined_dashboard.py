@@ -25,7 +25,7 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
         "support": 0.0,
         "resistance": 0.0,
     })
-    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir: {
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
         "execution_mode": "live",
         "reduce_only": True,
         "new_entries_allowed": False,
@@ -48,9 +48,62 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     with combined.app.test_request_context("/"):
         html = combined.index()
 
-    assert "Live Account" in html
-    assert "Buying Power" in html
+    assert "实盘账户" in html
+    assert "购买力" in html
     assert "$425.00" in html
-    assert "Session Risk & Trade Audit" in html
-    assert "Reduce Only" in html
+    assert "风控与交易审计" in html
+    assert "仅减仓" in html
     assert "low_funds" in html
+
+
+def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 1000.0,
+        "support": 100.0,
+        "resistance": 110.0,
+    })
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: {
+        "timestamp": "2026-06-30T09:29:00",
+        "report": [
+            {
+                "rank": 1,
+                "ticker": "NVDA",
+                "score": 84.19,
+                "volatility": 94.71,
+                "volume": 81.89,
+                "trend_fit": 58.0,
+                "repeatability": 62.0,
+                "drawdown": 55.0,
+                "correlation_penalty": 0.0,
+                "suggested_range": "$118.00 - $154.00",
+                "sector": "Semiconductors",
+            }
+        ],
+        "top3": [],
+        "top10": [],
+    })
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+        "execution_mode": "live",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "AI 区间选股" in html
+    assert "最新选股时间：2026-06-30T09:29:00" in html
+    assert "NVDA" in html
+    assert "84.19" in html
+    assert "$118.00 - $154.00" in html

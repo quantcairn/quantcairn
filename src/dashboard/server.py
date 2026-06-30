@@ -99,6 +99,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- Position Card -->
         <div class="card">
             <h2>📊 Position</h2>
+            <div class="stat-row"><span class="stat-label">Initial Capital</span><span class="stat-value">${{ "%.2f"|format(initial_capital) }}</span></div>
+            <div class="stat-row"><span class="stat-label">Cash</span><span class="stat-value">${{ "%.2f"|format(cash) }}</span></div>
             <div class="stat-row"><span class="stat-label">Shares</span><span class="stat-value">{{ position_shares }}</span></div>
             <div class="stat-row"><span class="stat-label">Entry Price</span><span class="stat-value">{% if entry_price and entry_price > 0 %}${{ "%.2f"|format(entry_price) }}{% else %}N/A{% endif %}</span></div>
             <div class="stat-row"><span class="stat-label">Unrealized P&L</span><span class="stat-value {{ 'value-green' if (unrealized_pnl|default(0)) >= 0 else 'value-red' }}">${{ "%.2f"|format(unrealized_pnl|default(0.0)) }}</span></div>
@@ -150,14 +152,10 @@ def api_recent():
         return jsonify({"prices": [], "ticker": "N/A"})
     try:
         prices = _engine.strategy._price_history[-60:] if _engine.strategy._price_history else []
-        # Get 1m OHLCV for richer data
-        ohlcv = _engine.fetcher.get_ohlcv(period="1d", interval="5m")
-        recent_bars = []
-        for c in ohlcv[-30:]:
-            recent_bars.append(round(c.close, 4))
+        recent_bars = [round(float(p), 4) for p in prices[-30:]]
         return jsonify({
             "ticker": _engine.ticker,
-            "prices": prices if prices else recent_bars,
+            "prices": prices,
             "recent_bars": recent_bars,
         })
     except Exception as e:
@@ -176,8 +174,9 @@ def get_dashboard_data() -> dict:
         return _empty_data()
 
     try:
-        # Price
-        quote = _engine.fetcher.get_quote()
+        # Price: dashboard reads cached engine state only. Fetching live market
+        # data here can block /api/status and make the combined view show zero.
+        quote = getattr(_engine.fetcher, "_cached_quote", None)
         price = quote.price if quote else 0
         change = quote.change_pct if quote else 0
         bid = quote.bid if quote else 0
@@ -203,6 +202,8 @@ def get_dashboard_data() -> dict:
 
         # Account
         acct = _engine.broker.get_account()
+        initial_capital = _engine.config.position.initial_capital
+        cash = acct.cash
         equity = acct.equity
 
         # Risk
@@ -232,6 +233,8 @@ def get_dashboard_data() -> dict:
             "position_shares": _nz(position_shares, 0),
             "entry_price": _nz(entry_price, 0.0),
             "unrealized_pnl": _nz(unrealized_pnl, 0.0),
+            "initial_capital": _nz(initial_capital, 0.0),
+            "cash": _nz(cash, 0.0),
             "equity": _nz(equity, 0.0),
             "daily_pnl": _nz(stats.get("daily_pnl_today"), 0.0),
             "trades_today": _nz(stats.get("total_trades"), 0),
@@ -257,7 +260,8 @@ def _empty_data() -> dict:
         "support": 0, "resistance": 0, "spread_dollars": 0, "spread_pct": 0,
         "position_in_range": 50,
         "position_shares": 0, "entry_price": 0.0, "unrealized_pnl": 0.0,
-        "equity": 0, "daily_pnl": 0, "trades_today": 0,
+        "initial_capital": 0, "cash": 0, "equity": 0,
+        "daily_pnl": 0, "trades_today": 0,
         "consecutive_losses": 0, "win_rate": 0,
         "running": False, "halted": False, "last_signal": "N/A",
         "last_update": datetime.now().strftime("%H:%M:%S"),

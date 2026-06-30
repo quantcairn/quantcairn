@@ -1,19 +1,17 @@
 #!/bin/bash
-# SOXS 区间套利 — 自动启停脚本
-# 由 cron 调用，北京时间 21:25 启动，04:05 停止
+# AI Top3 区间套利 — 自动启停脚本
+# 由 cron 或 launchd 调用，北京时间 21:25 启动，04:05 停止
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
-VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
-LOG_FILE="$PROJECT_DIR/trading.log"
+LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_FILE="$LOG_DIR/trading.log"
+MULTI_LAUNCH="$PROJECT_DIR/multi_launch.sh"
 
 cd "$PROJECT_DIR" || exit 1
 
 case "$1" in
     start)
-        # 杀掉可能残留的旧进程
-        pkill -f "run.py" 2>/dev/null
-        sleep 1
-
         # 清缓存
         find "$PROJECT_DIR" -type d -name __pycache__ -not -path '*/.venv/*' -exec rm -rf {} + 2>/dev/null
 
@@ -24,21 +22,19 @@ case "$1" in
         > "$LOG_FILE"
         > "$PROJECT_DIR/snapshots.log"
 
-        # 启动（不跳过交易时间检查，仅盘中运行）
-        nohup "$VENV_PYTHON" run.py --paper --dashboard >> "$LOG_FILE" 2>&1 &
-
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🚀 SOXS Range Arbitrage started (PID: $!)" | tee -a "$LOG_FILE"
+        "$MULTI_LAUNCH" start-foreground >> "$LOG_FILE" 2>&1
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🚀 AI Top3 trading started" | tee -a "$LOG_FILE"
         ;;
 
     stop)
-        pkill -f "run.py" 2>/dev/null
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🛑 SOXS Range Arbitrage stopped" | tee -a "$LOG_FILE"
+        "$MULTI_LAUNCH" stop >> "$LOG_FILE" 2>&1
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🛑 AI Top3 trading stopped" | tee -a "$LOG_FILE"
         ;;
 
     status)
-        if pgrep -f "run.py" > /dev/null; then
-            echo "✅ Running (PID: $(pgrep -f 'run.py'))"
-            echo "Dashboard: http://localhost:8080"
+        if pgrep -f "run.py --config .*configs/TOP" > /dev/null; then
+            echo "✅ Running"
+            echo "Dashboard: http://localhost:8090"
         else
             echo "❌ Not running"
         fi

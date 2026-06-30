@@ -1,0 +1,338 @@
+import json
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+
+from src.config.loader import load_config
+from src.engine.trading_engine import TradingEngine
+
+
+def test_longbridge_env_aliases_and_sandbox_config(tmp_path, monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def __init__(self):
+                self._env = {}
+
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+            def setenv(self, key, value):
+                import os
+
+                if key not in self._env:
+                    self._env[key] = os.environ.get(key)
+                os.environ[key] = value
+
+            def delenv(self, key, raising=True):
+                import os
+
+                if key not in self._env and raising:
+                    raise KeyError(key)
+                if key not in self._env:
+                    self._env[key] = os.environ.get(key)
+                os.environ.pop(key, None)
+
+            def restore(self):
+                import os
+
+                for key, value in self._env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mode: live
+broker:
+  longbridge:
+    enabled: true
+    app_key: ""
+    app_secret: ""
+    access_token: "token-from-yaml"
+    environment: sandbox
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        monkeypatch.delenv("LONGBRIDGE_APP_KEY", raising=False)
+        monkeypatch.delenv("LONGBRIDGE_APP_SECRET", raising=False)
+        monkeypatch.setenv("LONGBRIDGE_API_KEY", "alias-key")
+        monkeypatch.setenv("LONGBRIDGE_API_SECRET", "alias-secret")
+        monkeypatch.setenv("LONGBRIDGE_SANDBOX_HTTP_URL", "https://sandbox.example/http")
+        monkeypatch.setenv("LONGBRIDGE_SANDBOX_QUOTE_WS_URL", "wss://sandbox.example/quote")
+        monkeypatch.setenv("LONGBRIDGE_SANDBOX_TRADE_WS_URL", "wss://sandbox.example/trade")
+        monkeypatch.setenv("SOXS_CONFIG", str(config_path))
+
+        config = load_config(str(config_path))
+        assert config.broker.longbridge.app_key == "alias-key"
+        assert config.broker.longbridge.app_secret == "alias-secret"
+        assert config.broker.longbridge.environment == "sandbox"
+        assert config.broker.longbridge.http_url is None
+        assert config.broker.longbridge.quote_ws_url is None
+        assert config.broker.longbridge.trade_ws_url is None
+    finally:
+        monkeypatch.restore()
+
+
+def test_trading_engine_passes_longbridge_fields(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def __init__(self):
+                self._originals = {}
+
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                key = (module_name, attr_name)
+                if key not in self._originals:
+                    self._originals[key] = getattr(module, attr_name)
+                setattr(module, attr_name, value)
+
+            def restore(self):
+                for (module_name, attr_name), original in self._originals.items():
+                    module = __import__(module_name, fromlist=[attr_name])
+                    setattr(module, attr_name, original)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    captured = {}
+
+    class FakeLongBridgeBroker:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def connect(self):
+            return False
+
+    try:
+        monkeypatch.setattr("src.broker.longbridge_broker.LongBridgeBroker", FakeLongBridgeBroker)
+
+        from src.config.loader import (
+            AppConfig,
+            BrokerConfig,
+            LongBridgeConfig,
+            RangeConfig,
+        )
+
+        config = AppConfig(
+            mode="live",
+            range=RangeConfig(mode="auto"),
+            broker=BrokerConfig(
+                longbridge=LongBridgeConfig(
+                    enabled=True,
+                    app_key="k",
+                    app_secret="s",
+                    access_token="t",
+                    region="us",
+                    environment="sandbox",
+                    http_url="https://sandbox.example/http",
+                    quote_ws_url="wss://sandbox.example/quote",
+                    trade_ws_url="wss://sandbox.example/trade",
+                    log_path="logs/sdk",
+                )
+            )
+        )
+
+        TradingEngine(config)
+
+        assert captured["environment"] == "sandbox"
+        assert captured["http_url"] == "https://sandbox.example/http"
+        assert captured["quote_ws_url"] == "wss://sandbox.example/quote"
+        assert captured["trade_ws_url"] == "wss://sandbox.example/trade"
+        assert captured["log_path"] == "logs/sdk"
+    finally:
+        monkeypatch.restore()
+
+
+def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    from src.broker import longbridge_broker as module
+
+    class FakeConfig:
+        @staticmethod
+        def from_apikey(*args, **kwargs):
+            return SimpleNamespace(args=args, kwargs=kwargs)
+
+    class FakeTradeContext:
+        def __init__(self, config):
+            self.config = config
+
+        def submit_order(self, **kwargs):
+            return SimpleNamespace(order_id="LB-12345")
+
+        def cancel_order(self, **kwargs):
+            return SimpleNamespace(ok=True)
+
+        def order_detail(self, **kwargs):
+            return SimpleNamespace(
+                order_id="LB-12345",
+                symbol="AAPL",
+                side=module.lb.OrderSide.Buy,
+                order_type=module.lb.OrderType.MO,
+                quantity=1,
+                executed_quantity=1,
+                executed_price=100.5,
+                status=module.lb.OrderStatus.Filled,
+                msg="filled",
+            )
+
+        def stock_positions(self):
+            return SimpleNamespace(channels=[])
+
+        def account_balance(self):
+            return SimpleNamespace(total_cash=1000, net_assets=1000, buy_power=1000)
+
+    class FakeQuoteContext:
+        def __init__(self, config):
+            self.config = config
+
+        def quote(self, symbols):
+            return {"symbols": symbols}
+
+    fake_lb = SimpleNamespace(
+        Config=FakeConfig,
+        TradeContext=FakeTradeContext,
+        QuoteContext=FakeQuoteContext,
+        OrderSide=SimpleNamespace(Buy="Buy", Sell="Sell"),
+        OrderType=SimpleNamespace(MO="MO", LO="LO"),
+        TimeInForceType=SimpleNamespace(Day="Day"),
+        OpenApiException=RuntimeError,
+        OrderStatus=SimpleNamespace(
+            Filled="Filled",
+            PartialFilled="PartialFilled",
+            Rejected="Rejected",
+            Canceled="Canceled",
+            Expired="Expired",
+            New="New",
+            PendingCancel="PendingCancel",
+            WaitToNew="WaitToNew",
+        ),
+    )
+
+    monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        environment="sandbox",
+        http_url="https://sandbox.example/http",
+        quote_ws_url="wss://sandbox.example/quote",
+        trade_ws_url="wss://sandbox.example/trade",
+        audit_dir=str(tmp_path / "logs"),
+    )
+
+    log_path = tmp_path / "logs" / f"trades-{module.datetime.now().strftime('%Y%m%d')}.jsonl"
+    if log_path.exists():
+        log_path.unlink()
+
+    assert broker.connect() is True
+    order = broker.place_order("AAPL", module.OrderSide.BUY, 1)
+
+    assert order.order_id == "LB-12345"
+    assert log_path.exists()
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) >= 2
+    records = [json.loads(line) for line in lines]
+    assert records[0]["action"] == "connect"
+    assert records[0]["environment"] == "sandbox"
+    assert records[1]["action"] == "place_order"
+    assert records[1]["request"]["ticker"] == "AAPL"
+    assert records[1]["response"]["order_id"] == "LB-12345"
+
+
+def test_longbridge_broker_account_balance_handles_list_response(tmp_path, monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    from src.broker import longbridge_broker as module
+
+    class FakeConfig:
+        @staticmethod
+        def from_apikey(*args, **kwargs):
+            return SimpleNamespace(args=args, kwargs=kwargs)
+
+    class FakeTradeContext:
+        def __init__(self, config):
+            self.config = config
+
+        def account_balance(self):
+            return [
+                SimpleNamespace(total_cash=1234.56, net_assets=2345.67, buy_power=3456.78),
+                SimpleNamespace(total_cash=1, net_assets=1, buy_power=1),
+            ]
+
+        def stock_positions(self):
+            return SimpleNamespace(channels=[])
+
+    class FakeQuoteContext:
+        def __init__(self, config):
+            self.config = config
+
+    fake_lb = SimpleNamespace(
+        Config=FakeConfig,
+        TradeContext=FakeTradeContext,
+        QuoteContext=FakeQuoteContext,
+        OrderSide=SimpleNamespace(Buy="Buy", Sell="Sell"),
+        OrderType=SimpleNamespace(MO="MO", LO="LO"),
+        TimeInForceType=SimpleNamespace(Day="Day"),
+        OpenApiException=RuntimeError,
+        OrderStatus=SimpleNamespace(
+            Filled="Filled",
+            PartialFilled="PartialFilled",
+            Rejected="Rejected",
+            Canceled="Canceled",
+            Expired="Expired",
+            New="New",
+            PendingCancel="PendingCancel",
+            WaitToNew="WaitToNew",
+        ),
+    )
+
+    monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        environment="sandbox",
+        http_url="https://sandbox.example/http",
+        quote_ws_url="wss://sandbox.example/quote",
+        trade_ws_url="wss://sandbox.example/trade",
+        audit_dir=str(tmp_path / "logs"),
+    )
+
+    assert broker.connect() is True
+    account = broker.get_account()
+    assert account.cash == 1234.56
+    assert account.equity == 2345.67
+    assert account.buying_power == 3456.78
+
+
+def run_test_direct():
+    tmp_root = Path(tempfile.mkdtemp(prefix="longbridge-broker-test-"))
+    test_longbridge_env_aliases_and_sandbox_config(tmp_root)
+    test_trading_engine_passes_longbridge_fields()
+    test_longbridge_broker_audit_log_records_trade(tmp_root)

@@ -6,10 +6,9 @@
   <string>com.soxs.arbitrage</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/chenwei/soxs-range-arbitrage/.venv/bin/python</string>
-    <string>/Users/chenwei/soxs-range-arbitrage/run.py</string>
-    <string>--paper</string>
-    <string>--dashboard</string>
+    <string>/bin/bash</string>
+    <string>/Users/chenwei/soxs-range-arbitrage/auto_trade.sh</string>
+    <string>start</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>
@@ -18,6 +17,13 @@
     <key>Minute</key>
     <integer>25</integer>
   </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SOXS_USE_LAUNCHD_TOPS</key>
+    <string>1</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>/Users/chenwei/soxs-range-arbitrage/logs/launchd.out.log</string>
   <key>StandardErrorPath</key>
@@ -25,6 +31,6 @@
   <key>WorkingDirectory</key>
   <string>/Users/chenwei/soxs-range-arbitrage</string>
   <key>KeepAlive</key>
-  <false/>
+  <true/>
 </dict>
 </plist>

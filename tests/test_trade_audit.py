@@ -55,3 +55,20 @@ def test_trade_audit_counts_orders():
     assert summary["buy_count"] == 1
     assert summary["sell_count"] == 1
     assert summary["tickers"] == ["AAPL.US", "MSFT.US"]
+
+
+def test_trade_audit_can_filter_live_records():
+    summary = summarize_trade_records(
+        [
+            {"phase": "decision", "ticker": "AAPL.US", "execution_mode": "paper"},
+            {"phase": "execution", "ticker": "AAPL.US", "execution_mode": "paper", "order": {"side": "buy", "qty": 2}},
+            {"phase": "decision", "ticker": "NVDA.US", "execution_mode": "live"},
+            {"phase": "execution", "ticker": "NVDA.US", "execution_mode": "live", "order": {"side": "sell", "qty": 1}},
+        ],
+        mode="live",
+    )
+
+    assert summary["execution_mode"] == "live"
+    assert summary["decision_count"] == 1
+    assert summary["execution_count"] == 1
+    assert summary["tickers"] == ["NVDA.US"]

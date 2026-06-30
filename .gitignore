@@ -2,10 +2,15 @@
 __pycache__/
 *.py[cod]
 
+.env
+.env.*
+
 logs/
 *.log
 snapshots.log
 trading-*.log
+reports/
+state/
 config.local.yaml
 
 .DS_Store

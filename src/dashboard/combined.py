@@ -12,10 +12,12 @@ app = Flask(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 TICKERS = [
-    {"name": "TOP1", "desc": "AI Top Pick #1",    "port": 8091, "config": "TOP1.yaml"},
-    {"name": "TOP2", "desc": "AI Top Pick #2",    "port": 8092, "config": "TOP2.yaml"},
-    {"name": "TOP3", "desc": "AI Top Pick #3",    "port": 8093, "config": "TOP3.yaml"},
+    {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
+    {"name": "TOP2", "desc": "AI优选第2名",    "port": 8092, "config": "TOP2.yaml"},
+    {"name": "TOP3", "desc": "AI优选第3名",    "port": 8093, "config": "TOP3.yaml"},
 ]
+
+IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -55,7 +57,6 @@ def _fetch_live_account_summary():
         from src.broker.longbridge_broker import LongBridgeBroker
     except Exception:
         return None
-
     try:
         broker = LongBridgeBroker(
             app_key=_env("LONGBRIDGE_APP_KEY") or _env("LONGBRIDGE_API_KEY"),
@@ -70,169 +71,499 @@ def _fetch_live_account_summary():
         )
         if not broker.connect():
             return None
+        positions = broker.get_positions()
         account = broker.get_account()
         return {
             "cash": float(getattr(account, "cash", 0.0) or 0.0),
             "equity": float(getattr(account, "equity", 0.0) or 0.0),
             "buying_power": float(getattr(account, "buying_power", 0.0) or 0.0),
-            "positions_count": len(getattr(account, "positions", []) or []),
+            "positions_count": len(positions or []),
             "mode": "live",
         }
     except Exception:
         return None
 
+
+def _load_ai_selection_report():
+    path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
+    if not path.exists():
+        return {"timestamp": None, "report": [], "top3": [], "top10": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"timestamp": None, "report": [], "top3": [], "top10": []}
+        rows = data.get("report") if isinstance(data.get("report"), list) else []
+        return {
+            "timestamp": data.get("timestamp"),
+            "report": rows,
+            "top3": data.get("top3") if isinstance(data.get("top3"), list) else [],
+            "top10": data.get("top10") if isinstance(data.get("top10"), list) else [],
+        }
+    except Exception:
+        return {"timestamp": None, "report": [], "top3": [], "top10": []}
+
+
+def _desired_audit_mode() -> str:
+    value = _env("SOXS_AUDIT_MODE", "live").strip().lower()
+    return value if value in {"live", "paper"} else "live"
+
+
+def _load_top_modes() -> list[str]:
+    modes: list[str] = []
+    for item in TICKERS:
+        cfg_path = PROJECT_DIR / "configs" / item["config"]
+        try:
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        mode = str(data.get("mode", "paper")).strip().lower() or "paper"
+        modes.append(mode)
+    return modes
+
+
+def _resolve_dashboard_execution_mode(trade_audit: dict) -> str:
+    explicit = str(trade_audit.get("execution_mode") or "").strip().lower()
+    if explicit == "live" and int(trade_audit.get("execution_count", 0) or 0) > 0:
+        return "live"
+
+    top_modes = _load_top_modes()
+    if top_modes and all(mode == "live" for mode in top_modes):
+        return "live"
+    if top_modes and any(mode == "live" for mode in top_modes):
+        return "mixed"
+    return explicit or "paper"
+
+
+def _latest_trade_line(trade_audit: dict) -> str | None:
+    latest_execution = trade_audit.get("latest_execution") if isinstance(trade_audit, dict) else {}
+    latest_record = trade_audit.get("latest_record") if isinstance(trade_audit, dict) else {}
+    latest_decision = trade_audit.get("latest_decision") if isinstance(trade_audit, dict) else {}
+
+    candidates = [latest_execution, latest_decision, latest_record]
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or not candidate:
+            continue
+        action = str(candidate.get("action") or "").strip().lower()
+        if action in IGNORED_AUDIT_ACTIONS:
+            continue
+        ticker = candidate.get("ticker") or candidate.get("symbol") or ""
+        phase = candidate.get("phase") or action or "record"
+        order = candidate.get("order") if isinstance(candidate.get("order"), dict) else {}
+        side = order.get("side") or candidate.get("trade_signal", {}).get("action") or ""
+        qty = order.get("qty") or ""
+        status = ""
+        response = candidate.get("response")
+        if isinstance(response, dict):
+            status = response.get("status") or response.get("body", {}).get("status") or response.get("ok")
+        line = " ".join(str(part) for part in [phase, ticker, side, qty, status] if part not in ("", None, False))
+        if line:
+            return line
+    return None
+
+
+def _nearest_trigger(cards: list[dict]) -> tuple[str, str]:
+    best_name = "暂无"
+    best_hint = "暂无接近触发的标的"
+    best_distance = None
+    for card in cards:
+        if not card.get("online"):
+            continue
+        pos_pct = float(card.get("pos_pct", 50) or 50)
+        buy_distance = pos_pct
+        sell_distance = abs(100 - pos_pct)
+        if buy_distance <= sell_distance:
+            distance = buy_distance
+            hint = f"{card['name']} 接近买点"
+        else:
+            distance = sell_distance
+            hint = f"{card['name']} 接近卖点"
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_name = card["name"]
+            best_hint = hint
+    return best_name, best_hint
+
 HTML = """<!DOCTYPE html>
-<html><head>
+<html lang="zh-CN">
+<head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="5">
-<title>📊 Multi-Stock Range Arbitrage</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI区间交易总览</title>
 <style>
+    :root{
+        --bg:#05070d;
+        --bg2:#0a1020;
+        --panel:rgba(11,17,31,.82);
+        --panel-strong:rgba(15,22,40,.94);
+        --line:rgba(255,255,255,.08);
+        --text:#e6edf8;
+        --muted:#8c97ab;
+        --accent:#86efac;
+        --accent2:#7dd3fc;
+        --warn:#fbbf24;
+        --down:#fb7185;
+        --up:#34d399;
+        --shadow:0 24px 80px rgba(0,0,0,.45);
+    }
     *{margin:0;padding:0;box-sizing:border-box}
-    body{background:#0a0a1a;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,monospace;padding:20px}
-    h1{text-align:center;color:#00d4aa;margin-bottom:5px;font-size:22px}
-    .sub{text-align:center;color:#555;font-size:11px;margin-bottom:20px}
-    .grid{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
-    .card{background:#111133;border-radius:10px;padding:14px;width:340px;border:1px solid #222}
-    .card h2{margin-bottom:6px;font-size:15px;display:flex;align-items:center;gap:6px}
-    .ticker{color:#00d4aa}.desc{color:#666;font-size:12px}
-    .price-row{display:flex;align-items:baseline;gap:10px;margin:6px 0}
-    .price{font-size:30px;font-weight:bold}
-    .change{font-size:14px;font-weight:bold}
-    .price-detail{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;font-size:11px;background:#0d0f25;padding:8px;border-radius:6px;margin:8px 0}
-    .pd-label{color:#666}.pd-val{color:#ddd;text-align:right}
-    .sparkline{display:flex;align-items:flex-end;height:40px;gap:1px;background:#0d0f25;border-radius:4px;padding:4px 2px;margin:6px 0}
-    .spark-bar{flex:1;min-width:2px;border-radius:1px;opacity:0.85}
-    .vol-bar{height:3px;background:#1a1f3a;border-radius:2px;margin:3px 0;overflow:hidden}
-    .vol-fill{height:100%;background:#334;border-radius:2px}
-    .stat{display:flex;justify-content:space-between;padding:2px 0;font-size:12px}
-    .label{color:#888}.val{color:#fff}
-    .green{color:#00d4aa}.red{color:#ff4757}.yellow{color:#ffa502}
-    .range-bar{height:6px;background:#1a1f3a;border-radius:3px;margin:6px 0;overflow:hidden}
-    .range-fill{height:100%;border-radius:3px;transition:width .5s}
-    .signal{text-align:center;padding:5px;border-radius:5px;font-weight:bold;margin:6px 0;font-size:13px}
-    .sig-buy{background:#00d4aa22;color:#00d4aa;border:1px solid #00d4aa44}
-    .sig-sell{background:#ff475722;color:#ff4757;border:1px solid #ff475744}
-    .sig-hold{background:#55555522;color:#888;border:1px solid #55555544}
-    .sig-block{background:#ffa50222;color:#ffa502;border:1px solid #ffa50244}
-    .pnl-row{display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;margin-top:4px}
-    .total{background:#111138;border-radius:10px;padding:15px;margin-top:20px;text-align:center;border:1px solid #333}
-    .total h2{color:#ffa502}
-    .total .price{font-size:36px}
-    .account{background:#10162d;border-radius:10px;padding:14px;margin:12px 0 20px;border:1px solid #26314d}
-    .account h2{font-size:16px;margin-bottom:8px;color:#7dd3fc}
-    .account-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-    .account-stat{background:#0d0f25;border-radius:8px;padding:10px}
-    .account-label{display:block;color:#8a8fa3;font-size:11px;margin-bottom:4px}
-    .account-value{display:block;color:#fff;font-size:18px;font-weight:700}
-    .audit{background:#10162d;border-radius:10px;padding:14px;margin:12px 0 20px;border:1px solid #26314d}
-    .audit h2{font-size:16px;margin-bottom:8px;color:#fbbf24}
-    .audit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-    .audit-stat{background:#0d0f25;border-radius:8px;padding:10px}
-    .audit-label{display:block;color:#8a8fa3;font-size:11px;margin-bottom:4px}
-    .audit-value{display:block;color:#fff;font-size:15px;font-weight:700;line-height:1.3;word-break:break-word}
-    .audit-value.muted{color:#8a8fa3;font-weight:500}
-    .halted-badge{display:inline-block;background:#ff4757;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px}
-    .offline-badge{display:inline-block;background:#555;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px}
+    body{
+        min-height:100vh;
+        color:var(--text);
+        font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+        background:
+            radial-gradient(circle at top left, rgba(125,211,252,.14), transparent 28%),
+            radial-gradient(circle at top right, rgba(52,211,153,.12), transparent 24%),
+            linear-gradient(180deg, #04060b 0%, #060913 44%, #05070d 100%);
+        padding:24px;
+    }
+    .page{max-width:1440px;margin:0 auto}
+    .topbar{
+        display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
+        margin-bottom:20px;padding:20px 22px;border:1px solid var(--line);
+        background:linear-gradient(180deg, rgba(16,24,44,.92), rgba(9,13,24,.86));
+        border-radius:18px;box-shadow:var(--shadow);backdrop-filter:blur(14px);
+    }
+    .brand h1{font-size:28px;line-height:1.1;letter-spacing:.01em;font-weight:700}
+    .brand p{margin-top:8px;color:var(--muted);font-size:13px}
+    .status-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+    .pill{
+        display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:999px;
+        background:rgba(255,255,255,.04);border:1px solid var(--line);color:var(--text);
+        font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase
+    }
+    .pill.live{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22);color:#b8f5d0}
+    .pill.warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.24);color:#fde68a}
+    .summary{
+        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px;
+    }
+    .runtime-strip{
+        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px;
+    }
+    .runtime-item{
+        padding:14px 16px;border-radius:16px;background:rgba(255,255,255,.035);border:1px solid var(--line)
+    }
+    .runtime-label{display:block;color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase}
+    .runtime-value{display:block;margin-top:8px;font-size:15px;font-weight:700;color:#fff;line-height:1.35}
+    .runtime-value.live{color:#b8f5d0}
+    .runtime-value.warn{color:#fde68a}
+    .metric,.section,.card{
+        background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);backdrop-filter:blur(14px)
+    }
+    .metric{padding:16px 18px}
+    .metric span{display:block}
+    .metric-label{color:var(--muted);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+    .metric-value{margin-top:8px;font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+    .metric-value.small{font-size:19px}
+    .sections{
+        display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin-bottom:18px;
+    }
+    .section{padding:18px}
+    .section h2{font-size:15px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#dbe7ff;margin-bottom:12px}
+    .account-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .audit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .selector-table{display:grid;gap:10px}
+    .selector-head,.selector-row{
+        display:grid;
+        grid-template-columns:minmax(56px,.6fr) minmax(78px,.9fr) minmax(74px,.8fr) minmax(74px,.8fr) minmax(74px,.8fr) minmax(90px,1fr) minmax(90px,1fr) minmax(90px,1fr) minmax(90px,1fr) minmax(140px,1.2fr);
+        gap:8px;
+        align-items:center;
+    }
+    .selector-head{
+        color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+        padding:0 2px 4px;
+    }
+    .selector-row{
+        padding:12px 14px;border-radius:14px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06);
+        font-size:13px;
+    }
+    .selector-row .ticker{font-weight:800;color:#fff}
+    .selector-row .num{font-weight:700;font-variant-numeric:tabular-nums}
+    .selector-row .sector{color:var(--muted)}
+    .selector-empty{
+        padding:16px;border-radius:14px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06);
+        color:var(--muted);font-size:13px;
+    }
+    .section-meta{margin-bottom:12px;color:var(--muted);font-size:12px}
+    .stat-box{
+        padding:14px;border-radius:14px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06)
+    }
+    .stat-label{display:block;color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase}
+    .stat-value{
+        margin-top:8px;display:block;color:#fff;font-size:17px;font-weight:700;line-height:1.25;
+        font-variant-numeric:tabular-nums;word-break:break-word
+    }
+    .stat-value.muted{color:var(--muted);font-weight:500}
+    .cards{
+        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch
+    }
+    .card{padding:18px;min-width:0}
+    .card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:14px}
+    .card-title{min-width:0}
+    .card-title .ticker{
+        display:block;font-size:20px;font-weight:800;letter-spacing:.02em;line-height:1.1
+    }
+    .card-title .desc{display:block;margin-top:6px;color:var(--muted);font-size:12px;line-height:1.35}
+    .badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    .badge{
+        display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:700;
+        letter-spacing:.08em;text-transform:uppercase;border:1px solid transparent
+    }
+    .badge.live{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.2)}
+    .badge.offline{background:rgba(148,163,184,.1);color:#cbd5e1;border-color:rgba(148,163,184,.16)}
+    .badge.halted{background:rgba(251,191,36,.1);color:#fde68a;border-color:rgba(251,191,36,.22)}
+    .price-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:8px 0 14px}
+    .price{font-size:34px;line-height:1;font-weight:800;font-variant-numeric:tabular-nums}
+    .change{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+    .green{color:var(--up)} .red{color:var(--down)} .yellow{color:var(--warn)}
+    .grid-quote{
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:14px
+    }
+    .quote-item{
+        padding:11px 12px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)
+    }
+    .quote-item .label{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+    .quote-item .val{
+        display:block;margin-top:7px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums
+    }
+    .sparkline{
+        display:flex;align-items:flex-end;height:54px;gap:2px;padding:10px;border-radius:14px;
+        background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
+        border:1px solid rgba(255,255,255,.06);margin-bottom:14px
+    }
+    .spark-bar{flex:1;min-width:2px;border-radius:999px;opacity:.95}
+    .range-block{margin-bottom:14px}
+    .row{display:flex;justify-content:space-between;gap:12px;align-items:center;font-size:13px}
+    .row .label{color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:11px}
+    .row .val{font-weight:700;font-variant-numeric:tabular-nums}
+    .range-bar{
+        margin-top:8px;height:8px;border-radius:999px;background:rgba(255,255,255,.07);overflow:hidden
+    }
+    .range-fill{height:100%;border-radius:999px;transition:width .45s ease}
+    .signal{
+        display:flex;align-items:center;justify-content:center;min-height:44px;margin-bottom:14px;border-radius:14px;
+        border:1px solid transparent;font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase
+    }
+    .sig-buy{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.22)}
+    .sig-sell{background:rgba(251,113,133,.1);color:#fecdd3;border-color:rgba(251,113,133,.24)}
+    .sig-hold{background:rgba(148,163,184,.08);color:#d1d5db;border-color:rgba(148,163,184,.16)}
+    .sig-block{background:rgba(251,191,36,.1);color:#fde68a;border-color:rgba(251,191,36,.22)}
+    .pnl-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .footer{
+        margin-top:18px;padding:18px 20px;border-radius:18px;border:1px solid var(--line);
+        background:linear-gradient(180deg, rgba(15,22,40,.96), rgba(9,13,24,.92));text-align:center
+    }
+    .footer h2{font-size:14px;letter-spacing:.08em;text-transform:uppercase;color:#dbe7ff;margin-bottom:10px}
+    .footer .total{font-size:34px;font-weight:800;font-variant-numeric:tabular-nums}
+    .footer .meta{margin-top:10px;color:var(--muted);font-size:12px}
+    .refresh{text-align:right;color:var(--muted);font-size:11px;margin-top:10px}
     .offline{opacity:.72}
-    .refresh{text-align:center;color:#333;font-size:10px;margin-top:15px}
-</style></head>
+    @media (max-width:1180px){
+        .summary,.sections,.cards{grid-template-columns:1fr}
+        .runtime-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .account-grid,.audit-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .selector-head,.selector-row{grid-template-columns:repeat(5,minmax(0,1fr))}
+    }
+    @media (max-width:760px){
+        body{padding:14px}
+        .topbar{flex-direction:column}
+        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.runtime-strip{grid-template-columns:1fr}
+        .price{font-size:30px}
+        .selector-head{display:none}
+        .selector-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+    }
+</style>
+</head>
 <body>
-<h1>🎯 Multi-Stock Range Arbitrage</h1>
-<div class="sub">{{ update_time }}</div>
-
-<div class="account">
-    <h2>💼 Live Account</h2>
-    <div class="account-grid">
-        <div class="account-stat"><span class="account-label">Cash</span><span class="account-value">{% if live_account and live_account.cash is not none %}${{ "%.2f"|format(live_account.cash) }}{% else %}N/A{% endif %}</span></div>
-        <div class="account-stat"><span class="account-label">Equity</span><span class="account-value">{% if live_account and live_account.equity is not none %}${{ "%.2f"|format(live_account.equity) }}{% else %}N/A{% endif %}</span></div>
-        <div class="account-stat"><span class="account-label">Buying Power</span><span class="account-value">{% if live_account and live_account.buying_power is not none %}${{ "%.2f"|format(live_account.buying_power) }}{% else %}N/A{% endif %}</span></div>
-        <div class="account-stat"><span class="account-label">Positions</span><span class="account-value">{% if live_account and live_account.positions_count is not none %}{{ live_account.positions_count }}{% else %}N/A{% endif %}</span></div>
+<div class="page">
+    <div class="topbar">
+        <div class="brand">
+            <h1>AI区间交易总览</h1>
+            <p>TOP1、TOP2、TOP3 三路联动监控，每 5 秒自动刷新。</p>
+        </div>
+        <div class="status-row">
+            <span class="pill live">实时监控</span>
+            <span class="pill">更新于 {{ update_time }}</span>
+            <span class="pill {% if live_account and live_account.mode == 'live' %}live{% else %}warn{% endif %}">
+                {% if live_account and live_account.mode == 'live' %}实盘账户{% else %}模拟盘 / 离线{% endif %}
+            </span>
+        </div>
     </div>
+
+    <div class="summary">
+        <div class="metric">
+            <span class="metric-label">可用现金</span>
+            <span class="metric-value">{% if live_account and live_account.cash is not none %}${{ "%.2f"|format(live_account.cash) }}{% else %}暂无{% endif %}</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">账户权益</span>
+            <span class="metric-value">{% if live_account and live_account.equity is not none %}${{ "%.2f"|format(live_account.equity) }}{% else %}暂无{% endif %}</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">购买力</span>
+            <span class="metric-value">{% if live_account and live_account.buying_power is not none %}${{ "%.2f"|format(live_account.buying_power) }}{% else %}暂无{% endif %}</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">持仓数量</span>
+            <span class="metric-value small">{% if live_account and live_account.positions_count is not none %}{{ live_account.positions_count }}{% else %}暂无{% endif %}</span>
+        </div>
+    </div>
+
+    <div class="runtime-strip">
+        <div class="runtime-item">
+            <span class="runtime-label">当前模式</span>
+            <span class="runtime-value {% if trade_audit.execution_mode == 'live' %}live{% else %}warn{% endif %}">{{ trade_audit.execution_mode|upper }}</span>
+        </div>
+        <div class="runtime-item">
+            <span class="runtime-label">当前标的</span>
+            <span class="runtime-value">{{ active_symbols }}</span>
+        </div>
+        <div class="runtime-item">
+            <span class="runtime-label">新开仓</span>
+            <span class="runtime-value {% if trade_audit.new_entries_allowed %}live{% else %}warn{% endif %}">{% if trade_audit.new_entries_allowed %}允许{% else %}暂停{% endif %}</span>
+        </div>
+        <div class="runtime-item">
+            <span class="runtime-label">最近更新</span>
+            <span class="runtime-value">{{ update_time }}</span>
+        </div>
+        <div class="runtime-item">
+            <span class="runtime-label">最接近触发</span>
+            <span class="runtime-value {% if nearest_trigger_mode == 'buy' %}live{% elif nearest_trigger_mode == 'sell' %}warn{% endif %}">{{ nearest_trigger }}</span>
+        </div>
+    </div>
+
+    <div class="sections">
+        <div class="section">
+            <h2>风控与交易审计</h2>
+            <div class="audit-grid">
+                <div class="stat-box"><span class="stat-label">执行模式</span><span class="stat-value">{% if trade_audit and trade_audit.execution_mode %}{{ trade_audit.execution_mode|upper }}{% else %}PAPER{% endif %}</span></div>
+                <div class="stat-box"><span class="stat-label">仅减仓</span><span class="stat-value">{% if trade_audit and trade_audit.reduce_only %}是{% else %}否{% endif %}</span></div>
+                <div class="stat-box"><span class="stat-label">新开仓</span><span class="stat-value">{% if trade_audit and trade_audit.new_entries_allowed %}允许{% else %}暂停{% endif %}</span></div>
+                <div class="stat-box"><span class="stat-label">暂停原因</span><span class="stat-value {% if not trade_audit or not trade_audit.risk_pause_reason %}muted{% endif %}">{% if trade_audit and trade_audit.risk_pause_reason %}{{ trade_audit.risk_pause_reason }}{% else %}无{% endif %}</span></div>
+            </div>
+        </div>
+        <div class="section">
+            <h2>今日统计</h2>
+            <div class="account-grid">
+                <div class="stat-box"><span class="stat-label">成交次数</span><span class="stat-value">{% if trade_audit %}{{ trade_audit.execution_count }}{% else %}0{% endif %}</span></div>
+                <div class="stat-box"><span class="stat-label">决策次数</span><span class="stat-value">{% if trade_audit %}{{ trade_audit.decision_count }}{% else %}0{% endif %}</span></div>
+                <div class="stat-box"><span class="stat-label">成交股数</span><span class="stat-value">{% if trade_audit %}{{ trade_audit.order_qty }}{% else %}0{% endif %}</span></div>
+                <div class="stat-box"><span class="stat-label">最近交易</span><span class="stat-value {% if not trade_audit or not trade_audit.latest_line %}muted{% endif %}">{% if trade_audit and trade_audit.latest_line %}{{ trade_audit.latest_line }}{% else %}暂无{% endif %}</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section" style="margin-bottom:18px">
+        <h2>AI 区间选股</h2>
+        <div class="section-meta">
+            {% if ai_selection and ai_selection.timestamp %}
+                最新选股时间：{{ ai_selection.timestamp }}
+            {% else %}
+                暂无 AI 选股报告。
+            {% endif %}
+        </div>
+        {% if ai_selection and ai_selection.report %}
+        <div class="selector-table">
+            <div class="selector-head">
+                <span>排名</span>
+                <span>标的</span>
+                <span>总分</span>
+                <span>波动</span>
+                <span>流动性</span>
+                <span>趋势适配</span>
+                <span>区间重复</span>
+                <span>回撤安全</span>
+                <span>相关性扣分</span>
+                <span>建议区间</span>
+            </div>
+            {% for row in ai_selection.report %}
+            <div class="selector-row">
+                <span class="num">{{ row.rank }}</span>
+                <span class="ticker">{{ row.ticker }} <span class="sector">{{ row.sector }}</span></span>
+                <span class="num">{{ "%.2f"|format(row.score) }}</span>
+                <span class="num">{{ "%.2f"|format(row.volatility) }}</span>
+                <span class="num">{{ "%.2f"|format(row.volume) }}</span>
+                <span class="num">{{ "%.2f"|format(row.trend_fit) }}</span>
+                <span class="num">{{ "%.2f"|format(row.repeatability) }}</span>
+                <span class="num">{{ "%.2f"|format(row.drawdown) }}</span>
+                <span class="num">{{ "%.2f"|format(row.correlation_penalty) }}</span>
+                <span class="num">{{ row.suggested_range }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="selector-empty">先运行一次 `scripts/run_ai_selector.py`，这里就会显示最新的 AI 区间选股结果。</div>
+        {% endif %}
+    </div>
+
+    <div class="cards">
+    {% for card in cards %}
+        <div class="card {% if not card.online %}offline{% endif %}">
+            <div class="card-head">
+                <div class="card-title">
+                    <span class="ticker">{{ card.name }}</span>
+                    <span class="desc">{{ card.desc }}</span>
+                </div>
+                <div class="badges">
+                    {% if card.halted %}<span class="badge halted">已暂停</span>{% endif %}
+                    {% if card.online %}<span class="badge live">在线</span>{% else %}<span class="badge offline">离线</span>{% endif %}
+                </div>
+            </div>
+
+            <div class="price-row">
+                <span class="price {{ 'green' if card.price_change >= 0 else 'red' }}">${{ "%.2f"|format(card.price) }}</span>
+                <span class="change {{ 'green' if card.price_change >= 0 else 'red' }}">
+                    {{ '+' if card.price_change >= 0 else '' }}{{ "%.2f"|format(card.price_change) }}%
+                </span>
+            </div>
+
+            <div class="grid-quote">
+                <div class="quote-item"><span class="label">日内高点</span><span class="val green">${{ "%.2f"|format(card.day_high) }}</span></div>
+                <div class="quote-item"><span class="label">日内低点</span><span class="val red">${{ "%.2f"|format(card.day_low) }}</span></div>
+                <div class="quote-item"><span class="label">买一</span><span class="val">${{ "%.2f"|format(card.bid) }}</span></div>
+                <div class="quote-item"><span class="label">卖一</span><span class="val">${{ "%.2f"|format(card.ask) }}</span></div>
+            </div>
+
+            <div class="sparkline">
+                {% for bar in card.sparkline %}
+                <div class="spark-bar" style="height:{{ bar.height }}%;background:{{ bar.color }}"></div>
+                {% endfor %}
+            </div>
+
+            <div class="range-block">
+                <div class="row"><span class="label">区间</span><span class="val">${{ "%.2f"|format(card.support) }} - ${{ "%.2f"|format(card.resistance) }} ({{ "%.1f"|format(card.spread_pct) }}%)</span></div>
+                <div class="range-bar">
+                    <div class="range-fill" style="width:{{ card.pos_pct }}%;background:{% if card.pos_pct > 70 %}#fb7185{% elif card.pos_pct < 30 %}#34d399{% else %}#fbbf24{% endif %}"></div>
+                </div>
+                <div class="row" style="margin-top:8px"><span class="label">区间位置</span><span class="val">{{ "%.0f"|format(card.pos_pct) }}%</span></div>
+            </div>
+
+            <div class="signal {% if card.signal == 'BUY' %}sig-buy{% elif card.signal == 'SELL' %}sig-sell{% elif 'TREND' in card.signal %}sig-block{% else %}sig-hold{% endif %}">
+                {{ card.signal_cn }}
+            </div>
+
+            <div class="pnl-grid">
+                <div class="quote-item"><span class="label">分配本金</span><span class="val">${{ "%.2f"|format(card.initial_capital) }}</span></div>
+                <div class="quote-item"><span class="label">现金</span><span class="val">${{ "%.2f"|format(card.cash) }}</span></div>
+                <div class="quote-item"><span class="label">持股</span><span class="val">{{ card.shares }}</span></div>
+                <div class="quote-item"><span class="label">权益</span><span class="val">${{ "%.2f"|format(card.equity) }}</span></div>
+                <div class="quote-item"><span class="label">当日盈亏</span><span class="val {{ 'green' if card.pnl >= 0 else 'red' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
+                <div class="quote-item"><span class="label">成交笔数</span><span class="val">{{ card.trades }}</span></div>
+            </div>
+        </div>
+    {% endfor %}
+    </div>
+
+    <div class="footer">
+        <h2>组合盈亏</h2>
+        <div class="total {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</div>
+        <div class="meta">总本金：${{ "%.2f"|format(total_capital) }} · 总权益：${{ "%.2f"|format(total_equity) }} · 总成交：{{ total_trades }}</div>
+    </div>
+
+    <div class="refresh">每 5 秒自动刷新 · {{ update_time }}</div>
 </div>
-
-<div class="audit">
-    <h2>🧭 Session Risk & Trade Audit</h2>
-    <div class="audit-grid">
-        <div class="audit-stat"><span class="audit-label">Execution Mode</span><span class="audit-value">{% if trade_audit and trade_audit.execution_mode %}{{ trade_audit.execution_mode|upper }}{% else %}PAPER{% endif %}</span></div>
-        <div class="audit-stat"><span class="audit-label">Reduce Only</span><span class="audit-value">{% if trade_audit and trade_audit.reduce_only %}YES{% else %}NO{% endif %}</span></div>
-        <div class="audit-stat"><span class="audit-label">New Entries</span><span class="audit-value">{% if trade_audit and trade_audit.new_entries_allowed %}ALLOWED{% else %}PAUSED{% endif %}</span></div>
-        <div class="audit-stat"><span class="audit-label">Pause Reason</span><span class="audit-value {% if not trade_audit or not trade_audit.risk_pause_reason %}muted{% endif %}">{% if trade_audit and trade_audit.risk_pause_reason %}{{ trade_audit.risk_pause_reason }}{% else %}None{% endif %}</span></div>
-        <div class="audit-stat"><span class="audit-label">Today Executions</span><span class="audit-value">{% if trade_audit %}{{ trade_audit.execution_count }}{% else %}0{% endif %}</span></div>
-        <div class="audit-stat"><span class="audit-label">Today Decisions</span><span class="audit-value">{% if trade_audit %}{{ trade_audit.decision_count }}{% else %}0{% endif %}</span></div>
-        <div class="audit-stat"><span class="audit-label">Today Qty</span><span class="audit-value">{% if trade_audit %}{{ trade_audit.order_qty }}{% else %}0{% endif %}</span></div>
-        <div class="audit-stat"><span class="audit-label">Latest Trade</span><span class="audit-value {% if not trade_audit or not trade_audit.latest_line %}muted{% endif %}">{% if trade_audit and trade_audit.latest_line %}{{ trade_audit.latest_line }}{% else %}None{% endif %}</span></div>
-    </div>
-</div>
-
-<div class="grid">
-{% for card in cards %}
-<div class="card {% if not card.online %}offline{% endif %}">
-    <h2>
-        <span class="ticker">${{ card.name }}</span>
-        <span class="desc">{{ card.desc }}</span>
-        {% if card.halted %}<span class="halted-badge">HALTED</span>{% endif %}
-        {% if not card.online %}<span class="offline-badge">OFFLINE</span>{% endif %}
-    </h2>
-
-    <!-- Price -->
-    <div class="price-row">
-        <span class="price" style="color:{% if card.price_change >= 0 %}#00d4aa{% else %}#ff4757{% endif %}">
-            ${{ "%.2f"|format(card.price) }}
-        </span>
-        <span class="change {{ 'green' if card.price_change >= 0 else 'red' }}">
-            {{ '+' if card.price_change >= 0 else '' }}{{ "%.2f"|format(card.price_change) }}%
-        </span>
-    </div>
-
-    <!-- Real-time data grid -->
-    <div class="price-detail">
-        <span class="pd-label">Day High</span><span class="pd-val green">${{ "%.2f"|format(card.day_high) }}</span>
-        <span class="pd-label">Day Low</span><span class="pd-val red">${{ "%.2f"|format(card.day_low) }}</span>
-        <span class="pd-label">Bid</span><span class="pd-val">${{ "%.2f"|format(card.bid) }}</span>
-        <span class="pd-label">Ask</span><span class="pd-val">${{ "%.2f"|format(card.ask) }}</span>
-        <span class="pd-label">Volume</span><span class="pd-val">{{ card.vol_display }}</span>
-    </div>
-
-    <!-- Sparkline - last 30 prices -->
-    <div class="sparkline">
-        {% for bar in card.sparkline %}
-        <div class="spark-bar" style="height:{{ bar.height }}%;background:{{ bar.color }}"></div>
-        {% endfor %}
-    </div>
-
-    <!-- Range -->
-    <div class="stat"><span class="label">Range</span><span class="val">${{ "%.2f"|format(card.support) }} – ${{ "%.2f"|format(card.resistance) }} ({{ "%.1f"|format(card.spread_pct) }}%)</span></div>
-    <div class="range-bar">
-        <div class="range-fill" style="width:{{ card.pos_pct }}%;background:{% if card.pos_pct > 70 %}#ff4757{% elif card.pos_pct < 30 %}#00d4aa{% else %}#ffa502{% endif %}"></div>
-    </div>
-    <div class="stat"><span class="label">In Range</span><span class="val">{{ "%.0f"|format(card.pos_pct) }}%</span></div>
-
-    <!-- Signal -->
-    <div class="signal {% if card.signal == 'BUY' %}sig-buy{% elif card.signal == 'SELL' %}sig-sell{% elif 'TREND' in card.signal %}sig-block{% else %}sig-hold{% endif %}">
-        {{ card.signal }}
-    </div>
-
-    <!-- P&L Row -->
-    <div class="pnl-row">
-        <div class="stat"><span class="label">Capital</span><span class="val">${{ "%.2f"|format(card.initial_capital) }}</span></div>
-        <div class="stat"><span class="label">Cash</span><span class="val">${{ "%.2f"|format(card.cash) }}</span></div>
-        <div class="stat"><span class="label">Shares</span><span class="val">{{ card.shares }}</span></div>
-        <div class="stat"><span class="label">Equity</span><span class="val">${{ "%.2f"|format(card.equity) }}</span></div>
-        <div class="stat"><span class="label">Daily P&L</span><span class="val {{ 'green' if card.pnl >= 0 else 'red' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
-        <div class="stat"><span class="label">Trades</span><span class="val">{{ card.trades }}</span></div>
-    </div>
-</div>
-{% endfor %}
-</div>
-
-<div class="total">
-    <h2>💰 Combined P&L</h2>
-    <div class="price {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</div>
-    <div style="margin-top:5px;color:#888">Total Capital: ${{ "%.2f"|format(total_capital) }} | Total Equity: ${{ "%.2f"|format(total_equity) }} | Total Trades: {{ total_trades }}</div>
-</div>
-
-<div class="refresh">Auto-refresh every 5s | {{ update_time }}</div>
-</body></html>"""
+</body>
+</html>"""
 
 
 def _fetch_status(port):
@@ -312,6 +643,19 @@ def _fmt_vol(v):
     return str(int(v))
 
 
+def _signal_cn(signal: str) -> str:
+    normalized = str(signal or "").strip().upper()
+    mapping = {
+        "BUY": "买入",
+        "SELL": "卖出",
+        "HOLD": "观察",
+        "OFFLINE": "离线",
+    }
+    if "TREND" in normalized:
+        return "趋势过滤"
+    return mapping.get(normalized, normalized or "暂无")
+
+
 @app.route("/")
 def index():
     cards = []
@@ -320,25 +664,13 @@ def index():
     total_equity = 0.0
     total_trades = 0
     live_account = _fetch_live_account_summary()
-    trade_audit = summarize_trade_log(PROJECT_DIR / "logs")
-    latest_execution = trade_audit.get("latest_execution") if isinstance(trade_audit, dict) else {}
-    latest_record = trade_audit.get("latest_record") if isinstance(trade_audit, dict) else {}
-    latest_line = None
-    latest_source = latest_execution if latest_execution else latest_record
-    if isinstance(latest_source, dict) and latest_source:
-        ticker = latest_source.get("ticker") or latest_source.get("symbol") or ""
-        phase = latest_source.get("phase") or latest_source.get("action") or "record"
-        order = latest_source.get("order") if isinstance(latest_source.get("order"), dict) else {}
-        side = order.get("side") or latest_source.get("trade_signal", {}).get("action") or ""
-        qty = order.get("qty") or ""
-        status = ""
-        response = latest_source.get("response")
-        if isinstance(response, dict):
-            status = response.get("status") or response.get("body", {}).get("status") or response.get("ok")
-        latest_line = " ".join(str(part) for part in [phase, ticker, side, qty, status] if part not in ("", None, False))
+    ai_selection = _load_ai_selection_report()
+    trade_audit = summarize_trade_log(PROJECT_DIR / "logs", mode=_desired_audit_mode())
+    latest_line = _latest_trade_line(trade_audit)
     trade_audit = {
         **trade_audit,
         "latest_line": latest_line,
+        "execution_mode": _resolve_dashboard_execution_mode(trade_audit),
         "new_entries_allowed": bool(trade_audit.get("new_entries_allowed", True)),
         "reduce_only": bool(trade_audit.get("reduce_only", False)),
     }
@@ -373,6 +705,7 @@ def index():
                 "pos_pct": pos_pct,
                 "sparkline": sparkline,
                 "signal": d.get("last_signal", "N/A"),
+                "signal_cn": _signal_cn(d.get("last_signal", "N/A")),
                 "initial_capital": d.get("initial_capital", 0),
                 "cash": d.get("cash", 0),
                 "shares": d.get("position_shares", 0),
@@ -397,17 +730,33 @@ def index():
                 "support": defaults["support"], "resistance": defaults["resistance"], "spread_pct": 0,
                 "pos_pct": 50,
                 "sparkline": _build_sparkline([], 0),
-                "signal": "OFFLINE", "shares": 0,
+                "signal": "OFFLINE", "signal_cn": _signal_cn("OFFLINE"), "shares": 0,
                 "initial_capital": initial_capital, "cash": initial_capital,
                 "pnl": 0, "equity": initial_capital, "trades": 0, "halted": False,
             })
             total_capital += initial_capital
             total_equity += initial_capital
 
+    active_symbols = " / ".join(
+        card["name"].split("·", 1)[-1].strip() if "·" in card["name"] else str(card["name"]).strip()
+        for card in cards
+    ) or "N/A"
+    nearest_trigger_name, nearest_trigger = _nearest_trigger(cards)
+    nearest_trigger_mode = "neutral"
+    if "买点" in nearest_trigger:
+        nearest_trigger_mode = "buy"
+    elif "卖点" in nearest_trigger:
+        nearest_trigger_mode = "sell"
+
     from flask import render_template_string
     return render_template_string(HTML,
         cards=cards,
         live_account=live_account,
+        ai_selection=ai_selection,
+        active_symbols=active_symbols,
+        nearest_trigger_name=nearest_trigger_name,
+        nearest_trigger=nearest_trigger,
+        nearest_trigger_mode=nearest_trigger_mode,
         trade_audit=trade_audit,
         total_pnl=round(total_pnl, 2),
         total_capital=round(total_capital, 2),

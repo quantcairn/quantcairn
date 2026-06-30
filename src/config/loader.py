@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Literal
 
 
+TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+
+
 @dataclass
 class RangeConfig:
     mode: Literal["manual", "auto"] = "manual"
@@ -72,6 +75,11 @@ class LongBridgeConfig:
     access_token: str = ""
     region: str = "cn"
     enabled: bool = False
+    environment: str = "prod"
+    http_url: Optional[str] = None
+    quote_ws_url: Optional[str] = None
+    trade_ws_url: Optional[str] = None
+    log_path: Optional[str] = None
 
 
 @dataclass
@@ -105,6 +113,14 @@ def load_config(config_path: str = None) -> AppConfig:
         raw = yaml.safe_load(f)
 
     return _parse_config(raw)
+
+
+def _bool_env(key: str, default: bool = False) -> bool:
+    """Read a boolean-like env var with a default."""
+    val = os.environ.get(key)
+    if val is None:
+        return bool(default)
+    return val.strip().lower() in TRUE_VALUES
 
 
 def _parse_config(raw: dict) -> AppConfig:
@@ -183,13 +199,20 @@ def _parse_config(raw: dict) -> AppConfig:
 
     # Broker
     lb = raw.get("broker", {}).get("longbridge", {})
+    app_key = os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY") or lb.get("app_key", "")
+    app_secret = os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET") or lb.get("app_secret", "")
     config.broker = BrokerConfig(
         longbridge=LongBridgeConfig(
-            app_key=lb.get("app_key", ""),
-            app_secret=lb.get("app_secret", ""),
-            access_token=lb.get("access_token", ""),
-            region=lb.get("region", "cn"),
-            enabled=lb.get("enabled", False),
+            app_key=app_key,
+            app_secret=app_secret,
+            access_token=os.environ.get("LONGBRIDGE_ACCESS_TOKEN", lb.get("access_token", "")),
+            region=os.environ.get("LONGBRIDGE_REGION", lb.get("region", "cn")),
+            enabled=_bool_env("LONGBRIDGE_ENABLED", lb.get("enabled", False)),
+            environment=os.environ.get("LONGBRIDGE_ENV", lb.get("environment", "prod")),
+            http_url=os.environ.get("LONGBRIDGE_HTTP_URL", lb.get("http_url")),
+            quote_ws_url=os.environ.get("LONGBRIDGE_QUOTE_WS_URL", lb.get("quote_ws_url")),
+            trade_ws_url=os.environ.get("LONGBRIDGE_TRADE_WS_URL", lb.get("trade_ws_url")),
+            log_path=os.environ.get("LONGBRIDGE_LOG_PATH", lb.get("log_path")),
         )
     )
 
@@ -232,6 +255,13 @@ def validate_config(config: AppConfig) -> list[str]:
                 issues.append("[ERROR] live mode requires longbridge app_secret")
             if not config.broker.longbridge.access_token:
                 issues.append("[ERROR] live mode requires longbridge access_token")
+            if config.broker.longbridge.environment == "sandbox":
+                if not config.broker.longbridge.http_url:
+                    issues.append("[WARNING] sandbox mode selected but longbridge http_url is not set")
+                if not config.broker.longbridge.quote_ws_url:
+                    issues.append("[WARNING] sandbox mode selected but longbridge quote_ws_url is not set")
+                if not config.broker.longbridge.trade_ws_url:
+                    issues.append("[WARNING] sandbox mode selected but longbridge trade_ws_url is not set")
 
     spread_pct = (
         (config.range.resistance_price - config.range.support_price)
