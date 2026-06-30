@@ -203,15 +203,23 @@ def get_dashboard_data() -> dict:
         entry_price = pos.avg_entry_price if pos and pos.quantity > 0 else 0.0
         unrealized_pnl = pos.unrealized_pnl if pos else 0.0
 
-        acct = getattr(_engine, "_latest_account", None)
-        if acct is None:
-            acct = _engine.broker.get_account()
         initial_capital = _engine.config.position.initial_capital
-        cash = acct.cash
-        equity = acct.equity
 
         # Risk
         stats = _engine.risk.get_stats()
+        daily_pnl = float(stats.get("daily_pnl_today") or 0.0)
+
+        acct = getattr(_engine, "_latest_account", None)
+        if acct is None:
+            acct = _engine.broker.get_account()
+
+        if _engine.mode == "live":
+            market_value = float(pos.market_value) if pos else float(position_shares * price)
+            equity = initial_capital + daily_pnl + float(unrealized_pnl or 0.0)
+            cash = equity - market_value
+        else:
+            cash = acct.cash
+            equity = acct.equity
 
         # Signal
         last_signal = (_engine._last_signal_type.value
@@ -238,9 +246,9 @@ def get_dashboard_data() -> dict:
             "entry_price": _nz(entry_price, 0.0),
             "unrealized_pnl": _nz(unrealized_pnl, 0.0),
             "initial_capital": _nz(initial_capital, 0.0),
-            "cash": _nz(cash, 0.0),
-            "equity": _nz(equity, 0.0),
-            "daily_pnl": _nz(stats.get("daily_pnl_today"), 0.0),
+            "cash": _nz(round(cash, 2), 0.0),
+            "equity": _nz(round(equity, 2), 0.0),
+            "daily_pnl": _nz(daily_pnl, 0.0),
             "trades_today": _nz(stats.get("total_trades"), 0),
             "consecutive_losses": _nz(stats.get("consecutive_losses"), 0),
             "win_rate": _nz(stats.get("win_rate"), 0.0),
