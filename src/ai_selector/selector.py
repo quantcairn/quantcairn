@@ -32,7 +32,7 @@ class AIStrategySelector:
         else:
             symbols = self.universe.build_universe(source=source)
 
-        max_symbols = int(os.environ.get("AI_SELECTOR_MAX_SYMBOLS", "20"))
+        max_symbols = int(os.environ.get("AI_SELECTOR_MAX_SYMBOLS", "50"))
         symbols = symbols[:max_symbols]
 
         # 2. collect data & news. News scraping is optional because it can be

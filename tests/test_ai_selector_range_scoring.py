@@ -73,3 +73,10 @@ def test_flat_series_is_filtered_out():
     result = scorer.score_frame("FLAT", _make_flat_df(), news_items=[], sector="Utilities")
 
     assert result is None
+
+
+def test_high_price_series_is_filtered_out():
+    scorer = Scorer()
+    result = scorer.score_frame("EXPENSIVE", _make_range_like_df(base=120.0), news_items=[], sector="Technology")
+
+    assert result is None

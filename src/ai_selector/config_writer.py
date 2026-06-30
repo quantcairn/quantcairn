@@ -2,6 +2,7 @@ import yaml
 import os
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+TOP_INITIAL_CAPITAL = 700.0
 
 
 def _default_top_mode() -> str:
@@ -36,7 +37,7 @@ def write_top_configs(top_items):
         resistance = float(item["range_high"])
         if support <= 0 or resistance <= support:
             continue
-        initial_capital = 1000.0
+        initial_capital = TOP_INITIAL_CAPITAL
         estimated_price = (support + resistance) / 2
         fallback_size = max(1, int((initial_capital * 0.8) // estimated_price))
         requested_size = int(item.get("size") or fallback_size)

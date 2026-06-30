@@ -22,6 +22,7 @@ class Scorer:
     """
 
     MIN_PRICE = 5.0
+    MAX_PRICE = 50.0
     MIN_AVG_VOLUME = 1_000_000
     MIN_MARKET_CAP = 1_000_000_000
     MIN_HISTORY_ROWS = 60
@@ -45,6 +46,12 @@ class Scorer:
         "NFLX": {"score": 60.0, "range_low": 600.0, "range_high": 1000.0, "volume": 5_000_000},
         "QCOM": {"score": 58.0, "range_low": 130.0, "range_high": 190.0, "volume": 9_000_000},
         "UBER": {"score": 57.0, "range_low": 60.0, "range_high": 95.0, "volume": 20_000_000},
+        "LYFT": {"score": 61.0, "range_low": 12.5, "range_high": 16.8, "volume": 4_000_000},
+        "QBTS": {"score": 67.0, "range_low": 20.0, "range_high": 26.5, "volume": 10_000_000},
+        "WULF": {"score": 66.0, "range_low": 21.0, "range_high": 27.8, "volume": 10_000_000},
+        "SOFI": {"score": 64.0, "range_low": 15.2, "range_high": 19.8, "volume": 22_000_000},
+        "NIO": {"score": 59.0, "range_low": 4.5, "range_high": 5.6, "volume": 9_000_000},
+        "SMR": {"score": 63.0, "range_low": 8.5, "range_high": 11.2, "volume": 10_000_000},
     }
 
     FALLBACK_RANGE_PCT = {
@@ -60,6 +67,12 @@ class Scorer:
         "NFLX": 0.035,
         "QCOM": 0.03,
         "UBER": 0.035,
+        "LYFT": 0.06,
+        "QBTS": 0.08,
+        "WULF": 0.08,
+        "SOFI": 0.06,
+        "NIO": 0.08,
+        "SMR": 0.08,
     }
 
     FALLBACK_SECTOR = {
@@ -75,6 +88,12 @@ class Scorer:
         "AMZN": "Consumer Discretionary",
         "NFLX": "Communication Services",
         "UBER": "Technology",
+        "LYFT": "Technology",
+        "QBTS": "Information Technology",
+        "WULF": "Energy",
+        "SOFI": "Financial Services",
+        "NIO": "Consumer Discretionary",
+        "SMR": "Energy",
     }
 
     def _longbridge_symbol(self, symbol: str) -> str:
@@ -285,6 +304,8 @@ class Scorer:
             return None
 
         dynamic = dict(profile)
+        if os.environ.get("AI_SELECTOR_LIVE_DATA", "1") == "0":
+            return dynamic
         try:
             snapshot = self._fetch_live_snapshot(symbol)
             price = float(snapshot.get("price") or 0.0)
@@ -309,7 +330,9 @@ class Scorer:
                 if df.empty or len(df) < self.MIN_HISTORY_ROWS:
                     fallback = self._fallback_profile_for_symbol(symbol)
                     if fallback:
-                        scored.append(self._fallback_scored_item(symbol, fallback, news_map.get(symbol, [])))
+                        item = self._fallback_scored_item(symbol, fallback, news_map.get(symbol, []))
+                        if item:
+                            scored.append(item)
                     continue
 
                 item = self.score_frame(symbol=symbol, df=df, news_items=news_map.get(symbol, []))
@@ -318,7 +341,9 @@ class Scorer:
             except Exception:
                 fallback = self._fallback_profile_for_symbol(symbol)
                 if fallback:
-                    scored.append(self._fallback_scored_item(symbol, fallback, news_map.get(symbol, [])))
+                    item = self._fallback_scored_item(symbol, fallback, news_map.get(symbol, []))
+                    if item:
+                        scored.append(item)
                 continue
 
         if not scored:
@@ -353,6 +378,8 @@ class Scorer:
         avg_volume_60 = float(volume.rolling(60).mean().iloc[-1]) if len(volume) >= 60 else float(volume.mean())
 
         if last_close < self.MIN_PRICE:
+            return None
+        if last_close > self.MAX_PRICE:
             return None
         if avg_volume_20 < self.MIN_AVG_VOLUME:
             return None
@@ -463,13 +490,17 @@ class Scorer:
             profile = self._fallback_profile_for_symbol(symbol)
             if not profile:
                 continue
-            scored.append(self._fallback_scored_item(symbol, profile, news_map.get(symbol, [])))
+            item = self._fallback_scored_item(symbol, profile, news_map.get(symbol, []))
+            if item:
+                scored.append(item)
         return scored
 
     def _fallback_scored_item(self, symbol: str, profile: dict, news_items: Sequence[str]):
         support = float(profile["range_low"])
         resistance = float(profile["range_high"])
         price_mid = (support + resistance) / 2.0
+        if price_mid < self.MIN_PRICE or price_mid > self.MAX_PRICE:
+            return None
         band_pct = ((resistance - support) / price_mid * 100.0) if price_mid else 0.0
         news_score = self._news_score(list(news_items))
         volume_score = min(100.0, 35.0 + math.log10(max(float(profile["volume"]), 1.0) / 1_000_000.0 + 1.0) * 20.0)

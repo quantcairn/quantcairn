@@ -86,6 +86,7 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
     assert updated["range"]["mode"] == "auto"
     assert updated["range"]["support_price"] is None
     assert updated["range"]["resistance_price"] is None
+    assert updated["position"]["initial_capital"] == 700.0
     updated5 = yaml.safe_load((configs_dir / "TOP5.yaml").read_text(encoding="utf-8"))
     assert updated5["ticker"] == "AMZN"
 
