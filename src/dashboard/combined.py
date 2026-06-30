@@ -635,12 +635,10 @@ HTML = """<!DOCTYPE html>
             </div>
 
             <div class="pnl-grid">
-                <div class="quote-item"><span class="label">{{ account_labels.initial_capital }}</span><span class="val">${{ "%.2f"|format(card.initial_capital) }}</span></div>
-                <div class="quote-item"><span class="label">{{ account_labels.cash }}</span><span class="val">${{ "%.2f"|format(card.cash) }}</span></div>
                 <div class="quote-item"><span class="label">持股</span><span class="val">{{ card.shares }}</span></div>
-                <div class="quote-item"><span class="label">{{ account_labels.equity }}</span><span class="val">${{ "%.2f"|format(card.equity) }}</span></div>
                 <div class="quote-item"><span class="label">当日盈亏</span><span class="val {{ 'green' if card.pnl >= 0 else 'red' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
                 <div class="quote-item"><span class="label">成交笔数</span><span class="val">{{ card.trades }}</span></div>
+                <div class="quote-item"><span class="label">区间来源</span><span class="val {{ 'muted' if not card.range_ready else '' }}">{{ card.range_source }}</span></div>
             </div>
         </div>
     {% endfor %}
@@ -845,9 +843,6 @@ def index():
         total_equity = float(live_account.get("equity") or 0.0)
         footer_buying_power = float(live_account.get("buying_power") or 0.0)
         account_labels = {
-            "initial_capital": "可买额度",
-            "cash": "可用现金",
-            "equity": "账户权益",
             "footer_capital": "账户现金",
             "footer_equity": "账户权益",
             "footer_buying_power": "可买额度",
@@ -855,9 +850,6 @@ def index():
     else:
         footer_buying_power = None
         account_labels = {
-            "initial_capital": "分配本金",
-            "cash": "现金",
-            "equity": "权益",
             "footer_capital": "总本金",
             "footer_equity": "总权益",
             "footer_buying_power": "可买额度",
