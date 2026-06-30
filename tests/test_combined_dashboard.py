@@ -10,6 +10,33 @@ if str(PROJECT_DIR) not in sys.path:
 from src.dashboard import combined
 
 
+class SimpleMonkeyPatch:
+    def __init__(self):
+        self._originals = {}
+
+    def setattr(self, target_or_obj, name_or_value, value=None):
+        if value is None:
+            obj = target_or_obj
+            name = name_or_value
+            new_value = None
+        else:
+            obj = target_or_obj
+            name = name_or_value
+            new_value = value
+
+        if value is None:
+            raise TypeError("SimpleMonkeyPatch.setattr requires explicit value")
+
+        key = (obj, name)
+        if key not in self._originals:
+            self._originals[key] = getattr(obj, name)
+        setattr(obj, name, new_value)
+
+    def restore(self):
+        for (obj, name), original in self._originals.items():
+            setattr(obj, name, original)
+
+
 def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
         "cash": 850.0,
@@ -107,3 +134,16 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html
+
+
+def run_test_direct():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        test_combined_dashboard_renders_live_account_summary(monkeypatch)
+        test_combined_dashboard_renders_ai_selection_report(monkeypatch)
+    finally:
+        monkeypatch.restore()
+
+
+if __name__ == "__main__":
+    run_test_direct()

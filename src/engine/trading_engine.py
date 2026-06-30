@@ -21,6 +21,7 @@ from ..risk.manager import RiskManager, TradeRecord
 from ..broker.base import BrokerBase, OrderSide, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
+from .position_sizing import determine_buy_quantity
 
 logger = logging.getLogger(__name__)
 
@@ -259,14 +260,15 @@ class TradingEngine:
 
     def _handle_buy_signal(self, signal, current_price: float, ask: float) -> None:
         """Handle a BUY signal with auto position sizing."""
-        # Auto-calculate shares: use 80% of available cash
         acct = self.broker.get_account()
         available_cash = acct.cash
-        target_value = available_cash * 0.80  # 80% of cash per trade
-        shares = max(1, int(target_value / current_price))
-
-        # Cap at max_position
-        shares = min(shares, self.config.position.max_position)
+        shares = determine_buy_quantity(
+            current_price=current_price,
+            available_cash=available_cash,
+            configured_size=self.config.position.size_per_trade,
+            max_position=self.config.position.max_position,
+            execution_price=ask if ask > 0 else current_price,
+        )
 
         entry_check = self.risk.check_entry(
             current_price, shares, self._position_shares

@@ -26,7 +26,10 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.config.loader import load_config, validate_config
+from src.broker.base import OrderStatus, OrderSide, OrderType
+from src.broker.paper_broker import PaperBroker
 from src.engine.trading_engine import TradingEngine
+from src.engine.position_sizing import determine_buy_quantity
 from src.dashboard.server import start_dashboard
 
 
@@ -125,12 +128,15 @@ Environment variables:
 
     if has_errors:
         print("\n⚠️  Configuration has errors. Please fix them in config.yaml")
-        print("   Set support_price and resistance_price to begin.\n")
+        print("   Review the error lines above and update the relevant config fields.\n")
         if not args.dry_run:
             sys.exit(1)
 
     # Dry run: validate only
     if args.dry_run:
+        if has_errors:
+            print("❌ Configuration is invalid.")
+            sys.exit(1)
         print("\n✅ Configuration is valid.")
         print(f"   Mode: {config.mode}")
         print(f"   Ticker: {config.ticker}")
@@ -156,8 +162,16 @@ Environment variables:
         quote = engine.fetcher.get_quote()
         price = quote.price if quote else 6.50
         shares = int(args.init_position / price)
-        engine.broker.seed_position(config.ticker, shares, price)
-        logging.info(f"💰 Seeded virtual position: {shares} shares of {config.ticker} @ ${price:.2f} (≈${args.init_position:,.0f})")
+        seeded = engine.broker.seed_position(config.ticker, shares, price)
+        if seeded is None:
+            logging.warning(
+                "Could not seed virtual position: required cost exceeds paper cash balance."
+            )
+        else:
+            logging.info(
+                f"💰 Seeded virtual position: {shares} shares of {config.ticker} @ ${price:.2f} "
+                f"(≈${args.init_position:,.0f})"
+            )
 
     # Start dashboard if requested
     dashboard_thread = None
@@ -197,73 +211,150 @@ def run_backtest(engine, config):
     print(f"   Loaded {len(candles)} bars from {candles[0].timestamp} to {candles[-1].timestamp}")
 
     # Simulate strategy
-    position = 0
-    entry_price = 0
     trades = []
-    cash = 10000.0
+    open_entry_commission = 0.0
+    broker = PaperBroker(initial_cash=float(config.position.initial_capital))
+    broker.connect()
 
-    for i, c in enumerate(candles):
+    for c in candles:
         engine.strategy.feed_price(c.close)
+        broker.update_price(config.ticker, c.close)
 
         if config.range.mode == "auto" and engine.strategy.needs_auto_refresh():
             engine.strategy.update_auto_range()
 
+        pos = broker.get_position_for_ticker(config.ticker)
+        position = pos.quantity if pos else 0
         has_pos = position > 0
         signal = engine.strategy.evaluate(c.close, has_pos)
 
         if signal.type.value == "BUY" and not has_pos:
-            entry_price = c.close
-            position = config.position.size_per_trade
-            cost = entry_price * position
-            cash -= cost
-            trades.append({
-                "type": "BUY", "price": entry_price, "shares": position,
-                "time": c.timestamp, "cash": cash,
-            })
+            account = broker.get_account()
+            position = determine_buy_quantity(
+                current_price=c.close,
+                available_cash=account.cash,
+                configured_size=config.position.size_per_trade,
+                max_position=config.position.max_position,
+                execution_price=c.close,
+            )
+            if position > 0:
+                order = broker.place_order(
+                    ticker=config.ticker,
+                    side=OrderSide.BUY,
+                    quantity=position,
+                    order_type=OrderType.MARKET,
+                    current_bid=c.close,
+                    current_ask=c.close,
+                )
+                if order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                    open_entry_commission = order.commission
+                    trades.append({
+                        "type": "BUY",
+                        "price": order.avg_fill_price,
+                        "shares": order.filled_quantity,
+                        "time": c.timestamp,
+                        "cash": broker.get_account().cash,
+                        "commission": order.commission,
+                    })
 
         elif signal.type.value == "SELL" and has_pos:
-            exit_price = c.close
-            pnl = (exit_price - entry_price) * position
-            cash += exit_price * position
-            trades.append({
-                "type": "SELL", "price": exit_price, "shares": position,
-                "time": c.timestamp, "cash": cash, "pnl": pnl,
-            })
-            position = 0
-            entry_price = 0
+            entry_price = pos.avg_entry_price if pos else 0.0
+            order = broker.place_order(
+                ticker=config.ticker,
+                side=OrderSide.SELL,
+                quantity=position,
+                order_type=OrderType.MARKET,
+                current_bid=c.close,
+                current_ask=c.close,
+            )
+            if order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                pnl = (
+                    (order.avg_fill_price - entry_price) * order.filled_quantity
+                    - open_entry_commission
+                    - order.commission
+                )
+                trades.append({
+                    "type": "SELL",
+                    "price": order.avg_fill_price,
+                    "shares": order.filled_quantity,
+                    "time": c.timestamp,
+                    "cash": broker.get_account().cash,
+                    "pnl": pnl,
+                    "commission": order.commission,
+                })
+                open_entry_commission = 0.0
 
         elif signal.type.value == "STOP_LOSS" and has_pos:
-            exit_price = c.close
-            pnl = (exit_price - entry_price) * position
-            cash += exit_price * position
-            trades.append({
-                "type": "STOP_LOSS", "price": exit_price, "shares": position,
-                "time": c.timestamp, "cash": cash, "pnl": pnl,
-            })
-            position = 0
-            entry_price = 0
+            entry_price = pos.avg_entry_price if pos else 0.0
+            order = broker.place_order(
+                ticker=config.ticker,
+                side=OrderSide.SELL,
+                quantity=position,
+                order_type=OrderType.MARKET,
+                current_bid=c.close,
+                current_ask=c.close,
+            )
+            if order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                pnl = (
+                    (order.avg_fill_price - entry_price) * order.filled_quantity
+                    - open_entry_commission
+                    - order.commission
+                )
+                trades.append({
+                    "type": "STOP_LOSS",
+                    "price": order.avg_fill_price,
+                    "shares": order.filled_quantity,
+                    "time": c.timestamp,
+                    "cash": broker.get_account().cash,
+                    "pnl": pnl,
+                    "commission": order.commission,
+                })
+                open_entry_commission = 0.0
 
     # Close any open position at last price
+    pos = broker.get_position_for_ticker(config.ticker)
+    position = pos.quantity if pos else 0
     if position > 0:
+        entry_price = pos.avg_entry_price if pos else 0.0
         exit_price = candles[-1].close
-        pnl = (exit_price - entry_price) * position
-        cash += exit_price * position
-        trades.append({
-            "type": "SELL (close)", "price": exit_price, "shares": position,
-            "time": candles[-1].timestamp, "cash": cash, "pnl": pnl,
-        })
+        order = broker.place_order(
+            ticker=config.ticker,
+            side=OrderSide.SELL,
+            quantity=position,
+            order_type=OrderType.MARKET,
+            current_bid=exit_price,
+            current_ask=exit_price,
+        )
+        if order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+            pnl = (
+                (order.avg_fill_price - entry_price) * order.filled_quantity
+                - open_entry_commission
+                - order.commission
+            )
+            trades.append({
+                "type": "SELL (close)",
+                "price": order.avg_fill_price,
+                "shares": order.filled_quantity,
+                "time": candles[-1].timestamp,
+                "cash": broker.get_account().cash,
+                "pnl": pnl,
+                "commission": order.commission,
+            })
+            open_entry_commission = 0.0
 
     # Results
-    total_pnl = cash - 10000.0
+    final_cash = broker.get_account().cash
+    total_pnl = final_cash - float(config.position.initial_capital)
     wins = [t for t in trades if t.get("pnl", 0) > 0]
     losses = [t for t in trades if t.get("pnl", 0) < 0]
 
     print(f"\n{'='*50}")
     print(f"  📊 BACKTEST RESULTS")
     print(f"{'='*50}")
-    print(f"  Initial Cash:      $10,000.00")
-    print(f"  Final Cash:        ${cash:,.2f}")
-    print(f"  Total P&L:         ${total_pnl:+,.2f} ({total_pnl/10000*100:+.2f}%)")
+    print(f"  Initial Cash:      ${config.position.initial_capital:,.2f}")
+    print(f"  Final Cash:        ${final_cash:,.2f}")
+    pct_base = float(config.position.initial_capital) if config.position.initial_capital else 1.0
+    print(f"  Total P&L:         ${total_pnl:+,.2f} ({total_pnl/pct_base*100:+.2f}%)")
     print(f"  Total Trades:      {len(trades)}")
     print(f"  Wins:              {len(wins)}")
     print(f"  Losses:            {len(losses)}")

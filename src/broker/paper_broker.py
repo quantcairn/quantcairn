@@ -95,11 +95,30 @@ class PaperBroker(BrokerBase):
 
         commission = quantity * self._commission_per_share
 
-        # Update cash
         trade_value = fill_price * quantity
         if side == OrderSide.BUY:
+            total_cost = trade_value + commission
+            if total_cost > self._cash:
+                order = Order(
+                    order_id=order_id, ticker=ticker, side=side,
+                    order_type=order_type, quantity=quantity,
+                    status=OrderStatus.REJECTED,
+                    notes="Insufficient cash",
+                )
+                self._orders[order_id] = order
+                return order
             self._cash -= (trade_value + commission)
         else:
+            pos = self._positions.get(ticker)
+            if pos is None or pos.quantity < quantity:
+                order = Order(
+                    order_id=order_id, ticker=ticker, side=side,
+                    order_type=order_type, quantity=quantity,
+                    status=OrderStatus.REJECTED,
+                    notes="Insufficient position",
+                )
+                self._orders[order_id] = order
+                return order
             self._cash += (trade_value - commission)
 
         # Update position
@@ -116,20 +135,9 @@ class PaperBroker(BrokerBase):
             pos.quantity += quantity
             pos.avg_entry_price = total_cost / pos.quantity if pos.quantity > 0 else 0
         else:
-            if pos.quantity >= quantity:
-                pos.quantity -= quantity
-                if pos.quantity == 0:
-                    pos.avg_entry_price = 0
-            else:
-                # Can't sell more than we have
-                order = Order(
-                    order_id=order_id, ticker=ticker, side=side,
-                    order_type=order_type, quantity=quantity,
-                    status=OrderStatus.REJECTED,
-                    notes="Insufficient position",
-                )
-                self._orders[order_id] = order
-                return order
+            pos.quantity -= quantity
+            if pos.quantity == 0:
+                pos.avg_entry_price = 0
 
         # Update position market value
         pos.current_price = fill_price
@@ -176,7 +184,7 @@ class PaperBroker(BrokerBase):
     def get_position_for_ticker(self, ticker: str) -> Optional[Position]:
         return self._positions.get(ticker)
 
-    def seed_position(self, ticker: str, quantity: int, avg_price: float) -> Position:
+    def seed_position(self, ticker: str, quantity: int, avg_price: float) -> Optional[Position]:
         """Seed an initial position (for simulation/testing).
 
         This creates a position without going through the order book —
@@ -184,6 +192,13 @@ class PaperBroker(BrokerBase):
         The cash is deducted as if a buy order was filled.
         """
         cost = avg_price * quantity
+        if cost > self._cash:
+            logger.warning(
+                "[PAPER] Refused to seed position: cost $%.2f exceeds cash $%.2f",
+                cost,
+                self._cash,
+            )
+            return None
         self._cash -= cost
 
         pos = Position(

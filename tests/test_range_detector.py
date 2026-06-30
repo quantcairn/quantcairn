@@ -1,4 +1,16 @@
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
 from src.strategy.range_detector import RangeDetector, SignalType
+
+
+@dataclass
+class DummyCandle:
+    high: float
+    low: float
+    close: float
+    volume: int = 1_000
 
 
 def test_manual_range_can_buy_near_support_without_volume_confidence_gate():
@@ -31,3 +43,120 @@ def test_manual_range_does_not_buy_below_support():
 
     assert signal.type == SignalType.HOLD
     assert "dist to support" in signal.reason
+
+
+def test_auto_range_seed_succeeds_with_valid_ohlcv():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="auto",
+        auto_lookback=10,
+        trend_enabled=False,
+    )
+    candles = [
+        DummyCandle(high=101 + i * 0.1, low=99 + i * 0.1, close=100 + i * 0.05, volume=1_000 + i * 10)
+        for i in range(10)
+    ]
+
+    seeded = detector.seed_from_ohlcv(candles)
+    state = detector.get_range_state()
+
+    assert seeded is True
+    assert state.is_valid is True
+    assert state.support < state.resistance
+
+
+def test_auto_range_seed_rejects_flat_invalid_range():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="auto",
+        auto_lookback=10,
+        trend_enabled=False,
+    )
+    candles = [
+        DummyCandle(high=100.0, low=100.0, close=100.0, volume=1_000)
+        for _ in range(10)
+    ]
+
+    logger = logging.getLogger("src.strategy.range_detector")
+    original_disabled = logger.disabled
+    logger.disabled = True
+    try:
+        seeded = detector.seed_from_ohlcv(candles)
+        state = detector.get_range_state()
+    finally:
+        logger.disabled = original_disabled
+
+    assert seeded is False
+    assert state.is_valid is False
+
+
+def test_auto_range_buy_is_blocked_when_support_confidence_is_weak():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="auto",
+        tolerance_pct=0.5,
+        trend_enabled=False,
+    )
+    detector._auto_support = 100.0
+    detector._auto_resistance = 105.0
+    detector._support_confidence = 0.1
+
+    signal = detector.evaluate(100.2, has_position=False)
+
+    assert signal.type == SignalType.HOLD
+    assert "Weak support" in signal.reason
+
+
+def test_auto_range_buy_is_blocked_by_downtrend():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="auto",
+        tolerance_pct=0.5,
+        trend_enabled=True,
+        trend_ma_period=5,
+        trend_min_strength=0.1,
+    )
+    detector._auto_support = 100.0
+    detector._auto_resistance = 105.0
+    detector._support_confidence = 0.5
+    for price in [105.0, 104.0, 103.0, 102.0, 100.2]:
+        detector.feed_price(price)
+
+    signal = detector.evaluate(100.2, has_position=False)
+
+    assert signal.type == SignalType.TREND_BLOCK
+    assert "BUY blocked: downtrend" in signal.reason
+
+
+def test_quick_stop_triggers_for_open_position():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="manual",
+        support_price=100.0,
+        resistance_price=110.0,
+        trend_enabled=False,
+        quick_stop_pct=3.0,
+    )
+    detector.record_entry(100.0)
+
+    signal = detector.evaluate(96.5, has_position=True)
+
+    assert signal.type == SignalType.STOP_LOSS
+    assert "QUICK STOP" in signal.reason
+
+
+def test_needs_auto_refresh_respects_refresh_interval():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="auto",
+        auto_refresh_minutes=15,
+        trend_enabled=False,
+    )
+
+    assert detector.needs_auto_refresh() is True
+
+    detector._last_auto_refresh = datetime.now() - timedelta(minutes=5)
+    assert detector.needs_auto_refresh() is False
+
+    detector._last_auto_refresh = datetime.now() - timedelta(minutes=16)
+    assert detector.needs_auto_refresh() is True

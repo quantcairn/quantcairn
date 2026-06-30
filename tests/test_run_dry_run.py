@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+def test_dry_run_exits_nonzero_for_invalid_config():
+    repo_root = Path(__file__).resolve().parents[1]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "config.yaml"
+        config_path.write_text(
+            """
+ticker: "SOXS"
+mode: "paper"
+range:
+  mode: "manual"
+  support_price: 30.0
+  resistance_price: 29.0
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env.pop("SOXS_CONFIG", None)
+
+        result = subprocess.run(
+            [str(repo_root / ".venv/bin/python"), "run.py", "--dry-run", "--config", str(config_path)],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode != 0
+    assert "Configuration has errors" in result.stdout
+    assert "Configuration is invalid" in result.stdout
+    assert "Configuration is valid" not in result.stdout
+
+
+def run_test_direct():
+    test_dry_run_exits_nonzero_for_invalid_config()
+
+
+if __name__ == "__main__":
+    run_test_direct()

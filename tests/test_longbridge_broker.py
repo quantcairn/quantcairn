@@ -75,9 +75,9 @@ broker:
         assert config.broker.longbridge.app_key == "alias-key"
         assert config.broker.longbridge.app_secret == "alias-secret"
         assert config.broker.longbridge.environment == "sandbox"
-        assert config.broker.longbridge.http_url is None
-        assert config.broker.longbridge.quote_ws_url is None
-        assert config.broker.longbridge.trade_ws_url is None
+        assert config.broker.longbridge.http_url == "https://sandbox.example/http"
+        assert config.broker.longbridge.quote_ws_url == "wss://sandbox.example/quote"
+        assert config.broker.longbridge.trade_ws_url == "wss://sandbox.example/trade"
     finally:
         monkeypatch.restore()
 

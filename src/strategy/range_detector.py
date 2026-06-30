@@ -378,8 +378,6 @@ class RangeDetector:
         # Use recent candles for initial range
         recent = candles[-self.auto_lookback:] if len(candles) > self.auto_lookback else candles
 
-        lows = [c.low for c in recent]
-        highs = [c.high for c in recent]
         closes = [c.close for c in recent]
 
         # Seed price history
@@ -393,6 +391,10 @@ class RangeDetector:
 
         # ── Try Volume Profile first, fall back to percentile ──
         supp, res, supp_conf, res_conf = self._calc_volume_weighted_range() if self._volume_profile and len(self._volume_profile) >= 10 else self._percentile_range()
+
+        if supp <= 0 or res <= supp:
+            logger.warning("Could not seed auto range for %s: invalid derived range", self.ticker)
+            return False
 
         self._auto_support = supp
         self._auto_resistance = res

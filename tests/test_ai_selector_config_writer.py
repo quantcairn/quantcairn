@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import yaml
 
 from src.ai_selector.config_writer import write_top_configs
+
+
+class SimpleMonkeyPatch:
+    def __init__(self):
+        self._originals = {}
+
+    def setattr(self, target, value):
+        module_name, attr_name = target.rsplit(".", 1)
+        module = __import__(module_name, fromlist=[attr_name])
+        key = (module, attr_name)
+        if key not in self._originals:
+            self._originals[key] = getattr(module, attr_name)
+        setattr(module, attr_name, value)
+
+    def restore(self):
+        for (module, attr_name), original in self._originals.items():
+            setattr(module, attr_name, original)
 
 
 def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypatch):
@@ -37,3 +55,19 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
     assert updated["mode"] == "live"
     assert updated["broker"]["longbridge"]["enabled"] is True
     assert updated["ticker"] == "NVDA"
+
+
+def run_test_direct():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory(prefix="config-writer-test-") as tmpdir:
+            test_config_writer_preserves_live_mode_and_enabled_broker(
+                Path(tmpdir),
+                monkeypatch,
+            )
+    finally:
+        monkeypatch.restore()
+
+
+if __name__ == "__main__":
+    run_test_direct()

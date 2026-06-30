@@ -24,7 +24,7 @@ class RangeConfig:
 
 @dataclass
 class PositionConfig:
-    size_per_trade: int = 100
+    size_per_trade: int = 0
     max_position: int = 300
     cool_down_seconds: int = 30
     initial_capital: float = 10000.0
@@ -148,7 +148,7 @@ def _parse_config(raw: dict) -> AppConfig:
     # Position
     p = raw.get("position", {})
     config.position = PositionConfig(
-        size_per_trade=int(os.environ.get("SOXS_SIZE", p.get("size_per_trade", 100))),
+        size_per_trade=int(os.environ.get("SOXS_SIZE", p.get("size_per_trade", 0))),
         max_position=int(os.environ.get("SOXS_MAX_POS", p.get("max_position", 300))),
         cool_down_seconds=p.get("cool_down_seconds", 30),
         initial_capital=float(os.environ.get("SOXS_CAPITAL", p.get("initial_capital", 10000))),
@@ -201,6 +201,14 @@ def _parse_config(raw: dict) -> AppConfig:
     lb = raw.get("broker", {}).get("longbridge", {})
     app_key = os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY") or lb.get("app_key", "")
     app_secret = os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET") or lb.get("app_secret", "")
+    environment = os.environ.get("LONGBRIDGE_ENV", lb.get("environment", "prod"))
+    http_url = os.environ.get("LONGBRIDGE_HTTP_URL", lb.get("http_url"))
+    quote_ws_url = os.environ.get("LONGBRIDGE_QUOTE_WS_URL", lb.get("quote_ws_url"))
+    trade_ws_url = os.environ.get("LONGBRIDGE_TRADE_WS_URL", lb.get("trade_ws_url"))
+    if environment.strip().lower() == "sandbox":
+        http_url = http_url or os.environ.get("LONGBRIDGE_SANDBOX_HTTP_URL")
+        quote_ws_url = quote_ws_url or os.environ.get("LONGBRIDGE_SANDBOX_QUOTE_WS_URL")
+        trade_ws_url = trade_ws_url or os.environ.get("LONGBRIDGE_SANDBOX_TRADE_WS_URL")
     config.broker = BrokerConfig(
         longbridge=LongBridgeConfig(
             app_key=app_key,
@@ -208,10 +216,10 @@ def _parse_config(raw: dict) -> AppConfig:
             access_token=os.environ.get("LONGBRIDGE_ACCESS_TOKEN", lb.get("access_token", "")),
             region=os.environ.get("LONGBRIDGE_REGION", lb.get("region", "cn")),
             enabled=_bool_env("LONGBRIDGE_ENABLED", lb.get("enabled", False)),
-            environment=os.environ.get("LONGBRIDGE_ENV", lb.get("environment", "prod")),
-            http_url=os.environ.get("LONGBRIDGE_HTTP_URL", lb.get("http_url")),
-            quote_ws_url=os.environ.get("LONGBRIDGE_QUOTE_WS_URL", lb.get("quote_ws_url")),
-            trade_ws_url=os.environ.get("LONGBRIDGE_TRADE_WS_URL", lb.get("trade_ws_url")),
+            environment=environment,
+            http_url=http_url,
+            quote_ws_url=quote_ws_url,
+            trade_ws_url=trade_ws_url,
             log_path=os.environ.get("LONGBRIDGE_LOG_PATH", lb.get("log_path")),
         )
     )
