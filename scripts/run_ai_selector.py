@@ -62,8 +62,8 @@ def main():
     # macOS notification (optional)
     try:
         top5tickers = ', '.join([t['ticker'] for t in selected])
-        msg = f"Top5: {top5tickers}"
-        subprocess.run(['osascript', '-e', f'display notification "{msg}" with title "AI Selector"'], check=False)
+        msg = f"Top5: {top5tickers} (非成交提醒)"
+        subprocess.run(['osascript', '-e', f'display notification "{msg}" with title "AI 选股更新"' ], check=False)
     except Exception:
         pass
 

@@ -294,6 +294,11 @@ class TradingEngine:
             current_ask=ask,
         )
 
+        if order.status == OrderStatus.PENDING:
+            self.notifier.order_submitted(
+                self.ticker, "BUY", order.quantity, order.order_id
+            )
+
         if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
             self._entry_price = order.avg_fill_price
             self._position_shares += order.filled_quantity
@@ -312,6 +317,11 @@ class TradingEngine:
             current_bid=bid,
             current_ask=current_price,
         )
+
+        if order.status == OrderStatus.PENDING:
+            self.notifier.order_submitted(
+                self.ticker, "SELL", order.quantity, order.order_id
+            )
 
         if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
             pnl = self._calculate_pnl(order.avg_fill_price)
@@ -351,6 +361,11 @@ class TradingEngine:
             current_bid=bid,
             current_ask=current_price,
         )
+
+        if order.status == OrderStatus.PENDING:
+            self.notifier.order_submitted(
+                self.ticker, "SELL", order.quantity, order.order_id
+            )
 
         if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
             pnl = self._calculate_pnl(order.avg_fill_price)

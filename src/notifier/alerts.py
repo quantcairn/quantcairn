@@ -37,7 +37,14 @@ class Notifier:
         title = f"📊 {ticker} — {signal_type}"
         body = f"${price:.2f} | {reason}"
 
-        self._send(title, body, "signal")
+        self._send(title, body, "signal", macos=False)
+
+    def order_submitted(self, ticker: str, side: str, quantity: int, order_id: str = "") -> None:
+        """Notify when a live order has been accepted by the broker."""
+        suffix = f" | {order_id[:12]}" if order_id else ""
+        title = f"🟦 {side} 提交 {quantity} {ticker}"
+        body = f"submitted{suffix}"
+        self._send(title, body, "trade", macos=True)
 
     def trade(self, ticker: str, side: str, quantity: int, price: float, pnl: Optional[float] = None) -> None:
         """Notify about an executed trade."""
@@ -45,7 +52,7 @@ class Notifier:
         title = f"💱 {side} {quantity} {ticker}"
         body = f"@ ${price:.2f}{pnl_str}"
 
-        self._send(title, body, "trade")
+        self._send(title, body, "trade", macos=True)
 
         # Track for summary
         self._trade_count_since_summary += 1
@@ -55,7 +62,7 @@ class Notifier:
         """General alert (errors, warnings, halts)."""
         emoji = {"info": "ℹ️", "warning": "⚠️", "error": "🚨", "halt": "🛑"}
         title = f"{emoji.get(level, 'ℹ️')} Trading Alert"
-        self._send(title, message, level)
+        self._send(title, message, level, macos=False)
 
     def summary(self, stats: dict) -> None:
         """Send a trading summary."""
@@ -66,7 +73,7 @@ class Notifier:
             f"P&L: ${stats.get('total_pnl', 0):+.2f} | "
             f"Today: ${stats.get('daily_pnl_today', 0):+.2f}"
         )
-        self._send(title, body, "summary")
+        self._send(title, body, "summary", macos=False)
 
     def heartbeat(self, ticker: str, price: float, range_state, trend_info: dict = None, halted: bool = False) -> None:
         """Lightweight periodic status (not a full notification)."""
@@ -90,7 +97,7 @@ class Notifier:
 
     # ---- Internal ----
 
-    def _send(self, title: str, body: str, category: str) -> None:
+    def _send(self, title: str, body: str, category: str, macos: bool = False) -> None:
         """Send notification through all enabled channels."""
         timestamp = datetime.now().strftime("%H:%M:%S")
 
@@ -99,7 +106,7 @@ class Notifier:
             self._console_out(timestamp, title, body, category)
 
         # macOS Notification Center
-        if self.macos_enabled:
+        if self.macos_enabled and macos:
             self._macos_notify(title, body)
 
         # Webhook (Discord/Slack/WeCom)
