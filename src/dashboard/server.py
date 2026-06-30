@@ -177,13 +177,28 @@ def get_dashboard_data() -> dict:
         # Price: dashboard reads cached engine state only. Fetching live market
         # data here can block /api/status and make the combined view show zero.
         quote = getattr(_engine.fetcher, "_cached_quote", None)
-        price = quote.price if quote else 0
-        change = quote.change_pct if quote else 0
-        bid = quote.bid if quote else 0
-        ask = quote.ask if quote else 0
-        high_1m = quote.high_1m if quote else None
-        low_1m = quote.low_1m if quote else None
-        volume = quote.volume if quote else 0
+        recent_prices = getattr(_engine.strategy, "_price_history", []) or []
+        last_price = float(recent_prices[-1]) if recent_prices else 0.0
+
+        price = float(getattr(quote, "price", 0) or 0.0)
+        if price <= 0:
+            price = last_price
+
+        change = float(getattr(quote, "change_pct", 0) or 0.0)
+        bid = float(getattr(quote, "bid", 0) or 0.0)
+        if bid <= 0:
+            bid = price
+        ask = float(getattr(quote, "ask", 0) or 0.0)
+        if ask <= 0:
+            ask = price
+
+        high_1m = getattr(quote, "high_1m", None)
+        if not high_1m or high_1m <= 0:
+            high_1m = price
+        low_1m = getattr(quote, "low_1m", None)
+        if not low_1m or low_1m <= 0:
+            low_1m = price
+        volume = int(getattr(quote, "volume", 0) or 0)
 
         # Range
         rs = _engine.strategy.get_range_state()
@@ -234,8 +249,8 @@ def get_dashboard_data() -> dict:
             "change": _nz(change, 0.0),
             "bid": _nz(bid, 0.0),
             "ask": _nz(ask, 0.0),
-            "high_1m": high_1m if high_1m else price,
-            "low_1m": low_1m if low_1m else price,
+            "high_1m": high_1m,
+            "low_1m": low_1m,
             "volume": volume,
             "support": _nz(support, 0.0),
             "resistance": _nz(resistance, 0.0),
