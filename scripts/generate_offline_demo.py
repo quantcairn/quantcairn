@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate offline demo Top10/Top3 using synthetic data for validation."""
+"""Generate offline demo Top10/Top5 using synthetic data for validation."""
 import os
 import random
 import yaml
@@ -34,14 +34,14 @@ def main():
     scored = [synth_score(t) for t in SAMPLES]
     scored = sorted(scored, key=lambda x: x['score'], reverse=True)
     top10 = scored[:10]
-    top3 = top10[:3]
+    top5 = top10[:5]
 
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     cfg_dir = os.path.join(base, 'configs')
     os.makedirs(cfg_dir, exist_ok=True)
 
     # write top configs
-    for i, item in enumerate(top3, start=1):
+    for i, item in enumerate(top5, start=1):
         cfg = {
             'ticker': item['ticker'],
             'mode': 'paper',
@@ -67,15 +67,15 @@ def main():
         f.write('## Top10\n\n')
         for i, t in enumerate(top10, start=1):
             f.write(f"{i}. {t['ticker']} — score: {t['score']} (tech {t['tech_score']}, news {t['news_score']})\n")
-        f.write('\n## Top3 configs written to configs/TOP1.yaml, TOP2.yaml, TOP3.yaml\n')
+        f.write('\n## Top5 configs written to configs/TOP1.yaml, TOP2.yaml, TOP3.yaml, TOP4.yaml, TOP5.yaml\n')
 
     print('Offline demo generated:')
     print('  report:', rpt_path)
     print('  TOP configs in', cfg_dir)
     # local macOS notification
     try:
-        top3 = ', '.join([t['ticker'] for t in top3])
-        subprocess.run(['osascript', '-e', f'display notification "Top3: {top3}" with title "AI Selector (demo)"'], check=False)
+        top5tickers = ', '.join([t['ticker'] for t in top5])
+        subprocess.run(['osascript', '-e', f'display notification "Top5: {top5tickers}" with title "AI Selector (demo)"'], check=False)
     except Exception:
         pass
 

@@ -29,9 +29,9 @@ def _load_existing_mode(index: int, fallback: str) -> str:
         pass
     return fallback
 
-def write_top_configs(top3):
+def write_top_configs(top_items):
     default_mode = _default_top_mode()
-    for i, item in enumerate(top3, start=1):
+    for i, item in enumerate(top_items, start=1):
         support = float(item["range_low"])
         resistance = float(item["range_high"])
         if support <= 0 or resistance <= support:

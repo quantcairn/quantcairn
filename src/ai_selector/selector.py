@@ -14,6 +14,15 @@ class AIStrategySelector:
         self.universe = Universe()
         self.news = NewsCollector()
         self.scorer = Scorer()
+        self.selection_size = self._selection_size_from_env()
+
+    def _selection_size_from_env(self) -> int:
+        raw = os.environ.get("AI_SELECTOR_TOP_K", "5")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 5
+        return max(1, value)
 
     def run_selection(self):
         # 1. build universe
@@ -36,27 +45,28 @@ class AIStrategySelector:
         # 3. score
         scored = self.scorer.score_universe(symbols, news_map)
 
-        # 4. sort by base score, then diversify Top3 by sector/correlation
+        # 4. sort by base score, then diversify TopK by sector/correlation
         scored_sorted = sorted(scored, key=lambda x: x.get("score", 0.0), reverse=True)
         top10 = scored_sorted[:10]
-        top3 = self._select_diversified_top3(top10)
+        topk = self._select_diversified_top_k(top10, self.selection_size)
 
-        # write configs for top3
+        # write configs for selected TopK
         from src.ai_selector.config_writer import write_top_configs
-        write_top_configs(top3)
+        write_top_configs(topk)
 
-        report_rows = self._format_report_rows(top3)
+        report_rows = self._format_report_rows(topk)
         return {
             "top10": top10,
-            "top3": top3,
+            "top5": topk,
+            "top3": topk[:3],
             "report": report_rows,
         }
 
-    def _select_diversified_top3(self, candidates: List[dict]) -> List[dict]:
+    def _select_diversified_top_k(self, candidates: List[dict], max_items: int) -> List[dict]:
         remaining = [dict(item) for item in candidates]
         selected: List[dict] = []
 
-        while remaining and len(selected) < 3:
+        while remaining and len(selected) < max_items:
             best_idx = 0
             best_item = None
             best_score = -math.inf
@@ -83,6 +93,9 @@ class AIStrategySelector:
 
         selected.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return selected
+
+    def _select_diversified_top3(self, candidates: List[dict]) -> List[dict]:
+        return self._select_diversified_top_k(candidates, 3)
 
     def _final_score(self, item: dict, correlation_penalty: float) -> float:
         vol = float(item.get("volatility_score", 0.0))

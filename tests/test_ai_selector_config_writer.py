@@ -48,7 +48,35 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
             "range_high": 154.0,
             "risk": {"stop_loss_pct": 1.5},
             "size": 5,
-        }
+        },
+        {
+            "ticker": "TSLA",
+            "range_low": 220.0,
+            "range_high": 260.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 4,
+        },
+        {
+            "ticker": "AAPL",
+            "range_low": 170.0,
+            "range_high": 190.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 3,
+        },
+        {
+            "ticker": "MSFT",
+            "range_low": 390.0,
+            "range_high": 420.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 2,
+        },
+        {
+            "ticker": "AMZN",
+            "range_low": 120.0,
+            "range_high": 140.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 1,
+        },
     ])
 
     updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
@@ -58,6 +86,8 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
     assert updated["range"]["mode"] == "auto"
     assert updated["range"]["support_price"] is None
     assert updated["range"]["resistance_price"] is None
+    updated5 = yaml.safe_load((configs_dir / "TOP5.yaml").read_text(encoding="utf-8"))
+    assert updated5["ticker"] == "AMZN"
 
 
 def run_test_direct():

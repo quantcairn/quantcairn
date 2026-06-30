@@ -22,19 +22,21 @@ def _candidate(ticker, sector, score, corr_seed):
     }
 
 
-def test_top3_selection_spreads_across_sectors():
+def test_top5_selection_spreads_across_sectors():
     selector = AIStrategySelector()
     candidates = [
-        _candidate("A1", "Semiconductors", 91.0, 1),
+        _candidate("A1", "Semiconductors", 95.0, 1),
+        _candidate("B1", "Technology", 94.0, 9),
+        _candidate("C1", "Consumer Discretionary", 93.0, 13),
+        _candidate("D1", "Healthcare", 92.0, 17),
+        _candidate("E1", "Energy", 91.0, 21),
         _candidate("A2", "Semiconductors", 90.0, 1),
-        _candidate("B1", "Technology", 89.0, 9),
-        _candidate("C1", "Consumer Discretionary", 88.0, 13),
     ]
 
-    selected = selector._select_diversified_top3(candidates)
+    selected = selector._select_diversified_top_k(candidates, 5)
 
-    assert len(selected) == 3
+    assert len(selected) == 5
     sectors = [item["sector"] for item in selected]
-    assert len(set(sectors)) == 3
+    assert len(set(sectors)) == 5
     assert selected[0]["ticker"] == "A1"
-    assert selected[1]["ticker"] in {"B1", "C1"}
+    assert selected[-1]["ticker"] == "E1"

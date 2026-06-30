@@ -36,12 +36,17 @@ def main():
     print("Top10:")
     for i, t in enumerate(out['top10'], start=1):
         print(f"{i}. {t['ticker']} — {t['score']}")
+    selected = out.get('top5') or out.get('top3') or []
+    print("Top5:")
+    for i, t in enumerate(selected, start=1):
+        print(f"{i}. {t['ticker']} — {t['score']}")
 
     # Send notifications: webhook (env AI_SELECTOR_WEBHOOK) and macOS notification
     webhook = os.environ.get('AI_SELECTOR_WEBHOOK')
     summary = {
         'timestamp': timestamp,
         'top10': out.get('top10', []),
+        'top5': selected,
         'top3': out.get('top3', []),
         'report': out.get('report', []),
     }
@@ -56,8 +61,8 @@ def main():
 
     # macOS notification (optional)
     try:
-        top3tickers = ', '.join([t['ticker'] for t in out.get('top3', [])])
-        msg = f"Top3: {top3tickers}"
+        top5tickers = ', '.join([t['ticker'] for t in selected])
+        msg = f"Top5: {top5tickers}"
         subprocess.run(['osascript', '-e', f'display notification "{msg}" with title "AI Selector"'], check=False)
     except Exception:
         pass

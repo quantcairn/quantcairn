@@ -109,6 +109,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
                 "sector": "Semiconductors",
             }
         ],
+        "top5": [],
         "top3": [],
         "top10": [],
     })
@@ -134,6 +135,8 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html
+    assert "TOP4" in html
+    assert "TOP5" in html
 
 
 def run_test_direct():

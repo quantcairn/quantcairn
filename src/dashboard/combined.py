@@ -1,4 +1,4 @@
-"""Combined dashboard aggregating the selected TOP3 trading engines."""
+"""Combined dashboard aggregating the selected TOP5 trading engines."""
 import json, os, subprocess, urllib.request
 import time
 from datetime import datetime
@@ -16,6 +16,8 @@ TICKERS = [
     {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
     {"name": "TOP2", "desc": "AI优选第2名",    "port": 8092, "config": "TOP2.yaml"},
     {"name": "TOP3", "desc": "AI优选第3名",    "port": 8093, "config": "TOP3.yaml"},
+    {"name": "TOP4", "desc": "AI优选第4名",    "port": 8094, "config": "TOP4.yaml"},
+    {"name": "TOP5", "desc": "AI优选第5名",    "port": 8095, "config": "TOP5.yaml"},
 ]
 
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
@@ -107,20 +109,21 @@ def _fetch_live_account_summary():
 def _load_ai_selection_report():
     path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
     if not path.exists():
-        return {"timestamp": None, "report": [], "top3": [], "top10": []}
+        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"timestamp": None, "report": [], "top3": [], "top10": []}
+            return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": []}
         rows = data.get("report") if isinstance(data.get("report"), list) else []
         return {
             "timestamp": data.get("timestamp"),
             "report": rows,
+            "top5": data.get("top5") if isinstance(data.get("top5"), list) else [],
             "top3": data.get("top3") if isinstance(data.get("top3"), list) else [],
             "top10": data.get("top10") if isinstance(data.get("top10"), list) else [],
         }
     except Exception:
-        return {"timestamp": None, "report": [], "top3": [], "top10": []}
+        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": []}
 
 
 def _desired_audit_mode() -> str:
@@ -315,7 +318,7 @@ HTML = """<!DOCTYPE html>
     }
     .stat-value.muted{color:var(--muted);font-weight:500}
     .cards{
-        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch
+        display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;align-items:stretch
     }
     .card{padding:18px;min-width:0}
     .card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:14px}
@@ -399,7 +402,7 @@ HTML = """<!DOCTYPE html>
     <div class="topbar">
         <div class="brand">
             <h1>AI区间交易总览</h1>
-            <p>TOP1、TOP2、TOP3 三路联动监控，每 5 秒自动刷新。</p>
+            <p>TOP1 到 TOP5 五路联动监控，每 5 秒自动刷新。</p>
         </div>
         <div class="status-row">
             <span class="pill live">实时监控</span>

@@ -4,7 +4,7 @@
 Behavior:
 - Checks current time in America/New_York.
 - If it's a weekday (Mon-Fri) and time is near 09:29 ET, runs the selector once per ET day.
-- After a successful selection, restarts TOP1/TOP2/TOP3 paper engines so they use the new configs.
+- After a successful selection, restarts the TOP engines so they use the new configs.
 - Respects env var `FORCE_AI_RUN=1` to force execution regardless of time.
 """
 import os
