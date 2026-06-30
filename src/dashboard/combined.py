@@ -326,6 +326,9 @@ HTML = """<!DOCTYPE html>
         border:1px solid rgba(52,211,153,.24);background:rgba(52,211,153,.12);color:#b8f5d0;
         border-radius:10px;padding:10px 14px;font-size:13px;font-weight:800;cursor:pointer
     }
+    .settings-button.secondary{
+        border-color:rgba(125,211,252,.24);background:rgba(125,211,252,.12);color:#d7f0ff
+    }
     .settings-note{color:var(--muted);font-size:12px}
     .stat-box{
         padding:14px;border-radius:14px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06)
@@ -518,7 +521,8 @@ HTML = """<!DOCTYPE html>
                 <label for="max_price">价格上限</label>
                 <input id="max_price" name="max_price" type="number" min="1" max="500" step="0.01" value="{{ runtime_settings.max_price }}">
             </div>
-            <button class="settings-button" type="submit">保存设置</button>
+            <button class="settings-button" type="submit" name="action" value="save">保存设置</button>
+            <button class="settings-button secondary" type="submit" name="action" value="rerun">保存并立即重选</button>
             <span class="settings-note">保存后对下一次自动选股生效。</span>
         </form>
         {% if ai_selection and ai_selection.report %}
@@ -831,9 +835,33 @@ def index():
     )
 
 
+def _run_ai_selector_now() -> None:
+    project_dir = str(PROJECT_DIR)
+    env = os.environ.copy()
+    env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
+    env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
+    python_bin = PROJECT_DIR / ".venv" / "bin" / "python"
+    if not python_bin.exists():
+        python_bin = Path(os.environ.get("PYTHON", "")) if os.environ.get("PYTHON") else Path("python3")
+
+    subprocess.run(
+        [str(python_bin), "scripts/run_ai_selector.py"],
+        cwd=project_dir,
+        env=env,
+        check=False,
+    )
+    subprocess.run(
+        ["/bin/bash", str(PROJECT_DIR / "multi_launch.sh"), "restart-top"],
+        cwd=project_dir,
+        env=env,
+        check=False,
+    )
+
+
 @app.route("/ai-selector-settings", methods=["POST"])
 def update_ai_selector_settings():
     raw_max_price = str(request.form.get("max_price", "")).strip()
+    action = str(request.form.get("action", "save")).strip().lower()
     settings = load_runtime_settings()
     try:
         max_price = float(raw_max_price)
@@ -842,6 +870,8 @@ def update_ai_selector_settings():
     max_price = min(500.0, max(1.0, max_price))
     settings["max_price"] = round(max_price, 2)
     save_runtime_settings(settings)
+    if action == "rerun":
+        _run_ai_selector_now()
     return redirect("/")
 
 

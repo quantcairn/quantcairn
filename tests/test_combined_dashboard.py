@@ -245,12 +245,28 @@ def test_combined_dashboard_updates_ai_selector_settings(monkeypatch):
     saved = {}
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"max_price": 50.0})
     monkeypatch.setattr(combined, "save_runtime_settings", lambda data: saved.update(data))
+    monkeypatch.setattr(combined, "_run_ai_selector_now", lambda: None)
 
     with combined.app.test_client() as client:
         resp = client.post("/ai-selector-settings", data={"max_price": "35.5"})
 
     assert resp.status_code == 302
     assert saved["max_price"] == 35.5
+
+
+def test_combined_dashboard_reruns_ai_selector_from_settings_form(monkeypatch):
+    saved = {}
+    rerun = {"called": False}
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"max_price": 50.0})
+    monkeypatch.setattr(combined, "save_runtime_settings", lambda data: saved.update(data))
+    monkeypatch.setattr(combined, "_run_ai_selector_now", lambda: rerun.__setitem__("called", True))
+
+    with combined.app.test_client() as client:
+        resp = client.post("/ai-selector-settings", data={"max_price": "44.0", "action": "rerun"})
+
+    assert resp.status_code == 302
+    assert saved["max_price"] == 44.0
+    assert rerun["called"] is True
 
 
 def run_test_direct():
@@ -260,6 +276,7 @@ def run_test_direct():
         test_combined_dashboard_renders_ai_selection_report(monkeypatch)
         test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch)
         test_combined_dashboard_updates_ai_selector_settings(monkeypatch)
+        test_combined_dashboard_reruns_ai_selector_from_settings_form(monkeypatch)
     finally:
         monkeypatch.restore()
 
