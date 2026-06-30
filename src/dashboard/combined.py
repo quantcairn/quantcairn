@@ -186,27 +186,54 @@ def _latest_trade_line(trade_audit: dict) -> str | None:
     return None
 
 
-def _nearest_trigger(cards: list[dict], side: str) -> tuple[str, str]:
+def _nearest_trigger(
+    cards: list[dict],
+    side: str,
+    *,
+    new_entries_allowed: bool = True,
+) -> tuple[str, str]:
+    if side == "buy" and not new_entries_allowed:
+        return "暂停开仓", "当前已暂停新开仓"
+
     best_name = "暂无"
-    if side == "buy":
-        best_hint = "暂无接近买点的标的"
-    else:
-        best_hint = "暂无接近卖点的标的"
-    best_distance = None
+    best_hint = "暂无接近买点的标的" if side == "buy" else "暂无接近卖点的标的"
+    best_rank = None
+    buy_blocked_by_position = False
+
     for card in cards:
-        if not card.get("online"):
+        if not card.get("online") or not card.get("range_ready") or card.get("halted"):
             continue
-        pos_pct = float(card.get("pos_pct", 50) or 50)
+
+        price = float(card.get("price", 0) or 0.0)
+        support = float(card.get("support", 0) or 0.0)
+        resistance = float(card.get("resistance", 0) or 0.0)
+        shares = int(card.get("shares", 0) or 0)
+
+        if price <= 0 or support <= 0 or resistance <= support:
+            continue
+
         if side == "buy":
-            distance = pos_pct
-            hint = f"{card['name']} 接近买点"
+            if shares > 0:
+                buy_blocked_by_position = True
+                continue
+            distance = abs(price - support)
+            distance_pct = (distance / support * 100.0) if support > 0 else 0.0
+            rank = (distance, distance_pct)
+            hint = f"{card['name']} 距买点 ${distance:.2f} ({distance_pct:.1f}%)"
         else:
-            distance = abs(100 - pos_pct)
-            hint = f"{card['name']} 接近卖点"
-        if best_distance is None or distance < best_distance:
-            best_distance = distance
+            distance = abs(resistance - price)
+            distance_pct = (distance / resistance * 100.0) if resistance > 0 else 0.0
+            rank = (0 if shares > 0 else 1, distance, distance_pct)
+            hint = f"{card['name']} 距卖点 ${distance:.2f} ({distance_pct:.1f}%)"
+
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
             best_name = card["name"]
             best_hint = hint
+
+    if side == "buy" and best_rank is None and buy_blocked_by_position:
+        return "暂无可买", "当前标的都有持仓，暂无新的买点提示"
+
     return best_name, best_hint
 
 HTML = """<!DOCTYPE html>
@@ -608,10 +635,10 @@ HTML = """<!DOCTYPE html>
             </div>
 
             <div class="pnl-grid">
-                <div class="quote-item"><span class="label">分配本金</span><span class="val">${{ "%.2f"|format(card.initial_capital) }}</span></div>
-                <div class="quote-item"><span class="label">现金</span><span class="val">${{ "%.2f"|format(card.cash) }}</span></div>
+                <div class="quote-item"><span class="label">{{ account_labels.initial_capital }}</span><span class="val">${{ "%.2f"|format(card.initial_capital) }}</span></div>
+                <div class="quote-item"><span class="label">{{ account_labels.cash }}</span><span class="val">${{ "%.2f"|format(card.cash) }}</span></div>
                 <div class="quote-item"><span class="label">持股</span><span class="val">{{ card.shares }}</span></div>
-                <div class="quote-item"><span class="label">权益</span><span class="val">${{ "%.2f"|format(card.equity) }}</span></div>
+                <div class="quote-item"><span class="label">{{ account_labels.equity }}</span><span class="val">${{ "%.2f"|format(card.equity) }}</span></div>
                 <div class="quote-item"><span class="label">当日盈亏</span><span class="val {{ 'green' if card.pnl >= 0 else 'red' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
                 <div class="quote-item"><span class="label">成交笔数</span><span class="val">{{ card.trades }}</span></div>
             </div>
@@ -622,7 +649,12 @@ HTML = """<!DOCTYPE html>
     <div class="footer">
         <h2>组合盈亏</h2>
         <div class="total {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</div>
-        <div class="meta">总本金：${{ "%.2f"|format(total_capital) }} · 总权益：${{ "%.2f"|format(total_equity) }} · 总成交：{{ total_trades }}</div>
+        <div class="meta">
+            {{ account_labels.footer_capital }}：${{ "%.2f"|format(total_capital) }}
+            · {{ account_labels.footer_equity }}：${{ "%.2f"|format(total_equity) }}
+            {% if footer_buying_power is not none %}· {{ account_labels.footer_buying_power }}：${{ "%.2f"|format(footer_buying_power) }}{% endif %}
+            · 总成交：{{ total_trades }}
+        </div>
     </div>
 
     <div class="refresh">每 5 秒自动刷新 · {{ update_time }}</div>
@@ -811,16 +843,41 @@ def index():
     if live_account and live_account.get("mode") == "live":
         total_capital = float(live_account.get("cash") or 0.0)
         total_equity = float(live_account.get("equity") or 0.0)
+        footer_buying_power = float(live_account.get("buying_power") or 0.0)
+        account_labels = {
+            "initial_capital": "可买额度",
+            "cash": "可用现金",
+            "equity": "账户权益",
+            "footer_capital": "账户现金",
+            "footer_equity": "账户权益",
+            "footer_buying_power": "可买额度",
+        }
+    else:
+        footer_buying_power = None
+        account_labels = {
+            "initial_capital": "分配本金",
+            "cash": "现金",
+            "equity": "权益",
+            "footer_capital": "总本金",
+            "footer_equity": "总权益",
+            "footer_buying_power": "可买额度",
+        }
 
     active_symbols = " / ".join(
         card["name"].split("·", 1)[-1].strip() if "·" in card["name"] else str(card["name"]).strip()
         for card in cards
     ) or "N/A"
-    nearest_buy_trigger_name, nearest_buy_trigger = _nearest_trigger(cards, "buy")
+    nearest_buy_trigger_name, nearest_buy_trigger = _nearest_trigger(
+        cards,
+        "buy",
+        new_entries_allowed=trade_audit["new_entries_allowed"],
+    )
     nearest_sell_trigger_name, nearest_sell_trigger = _nearest_trigger(cards, "sell")
 
     return render_template_string(HTML,
         cards=cards,
+        account_labels=account_labels,
+        footer_buying_power=footer_buying_power,
         live_account=live_account,
         ai_selection=ai_selection,
         runtime_settings={

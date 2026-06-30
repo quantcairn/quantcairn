@@ -80,8 +80,9 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     assert "风控与交易审计" in html
     assert "仅减仓" in html
     assert "low_funds" in html
-    assert "总本金：$850.00" in html
-    assert "总权益：$1200.00" in html
+    assert "账户现金：$850.00" in html
+    assert "账户权益：$1200.00" in html
+    assert "可买额度：$425.00" in html
 
 
 def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
@@ -185,7 +186,7 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
             "ticker": "TOP1 · NVDA",
             "online": True,
             "price": 102.0,
-            "price_change": 0.5,
+            "change": 0.5,
             "day_high": 103.0,
             "day_low": 99.0,
             "bid": 101.9,
@@ -194,13 +195,13 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
             "support": 100.0,
             "resistance": 110.0,
             "spread_pct": 10.0,
-            "pos_pct": 20.0,
+            "range_ready": True,
             "sparkline": [],
             "signal": "MONITORING",
-            "shares": 0,
+            "position_shares": 0,
             "initial_capital": 1000.0,
             "cash": 1000.0,
-            "pnl": 0.0,
+            "daily_pnl": 0.0,
             "equity": 1000.0,
             "trades_today": 0,
             "halted": False,
@@ -209,7 +210,7 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
             "ticker": "TOP2 · TSLA",
             "online": True,
             "price": 108.5,
-            "price_change": 1.0,
+            "change": 1.0,
             "day_high": 109.0,
             "day_low": 104.0,
             "bid": 108.4,
@@ -218,13 +219,13 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
             "support": 100.0,
             "resistance": 110.0,
             "spread_pct": 10.0,
-            "pos_pct": 85.0,
+            "range_ready": True,
             "sparkline": [],
             "signal": "MONITORING",
-            "shares": 0,
+            "position_shares": 0,
             "initial_capital": 1000.0,
             "cash": 1000.0,
-            "pnl": 0.0,
+            "daily_pnl": 0.0,
             "equity": 1000.0,
             "trades_today": 0,
             "halted": False,
@@ -236,9 +237,117 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
         html = combined.index()
 
     assert "最近触发买点" in html
-    assert "TOP1 · NVDA 接近买点" in html
+    assert "TOP1 · NVDA 距买点 $2.00 (2.0%)" in html
     assert "最近触发卖点" in html
-    assert "TOP2 · TSLA 接近卖点" in html
+    assert "TOP2 · TSLA 距卖点 $1.50 (1.4%)" in html
+
+
+def test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"max_price": 50.0})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+        "execution_mode": "live",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+
+    statuses = {
+        8091: {
+            "price": 10.1,
+            "change": 0.0,
+            "high_1m": 10.2,
+            "low_1m": 10.0,
+            "bid": 10.1,
+            "ask": 10.1,
+            "volume": 1000,
+            "support": 10.0,
+            "resistance": 12.0,
+            "spread_pct": 20.0,
+            "range_ready": True,
+            "last_signal": "HOLD",
+            "position_shares": 5,
+            "initial_capital": 700.0,
+            "cash": 350.0,
+            "daily_pnl": 0.0,
+            "equity": 710.0,
+            "trades_today": 0,
+            "halted": False,
+        },
+        8092: {
+            "price": 10.4,
+            "change": 0.0,
+            "high_1m": 10.5,
+            "low_1m": 10.3,
+            "bid": 10.4,
+            "ask": 10.4,
+            "volume": 1000,
+            "support": 10.0,
+            "resistance": 12.0,
+            "spread_pct": 20.0,
+            "range_ready": True,
+            "last_signal": "HOLD",
+            "position_shares": 0,
+            "initial_capital": 700.0,
+            "cash": 700.0,
+            "daily_pnl": 0.0,
+            "equity": 700.0,
+            "trades_today": 0,
+            "halted": False,
+        },
+    }
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: statuses.get(port))
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "TOP2 · TOP2 距买点 $0.40 (4.0%)" in html
+    assert "TOP1 · TOP1 距买点 $0.10 (1.0%)" not in html
+
+
+def test_combined_dashboard_buy_trigger_shows_pause_when_new_entries_disabled(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"max_price": 50.0})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+        "execution_mode": "live",
+        "reduce_only": True,
+        "new_entries_allowed": False,
+        "risk_pause_reason": "low_funds",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "当前已暂停新开仓" in html
 
 
 def test_combined_dashboard_updates_ai_selector_settings(monkeypatch):
@@ -275,6 +384,8 @@ def run_test_direct():
         test_combined_dashboard_renders_live_account_summary(monkeypatch)
         test_combined_dashboard_renders_ai_selection_report(monkeypatch)
         test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch)
+        test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch)
+        test_combined_dashboard_buy_trigger_shows_pause_when_new_entries_disabled(monkeypatch)
         test_combined_dashboard_updates_ai_selector_settings(monkeypatch)
         test_combined_dashboard_reruns_ai_selector_from_settings_form(monkeypatch)
     finally:

@@ -246,6 +246,12 @@ def get_dashboard_data() -> dict:
         def _nz(v, default=0):
             return v if v is not None else default
 
+        range_ready = bool(
+            getattr(rs, "is_valid", bool(support and resistance and resistance > support))
+            and support
+            and resistance
+        )
+
         return {
             "price": _nz(price, 0.0),
             "change": _nz(change, 0.0),
@@ -258,7 +264,7 @@ def get_dashboard_data() -> dict:
             "resistance": _nz(resistance, 0.0),
             "spread_dollars": _nz(spread_dollars, 0.0),
             "spread_pct": _nz(spread_pct, 0.0),
-            "range_ready": bool(rs.is_valid and support and resistance),
+            "range_ready": range_ready,
             "range_source": getattr(rs, "source", "unknown"),
             "support_confidence": float(getattr(rs, "support_confidence", 0.0) or 0.0),
             "position_in_range": _nz(position_in_range, 50.0),
