@@ -40,8 +40,8 @@ def test_live_dashboard_uses_live_account_basis():
                 "halted": False,
             }
         ),
-        _latest_position=None,
-        _latest_account=None,
+        _latest_position=SimpleNamespace(quantity=0, avg_entry_price=0.0, unrealized_pnl=0.0),
+        _latest_account=SimpleNamespace(cash=707.61, equity=1558.11, buying_power=707.43),
         _last_signal_type=None,
         _running=True,
     )
@@ -96,8 +96,8 @@ def test_dashboard_keeps_last_valid_price_when_quote_is_temporarily_empty():
                 "halted": False,
             }
         ),
-        _latest_position=None,
-        _latest_account=None,
+        _latest_position=SimpleNamespace(quantity=0, avg_entry_price=0.0, unrealized_pnl=0.0),
+        _latest_account=SimpleNamespace(cash=707.61, equity=1558.11, buying_power=707.43),
         _last_signal_type=None,
         _running=True,
     )

@@ -210,10 +210,9 @@ def get_dashboard_data() -> dict:
         position_in_range = max(0, min(100, position_in_range))
 
         # Position/account snapshots are maintained by the engine loop.
-        # Falling back to the broker here keeps the dashboard usable on startup.
+        # Do not call back into the broker here: status polling must stay
+        # lightweight and never block on trading APIs.
         pos = getattr(_engine, "_latest_position", None)
-        if pos is None:
-            pos = _engine.broker.get_position_for_ticker(_engine.ticker)
         position_shares = pos.quantity if pos else 0
         entry_price = pos.avg_entry_price if pos and pos.quantity > 0 else 0.0
         unrealized_pnl = pos.unrealized_pnl if pos else 0.0
@@ -225,18 +224,16 @@ def get_dashboard_data() -> dict:
         daily_pnl = float(stats.get("daily_pnl_today") or 0.0)
 
         acct = getattr(_engine, "_latest_account", None)
-        if acct is None:
-            acct = _engine.broker.get_account()
 
         if _engine.mode == "live":
-            initial_capital = float(getattr(acct, "buying_power", 0.0) or 0.0)
-            if initial_capital <= 0:
+            initial_capital = float(getattr(acct, "buying_power", 0.0) or 0.0) if acct else 0.0
+            if initial_capital <= 0 and acct is not None:
                 initial_capital = float(getattr(acct, "cash", 0.0) or 0.0)
-            cash = float(getattr(acct, "cash", 0.0) or 0.0)
-            equity = float(getattr(acct, "equity", 0.0) or 0.0)
+            cash = float(getattr(acct, "cash", 0.0) or 0.0) if acct else 0.0
+            equity = float(getattr(acct, "equity", 0.0) or 0.0) if acct else 0.0
         else:
-            cash = acct.cash
-            equity = acct.equity
+            cash = acct.cash if acct else 0.0
+            equity = acct.equity if acct else 0.0
 
         # Signal
         last_signal = (_engine._last_signal_type.value
