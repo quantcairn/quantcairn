@@ -11,6 +11,8 @@ from ta.momentum import rsi
 from ta.trend import MACD
 from ta.volatility import AverageTrueRange
 
+from src.ai_selector.settings import get_float_setting
+
 
 class Scorer:
     """Score symbols for range-bound swing trading.
@@ -100,8 +102,8 @@ class Scorer:
     }
 
     def __init__(self):
-        self.min_price = self._env_float("AI_SELECTOR_MIN_PRICE", self.MIN_PRICE)
-        self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", self.MAX_PRICE)
+        self.min_price = self._env_float("AI_SELECTOR_MIN_PRICE", get_float_setting("min_price", self.MIN_PRICE))
+        self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", get_float_setting("max_price", self.MAX_PRICE))
         self.market_timeout = self._env_float("AI_SELECTOR_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
         self.score_workers = max(1, self._env_int("AI_SELECTOR_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
 

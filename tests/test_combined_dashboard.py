@@ -9,7 +9,6 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.dashboard import combined
 
-
 class SimpleMonkeyPatch:
     def __init__(self):
         self._originals = {}
@@ -87,6 +86,7 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
 
 def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"max_price": 50.0})
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
     monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
         "ticker": name.replace(".yaml", ""),
@@ -158,6 +158,7 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
         "TOP5.yaml": "AMD",
     }
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"max_price": 50.0})
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
     monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
         "execution_mode": "paper",
@@ -240,12 +241,25 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
     assert "TOP2 · TSLA 接近卖点" in html
 
 
+def test_combined_dashboard_updates_ai_selector_settings(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"max_price": 50.0})
+    monkeypatch.setattr(combined, "save_runtime_settings", lambda data: saved.update(data))
+
+    with combined.app.test_client() as client:
+        resp = client.post("/ai-selector-settings", data={"max_price": "35.5"})
+
+    assert resp.status_code == 302
+    assert saved["max_price"] == 35.5
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:
         test_combined_dashboard_renders_live_account_summary(monkeypatch)
         test_combined_dashboard_renders_ai_selection_report(monkeypatch)
         test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch)
+        test_combined_dashboard_updates_ai_selector_settings(monkeypatch)
     finally:
         monkeypatch.restore()
 

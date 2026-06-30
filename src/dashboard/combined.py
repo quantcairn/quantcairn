@@ -3,9 +3,10 @@ import json, os, subprocess, urllib.request
 import time
 from datetime import datetime
 from pathlib import Path
-from flask import Flask
+from flask import Flask, redirect, render_template_string, request
 import yaml
 
+from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
 from src.reports.trade_audit import summarize_trade_log
 
 app = Flask(__name__)
@@ -310,6 +311,22 @@ HTML = """<!DOCTYPE html>
         color:var(--muted);font-size:13px;
     }
     .section-meta{margin-bottom:12px;color:var(--muted);font-size:12px}
+    .settings-form{
+        display:flex;gap:10px;align-items:end;flex-wrap:wrap;
+        margin-bottom:14px;padding:14px;border-radius:14px;
+        background:var(--panel-strong);border:1px solid rgba(255,255,255,.06)
+    }
+    .settings-field{display:flex;flex-direction:column;gap:6px;min-width:180px}
+    .settings-field label{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+    .settings-field input{
+        border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);color:#fff;
+        border-radius:10px;padding:10px 12px;font-size:14px;font-weight:600
+    }
+    .settings-button{
+        border:1px solid rgba(52,211,153,.24);background:rgba(52,211,153,.12);color:#b8f5d0;
+        border-radius:10px;padding:10px 14px;font-size:13px;font-weight:800;cursor:pointer
+    }
+    .settings-note{color:var(--muted);font-size:12px}
     .stat-box{
         padding:14px;border-radius:14px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06)
     }
@@ -496,6 +513,14 @@ HTML = """<!DOCTYPE html>
                 暂无 AI 选股报告。
             {% endif %}
         </div>
+        <form class="settings-form" method="post" action="/ai-selector-settings">
+            <div class="settings-field">
+                <label for="max_price">价格上限</label>
+                <input id="max_price" name="max_price" type="number" min="1" max="500" step="0.01" value="{{ runtime_settings.max_price }}">
+            </div>
+            <button class="settings-button" type="submit">保存设置</button>
+            <span class="settings-note">保存后对下一次自动选股生效。</span>
+        </form>
         {% if ai_selection and ai_selection.report %}
         <div class="selector-table">
             <div class="selector-head">
@@ -697,8 +722,11 @@ def index():
     total_capital = 0.0
     total_equity = 0.0
     total_trades = 0
+    runtime_settings = load_runtime_settings()
     live_account = _fetch_live_account_summary()
     ai_selection = _load_ai_selection_report()
+    if not isinstance(ai_selection, dict):
+        ai_selection = {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", mode=_desired_audit_mode())
     latest_line = _latest_trade_line(trade_audit)
     trade_audit = {
@@ -782,11 +810,13 @@ def index():
     nearest_buy_trigger_name, nearest_buy_trigger = _nearest_trigger(cards, "buy")
     nearest_sell_trigger_name, nearest_sell_trigger = _nearest_trigger(cards, "sell")
 
-    from flask import render_template_string
     return render_template_string(HTML,
         cards=cards,
         live_account=live_account,
         ai_selection=ai_selection,
+        runtime_settings={
+            "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 50.0)) or 50.0),
+        },
         active_symbols=active_symbols,
         nearest_buy_trigger_name=nearest_buy_trigger_name,
         nearest_buy_trigger=nearest_buy_trigger,
@@ -799,6 +829,20 @@ def index():
         total_trades=total_trades,
         update_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
+
+
+@app.route("/ai-selector-settings", methods=["POST"])
+def update_ai_selector_settings():
+    raw_max_price = str(request.form.get("max_price", "")).strip()
+    settings = load_runtime_settings()
+    try:
+        max_price = float(raw_max_price)
+    except (TypeError, ValueError):
+        max_price = float(settings.get("max_price", 50.0) or 50.0)
+    max_price = min(500.0, max(1.0, max_price))
+    settings["max_price"] = round(max_price, 2)
+    save_runtime_settings(settings)
+    return redirect("/")
 
 
 def start_combined(port=8090):
