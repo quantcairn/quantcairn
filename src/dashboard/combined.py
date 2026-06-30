@@ -462,6 +462,17 @@ HTML = """<!DOCTYPE html>
         </div>
     </div>
 
+    <div class="footer" style="margin-bottom:18px">
+        <h2>组合盈亏</h2>
+        <div class="total {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</div>
+        <div class="meta">
+            {{ account_labels.footer_capital }}：${{ "%.2f"|format(total_capital) }}
+            · {{ account_labels.footer_equity }}：${{ "%.2f"|format(total_equity) }}
+            {% if footer_buying_power is not none %}· {{ account_labels.footer_buying_power }}：${{ "%.2f"|format(footer_buying_power) }}{% endif %}
+            · 总成交：{{ total_trades }}
+        </div>
+    </div>
+
     <div class="summary">
         <div class="metric">
             <span class="metric-label">可用现金</span>
@@ -642,17 +653,6 @@ HTML = """<!DOCTYPE html>
             </div>
         </div>
     {% endfor %}
-    </div>
-
-    <div class="footer">
-        <h2>组合盈亏</h2>
-        <div class="total {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</div>
-        <div class="meta">
-            {{ account_labels.footer_capital }}：${{ "%.2f"|format(total_capital) }}
-            · {{ account_labels.footer_equity }}：${{ "%.2f"|format(total_equity) }}
-            {% if footer_buying_power is not none %}· {{ account_labels.footer_buying_power }}：${{ "%.2f"|format(footer_buying_power) }}{% endif %}
-            · 总成交：{{ total_trades }}
-        </div>
     </div>
 
     <div class="refresh">每 5 秒自动刷新 · {{ update_time }}</div>
