@@ -273,7 +273,7 @@ HTML = """<!DOCTYPE html>
     .page{max-width:1440px;margin:0 auto}
     .topbar{
         display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
-        margin-bottom:20px;padding:20px 22px;border:1px solid var(--line);
+        margin-bottom:18px;padding:20px 22px;border:1px solid var(--line);
         background:linear-gradient(180deg, rgba(16,24,44,.92), rgba(9,13,24,.86));
         border-radius:18px;box-shadow:var(--shadow);backdrop-filter:blur(14px);
     }
@@ -291,7 +291,7 @@ HTML = """<!DOCTYPE html>
         display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px;
     }
     .runtime-strip{
-        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px;
+        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:18px;
     }
     .runtime-item{
         padding:14px 16px;border-radius:16px;background:rgba(255,255,255,.035);border:1px solid var(--line)
@@ -367,13 +367,18 @@ HTML = """<!DOCTYPE html>
     }
     .stat-value.muted{color:var(--muted);font-weight:500}
     .cards{
-        display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;align-items:stretch
+        display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;align-items:stretch
     }
-    .card{padding:18px;min-width:0}
-    .card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:14px}
+    .card{
+        padding:18px;min-width:0;min-height:100%;
+        background:
+            linear-gradient(180deg, rgba(16,24,44,.96), rgba(9,13,24,.88)),
+            radial-gradient(circle at top right, rgba(125,211,252,.06), transparent 34%);
+    }
+    .card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
     .card-title{min-width:0}
     .card-title .ticker{
-        display:block;font-size:20px;font-weight:800;letter-spacing:.02em;line-height:1.1
+        display:block;font-size:19px;font-weight:800;letter-spacing:.02em;line-height:1.1
     }
     .card-title .desc{display:block;margin-top:6px;color:var(--muted);font-size:12px;line-height:1.35}
     .badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
@@ -384,12 +389,12 @@ HTML = """<!DOCTYPE html>
     .badge.live{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.2)}
     .badge.offline{background:rgba(148,163,184,.1);color:#cbd5e1;border-color:rgba(148,163,184,.16)}
     .badge.halted{background:rgba(251,191,36,.1);color:#fde68a;border-color:rgba(251,191,36,.22)}
-    .price-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:8px 0 14px}
-    .price{font-size:34px;line-height:1;font-weight:800;font-variant-numeric:tabular-nums}
+    .price-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:8px 0 12px}
+    .price{font-size:32px;line-height:1;font-weight:800;font-variant-numeric:tabular-nums}
     .change{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
     .green{color:var(--up)} .red{color:var(--down)} .yellow{color:var(--warn)}
     .grid-quote{
-        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:14px
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px
     }
     .quote-item{
         padding:11px 12px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)
@@ -399,12 +404,12 @@ HTML = """<!DOCTYPE html>
         display:block;margin-top:7px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums
     }
     .sparkline{
-        display:flex;align-items:flex-end;height:54px;gap:2px;padding:10px;border-radius:14px;
+        display:flex;align-items:flex-end;height:52px;gap:2px;padding:10px;border-radius:14px;
         background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
-        border:1px solid rgba(255,255,255,.06);margin-bottom:14px
+        border:1px solid rgba(255,255,255,.06);margin-bottom:12px
     }
     .spark-bar{flex:1;min-width:2px;border-radius:999px;opacity:.95}
-    .range-block{margin-bottom:14px}
+    .range-block{margin-bottom:12px}
     .row{display:flex;justify-content:space-between;gap:12px;align-items:center;font-size:13px}
     .row .label{color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:11px}
     .row .val{font-weight:700;font-variant-numeric:tabular-nums}
@@ -413,7 +418,7 @@ HTML = """<!DOCTYPE html>
     }
     .range-fill{height:100%;border-radius:999px;transition:width .45s ease}
     .signal{
-        display:flex;align-items:center;justify-content:center;min-height:44px;margin-bottom:14px;border-radius:14px;
+        display:flex;align-items:center;justify-content:center;min-height:44px;margin-bottom:12px;border-radius:14px;
         border:1px solid transparent;font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase
     }
     .sig-buy{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.22)}
@@ -422,13 +427,16 @@ HTML = """<!DOCTYPE html>
     .sig-block{background:rgba(251,191,36,.1);color:#fde68a;border-color:rgba(251,191,36,.22)}
     .pnl-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
     .footer{
-        margin-top:18px;padding:18px 20px;border-radius:18px;border:1px solid var(--line);
-        background:linear-gradient(180deg, rgba(15,22,40,.96), rgba(9,13,24,.92));text-align:center
+        margin:0 0 18px;padding:18px 20px;border-radius:18px;border:1px solid var(--line);
+        background:
+            linear-gradient(135deg, rgba(52,211,153,.10), rgba(125,211,252,.08)),
+            linear-gradient(180deg, rgba(15,22,40,.96), rgba(9,13,24,.92));
+        text-align:center
     }
-    .footer h2{font-size:14px;letter-spacing:.08em;text-transform:uppercase;color:#dbe7ff;margin-bottom:10px}
-    .footer .total{font-size:34px;font-weight:800;font-variant-numeric:tabular-nums}
-    .footer .meta{margin-top:10px;color:var(--muted);font-size:12px}
-    .refresh{text-align:right;color:var(--muted);font-size:11px;margin-top:10px}
+    .footer h2{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#dbe7ff;margin-bottom:8px}
+    .footer .total{font-size:36px;font-weight:800;font-variant-numeric:tabular-nums}
+    .footer .meta{margin-top:8px;color:var(--muted);font-size:12px}
+    .refresh{text-align:right;color:var(--muted);font-size:11px;margin-top:8px}
     .offline{opacity:.72}
     @media (max-width:1180px){
         .summary,.sections,.cards{grid-template-columns:1fr}
@@ -462,7 +470,7 @@ HTML = """<!DOCTYPE html>
         </div>
     </div>
 
-    <div class="footer" style="margin-bottom:18px">
+    <div class="footer">
         <h2>组合盈亏</h2>
         <div class="total {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</div>
         <div class="meta">
