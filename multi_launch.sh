@@ -17,6 +17,26 @@ port_for_top() {
     printf '%s' $((8090 + ${top_name:3}))
 }
 
+kill_listener_on_port() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+        local pids
+        pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"
+        if [ -n "$pids" ]; then
+            kill $pids 2>/dev/null || true
+            sleep 1
+            kill -9 $pids 2>/dev/null || true
+        fi
+    fi
+}
+
+kill_dashboard_ports() {
+    kill_listener_on_port 8090
+    for top_name in "${TOP_ENGINES[@]}"; do
+        kill_listener_on_port "$(port_for_top "$top_name")"
+    done
+}
+
 stop_existing() {
     pkill -f "run.py --config configs/DRIP.yaml" 2>/dev/null
     pkill -f "run.py --config configs/AMC.yaml" 2>/dev/null
@@ -24,6 +44,7 @@ stop_existing() {
     stop_top
     pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
     pkill -f "start_combined(8090)" 2>/dev/null
+    kill_dashboard_ports
 }
 
 stop_top() {
@@ -34,6 +55,9 @@ stop_top() {
     else
         for top_name in "${TOP_ENGINES[@]}"; do
             pkill -f "run.py --config .*configs/${top_name}.yaml" 2>/dev/null
+        done
+        for top_name in "${TOP_ENGINES[@]}"; do
+            kill_listener_on_port "$(port_for_top "$top_name")"
         done
     fi
 }
