@@ -696,6 +696,7 @@ HTML = """<!DOCTYPE html>
                     </div>
                     <div class="badges">
                         {% if card.halted %}<span class="badge halted">已暂停</span>{% endif %}
+                        {% if card.trade_in_progress %}<span class="badge live">交易中</span>{% endif %}
                         {% if card.range_ready %}<span class="badge live">区间就绪</span>{% else %}<span class="badge halted">区间未就绪</span>{% endif %}
                         {% if card.online %}<span class="badge live">在线</span>{% else %}<span class="badge offline">离线</span>{% endif %}
                     </div>
@@ -762,6 +763,7 @@ HTML = """<!DOCTYPE html>
                 </div>
                 <div class="badges">
                     {% if card.halted %}<span class="badge halted">已暂停</span>{% endif %}
+                    {% if card.trade_in_progress %}<span class="badge live">交易中</span>{% endif %}
                     {% if card.range_ready %}<span class="badge live">区间就绪</span>{% else %}<span class="badge halted">区间未就绪</span>{% endif %}
                     {% if card.online %}<span class="badge live">在线</span>{% else %}<span class="badge offline">离线</span>{% endif %}
                 </div>
@@ -976,6 +978,7 @@ def index():
                 "equity": d.get("equity", 0),
                 "trades": d.get("trades_today", 0),
                 "halted": d.get("halted", False),
+                "trade_in_progress": bool(d.get("trade_in_progress", False)),
             }
             cards.append(card)
             total_pnl += d.get("daily_pnl", 0) or 0
@@ -997,6 +1000,7 @@ def index():
                 "signal": "OFFLINE", "signal_cn": _signal_cn("OFFLINE"), "shares": 0,
                 "initial_capital": initial_capital, "cash": initial_capital,
                 "pnl": 0, "equity": initial_capital, "trades": 0, "halted": False,
+                "trade_in_progress": False,
             })
             total_capital += initial_capital
             total_equity += initial_capital

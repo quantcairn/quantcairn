@@ -238,6 +238,7 @@ def get_dashboard_data() -> dict:
         # Signal
         last_signal = (_engine._last_signal_type.value
                        if _engine._last_signal_type else "HOLD")
+        trade_in_progress = bool(getattr(_engine, "_trade_in_progress", False))
 
         # Guarantee no None values escape to the template
         def _nz(v, default=0):
@@ -277,6 +278,7 @@ def get_dashboard_data() -> dict:
             "win_rate": _nz(stats.get("win_rate"), 0.0),
             "running": _engine._running if _engine._running is not None else False,
             "halted": stats.get("halted", False) or False,
+            "trade_in_progress": trade_in_progress,
             "last_signal": _nz(last_signal, "HOLD"),
             "last_update": datetime.now().strftime("%H:%M:%S"),
             "status_line": (f"{_engine.ticker} Range Arbitrage | "
@@ -299,7 +301,7 @@ def _empty_data() -> dict:
         "initial_capital": 0, "cash": 0, "equity": 0,
         "daily_pnl": 0, "trades_today": 0,
         "consecutive_losses": 0, "win_rate": 0,
-        "running": False, "halted": False, "last_signal": "N/A",
+        "running": False, "halted": False, "trade_in_progress": False, "last_signal": "N/A",
         "last_update": datetime.now().strftime("%H:%M:%S"),
         "status_line": "SOXS Range Arbitrage | Engine not running",
     }

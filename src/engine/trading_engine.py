@@ -114,6 +114,7 @@ class TradingEngine:
         self._latest_account = None
         self._latest_position = None
         self._latest_snapshot_at: Optional[datetime] = None
+        self._trade_in_progress = False
 
         # NY timezone
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
@@ -310,123 +311,135 @@ class TradingEngine:
 
     def _handle_buy_signal(self, signal, current_price: float, ask: float) -> None:
         """Handle a BUY signal with auto position sizing."""
-        acct = self.broker.get_account()
-        available_cash = acct.cash
-        shares = determine_buy_quantity(
-            current_price=current_price,
-            available_cash=available_cash,
-            configured_size=self.config.position.size_per_trade,
-            max_position=self.config.position.max_position,
-            execution_price=ask if ask > 0 else current_price,
-        )
-
-        entry_check = self.risk.check_entry(
-            current_price, shares, self._position_shares
-        )
-
-        if not entry_check.allowed:
-            self.notifier.alert(entry_check.reason, "warning")
-            return
-
-        # Place order
-        order = self.broker.place_order(
-            ticker=self.ticker,
-            side=OrderSide.BUY,
-            quantity=shares,
-            order_type=OrderType.MARKET,
-            current_bid=current_price,
-            current_ask=ask,
-        )
-
-        if order.status == OrderStatus.PENDING:
-            self.notifier.order_submitted(
-                self.ticker, "BUY", order.quantity, order.order_id
+        self._trade_in_progress = True
+        try:
+            acct = self.broker.get_account()
+            available_cash = acct.cash
+            shares = determine_buy_quantity(
+                current_price=current_price,
+                available_cash=available_cash,
+                configured_size=self.config.position.size_per_trade,
+                max_position=self.config.position.max_position,
+                execution_price=ask if ask > 0 else current_price,
             )
 
-        if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
-            self._entry_price = order.avg_fill_price
-            self._position_shares += order.filled_quantity
-            self.strategy.record_entry(order.avg_fill_price)  # Quick stop tracking
-            self.notifier.trade(
-                self.ticker, "BUY", order.filled_quantity, order.avg_fill_price
+            entry_check = self.risk.check_entry(
+                current_price, shares, self._position_shares
             )
+
+            if not entry_check.allowed:
+                self.notifier.alert(entry_check.reason, "warning")
+                return
+
+            # Place order
+            order = self.broker.place_order(
+                ticker=self.ticker,
+                side=OrderSide.BUY,
+                quantity=shares,
+                order_type=OrderType.MARKET,
+                current_bid=current_price,
+                current_ask=ask,
+            )
+
+            if order.status == OrderStatus.PENDING:
+                self.notifier.order_submitted(
+                    self.ticker, "BUY", order.quantity, order.order_id
+                )
+
+            if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
+                self._entry_price = order.avg_fill_price
+                self._position_shares += order.filled_quantity
+                self.strategy.record_entry(order.avg_fill_price)  # Quick stop tracking
+                self.notifier.trade(
+                    self.ticker, "BUY", order.filled_quantity, order.avg_fill_price
+                )
+        finally:
+            self._trade_in_progress = False
 
     def _handle_sell_signal(self, signal, current_price: float, bid: float) -> None:
         """Handle a SELL signal (take profit at resistance)."""
-        order = self.broker.place_order(
-            ticker=self.ticker,
-            side=OrderSide.SELL,
-            quantity=self._position_shares,
-            order_type=OrderType.MARKET,
-            current_bid=bid,
-            current_ask=current_price,
-        )
-
-        if order.status == OrderStatus.PENDING:
-            self.notifier.order_submitted(
-                self.ticker, "SELL", order.quantity, order.order_id
+        self._trade_in_progress = True
+        try:
+            order = self.broker.place_order(
+                ticker=self.ticker,
+                side=OrderSide.SELL,
+                quantity=self._position_shares,
+                order_type=OrderType.MARKET,
+                current_bid=bid,
+                current_ask=current_price,
             )
 
-        if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
-            pnl = self._calculate_pnl(order.avg_fill_price)
-            self.notifier.trade(
-                self.ticker, "SELL", order.filled_quantity, order.avg_fill_price, pnl
-            )
+            if order.status == OrderStatus.PENDING:
+                self.notifier.order_submitted(
+                    self.ticker, "SELL", order.quantity, order.order_id
+                )
 
-            # Record the trade
-            self.risk.record_trade(TradeRecord(
-                entry_time=datetime.now(),
-                exit_time=datetime.now(),
-                entry_price=self._entry_price or 0,
-                exit_price=order.avg_fill_price,
-                shares=order.filled_quantity,
-                pnl=pnl or 0,
-                pnl_pct=((order.avg_fill_price - (self._entry_price or order.avg_fill_price))
-                         / (self._entry_price or 1) * 100),
-                side="LONG",
-            ))
+            if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
+                pnl = self._calculate_pnl(order.avg_fill_price)
+                self.notifier.trade(
+                    self.ticker, "SELL", order.filled_quantity, order.avg_fill_price, pnl
+                )
 
-            self._entry_price = None
-            self._position_shares = 0
-            self.strategy.clear_entry()
+                # Record the trade
+                self.risk.record_trade(TradeRecord(
+                    entry_time=datetime.now(),
+                    exit_time=datetime.now(),
+                    entry_price=self._entry_price or 0,
+                    exit_price=order.avg_fill_price,
+                    shares=order.filled_quantity,
+                    pnl=pnl or 0,
+                    pnl_pct=((order.avg_fill_price - (self._entry_price or order.avg_fill_price))
+                             / (self._entry_price or 1) * 100),
+                    side="LONG",
+                ))
+
+                self._entry_price = None
+                self._position_shares = 0
+                self.strategy.clear_entry()
+        finally:
+            self._trade_in_progress = False
 
     def _handle_stop_loss(self, signal, current_price: float, bid: float) -> None:
         """Handle stop loss: exit position immediately."""
-        self.notifier.alert(
-            f"STOP LOSS triggered! Exiting at ${current_price:.2f}",
-            "halt",
-        )
-
-        order = self.broker.place_order(
-            ticker=self.ticker,
-            side=OrderSide.SELL,
-            quantity=self._position_shares,
-            order_type=OrderType.MARKET,
-            current_bid=bid,
-            current_ask=current_price,
-        )
-
-        if order.status == OrderStatus.PENDING:
-            self.notifier.order_submitted(
-                self.ticker, "SELL", order.quantity, order.order_id
+        self._trade_in_progress = True
+        try:
+            self.notifier.alert(
+                f"STOP LOSS triggered! Exiting at ${current_price:.2f}",
+                "halt",
             )
 
-        if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
-            pnl = self._calculate_pnl(order.avg_fill_price)
-            self.risk.record_trade(TradeRecord(
-                entry_time=datetime.now(),
-                exit_time=datetime.now(),
-                entry_price=self._entry_price or 0,
-                exit_price=order.avg_fill_price,
-                shares=order.filled_quantity,
-                pnl=pnl or 0,
-                pnl_pct=((order.avg_fill_price - (self._entry_price or order.avg_fill_price))
-                         / (self._entry_price or 1) * 100),
-                side="LONG",
-            ))
-            self._entry_price = None
-            self._position_shares = 0
-            self.strategy.clear_entry()
+            order = self.broker.place_order(
+                ticker=self.ticker,
+                side=OrderSide.SELL,
+                quantity=self._position_shares,
+                order_type=OrderType.MARKET,
+                current_bid=bid,
+                current_ask=current_price,
+            )
+
+            if order.status == OrderStatus.PENDING:
+                self.notifier.order_submitted(
+                    self.ticker, "SELL", order.quantity, order.order_id
+                )
+
+            if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
+                pnl = self._calculate_pnl(order.avg_fill_price)
+                self.risk.record_trade(TradeRecord(
+                    entry_time=datetime.now(),
+                    exit_time=datetime.now(),
+                    entry_price=self._entry_price or 0,
+                    exit_price=order.avg_fill_price,
+                    shares=order.filled_quantity,
+                    pnl=pnl or 0,
+                    pnl_pct=((order.avg_fill_price - (self._entry_price or order.avg_fill_price))
+                             / (self._entry_price or 1) * 100),
+                    side="LONG",
+                ))
+                self._entry_price = None
+                self._position_shares = 0
+                self.strategy.clear_entry()
+        finally:
+            self._trade_in_progress = False
 
     # ---- Helpers ----
 
