@@ -1,4 +1,4 @@
-ticker: NVDA
+ticker: MSFT
 mode: live
 range:
   mode: auto
@@ -14,7 +14,7 @@ range:
   min_profit_per_trade: 1.0
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 4
+  size_per_trade: 1
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 1000.0
