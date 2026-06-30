@@ -60,6 +60,7 @@ class RangeDetector:
     """
 
     BUY_ZONE_MAX_POSITION_PCT = 55.0
+    TREND_BLOCK_MIN_PCT_FROM_MA = 1.0
 
     def __init__(
         self,
@@ -486,9 +487,11 @@ class RangeDetector:
         # --- Trend filter ---
         trend_info = self.get_trend_info()
         trend_blocked = False
+        pct_ma = trend_info["pct_from_ma"]
+        trend_block_threshold = max(self.trend_min_strength, self.TREND_BLOCK_MIN_PCT_FROM_MA)
         if self.trend_enabled and self._trend_direction == "down" and not has_position:
-            # Don't buy in a downtrend — price likely to break support
-            trend_blocked = True
+            # Only block when the stock is clearly below its moving average.
+            trend_blocked = pct_ma <= -trend_block_threshold
 
         # --- Calculate distances ---
         dist_to_support = (current_price - support) / support * 100  # % above support
@@ -539,7 +542,6 @@ class RangeDetector:
             in_buy_zone = position_in_range <= self.BUY_ZONE_MAX_POSITION_PCT
             if 0 <= dist_to_support <= tol or in_buy_zone:
                 if trend_blocked:
-                    pct_ma = trend_info["pct_from_ma"]
                     return Signal(
                         type=SignalType.TREND_BLOCK,
                         ticker=self.ticker,
@@ -611,7 +613,6 @@ class RangeDetector:
         position_in_range = ((current_price - support) / (resistance - support) * 100) if resistance != support else 50
         trend_note = ""
         if trend_blocked:
-            pct_ma = trend_info["pct_from_ma"]
             trend_note = f" [TREND FILTER: downtrend, price {pct_ma:+.1f}% vs MA{self.trend_ma_period}]"
         return Signal(
             type=SignalType.HOLD,

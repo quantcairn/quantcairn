@@ -166,6 +166,27 @@ def test_auto_range_buy_is_blocked_by_downtrend():
     assert "BUY blocked: downtrend" in signal.reason
 
 
+def test_auto_range_buy_is_not_blocked_by_mild_downtrend():
+    detector = RangeDetector(
+        ticker="TOP1",
+        mode="auto",
+        tolerance_pct=1.0,
+        trend_enabled=True,
+        trend_ma_period=5,
+        trend_min_strength=0.1,
+    )
+    detector._auto_support = 100.0
+    detector._auto_resistance = 105.0
+    detector._support_confidence = 0.5
+    for price in [101.5, 101.0, 100.7, 100.3, 100.2]:
+        detector.feed_price(price)
+
+    signal = detector.evaluate(100.2, has_position=False)
+
+    assert signal.type == SignalType.BUY
+    assert "in lower range" in signal.reason or "near support" in signal.reason
+
+
 def test_quick_stop_triggers_for_open_position():
     detector = RangeDetector(
         ticker="TOP1",
