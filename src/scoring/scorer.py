@@ -24,8 +24,8 @@ class Scorer:
     - and have a repeatable tendency to rotate through the same price area.
     """
 
-    MIN_PRICE = 5.0
-    MAX_PRICE = 50.0
+    MIN_PRICE = 10.0
+    MAX_PRICE = 200.0
     MIN_AVG_VOLUME = 1_000_000
     MIN_MARKET_CAP = 1_000_000_000
     MIN_HISTORY_ROWS = 60
@@ -53,6 +53,7 @@ class Scorer:
         "QCOM": {"score": 58.0, "range_low": 130.0, "range_high": 190.0, "volume": 9_000_000},
         "UBER": {"score": 57.0, "range_low": 60.0, "range_high": 95.0, "volume": 20_000_000},
         "LYFT": {"score": 61.0, "range_low": 12.5, "range_high": 16.8, "volume": 4_000_000},
+        "PLTR": {"score": 62.0, "range_low": 104.0, "range_high": 138.0, "volume": 35_000_000},
         "QBTS": {"score": 67.0, "range_low": 20.0, "range_high": 26.5, "volume": 10_000_000},
         "WULF": {"score": 66.0, "range_low": 21.0, "range_high": 27.8, "volume": 10_000_000},
         "SOFI": {"score": 64.0, "range_low": 15.2, "range_high": 19.8, "volume": 22_000_000},
@@ -74,6 +75,7 @@ class Scorer:
         "QCOM": 0.03,
         "UBER": 0.035,
         "LYFT": 0.06,
+        "PLTR": 0.03,
         "QBTS": 0.08,
         "WULF": 0.08,
         "SOFI": 0.06,
@@ -95,6 +97,7 @@ class Scorer:
         "NFLX": "Communication Services",
         "UBER": "Technology",
         "LYFT": "Technology",
+        "PLTR": "Technology",
         "QBTS": "Information Technology",
         "WULF": "Energy",
         "SOFI": "Financial Services",

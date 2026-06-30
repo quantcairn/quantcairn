@@ -612,7 +612,7 @@ HTML = """<!DOCTYPE html>
             {% if ai_selection and ai_selection.timestamp %}
                 最新选股时间：{{ ai_selection.timestamp }}
                 {% if ai_selection.settings %}
-                    · 价格上限：${{ "%.2f"|format(ai_selection.settings.max_price or 0) }}
+                    · 价格范围：${{ "%.2f"|format(ai_selection.settings.min_price or 0) }} - ${{ "%.2f"|format(ai_selection.settings.max_price or 0) }}
                     · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
                     · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
                     {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
@@ -622,6 +622,10 @@ HTML = """<!DOCTYPE html>
             {% endif %}
         </div>
         <form class="settings-form" method="post" action="/ai-selector-settings">
+            <div class="settings-field">
+                <label for="min_price">价格下限</label>
+                <input id="min_price" name="min_price" type="number" min="1" max="500" step="0.01" value="{{ runtime_settings.min_price }}">
+            </div>
             <div class="settings-field">
                 <label for="max_price">价格上限</label>
                 <input id="max_price" name="max_price" type="number" min="1" max="500" step="0.01" value="{{ runtime_settings.max_price }}">
@@ -1057,7 +1061,8 @@ def index():
         live_account=live_account,
         ai_selection=ai_selection,
         runtime_settings={
-            "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 50.0)) or 50.0),
+            "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),
+            "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 200.0)) or 200.0),
         },
         active_symbols=active_symbols,
         nearest_buy_trigger_name=nearest_buy_trigger_name,
@@ -1098,15 +1103,25 @@ def _run_ai_selector_now() -> None:
 
 @app.route("/ai-selector-settings", methods=["POST"])
 def update_ai_selector_settings():
+    raw_min_price = str(request.form.get("min_price", "")).strip()
     raw_max_price = str(request.form.get("max_price", "")).strip()
     action = str(request.form.get("action", "save")).strip().lower()
     settings = load_runtime_settings()
     try:
+        min_price = float(raw_min_price)
+    except (TypeError, ValueError):
+        min_price = float(settings.get("min_price", 10.0) or 10.0)
+    try:
         max_price = float(raw_max_price)
     except (TypeError, ValueError):
-        max_price = float(settings.get("max_price", 50.0) or 50.0)
+        max_price = float(settings.get("max_price", 200.0) or 200.0)
+    min_price = min(500.0, max(1.0, min_price))
     max_price = min(500.0, max(1.0, max_price))
+    if min_price > max_price:
+        min_price, max_price = max_price, min_price
+    min_price = round(min_price, 2)
     settings["max_price"] = round(max_price, 2)
+    settings["min_price"] = min_price
     save_runtime_settings(settings)
     if action == "rerun":
         _run_ai_selector_now()
