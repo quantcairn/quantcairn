@@ -117,6 +117,7 @@ class TradingEngine:
         self._trade_in_progress = False
         self._last_signal_reason: str = "暂无"
         self._pending_order: Optional[dict] = None
+        self._reduce_only = bool(getattr(config.position, "reduce_only", False))
 
         # NY timezone
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
@@ -274,7 +275,9 @@ class TradingEngine:
                         f"等待订单成交：{self._pending_order['side']} {self._pending_order['order_id'][:12]}"
                     )
                 elif signal.type == SignalType.BUY and not has_position:
-                    if not is_halted:
+                    if self._reduce_only:
+                        self._last_signal_reason = "仅减仓模式：今晚不新开仓"
+                    elif not is_halted:
                         self._handle_buy_signal(signal, current_price, quote.ask)
 
                 elif signal.type == SignalType.SELL and has_position:
@@ -330,6 +333,9 @@ class TradingEngine:
 
     def _handle_buy_signal(self, signal, current_price: float, ask: float) -> None:
         """Handle a BUY signal with auto position sizing."""
+        if self._reduce_only:
+            self._last_signal_reason = "仅减仓模式：今晚不新开仓"
+            return
         self._trade_in_progress = True
         try:
             acct = self.broker.get_account()

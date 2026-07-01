@@ -12,6 +12,7 @@ from src.reports.trade_audit import summarize_trade_log
 app = Flask(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+TRADING_FLAGS_PATH = PROJECT_DIR / "state" / "trading_flags.json"
 
 TICKERS = [
     {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
@@ -137,6 +138,25 @@ def _position_lookup(live_account: dict | None) -> dict[str, dict]:
     return lookup
 
 
+def _filter_live_positions(live_account: dict | None, allowed_tickers: set[str]) -> dict | None:
+    if not isinstance(live_account, dict):
+        return live_account
+    if not allowed_tickers:
+        return live_account
+    filtered_positions = []
+    for pos in live_account.get("positions") or []:
+        if not isinstance(pos, dict):
+            continue
+        ticker = str(pos.get("ticker") or "").strip().upper()
+        if ticker and ticker in allowed_tickers:
+            filtered_positions.append(pos)
+    return {
+        **live_account,
+        "positions": filtered_positions,
+        "positions_count": len(filtered_positions),
+    }
+
+
 def _load_ai_selection_report():
     path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
     if not path.exists():
@@ -232,6 +252,8 @@ def _nearest_trigger(
 
     for card in cards:
         if not card.get("online") or not card.get("range_ready") or card.get("halted"):
+            continue
+        if side == "buy" and card.get("reduce_only"):
             continue
 
         price = float(card.get("price", 0) or 0.0)
@@ -629,7 +651,7 @@ HTML = """<!DOCTYPE html>
                     <div class="account-strip">
                         <div class="account-summary">
                             <div class="metric">
-                                <span class="metric-label">可用现金</span>
+                                <span class="metric-label">账户现金</span>
                                 <span class="metric-value">{% if live_account and live_account.cash is not none %}${{ "%.2f"|format(live_account.cash) }}{% else %}暂无{% endif %}</span>
                             </div>
                             <div class="metric">
@@ -637,7 +659,7 @@ HTML = """<!DOCTYPE html>
                                 <span class="metric-value">{% if live_account and live_account.equity is not none %}${{ "%.2f"|format(live_account.equity) }}{% else %}暂无{% endif %}</span>
                             </div>
                             <div class="metric">
-                                <span class="metric-label">购买力</span>
+                                <span class="metric-label">可买额度</span>
                                 <span class="metric-value">{% if live_account and live_account.buying_power is not none %}${{ "%.2f"|format(live_account.buying_power) }}{% else %}暂无{% endif %}</span>
                             </div>
                             <div class="metric">
@@ -748,6 +770,7 @@ HTML = """<!DOCTYPE html>
                     <div class="badges">
                         {% if card.halted %}<span class="badge halted">已暂停</span>{% endif %}
                         {% if card.trade_in_progress %}<span class="badge live">交易中</span>{% endif %}
+                        {% if card.reduce_only %}<span class="badge halted">仅减仓</span>{% endif %}
                         {% if card.range_ready %}<span class="badge live">区间就绪</span>{% else %}<span class="badge halted">区间未就绪</span>{% endif %}
                         {% if card.online %}<span class="badge live">在线</span>{% else %}<span class="badge offline">离线</span>{% endif %}
                     </div>
@@ -828,12 +851,17 @@ def _load_config_defaults(config_name):
         "initial_capital": 0.0,
         "support": 0.0,
         "resistance": 0.0,
+        "reduce_only": False,
     }
     try:
+        flags = json.loads(TRADING_FLAGS_PATH.read_text(encoding="utf-8")) if TRADING_FLAGS_PATH.exists() else {}
+        if not isinstance(flags, dict):
+            flags = {}
         data = yaml.safe_load(cfg_path.read_text()) or {}
         defaults["ticker"] = data.get("ticker") or defaults["ticker"]
         position = data.get("position") or {}
         defaults["initial_capital"] = float(position.get("initial_capital") or 0.0)
+        defaults["reduce_only"] = bool(position.get("reduce_only", False)) or bool(flags.get("reduce_only_all", False))
         range_cfg = data.get("range") or {}
         defaults["support"] = float(range_cfg.get("support_price") or 0.0)
         defaults["resistance"] = float(range_cfg.get("resistance_price") or 0.0)
@@ -922,10 +950,12 @@ def index():
         "new_entries_allowed": bool(trade_audit.get("new_entries_allowed", True)),
         "reduce_only": bool(trade_audit.get("reduce_only", False)),
     }
+    selected_tickers: set[str] = set()
 
     for t in TICKERS:
         d = _fetch_status(t["port"])
         defaults = _load_config_defaults(t["config"])
+        selected_tickers.add(str(defaults["ticker"]).strip().upper())
 
         if d:
             supp = d.get("support", 0)
@@ -969,6 +999,7 @@ def index():
                 "pnl": account_pnl if account_pos else float(d.get("daily_pnl", 0) or 0.0),
                 "pnl_pct": account_pnl_pct if account_pos else 0.0,
                 "hold_source": hold_source,
+                "reduce_only": defaults.get("reduce_only", False),
                 "equity": d.get("equity", 0),
                 "trades": d.get("trades_today", 0),
                 "halted": d.get("halted", False),
@@ -993,11 +1024,13 @@ def index():
                 "sparkline": _build_sparkline([], 0),
                 "signal": "OFFLINE", "signal_cn": _signal_cn("OFFLINE"), "signal_reason": "暂无", "shares": 0,
                 "initial_capital": initial_capital, "cash": initial_capital,
-                "pnl": 0, "pnl_pct": 0.0, "hold_source": "离线", "equity": initial_capital, "trades": 0, "halted": False,
+                "pnl": 0, "pnl_pct": 0.0, "hold_source": "离线", "reduce_only": defaults.get("reduce_only", False), "equity": initial_capital, "trades": 0, "halted": False,
                 "trade_in_progress": False,
             })
             total_capital += initial_capital
             total_equity += initial_capital
+
+    display_live_account = _filter_live_positions(live_account, selected_tickers)
 
     if live_account and live_account.get("mode") == "live":
         total_pnl = sum(float((pos or {}).get("unrealized_pnl", 0.0) or 0.0) for pos in (live_account.get("positions") or []))
@@ -1075,7 +1108,7 @@ def index():
         other_cards=other_cards,
         account_labels=account_labels,
         footer_buying_power=footer_buying_power,
-        live_account=live_account,
+        live_account=display_live_account or live_account,
         ai_selection=ai_selection,
         runtime_settings={
             "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),

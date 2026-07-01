@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from src.broker.base import Order, OrderSide, OrderStatus, OrderType
-from src.config.loader import AppConfig
+from src.config.loader import AppConfig, PositionConfig
 from src.engine.trading_engine import TradingEngine
 
 
@@ -153,10 +153,30 @@ def test_reconcile_pending_sell_fill_records_trade():
     assert round(engine.risk.records[0].pnl, 2) == 4.0
 
 
+def test_reduce_only_blocks_new_buy_orders():
+    engine = TradingEngine(
+        AppConfig(ticker="SOFI", position=PositionConfig(reduce_only=True)),
+        ignore_trading_hours=True,
+    )
+    engine.notifier = FakeNotifier()
+    engine.risk = FakeRisk()
+    place_calls = []
+    engine.broker = SimpleNamespace(
+        get_account=lambda: SimpleNamespace(cash=1000.0, buying_power=1000.0),
+        place_order=lambda **kwargs: place_calls.append(kwargs),
+    )
+
+    engine._handle_buy_signal(SimpleNamespace(type="BUY", reason="test"), 100.0, 100.1)
+
+    assert place_calls == []
+    assert engine._last_signal_reason == "仅减仓模式：今晚不新开仓"
+
+
 def run_test_direct():
     test_reconcile_pending_buy_fill_updates_local_state()
     test_reconcile_partial_buy_fill_keeps_pending_order()
     test_reconcile_pending_sell_fill_records_trade()
+    test_reduce_only_blocks_new_buy_orders()
 
 
 if __name__ == "__main__":

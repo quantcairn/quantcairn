@@ -1,6 +1,7 @@
 """
 Configuration loader: reads config.yaml and returns typed config objects.
 """
+import json
 import os
 import yaml
 from dataclasses import dataclass, field
@@ -8,6 +9,8 @@ from typing import Optional, Literal
 
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+TRADING_FLAGS_PATH = os.path.join(PROJECT_DIR, "state", "trading_flags.json")
 
 
 @dataclass
@@ -29,6 +32,7 @@ class PositionConfig:
     max_position: int = 300
     cool_down_seconds: int = 30
     initial_capital: float = 10000.0
+    reduce_only: bool = False
 
 
 @dataclass
@@ -124,9 +128,22 @@ def _bool_env(key: str, default: bool = False) -> bool:
     return val.strip().lower() in TRUE_VALUES
 
 
+def _load_trading_flags() -> dict:
+    """Load shared runtime trading flags from the state directory."""
+    try:
+        if not os.path.exists(TRADING_FLAGS_PATH):
+            return {}
+        with open(TRADING_FLAGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _parse_config(raw: dict) -> AppConfig:
     """Parse raw dict into AppConfig, applying env var overrides."""
     config = AppConfig()
+    trading_flags = _load_trading_flags()
 
     if "ticker" in raw:
         config.ticker = os.environ.get("SOXS_TICKER", raw["ticker"])
@@ -149,11 +166,17 @@ def _parse_config(raw: dict) -> AppConfig:
 
     # Position
     p = raw.get("position", {})
+    reduce_only = (
+        _bool_env("SOXS_REDUCE_ONLY_ALL", False)
+        or _bool_env("SOXS_REDUCE_ONLY", p.get("reduce_only", False))
+        or bool(trading_flags.get("reduce_only_all", False))
+    )
     config.position = PositionConfig(
         size_per_trade=int(os.environ.get("SOXS_SIZE", p.get("size_per_trade", 0))),
         max_position=int(os.environ.get("SOXS_MAX_POS", p.get("max_position", 300))),
         cool_down_seconds=p.get("cool_down_seconds", 30),
         initial_capital=float(os.environ.get("SOXS_CAPITAL", p.get("initial_capital", 10000))),
+        reduce_only=reduce_only,
     )
 
     # Risk

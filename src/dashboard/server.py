@@ -101,13 +101,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- Position Card -->
         <div class="card">
             <h2>📊 Position</h2>
-            <div class="stat-row"><span class="stat-label">Initial Capital</span><span class="stat-value">${{ "%.2f"|format(initial_capital) }}</span></div>
-            <div class="stat-row"><span class="stat-label">Cash</span><span class="stat-value">${{ "%.2f"|format(cash) }}</span></div>
-            <div class="stat-row"><span class="stat-label">Buying Power</span><span class="stat-value">${{ "%.2f"|format(buying_power) }}</span></div>
-            <div class="stat-row"><span class="stat-label">Shares</span><span class="stat-value">{{ position_shares }}</span></div>
-            <div class="stat-row"><span class="stat-label">Entry Price</span><span class="stat-value">{% if entry_price and entry_price > 0 %}${{ "%.2f"|format(entry_price) }}{% else %}N/A{% endif %}</span></div>
-            <div class="stat-row"><span class="stat-label">Unrealized P&L</span><span class="stat-value {{ 'value-green' if (unrealized_pnl|default(0)) >= 0 else 'value-red' }}">${{ "%.2f"|format(unrealized_pnl|default(0.0)) }}</span></div>
-            <div class="stat-row"><span class="stat-label">Equity</span><span class="stat-value">${{ "%.2f"|format(equity) }}</span></div>
+            <div class="stat-row"><span class="stat-label">策略分配本金</span><span class="stat-value">${{ "%.2f"|format(initial_capital) }}</span></div>
+            <div class="stat-row"><span class="stat-label">账户现金</span><span class="stat-value">${{ "%.2f"|format(cash) }}</span></div>
+            <div class="stat-row"><span class="stat-label">可买额度</span><span class="stat-value">${{ "%.2f"|format(buying_power) }}</span></div>
+            <div class="stat-row"><span class="stat-label">持仓股数</span><span class="stat-value">{{ position_shares }}</span></div>
+            <div class="stat-row"><span class="stat-label">持仓成本</span><span class="stat-value">{% if entry_price and entry_price > 0 %}${{ "%.2f"|format(entry_price) }}{% else %}N/A{% endif %}</span></div>
+            <div class="stat-row"><span class="stat-label">浮动盈亏</span><span class="stat-value {{ 'value-green' if (unrealized_pnl|default(0)) >= 0 else 'value-red' }}">${{ "%.2f"|format(unrealized_pnl|default(0.0)) }}</span></div>
+            <div class="stat-row"><span class="stat-label">账户权益</span><span class="stat-value">${{ "%.2f"|format(equity) }}</span></div>
         </div>
 
         <!-- Risk Card -->
@@ -220,7 +220,7 @@ def get_dashboard_data() -> dict:
         entry_price = pos.avg_entry_price if pos and pos.quantity > 0 else 0.0
         unrealized_pnl = pos.unrealized_pnl if pos else 0.0
 
-        initial_capital = _engine.config.position.initial_capital
+        initial_capital = float(_engine.config.position.initial_capital or 0.0)
 
         # Risk
         stats = _engine.risk.get_stats()
@@ -229,9 +229,6 @@ def get_dashboard_data() -> dict:
         acct = getattr(_engine, "_latest_account", None)
 
         if _engine.mode == "live":
-            initial_capital = float(getattr(acct, "buying_power", 0.0) or 0.0) if acct else 0.0
-            if initial_capital <= 0 and acct is not None:
-                initial_capital = float(getattr(acct, "cash", 0.0) or 0.0)
             cash = float(getattr(acct, "cash", 0.0) or 0.0) if acct else 0.0
             buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0) if acct else 0.0
             equity = float(getattr(acct, "equity", 0.0) or 0.0) if acct else 0.0
