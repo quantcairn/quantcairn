@@ -64,6 +64,7 @@ stop_top() {
 }
 
 start_top() {
+    startup_delay="${SOXS_ENGINE_STARTUP_DELAY_SECONDS:-6}"
     if [ "$USE_LAUNCHD_TOPS" = "1" ]; then
         for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
             plist="$PROJECT_DIR/launchd/${job}.plist"
@@ -71,7 +72,7 @@ start_top() {
                 launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
                 launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
                 launchctl kickstart -k gui/"$UID_NUM"/"$job" 2>/dev/null || true
-                sleep 2
+                sleep "$startup_delay"
             fi
         done
         echo "🚀 TOP engines managed by launchd"
@@ -124,6 +125,9 @@ EOF
             fi
             TOP_PIDS="$TOP_PIDS $!"
             echo "🚀 $TOP on :$port (PID $!, mode=$ENGINE_MODE)"
+            if [ "$ENGINE_MODE" = "live" ]; then
+                sleep "$startup_delay"
+            fi
         fi
     done
 }

@@ -202,6 +202,49 @@ def test_buy_sizing_does_not_use_margin_buying_power():
     assert "现金 $50.00" in engine._last_signal_reason
 
 
+def test_adopt_active_live_order_retries_after_rate_limit(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def __init__(self):
+                self._originals = {}
+
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                key = (module_name, attr_name)
+                if key not in self._originals:
+                    self._originals[key] = getattr(module, attr_name)
+                setattr(module, attr_name, value)
+
+            def restore(self):
+                for (module_name, attr_name), original in self._originals.items():
+                    module = __import__(module_name, fromlist=[attr_name])
+                    setattr(module, attr_name, original)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
+    use_test_pending_path(engine, "adopt-retry")
+    engine.notifier = FakeNotifier()
+
+    calls = {"count": 0}
+
+    def fake_get_active_orders(_ticker):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            return None
+        return []
+
+    try:
+        monkeypatch.setattr("src.engine.trading_engine.time.sleep", lambda _seconds: None)
+        engine.broker = SimpleNamespace(get_active_orders=fake_get_active_orders)
+        assert engine._adopt_active_live_order() is True
+        assert calls["count"] == 3
+        assert engine.notifier.alerts == []
+    finally:
+        monkeypatch.restore()
+
+
 def test_partial_immediate_sell_keeps_unfilled_position():
     engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
     use_test_pending_path(engine, "partial-sell")

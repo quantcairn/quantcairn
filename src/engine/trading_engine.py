@@ -544,7 +544,19 @@ class TradingEngine:
         get_active_orders = getattr(self.broker, "get_active_orders", None)
         if not callable(get_active_orders):
             return True
-        active_orders = get_active_orders(self.ticker)
+        retry_count = 3
+        retry_delay = 6
+        for idx in range(retry_count):
+            active_orders = get_active_orders(self.ticker)
+            if active_orders is not None:
+                break
+            if idx < (retry_count - 1):
+                self._last_signal_reason = (
+                    f"启动自检限流，{self.ticker} 活动订单核对重试 {idx + 1}/{retry_count - 1}"
+                )
+                time.sleep(retry_delay * (idx + 1))
+        else:
+            active_orders = None
         if active_orders is None:
             self.notifier.alert(
                 f"{self.ticker} 无法核对活动订单，拒绝启动实盘交易",
