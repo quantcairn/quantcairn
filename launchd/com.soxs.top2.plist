@@ -15,7 +15,7 @@
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <false/>
   <key>StandardOutPath</key>
   <string>/Users/chenwei/soxs-range-arbitrage/logs/top2.launchd.out.log</string>
   <key>StandardErrorPath</key>

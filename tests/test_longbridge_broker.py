@@ -258,6 +258,96 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     assert len(lines) >= 2
     records = [json.loads(line) for line in lines]
     assert records[0]["action"] == "connect"
+
+
+def test_get_active_orders_accepts_unhashable_status_objects(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    from src.broker import longbridge_broker as module
+
+    class FakeStatus:
+        __hash__ = None
+
+        def __init__(self, value):
+            self.value = value
+
+        def __eq__(self, other):
+            return isinstance(other, FakeStatus) and self.value == other.value
+
+        def __str__(self):
+            return self.value
+
+    class FakeTradeContext:
+        def __init__(self, config):
+            self.config = config
+
+        def today_orders(self, symbol):
+            return [
+                SimpleNamespace(
+                    order_id="LB-ACTIVE-1",
+                    symbol=symbol,
+                    side="Buy",
+                    order_type="MO",
+                    quantity=3,
+                    executed_quantity=1,
+                    executed_price=12.34,
+                    status=FakeStatus("PartialFilled"),
+                    msg="partial",
+                ),
+                SimpleNamespace(
+                    order_id="LB-DONE-1",
+                    symbol=symbol,
+                    side="Sell",
+                    order_type="MO",
+                    quantity=2,
+                    executed_quantity=2,
+                    executed_price=12.55,
+                    status=FakeStatus("Filled"),
+                    msg="filled",
+                ),
+            ]
+
+    fake_lb = SimpleNamespace(
+        Config=SimpleNamespace(from_apikey=lambda *args, **kwargs: SimpleNamespace()),
+        TradeContext=FakeTradeContext,
+        QuoteContext=lambda config: SimpleNamespace(),
+        OrderSide=SimpleNamespace(Buy="Buy", Sell="Sell"),
+        OrderType=SimpleNamespace(MO="MO", LO="LO"),
+        TimeInForceType=SimpleNamespace(Day="Day"),
+        OpenApiException=RuntimeError,
+        OrderStatus=SimpleNamespace(
+            Filled=FakeStatus("Filled"),
+            PartialFilled=FakeStatus("PartialFilled"),
+            Rejected=FakeStatus("Rejected"),
+            Canceled=FakeStatus("Canceled"),
+            Expired=FakeStatus("Expired"),
+            New=FakeStatus("New"),
+            PendingCancel=FakeStatus("PendingCancel"),
+            WaitToNew=FakeStatus("WaitToNew"),
+            NotReported=FakeStatus("NotReported"),
+            ProtectedNotReported=FakeStatus("ProtectedNotReported"),
+            VarietiesNotReported=FakeStatus("VarietiesNotReported"),
+        ),
+    )
+
+    monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+
+    broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+    assert broker.connect() is True
+
+    orders = broker.get_active_orders("PLTR")
+
+    assert orders is not None
+    assert len(orders) == 1
+    assert orders[0].order_id == "LB-ACTIVE-1"
+    assert orders[0].status == module.OrderStatus.PARTIALLY_FILLED
     assert records[0]["environment"] == "sandbox"
     assert records[1]["action"] == "place_order"
     assert records[1]["request"]["ticker"] == "AAPL"
@@ -443,6 +533,78 @@ def test_longbridge_broker_reuses_cached_positions_and_account(tmp_path, monkeyp
     assert broker._trade_ctx.positions_calls == 1
     assert broker._trade_ctx.balance_calls == 1
     assert broker._quote_ctx.quote_calls == 1
+
+
+def test_longbridge_broker_uses_safer_default_cache_and_backoff(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def __init__(self):
+                self._env = {}
+                self._originals = {}
+
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                key = (module_name, attr_name)
+                if key not in self._originals:
+                    self._originals[key] = getattr(module, attr_name)
+                setattr(module, attr_name, value)
+
+            def delenv(self, key, raising=True):
+                import os
+                if key not in self._env:
+                    self._env[key] = os.environ.get(key)
+                if raising and key not in os.environ:
+                    raise KeyError(key)
+                os.environ.pop(key, None)
+
+            def restore(self):
+                import os
+                for key, value in self._env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+                for (module_name, attr_name), original in self._originals.items():
+                    module = __import__(module_name, fromlist=[attr_name])
+                    setattr(module, attr_name, original)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    from src.broker import longbridge_broker as module
+
+    fake_lb = SimpleNamespace(
+        Config=SimpleNamespace(from_apikey=lambda *args, **kwargs: SimpleNamespace()),
+        TradeContext=lambda config: SimpleNamespace(),
+        QuoteContext=lambda config: SimpleNamespace(),
+        OrderSide=SimpleNamespace(Buy="Buy", Sell="Sell"),
+        OrderType=SimpleNamespace(MO="MO", LO="LO"),
+        TimeInForceType=SimpleNamespace(Day="Day"),
+        OpenApiException=RuntimeError,
+        OrderStatus=SimpleNamespace(
+            Filled="Filled",
+            PartialFilled="PartialFilled",
+            Rejected="Rejected",
+            Canceled="Canceled",
+            Expired="Expired",
+            New="New",
+            PendingCancel="PendingCancel",
+            WaitToNew="WaitToNew",
+        ),
+    )
+
+    try:
+        monkeypatch.delenv("LONGBRIDGE_CACHE_TTL_SECONDS", raising=False)
+        monkeypatch.delenv("LONGBRIDGE_RETRY_BACKOFF_SECONDS", raising=False)
+        monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+
+        broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+
+        assert broker._account_cache_ttl_seconds == 180.0
+        assert broker._positions_cache_ttl_seconds == 180.0
+        assert broker._cache_retry_backoff_seconds == 45.0
+    finally:
+        monkeypatch.restore()
 
 
 def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_path, monkeypatch=None):

@@ -109,6 +109,14 @@ def _quote_field(value, *names, default=0.0):
     return default
 
 
+def _enum_token(value) -> str:
+    """Normalize SDK enum-like objects to a stable string token."""
+    if value is None:
+        return ""
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
 def _normalize_base_symbol(symbol: str) -> str:
     return str(symbol or "").strip().upper().split(".")[0]
 
@@ -183,10 +191,25 @@ class LongBridgeBroker(BrokerBase):
         self._account_retry_not_before = 0.0
         self._positions_retry_not_before = 0.0
         ttl_env = os.environ.get("LONGBRIDGE_CACHE_TTL_SECONDS")
-        ttl_seconds = float(ttl_env) if ttl_env else 60.0
-        self._account_cache_ttl_seconds = max(5.0, ttl_seconds)
-        self._positions_cache_ttl_seconds = max(5.0, ttl_seconds)
-        self._cache_retry_backoff_seconds = max(5.0, min(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds))
+        ttl_seconds = float(ttl_env) if ttl_env else 180.0
+        self._account_cache_ttl_seconds = max(15.0, ttl_seconds)
+        self._positions_cache_ttl_seconds = max(15.0, ttl_seconds)
+        retry_env = os.environ.get("LONGBRIDGE_RETRY_BACKOFF_SECONDS")
+        retry_seconds = float(retry_env) if retry_env else 45.0
+        self._cache_retry_backoff_seconds = max(
+            15.0,
+            min(
+                retry_seconds,
+                max(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds),
+            ),
+        )
+
+    def invalidate_cache(self) -> None:
+        """Force the next account/position read to hit the broker."""
+        self._account_cache_fetched_at = 0.0
+        self._positions_cache_fetched_at = 0.0
+        self._account_retry_not_before = 0.0
+        self._positions_retry_not_before = 0.0
 
     def _audit_path(self) -> Path:
         return self._audit_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
@@ -370,6 +393,7 @@ class LongBridgeBroker(BrokerBase):
                 "raw": _jsonable(result),
             }
             self._write_audit("place_order", request, response, ok=True)
+            self.invalidate_cache()
             logger.info("  → Order ID: %s", response["order_id"])
             return Order(
                 order_id=response["order_id"],
@@ -414,6 +438,7 @@ class LongBridgeBroker(BrokerBase):
         try:
             result = self._trade_ctx.cancel_order(order_id=order_id)
             self._write_audit("cancel_order", request, {"result": _jsonable(result)}, ok=True)
+            self.invalidate_cache()
             logger.info("Canceled order %s", order_id)
             return True
         except Exception as e:
@@ -431,16 +456,23 @@ class LongBridgeBroker(BrokerBase):
             # causes every reconciliation request to fail after a live submission.
             od: lb.OrderDetail = self._trade_ctx.order_detail(order_id)
             status_map = {
-                lb.OrderStatus.Filled: OrderStatus.FILLED,
-                lb.OrderStatus.PartialFilled: OrderStatus.PARTIALLY_FILLED,
-                lb.OrderStatus.Rejected: OrderStatus.REJECTED,
-                lb.OrderStatus.Canceled: OrderStatus.CANCELLED,
-                lb.OrderStatus.Expired: OrderStatus.CANCELLED,
-                lb.OrderStatus.New: OrderStatus.PENDING,
-                lb.OrderStatus.PendingCancel: OrderStatus.PENDING,
-                lb.OrderStatus.WaitToNew: OrderStatus.PENDING,
+                _enum_token(lb.OrderStatus.Filled): OrderStatus.FILLED,
+                _enum_token(lb.OrderStatus.PartialFilled): OrderStatus.PARTIALLY_FILLED,
+                _enum_token(lb.OrderStatus.Rejected): OrderStatus.REJECTED,
+                _enum_token(lb.OrderStatus.Canceled): OrderStatus.CANCELLED,
+                _enum_token(lb.OrderStatus.Expired): OrderStatus.CANCELLED,
+                _enum_token(lb.OrderStatus.New): OrderStatus.PENDING,
+                _enum_token(lb.OrderStatus.PendingCancel): OrderStatus.PENDING,
+                _enum_token(lb.OrderStatus.WaitToNew): OrderStatus.PENDING,
             }
-            mapped_status = status_map.get(od.status, OrderStatus.PENDING)
+            mapped_status = status_map.get(_enum_token(od.status), OrderStatus.PENDING)
+            if mapped_status in (
+                OrderStatus.FILLED,
+                OrderStatus.PARTIALLY_FILLED,
+                OrderStatus.CANCELLED,
+                OrderStatus.REJECTED,
+            ):
+                self.invalidate_cache()
             response = {"order": _jsonable(od), "mapped_status": mapped_status.value}
             self._write_audit("get_order", request, response, ok=True)
             return Order(
@@ -465,18 +497,19 @@ class LongBridgeBroker(BrokerBase):
             return []
         try:
             details = self._trade_ctx.today_orders(_longbridge_symbol(ticker))
-            active_statuses = {
-                lb.OrderStatus.New,
-                lb.OrderStatus.PartialFilled,
-                lb.OrderStatus.PendingCancel,
-                lb.OrderStatus.WaitToNew,
-                lb.OrderStatus.NotReported,
-                lb.OrderStatus.ProtectedNotReported,
-                lb.OrderStatus.VarietiesNotReported,
-            }
+            active_statuses = (
+                _enum_token(lb.OrderStatus.New),
+                _enum_token(lb.OrderStatus.PartialFilled),
+                _enum_token(lb.OrderStatus.PendingCancel),
+                _enum_token(lb.OrderStatus.WaitToNew),
+                _enum_token(lb.OrderStatus.NotReported),
+                _enum_token(lb.OrderStatus.ProtectedNotReported),
+                _enum_token(lb.OrderStatus.VarietiesNotReported),
+            )
             orders = []
             for od in details or []:
-                if od.status not in active_statuses:
+                status_token = _enum_token(od.status)
+                if status_token not in active_statuses:
                     continue
                 orders.append(Order(
                     order_id=od.order_id,
@@ -488,7 +521,7 @@ class LongBridgeBroker(BrokerBase):
                     avg_fill_price=float(od.executed_price or 0.0),
                     status=(
                         OrderStatus.PARTIALLY_FILLED
-                        if od.status == lb.OrderStatus.PartialFilled
+                        if status_token == _enum_token(lb.OrderStatus.PartialFilled)
                         else OrderStatus.PENDING
                     ),
                     notes=str(od.msg or ""),

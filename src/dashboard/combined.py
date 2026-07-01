@@ -25,7 +25,7 @@ TICKERS = [
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
 _LIVE_ACCOUNT_CACHE = None
 _LIVE_ACCOUNT_CACHE_AT = 0.0
-_LIVE_ACCOUNT_CACHE_TTL = float(os.getenv("SOXS_LIVE_ACCOUNT_CACHE_TTL", "60"))
+_LIVE_ACCOUNT_CACHE_TTL = float(os.getenv("SOXS_LIVE_ACCOUNT_CACHE_TTL", "15"))
 _LIVE_ACCOUNT_LOCK = threading.Lock()
 _STATUS_CACHE: dict[int, dict] = {}
 _STATUS_FAILURES: dict[int, int] = {}
@@ -678,7 +678,7 @@ HTML = """<!DOCTYPE html>
                         <div>
                             <div class="panel-head" style="margin:0 0 8px 0;">
                                 <h2>真实仓位</h2>
-                                <span class="hint">仅显示 TOP1-5 对应标的</span>
+                                <span class="hint">显示真实账户全部持仓</span>
                             </div>
                             {% if live_account and live_account.positions %}
                             <div class="position-list">
@@ -1026,25 +1026,41 @@ def index():
             total_trades += d.get("trades_today", 0) or 0
         else:
             initial_capital = defaults["initial_capital"]
+            selected_ticker = str(defaults["ticker"]).strip().upper()
+            account_pos = account_positions.get(selected_ticker)
+            account_shares = int((account_pos or {}).get("quantity", 0) or 0)
+            account_pnl = float((account_pos or {}).get("unrealized_pnl", 0.0) or 0.0)
+            account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
+            account_price = float((account_pos or {}).get("current_price", 0.0) or 0.0)
             cards.append({
                 "name": defaults["ticker"], "desc": t["desc"],
                 "online": False,
-                "price": 0, "price_change": 0,
-                "day_high": 0, "day_low": 0,
-                "bid": 0, "ask": 0, "vol_display": "0",
+                "price": account_price,
+                "price_change": 0,
+                "day_high": account_price,
+                "day_low": account_price,
+                "bid": account_price,
+                "ask": account_price,
+                "vol_display": "0",
                 "support": defaults["support"], "resistance": defaults["resistance"], "spread_pct": 0,
                 "range_ready": False, "range_source": "offline",
                 "pos_pct": 50,
                 "sparkline": _build_sparkline([], 0),
-                "signal": "OFFLINE", "signal_cn": _signal_cn("OFFLINE"), "signal_reason": "暂无", "shares": 0,
+                "signal": "OFFLINE",
+                "signal_cn": _signal_cn("OFFLINE"),
+                "signal_reason": "引擎离线，仓位仍按真实账户显示" if account_pos else "暂无",
+                "shares": account_shares,
                 "initial_capital": initial_capital, "cash": initial_capital,
-                "pnl": 0, "pnl_pct": 0.0, "hold_source": "离线", "reduce_only": defaults.get("reduce_only", False), "equity": initial_capital, "trades": 0, "halted": False,
+                "pnl": account_pnl,
+                "pnl_pct": account_pnl_pct,
+                "hold_source": "真实账户" if account_pos else "离线",
+                "reduce_only": defaults.get("reduce_only", False), "equity": initial_capital, "trades": 0, "halted": False,
                 "trade_in_progress": False,
             })
             total_capital += initial_capital
             total_equity += initial_capital
 
-    display_live_account = _filter_live_positions(live_account, selected_tickers)
+    display_live_account = live_account
 
     if live_account and live_account.get("mode") == "live":
         total_pnl = sum(float((pos or {}).get("unrealized_pnl", 0.0) or 0.0) for pos in (live_account.get("positions") or []))

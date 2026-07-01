@@ -48,18 +48,19 @@ stop_existing() {
 }
 
 stop_top() {
+    for top_name in "${TOP_ENGINES[@]}"; do
+        pkill -f "run.py --config .*configs/${top_name}.yaml" 2>/dev/null || true
+        pkill -f "run.py --config ${PROJECT_DIR}/configs/${top_name}.yaml" 2>/dev/null || true
+    done
     if [ "$USE_LAUNCHD_TOPS" = "1" ]; then
         for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
+            launchctl disable gui/"$UID_NUM"/"$job" 2>/dev/null || true
             launchctl bootout gui/"$UID_NUM"/"$job" 2>/dev/null || true
         done
-    else
-        for top_name in "${TOP_ENGINES[@]}"; do
-            pkill -f "run.py --config .*configs/${top_name}.yaml" 2>/dev/null
-        done
-        for top_name in "${TOP_ENGINES[@]}"; do
-            kill_listener_on_port "$(port_for_top "$top_name")"
-        done
     fi
+    for top_name in "${TOP_ENGINES[@]}"; do
+        kill_listener_on_port "$(port_for_top "$top_name")"
+    done
 }
 
 start_top() {
@@ -67,8 +68,10 @@ start_top() {
         for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
             plist="$PROJECT_DIR/launchd/${job}.plist"
             if [ -f "$plist" ]; then
+                launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
                 launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
                 launchctl kickstart -k gui/"$UID_NUM"/"$job" 2>/dev/null || true
+                sleep 2
             fi
         done
         echo "🚀 TOP engines managed by launchd"
