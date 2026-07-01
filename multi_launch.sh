@@ -42,6 +42,7 @@ stop_existing() {
     pkill -f "run.py --config configs/AMC.yaml" 2>/dev/null
     pkill -f "run.py --config configs/SMR.yaml" 2>/dev/null
     stop_top
+    pkill -f "scripts/start_combined.py" 2>/dev/null
     pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
     pkill -f "start_combined(8090)" 2>/dev/null
     kill_dashboard_ports
@@ -140,15 +141,9 @@ start_all() {
 
     find "$PROJECT_DIR" -type d -name __pycache__ -not -path '*/.venv/*' -exec rm -rf {} + 2>/dev/null
 
-    # Start combined dashboard
+    # Start combined dashboard with the dedicated launcher.
     : > "$LOG_DIR/combined.log"
-    nohup "$VENV_PYTHON" -c "
-import sys; sys.path.insert(0,'$PROJECT_DIR')
-from src.dashboard.combined import start_combined
-start_combined(8090)
-import time
-while True: time.sleep(60)
-" >> "$LOG_DIR/combined.log" 2>&1 &
+    nohup "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 &
     pids="$pids $!"
     echo "📊 COMBINED on :8090 (PID $!)"
 
@@ -190,6 +185,7 @@ case "$1" in
         ;;
 
     restart-combined)
+        pkill -f "scripts/start_combined.py" 2>/dev/null
         pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
         pkill -f "start_combined(8090)" 2>/dev/null
         sleep 1

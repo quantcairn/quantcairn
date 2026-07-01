@@ -328,24 +328,30 @@ HTML = """<!DOCTYPE html>
             radial-gradient(circle at top left, rgba(125,211,252,.14), transparent 28%),
             radial-gradient(circle at top right, rgba(52,211,153,.12), transparent 24%),
             linear-gradient(180deg, #04060b 0%, #060913 44%, #05070d 100%);
-        padding:16px;
-        overflow:hidden;
+        padding:16px 16px 28px;
+        overflow-x:hidden;
+        overflow-y:auto;
     }
     .page{
-        max-width:1720px;margin:0 auto;height:calc(100vh - 32px);
-        display:flex;flex-direction:column;gap:12px;overflow:hidden
+        max-width:1680px;
+        margin:0 auto;
+        min-height:calc(100vh - 44px);
+        display:flex;
+        flex-direction:column;
+        gap:18px;
     }
     .topbar{
         display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
         padding:16px 18px;border:1px solid var(--line);
         background:linear-gradient(180deg, rgba(16,24,44,.92), rgba(9,13,24,.86));
         border-radius:18px;box-shadow:var(--shadow);backdrop-filter:blur(14px);
+        position:sticky;top:10px;z-index:5;
     }
     .brand{display:flex;flex-direction:column;gap:8px}
     .brand h1{font-size:24px;line-height:1.1;letter-spacing:.01em;font-weight:700}
     .brand p{color:var(--muted);font-size:12px}
     .headline-stats{
-        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;min-width:860px
+        display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;min-width:1040px
     }
     .headline-stat{
         padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.04);
@@ -369,20 +375,23 @@ HTML = """<!DOCTYPE html>
     .pill.live{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22);color:#b8f5d0}
     .pill.warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.24);color:#fde68a}
     .overview-layout{
-        display:grid;grid-template-columns:1fr;gap:10px;
+        display:grid;grid-template-columns:1fr;gap:14px;
     }
     .control-grid{
-        display:grid;grid-template-columns:1.15fr 1.35fr;gap:10px;align-items:start
+        display:grid;
+        grid-template-columns:minmax(0,1.08fr) minmax(0,1fr);
+        gap:14px;
+        align-items:start
     }
     .two-column{
         display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;
     }
     .overview-panel{
-        padding:14px;border-radius:18px;border:1px solid var(--line);
+        padding:18px;border-radius:20px;border:1px solid var(--line);
         background:linear-gradient(180deg, rgba(15,22,40,.92), rgba(9,13,24,.88));
         box-shadow:var(--shadow);backdrop-filter:blur(14px)
     }
-    .overview-panel.compact{padding:12px}
+    .overview-panel.compact{padding:16px}
     .panel-head{
         display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:10px
     }
@@ -400,7 +409,7 @@ HTML = """<!DOCTYPE html>
     .account-strip{
         display:flex;flex-direction:column;gap:10px
     }
-    .account-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .account-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
     .metric,.section,.card{
         background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);backdrop-filter:blur(14px)
     }
@@ -410,11 +419,11 @@ HTML = """<!DOCTYPE html>
     .metric-value{margin-top:6px;font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
     .metric-value.small{font-size:17px}
     .position-list{
-        display:grid;gap:6px;max-height:286px;overflow:auto;padding-right:2px
+        display:grid;gap:8px;max-height:520px;overflow:auto;padding-right:4px
     }
     .position-item{
-        display:grid;grid-template-columns:minmax(58px,.7fr) minmax(72px,.8fr) minmax(74px,.8fr) minmax(74px,.8fr) minmax(84px,.9fr) minmax(84px,.9fr);
-        gap:8px;align-items:center;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.035);
+        display:grid;grid-template-columns:minmax(68px,.8fr) minmax(78px,.8fr) minmax(80px,.8fr) minmax(80px,.8fr) minmax(92px,.95fr) minmax(92px,.95fr);
+        gap:10px;align-items:center;padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.035);
         border:1px solid var(--line)
     }
     .position-ticker{font-size:13px;font-weight:800;letter-spacing:.02em}
@@ -429,7 +438,7 @@ HTML = """<!DOCTYPE html>
         border:1px solid rgba(255,255,255,.06);color:var(--muted);font-size:12px
     }
     .account-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-    .selector-table{display:grid;gap:5px;max-height:190px;overflow:auto;padding-right:2px}
+    .selector-table{display:grid;gap:6px;max-height:520px;overflow:auto;padding-right:4px}
     .selector-head,.selector-row{
         display:grid;
         grid-template-columns:minmax(40px,.4fr) minmax(72px,.8fr) minmax(58px,.55fr) minmax(64px,.6fr) minmax(90px,.95fr);
@@ -441,7 +450,7 @@ HTML = """<!DOCTYPE html>
         padding:0 2px 2px;
     }
     .selector-row{
-        padding:7px 8px;border-radius:10px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06);
+        padding:9px 10px;border-radius:12px;background:var(--panel-strong);border:1px solid rgba(255,255,255,.06);
         font-size:11px;
     }
     .selector-row .ticker{font-weight:800;color:#fff}
@@ -495,7 +504,17 @@ HTML = """<!DOCTYPE html>
         font-variant-numeric:tabular-nums;word-break:break-word
     }
     .stat-value.muted{color:var(--muted);font-weight:500}
-    .cards-section{flex:1;min-height:0;display:flex;flex-direction:column}
+    .cards-section{
+        display:flex;
+        flex-direction:column;
+        gap:12px;
+        padding:18px;
+        border-radius:20px;
+        border:1px solid var(--line);
+        background:linear-gradient(180deg, rgba(15,22,40,.92), rgba(9,13,24,.88));
+        box-shadow:var(--shadow);
+        backdrop-filter:blur(14px)
+    }
     .cards-section-head{
         display:flex;justify-content:space-between;gap:12px;align-items:flex-end;margin-bottom:8px
     }
@@ -504,11 +523,14 @@ HTML = """<!DOCTYPE html>
     }
     .cards-section-head p{color:var(--muted);font-size:12px;line-height:1.35}
     .cards{
-        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;align-items:stretch;
-        min-height:0;overflow:auto;padding-right:2px
+        display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:14px;
+        align-items:stretch;
+        overflow:visible;
     }
     .card{
-        padding:14px;min-width:0;min-height:100%;
+        padding:16px;min-width:0;min-height:100%;
         background:
             linear-gradient(180deg, rgba(16,24,44,.96), rgba(9,13,24,.88)),
             radial-gradient(circle at top right, rgba(125,211,252,.06), transparent 34%);
@@ -591,8 +613,8 @@ HTML = """<!DOCTYPE html>
     }
     @media (max-width:760px){
         body{padding:14px;overflow:auto}
-        .page{height:auto;overflow:visible}
-        .topbar{flex-direction:column}
+        .page{min-height:auto}
+        .topbar{flex-direction:column;position:static}
         .headline-stats{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
         .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column{grid-template-columns:1fr}
         .settings-form{align-items:stretch}
@@ -600,6 +622,7 @@ HTML = """<!DOCTYPE html>
         .price{font-size:30px}
         .selector-head{display:none}
         .selector-row,.position-item{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .position-list,.selector-table{max-height:none}
     }
 </style>
 </head>
@@ -611,7 +634,12 @@ HTML = """<!DOCTYPE html>
             <p>TOP1 到 TOP5 五路联动监控，每 5 秒自动刷新。</p>
             <div class="headline-stats">
                 <div class="headline-stat">
-                    <span class="label">组合盈亏</span>
+                    <span class="label">今日总收益</span>
+                    <span class="value {{ 'green' if today_total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(today_total_pnl) }}</span>
+                    <span class="sub">按 5 路策略今日盈亏汇总</span>
+                </div>
+                <div class="headline-stat">
+                    <span class="label">账户浮盈亏</span>
                     <span class="value {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</span>
                     <span class="sub">总成交 {{ total_trades }} 笔</span>
                 </div>
@@ -648,7 +676,7 @@ HTML = """<!DOCTYPE html>
         <div class="overview-panel">
             <div class="panel-head">
                 <h2>控制台总览</h2>
-                <span class="hint">账户、持仓、选股放在同一块界面里</span>
+                <span class="hint">第一屏看账户与选股，第二屏看全部标的卡片</span>
             </div>
             <div class="control-grid">
                 <div class="overview-panel compact">
@@ -769,7 +797,7 @@ HTML = """<!DOCTYPE html>
             <div class="cards-section-head">
                 <div>
                     <h2>全部标的</h2>
-                <p>5 只标的恢复卡片显示，买卖距离近的会自动高亮。</p>
+                <p>第二屏重点看每只票的区间位置、当前信号、持仓和盈亏，距离近的会自动高亮。</p>
                 </div>
             </div>
         <div class="cards">
@@ -946,6 +974,7 @@ def _signal_cn(signal: str) -> str:
 def index():
     cards = []
     total_pnl = 0.0
+    today_total_pnl = 0.0
     total_capital = 0.0
     total_equity = 0.0
     total_trades = 0
@@ -1020,7 +1049,9 @@ def index():
                 "trade_in_progress": bool(d.get("trade_in_progress", False)),
             }
             cards.append(card)
-            total_pnl += d.get("daily_pnl", 0) or 0
+            day_pnl = float(d.get("daily_pnl", 0) or 0.0)
+            today_total_pnl += day_pnl
+            total_pnl += day_pnl
             total_capital += d.get("initial_capital", 0) or 0
             total_equity += d.get("equity", 0) or 0
             total_trades += d.get("trades_today", 0) or 0
@@ -1152,6 +1183,7 @@ def index():
         nearest_sell_trigger=nearest_sell_trigger,
         trade_audit=trade_audit,
         total_pnl=round(total_pnl, 2),
+        today_total_pnl=round(today_total_pnl, 2),
         total_capital=round(total_capital, 2),
         total_equity=round(total_equity, 2),
         total_trades=total_trades,
@@ -1215,8 +1247,5 @@ def update_ai_selector_settings():
 
 
 def start_combined(port=8090):
-    """Start combined dashboard in background thread."""
-    from threading import Thread
-    t = Thread(target=lambda: app.run(host="0.0.0.0", port=port, debug=False), daemon=True)
-    t.start()
-    return t
+    """Start combined dashboard as a foreground Flask server."""
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
