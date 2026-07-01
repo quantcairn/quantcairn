@@ -34,6 +34,7 @@ def test_live_dashboard_uses_live_account_basis():
         risk=SimpleNamespace(
             get_stats=lambda: {
                 "daily_pnl_today": 0.0,
+                "daily_trades_today": 2,
                 "total_trades": 0,
                 "consecutive_losses": 0,
                 "win_rate": 0.0,
@@ -43,6 +44,7 @@ def test_live_dashboard_uses_live_account_basis():
         _latest_position=SimpleNamespace(quantity=0, avg_entry_price=0.0, unrealized_pnl=0.0),
         _latest_account=SimpleNamespace(cash=707.61, equity=1558.11, buying_power=707.43),
         _last_signal_type=None,
+        _last_signal_reason="买入数量为 0：购买力不足",
         _running=True,
     )
 
@@ -55,7 +57,10 @@ def test_live_dashboard_uses_live_account_basis():
 
     assert data["initial_capital"] == 707.43
     assert data["cash"] == 707.61
+    assert data["buying_power"] == 707.43
     assert data["equity"] == 1558.11
+    assert data["trades_today"] == 2
+    assert data["last_signal_reason"] == "买入数量为 0：购买力不足"
 
 
 def test_dashboard_keeps_last_valid_price_when_quote_is_temporarily_empty():
@@ -90,6 +95,7 @@ def test_dashboard_keeps_last_valid_price_when_quote_is_temporarily_empty():
         risk=SimpleNamespace(
             get_stats=lambda: {
                 "daily_pnl_today": 0.0,
+                "daily_trades_today": 0,
                 "total_trades": 0,
                 "consecutive_losses": 0,
                 "win_rate": 0.0,

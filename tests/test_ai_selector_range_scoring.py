@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -76,7 +78,14 @@ def test_flat_series_is_filtered_out():
 
 
 def test_high_price_series_is_filtered_out():
-    scorer = Scorer()
-    result = scorer.score_frame("EXPENSIVE", _make_range_like_df(base=120.0), news_items=[], sector="Technology")
-
-    assert result is None
+    previous = os.environ.get("AI_SELECTOR_MAX_PRICE")
+    os.environ["AI_SELECTOR_MAX_PRICE"] = "110"
+    try:
+        scorer = Scorer()
+        result = scorer.score_frame("EXPENSIVE", _make_range_like_df(base=120.0), news_items=[], sector="Technology")
+        assert result is None
+    finally:
+        if previous is None:
+            os.environ.pop("AI_SELECTOR_MAX_PRICE", None)
+        else:
+            os.environ["AI_SELECTOR_MAX_PRICE"] = previous

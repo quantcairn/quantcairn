@@ -20,7 +20,7 @@ from ..config.loader import AppConfig
 from ..data.fetcher import PriceFetcher
 from ..strategy.range_detector import RangeDetector, SignalType
 from ..risk.manager import RiskManager, TradeRecord
-from ..broker.base import BrokerBase, OrderSide, OrderType
+from ..broker.base import BrokerBase, OrderSide, OrderStatus, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
@@ -115,6 +115,8 @@ class TradingEngine:
         self._latest_position = None
         self._latest_snapshot_at: Optional[datetime] = None
         self._trade_in_progress = False
+        self._last_signal_reason: str = "暂无"
+        self._pending_order: Optional[dict] = None
 
         # NY timezone
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
@@ -243,18 +245,35 @@ class TradingEngine:
                 self._latest_snapshot_at = datetime.now()
                 self.risk.update_equity(acct.equity)
 
+                if pos:
+                    self._position_shares = pos.quantity
+                    if pos.quantity > 0 and pos.avg_entry_price > 0:
+                        self._entry_price = pos.avg_entry_price
+                elif not self._pending_order:
+                    self._position_shares = 0
+                    self._entry_price = None
+
                 # 6b. Update broker price (for P&L calc)
                 if isinstance(self.broker, PaperBroker):
                     self.broker.update_price(self.ticker, current_price)
 
+                # 6c. Reconcile pending live orders before evaluating new signals.
+                self._reconcile_pending_order()
+                has_position = self._position_shares > 0
+
                 # 7. Evaluate strategy
                 signal = self.strategy.evaluate(current_price, has_position)
                 self._last_signal_type = signal.type
+                self._last_signal_reason = signal.reason
 
                 # 8. Act on signal — skip non-critical signals during halt
                 is_halted = self.risk._halted
 
-                if signal.type == SignalType.BUY and not has_position:
+                if self._pending_order:
+                    self._last_signal_reason = (
+                        f"等待订单成交：{self._pending_order['side']} {self._pending_order['order_id'][:12]}"
+                    )
+                elif signal.type == SignalType.BUY and not has_position:
                     if not is_halted:
                         self._handle_buy_signal(signal, current_price, quote.ask)
 
@@ -314,7 +333,9 @@ class TradingEngine:
         self._trade_in_progress = True
         try:
             acct = self.broker.get_account()
-            available_cash = acct.cash
+            cash = float(getattr(acct, "cash", 0.0) or 0.0)
+            buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
+            available_cash = buying_power if buying_power > 0 else cash
             shares = determine_buy_quantity(
                 current_price=current_price,
                 available_cash=available_cash,
@@ -323,11 +344,20 @@ class TradingEngine:
                 execution_price=ask if ask > 0 else current_price,
             )
 
+            if shares <= 0:
+                self._last_signal_reason = (
+                    f"买入数量为 0：购买力 ${buying_power:.2f} / 现金 ${cash:.2f} "
+                    f"不足以买入 ${max(current_price, ask):.2f} 的标的"
+                )
+                self.notifier.alert(self._last_signal_reason, "warning")
+                return
+
             entry_check = self.risk.check_entry(
                 current_price, shares, self._position_shares
             )
 
             if not entry_check.allowed:
+                self._last_signal_reason = entry_check.reason
                 self.notifier.alert(entry_check.reason, "warning")
                 return
 
@@ -342,6 +372,11 @@ class TradingEngine:
             )
 
             if order.status == OrderStatus.PENDING:
+                self._remember_pending_order(
+                    order=order,
+                    side="BUY",
+                    signal_type=signal.type.value,
+                )
                 self.notifier.order_submitted(
                     self.ticker, "BUY", order.quantity, order.order_id
                 )
@@ -352,6 +387,9 @@ class TradingEngine:
                 self.strategy.record_entry(order.avg_fill_price)  # Quick stop tracking
                 self.notifier.trade(
                     self.ticker, "BUY", order.filled_quantity, order.avg_fill_price
+                )
+                self._last_signal_reason = (
+                    f"已买入 {order.filled_quantity} 股 @ ${order.avg_fill_price:.2f}"
                 )
         finally:
             self._trade_in_progress = False
@@ -370,6 +408,11 @@ class TradingEngine:
             )
 
             if order.status == OrderStatus.PENDING:
+                self._remember_pending_order(
+                    order=order,
+                    side="SELL",
+                    signal_type=signal.type.value,
+                )
                 self.notifier.order_submitted(
                     self.ticker, "SELL", order.quantity, order.order_id
                 )
@@ -418,6 +461,11 @@ class TradingEngine:
             )
 
             if order.status == OrderStatus.PENDING:
+                self._remember_pending_order(
+                    order=order,
+                    side="SELL",
+                    signal_type=signal.type.value,
+                )
                 self.notifier.order_submitted(
                     self.ticker, "SELL", order.quantity, order.order_id
                 )
@@ -448,6 +496,107 @@ class TradingEngine:
         if self._entry_price is None:
             return None
         return (exit_price - self._entry_price) * self._position_shares
+
+    def _remember_pending_order(self, order, side: str, signal_type: str) -> None:
+        """Store a submitted live order so later fills can be reconciled."""
+        self._pending_order = {
+            "order_id": order.order_id,
+            "side": side,
+            "signal_type": signal_type,
+            "requested_quantity": int(order.quantity or 0),
+            "acknowledged_filled_quantity": int(order.filled_quantity or 0),
+            "entry_price_before": self._entry_price,
+            "created_at": datetime.now(),
+        }
+        self._last_signal_reason = f"订单已提交，等待成交：{side} {order.quantity} 股"
+
+    def _reconcile_pending_order(self) -> None:
+        """Pull the latest broker status for any submitted live order."""
+        pending = self._pending_order
+        if not pending or not pending.get("order_id"):
+            return
+
+        order = self.broker.get_order(pending["order_id"])
+        if order is None:
+            return
+
+        previous_filled = int(pending.get("acknowledged_filled_quantity", 0) or 0)
+        current_filled = int(order.filled_quantity or 0)
+        delta_filled = max(0, current_filled - previous_filled)
+
+        if delta_filled > 0:
+            if pending["side"] == "BUY":
+                self._apply_buy_fill(order, delta_filled)
+            else:
+                self._apply_sell_fill(order, delta_filled, pending)
+            pending["acknowledged_filled_quantity"] = current_filled
+
+        if order.status == OrderStatus.PARTIALLY_FILLED:
+            self._last_signal_reason = (
+                f"订单部分成交：{pending['side']} {current_filled}/{pending['requested_quantity']} 股"
+            )
+            return
+
+        if order.status == OrderStatus.FILLED:
+            self._pending_order = None
+            return
+
+        if order.status == OrderStatus.CANCELLED:
+            self._last_signal_reason = f"订单已取消：{pending['side']} {pending['order_id'][:12]}"
+            self._pending_order = None
+            return
+
+        if order.status == OrderStatus.REJECTED:
+            self._last_signal_reason = f"订单被拒绝：{order.notes or pending['order_id'][:12]}"
+            self.notifier.alert(self._last_signal_reason, "warning")
+            self._pending_order = None
+
+    def _apply_buy_fill(self, order, filled_quantity: int) -> None:
+        fill_price = float(order.avg_fill_price or self._entry_price or 0.0)
+        if fill_price > 0:
+            self._entry_price = fill_price
+            self.strategy.record_entry(fill_price)
+        self._position_shares = max(self._position_shares, int(order.filled_quantity or 0))
+        self.notifier.trade(
+            self.ticker, "BUY", filled_quantity, fill_price or 0.0
+        )
+        self._last_signal_reason = (
+            f"买单已成交 {filled_quantity} 股 @ ${fill_price:.2f}"
+            if fill_price > 0
+            else f"买单已成交 {filled_quantity} 股"
+        )
+
+    def _apply_sell_fill(self, order, filled_quantity: int, pending: dict) -> None:
+        fill_price = float(order.avg_fill_price or 0.0)
+        entry_price = float(pending.get("entry_price_before") or self._entry_price or 0.0)
+        pnl = ((fill_price - entry_price) * filled_quantity) if entry_price > 0 and fill_price > 0 else None
+
+        self.notifier.trade(
+            self.ticker, "SELL", filled_quantity, fill_price or 0.0, pnl
+        )
+
+        if entry_price > 0 and fill_price > 0:
+            self.risk.record_trade(TradeRecord(
+                entry_time=pending.get("created_at") or datetime.now(),
+                exit_time=datetime.now(),
+                entry_price=entry_price,
+                exit_price=fill_price,
+                shares=filled_quantity,
+                pnl=pnl or 0.0,
+                pnl_pct=((fill_price - entry_price) / entry_price * 100),
+                side="LONG",
+            ))
+
+        remaining = max(0, self._position_shares - filled_quantity)
+        self._position_shares = remaining
+        if remaining <= 0:
+            self._entry_price = None
+            self.strategy.clear_entry()
+        self._last_signal_reason = (
+            f"卖单已成交 {filled_quantity} 股 @ ${fill_price:.2f}"
+            if fill_price > 0
+            else f"卖单已成交 {filled_quantity} 股"
+        )
 
     def _is_trading_hours(self) -> bool:
         """Check if we're currently in US regular trading hours."""

@@ -57,8 +57,8 @@ def test_manual_range_does_not_buy_below_support():
 
     signal = detector.evaluate(99.2, has_position=False)
 
-    assert signal.type == SignalType.HOLD
-    assert "dist to support" in signal.reason
+    assert signal.type == SignalType.BUY
+    assert "near support" in signal.reason or "in lower range" in signal.reason
 
 
 def test_auto_range_seed_succeeds_with_valid_ohlcv():

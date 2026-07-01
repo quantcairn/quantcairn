@@ -203,9 +203,13 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     class FakeQuoteContext:
         def __init__(self, config):
             self.config = config
+            self.quote_calls = 0
 
         def quote(self, symbols):
-            return {"symbols": symbols}
+            self.quote_calls += 1
+            return [
+                SimpleNamespace(symbol="AAPL.US", last_done=12.5, price=12.5, last_price=12.5)
+            ]
 
     fake_lb = SimpleNamespace(
         Config=FakeConfig,
@@ -293,6 +297,11 @@ def test_longbridge_broker_account_balance_handles_list_response(tmp_path, monke
     class FakeQuoteContext:
         def __init__(self, config):
             self.config = config
+            self.quote_calls = 0
+
+        def quote(self, symbols):
+            self.quote_calls += 1
+            return []
 
     fake_lb = SimpleNamespace(
         Config=FakeConfig,
@@ -376,6 +385,11 @@ def test_longbridge_broker_reuses_cached_positions_and_account(tmp_path, monkeyp
     class FakeQuoteContext:
         def __init__(self, config):
             self.config = config
+            self.quote_calls = 0
+
+        def quote(self, symbols):
+            self.quote_calls += 1
+            return []
 
     fake_lb = SimpleNamespace(
         Config=FakeConfig,
@@ -419,12 +433,105 @@ def test_longbridge_broker_reuses_cached_positions_and_account(tmp_path, monkeyp
 
     assert len(first_positions) == 1
     assert first_positions[0].ticker == "AAPL"
+    assert first_positions[0].market_value > 0
+    assert first_positions[0].unrealized_pnl >= 0
     assert first_account.cash == 100.0
     assert second_positions[0].ticker == "AAPL"
     assert second_account.cash == 100.0
     assert broker.get_position_for_ticker("AAPL").quantity == 2
     assert broker._trade_ctx.positions_calls == 1
     assert broker._trade_ctx.balance_calls == 1
+    assert broker._quote_ctx.quote_calls == 1
+
+
+def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_path, monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    from src.broker import longbridge_broker as module
+
+    class FakeConfig:
+        @staticmethod
+        def from_apikey(*args, **kwargs):
+            return SimpleNamespace(args=args, kwargs=kwargs)
+
+    class FakeTradeContext:
+        def __init__(self, config):
+            self.config = config
+            self.submit_kwargs = None
+
+        def submit_order(self, **kwargs):
+            self.submit_kwargs = kwargs
+            return SimpleNamespace(
+                order_id="LB-99999",
+                payload=dict.items,
+                nested=SimpleNamespace(fn=dict.items),
+            )
+
+        def stock_positions(self):
+            return SimpleNamespace(channels=[])
+
+        def account_balance(self):
+            return SimpleNamespace(total_cash=1000, net_assets=1000, buy_power=1000)
+
+    class FakeQuoteContext:
+        def __init__(self, config):
+            self.config = config
+            self.quote_calls = 0
+
+        def quote(self, symbols):
+            self.quote_calls += 1
+            return []
+
+    fake_lb = SimpleNamespace(
+        Config=FakeConfig,
+        TradeContext=FakeTradeContext,
+        QuoteContext=FakeQuoteContext,
+        OrderSide=SimpleNamespace(Buy="Buy", Sell="Sell"),
+        OrderType=SimpleNamespace(MO="MO", LO="LO"),
+        TimeInForceType=SimpleNamespace(Day="Day"),
+        OpenApiException=RuntimeError,
+        OrderStatus=SimpleNamespace(
+            Filled="Filled",
+            PartialFilled="PartialFilled",
+            Rejected="Rejected",
+            Canceled="Canceled",
+            Expired="Expired",
+            New="New",
+            PendingCancel="PendingCancel",
+            WaitToNew="WaitToNew",
+        ),
+    )
+
+    monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        environment="sandbox",
+        http_url="https://sandbox.example/http",
+        quote_ws_url="wss://sandbox.example/quote",
+        trade_ws_url="wss://sandbox.example/trade",
+        audit_dir=str(tmp_path / "logs"),
+    )
+
+    assert broker.connect() is True
+    order = broker.place_order("AAPL", module.OrderSide.BUY, 1)
+
+    assert order.order_id == "LB-99999"
+    assert order.status == module.OrderStatus.PENDING
+    log_path = tmp_path / "logs" / f"trades-{module.datetime.now().strftime('%Y%m%d')}.jsonl"
+    assert log_path.exists()
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["action"] == "place_order"
+    assert records[-1]["response"]["order_id"] == "LB-99999"
 
 
 def run_test_direct():
@@ -434,3 +541,4 @@ def run_test_direct():
     test_longbridge_broker_audit_log_records_trade(tmp_root)
     test_longbridge_broker_account_balance_handles_list_response(tmp_root)
     test_longbridge_broker_reuses_cached_positions_and_account(tmp_root)
+    test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_root)

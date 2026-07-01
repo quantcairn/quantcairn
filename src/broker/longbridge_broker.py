@@ -47,25 +47,34 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _jsonable(value):
-    if value is None:
-        return None
-    if isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Enum):
-        return value.value
-    if dataclasses.is_dataclass(value):
-        return {k: _jsonable(v) for k, v in dataclasses.asdict(value).items()}
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(v) for v in value]
-    if hasattr(value, "__dict__"):
-        return {
-            key: _jsonable(val)
-            for key, val in vars(value).items()
-            if not key.startswith("_")
-        }
-    return str(value)
+    try:
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, Enum):
+            return value.value
+        if callable(value):
+            return getattr(value, "__name__", repr(value))
+        if dataclasses.is_dataclass(value):
+            return {k: _jsonable(v) for k, v in dataclasses.asdict(value).items()}
+        if isinstance(value, dict):
+            return {str(k): _jsonable(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_jsonable(v) for v in value]
+        if hasattr(value, "__dict__"):
+            try:
+                attrs = vars(value)
+            except Exception:
+                attrs = {}
+            return {
+                key: _jsonable(val)
+                for key, val in attrs.items()
+                if not key.startswith("_")
+            }
+        return str(value)
+    except Exception:
+        return repr(value)
 
 
 def _first_item(value):
@@ -75,6 +84,19 @@ def _first_item(value):
 
 
 def _balance_field(value, *names, default=0.0):
+    value = _first_item(value)
+    for name in names:
+        if isinstance(value, dict):
+            if name in value and value[name] is not None:
+                return value[name]
+        elif hasattr(value, name):
+            attr = getattr(value, name)
+            if attr is not None:
+                return attr
+    return default
+
+
+def _quote_field(value, *names, default=0.0):
     value = _first_item(value)
     for name in names:
         if isinstance(value, dict):
@@ -161,30 +183,33 @@ class LongBridgeBroker(BrokerBase):
         self._account_retry_not_before = 0.0
         self._positions_retry_not_before = 0.0
         ttl_env = os.environ.get("LONGBRIDGE_CACHE_TTL_SECONDS")
-        ttl_seconds = float(ttl_env) if ttl_env else 120.0
-        self._account_cache_ttl_seconds = max(30.0, ttl_seconds)
-        self._positions_cache_ttl_seconds = max(30.0, ttl_seconds)
-        self._cache_retry_backoff_seconds = max(30.0, min(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds))
+        ttl_seconds = float(ttl_env) if ttl_env else 8.0
+        self._account_cache_ttl_seconds = max(5.0, ttl_seconds)
+        self._positions_cache_ttl_seconds = max(5.0, ttl_seconds)
+        self._cache_retry_backoff_seconds = max(5.0, min(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds))
 
     def _audit_path(self) -> Path:
         return self._audit_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
 
     def _write_audit(self, action: str, request: dict, response: dict, *, ok: bool, error: str | None = None) -> None:
-        record = {
-            "timestamp": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
-            "broker": "longbridge",
-            "environment": self._environment,
-            "region": self._region,
-            "action": action,
-            "ok": ok,
-            "request": _jsonable(request),
-            "response": _jsonable(response),
-        }
-        if error:
-            record["error"] = error
+        try:
+            record = {
+                "timestamp": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+                "broker": "longbridge",
+                "environment": self._environment,
+                "region": self._region,
+                "action": action,
+                "ok": ok,
+                "request": _jsonable(request),
+                "response": _jsonable(response),
+            }
+            if error:
+                record["error"] = error
 
-        with self._audit_path().open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            with self._audit_path().open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception as audit_error:
+            logger.warning("Long Bridge audit write skipped for %s: %s", action, audit_error)
 
     def _build_config(self) -> lb.Config:
         """Build a LongBridge SDK config from credentials and endpoint overrides."""
@@ -340,20 +365,21 @@ class LongBridgeBroker(BrokerBase):
             )
 
             response = {
-                "order_id": result.order_id,
+                "order_id": str(getattr(result, "order_id", "") or ""),
+                "status": str(getattr(result, "status", "submitted") or "submitted"),
                 "raw": _jsonable(result),
             }
             self._write_audit("place_order", request, response, ok=True)
-            logger.info("  → Order ID: %s", result.order_id)
+            logger.info("  → Order ID: %s", response["order_id"])
             return Order(
-                order_id=result.order_id,
+                order_id=response["order_id"],
                 ticker=ticker,
                 side=side,
                 order_type=order_type,
                 quantity=quantity,
                 limit_price=limit_price,
                 status=OrderStatus.PENDING,
-                notes=f"Live order {result.order_id[:12]}...",
+                notes=f"Live order {response['order_id'][:12]}...",
             )
         except lb.OpenApiException as e:
             logger.error(f"Long Bridge order rejected: {e}")
@@ -444,19 +470,50 @@ class LongBridgeBroker(BrokerBase):
         try:
             resp: lb.StockPositionsResponse = self._trade_ctx.stock_positions()
             positions = []
+            quote_map: dict[str, float] = {}
+            raw_positions = []
             for channel in resp.channels or []:
                 for p in channel.positions or []:
-                    positions.append(
-                        Position(
-                            ticker=_normalize_base_symbol(p.symbol),
-                            quantity=p.quantity,
-                            avg_entry_price=p.cost_price,
-                            current_price=0.0,
-                            market_value=p.quantity * p.cost_price,
-                            unrealized_pnl=0.0,
-                            unrealized_pnl_pct=0.0,
-                        )
+                    raw_positions.append(p)
+
+            if raw_positions and self._quote_ctx:
+                try:
+                    symbols = [_longbridge_symbol(p.symbol) for p in raw_positions if _longbridge_symbol(p.symbol)]
+                    if symbols:
+                        quote_resp = self._quote_ctx.quote(symbols=symbols)
+                        quote_items = quote_resp if isinstance(quote_resp, (list, tuple)) else [quote_resp]
+                        for item in quote_items:
+                            symbol = _normalize_base_symbol(
+                                _quote_field(item, "symbol", "code", "ticker", default="")
+                            )
+                            price = float(_quote_field(item, "last_done", "price", "last_price", default=0.0) or 0.0)
+                            if symbol and price > 0:
+                                quote_map[symbol] = price
+                except Exception as e:
+                    logger.warning(f"Quote enrichment for positions failed: {e}")
+
+            for p in raw_positions:
+                ticker = _normalize_base_symbol(p.symbol)
+                quantity = int(float(getattr(p, "quantity", 0) or 0))
+                avg_entry_price = float(getattr(p, "cost_price", 0.0) or 0.0)
+                current_price = float(quote_map.get(ticker, 0.0) or 0.0)
+                if current_price <= 0:
+                    current_price = avg_entry_price
+                market_value = round(quantity * current_price, 3)
+                cost_value = quantity * avg_entry_price
+                unrealized_pnl = round((current_price - avg_entry_price) * quantity, 3)
+                unrealized_pnl_pct = round((unrealized_pnl / cost_value * 100.0), 3) if cost_value > 0 else 0.0
+                positions.append(
+                    Position(
+                        ticker=ticker,
+                        quantity=quantity,
+                        avg_entry_price=avg_entry_price,
+                        current_price=round(current_price, 3),
+                        market_value=market_value,
+                        unrealized_pnl=unrealized_pnl,
+                        unrealized_pnl_pct=unrealized_pnl_pct,
                     )
+                )
             self._positions_cache = positions
             self._positions_cache_fetched_at = now
             self._positions_retry_not_before = now
@@ -496,6 +553,8 @@ class LongBridgeBroker(BrokerBase):
             return self._account_cache
 
         try:
+            if not self._positions_cache:
+                self.get_positions()
             bal = self._trade_ctx.account_balance()
             cash = float(_balance_field(bal, "total_cash", "cash", "cash_balance", "available_cash", default=0) or 0)
             equity = float(_balance_field(bal, "net_assets", "equity", "net_liquidation", "total_equity", default=0) or 0)

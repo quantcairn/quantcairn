@@ -227,7 +227,16 @@ class RiskManager:
         """Get summary statistics."""
         trades = self._trade_history
         if not trades:
-            return {"total_trades": 0, "win_rate": 0, "total_pnl": 0, "avg_pnl": 0}
+            return {
+                "total_trades": 0,
+                "daily_trades_today": 0,
+                "win_rate": 0,
+                "total_pnl": 0,
+                "avg_pnl": 0,
+                "daily_pnl_today": round(self.get_daily_pnl(), 2),
+                "consecutive_losses": self._consecutive_losses,
+                "halted": self._halted,
+            }
 
         wins = [t for t in trades if t.pnl > 0]
         losses = [t for t in trades if t.pnl < 0]
@@ -235,6 +244,7 @@ class RiskManager:
 
         return {
             "total_trades": len(trades),
+            "daily_trades_today": self.get_daily_trades(),
             "wins": len(wins),
             "losses": len(losses),
             "win_rate": round(len(wins) / len(trades) * 100, 1) if trades else 0,
@@ -266,4 +276,3 @@ class RiskManager:
             self._daily_peak_equity[today] = current_equity
         else:
             self._current_equity = current_equity
-

@@ -46,6 +46,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .value-red { color: #ff4757; }
         .value-yellow { color: #ffa502; }
         .signal { padding: 8px 16px; border-radius: 4px; font-size: 18px; font-weight: bold; text-align: center; margin-top: 8px; }
+        .signal-note { margin-top: 8px; color: #9aa4b2; font-size: 12px; line-height: 1.35; }
         .signal-buy { background: rgba(0, 212, 170, 0.15); color: #00d4aa; border: 1px solid #00d4aa; }
         .signal-sell { background: rgba(255, 71, 87, 0.15); color: #ff4757; border: 1px solid #ff4757; }
         .signal-hold { background: rgba(255, 165, 2, 0.1); color: #ffa502; border: 1px solid #ffa502; }
@@ -94,6 +95,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="signal {{ 'signal-buy' if last_signal == 'BUY' else 'signal-sell' if last_signal == 'SELL' else 'signal-hold' }}">
                 {{ last_signal }}
             </div>
+            <div class="signal-note">{{ last_signal_reason }}</div>
         </div>
 
         <!-- Position Card -->
@@ -101,6 +103,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <h2>📊 Position</h2>
             <div class="stat-row"><span class="stat-label">Initial Capital</span><span class="stat-value">${{ "%.2f"|format(initial_capital) }}</span></div>
             <div class="stat-row"><span class="stat-label">Cash</span><span class="stat-value">${{ "%.2f"|format(cash) }}</span></div>
+            <div class="stat-row"><span class="stat-label">Buying Power</span><span class="stat-value">${{ "%.2f"|format(buying_power) }}</span></div>
             <div class="stat-row"><span class="stat-label">Shares</span><span class="stat-value">{{ position_shares }}</span></div>
             <div class="stat-row"><span class="stat-label">Entry Price</span><span class="stat-value">{% if entry_price and entry_price > 0 %}${{ "%.2f"|format(entry_price) }}{% else %}N/A{% endif %}</span></div>
             <div class="stat-row"><span class="stat-label">Unrealized P&L</span><span class="stat-value {{ 'value-green' if (unrealized_pnl|default(0)) >= 0 else 'value-red' }}">${{ "%.2f"|format(unrealized_pnl|default(0.0)) }}</span></div>
@@ -230,14 +233,17 @@ def get_dashboard_data() -> dict:
             if initial_capital <= 0 and acct is not None:
                 initial_capital = float(getattr(acct, "cash", 0.0) or 0.0)
             cash = float(getattr(acct, "cash", 0.0) or 0.0) if acct else 0.0
+            buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0) if acct else 0.0
             equity = float(getattr(acct, "equity", 0.0) or 0.0) if acct else 0.0
         else:
             cash = acct.cash if acct else 0.0
+            buying_power = acct.buying_power if acct else 0.0
             equity = acct.equity if acct else 0.0
 
         # Signal
         last_signal = (_engine._last_signal_type.value
                        if _engine._last_signal_type else "HOLD")
+        last_signal_reason = getattr(_engine, "_last_signal_reason", "暂无")
         trade_in_progress = bool(getattr(_engine, "_trade_in_progress", False))
 
         # Guarantee no None values escape to the template
@@ -271,15 +277,17 @@ def get_dashboard_data() -> dict:
             "unrealized_pnl": _nz(unrealized_pnl, 0.0),
             "initial_capital": _nz(initial_capital, 0.0),
             "cash": _nz(round(cash, 2), 0.0),
+            "buying_power": _nz(round(buying_power, 2), 0.0),
             "equity": _nz(round(equity, 2), 0.0),
             "daily_pnl": _nz(daily_pnl, 0.0),
-            "trades_today": _nz(stats.get("total_trades"), 0),
+            "trades_today": _nz(stats.get("daily_trades_today"), 0),
             "consecutive_losses": _nz(stats.get("consecutive_losses"), 0),
             "win_rate": _nz(stats.get("win_rate"), 0.0),
             "running": _engine._running if _engine._running is not None else False,
             "halted": stats.get("halted", False) or False,
             "trade_in_progress": trade_in_progress,
             "last_signal": _nz(last_signal, "HOLD"),
+            "last_signal_reason": _nz(last_signal_reason, "暂无"),
             "last_update": datetime.now().strftime("%H:%M:%S"),
             "status_line": (f"{_engine.ticker} Range Arbitrage | "
                             f"{_engine.mode.upper()} Mode | "
@@ -298,10 +306,11 @@ def _empty_data() -> dict:
         "range_ready": False, "range_source": "unknown", "support_confidence": 0.0,
         "position_in_range": 50,
         "position_shares": 0, "entry_price": 0.0, "unrealized_pnl": 0.0,
-        "initial_capital": 0, "cash": 0, "equity": 0,
+        "initial_capital": 0, "cash": 0, "buying_power": 0, "equity": 0,
         "daily_pnl": 0, "trades_today": 0,
         "consecutive_losses": 0, "win_rate": 0,
         "running": False, "halted": False, "trade_in_progress": False, "last_signal": "N/A",
+        "last_signal_reason": "暂无",
         "last_update": datetime.now().strftime("%H:%M:%S"),
         "status_line": "SOXS Range Arbitrage | Engine not running",
     }

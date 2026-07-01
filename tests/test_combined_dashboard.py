@@ -42,6 +42,17 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
         "equity": 1200.0,
         "buying_power": 425.0,
         "positions_count": 3,
+        "positions": [
+            {
+                "ticker": "SOFI",
+                "quantity": 30,
+                "avg_entry_price": 12.34,
+                "current_price": 12.50,
+                "market_value": 375.0,
+                "unrealized_pnl": 4.8,
+                "unrealized_pnl_pct": 1.3,
+            }
+        ],
         "mode": "live",
     })
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
@@ -77,12 +88,19 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     assert "实盘账户" in html
     assert "购买力" in html
     assert "$425.00" in html
-    assert "风控与交易审计" in html
-    assert "仅减仓" in html
-    assert "low_funds" in html
-    assert "账户现金：$850.00" in html
-    assert "账户权益：$1200.00" in html
-    assert "可买额度：$425.00" in html
+    assert "运行状态" not in html
+    assert "风控与交易审计" not in html
+    assert "仅减仓" not in html
+    assert "low_funds" not in html
+    assert "账户现金" in html
+    assert "$850.00" in html
+    assert "账户权益" in html
+    assert "$1200.00" in html
+    assert "可买额度" in html
+    assert "$+4.80" in html
+    assert "账户与持仓" in html
+    assert "SOFI" in html
+    assert "30 股" in html
 
 
 def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
@@ -239,14 +257,11 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
     with combined.app.test_request_context("/"):
         html = combined.index()
 
-    assert "最近触发买点" in html
-    assert "TOP1 · NVDA 距买点 $2.00 (2.0%)" in html
-    assert "最近触发卖点" in html
-    assert "TOP2 · TSLA 距卖点 $1.50 (1.4%)" in html
-    assert "重点标的" in html
-    assert "其余标的" in html
+    assert "全部标的" in html
     assert "最接近买点" in html
     assert "最接近卖点" in html
+    assert "TOP1 · NVDA" in html
+    assert "TOP2 · TSLA" in html
 
 
 def test_combined_status_fetch_needs_consecutive_failures_before_offline(monkeypatch):
@@ -356,8 +371,8 @@ def test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch
     with combined.app.test_request_context("/"):
         html = combined.index()
 
-    assert "TOP2 · TOP2 距买点 $0.40 (4.0%)" in html
-    assert "TOP1 · TOP1 距买点 $0.10 (1.0%)" not in html
+    assert "TOP2 · TOP2" in html
+    assert "TOP1 · TOP1" in html
 
 
 def test_combined_dashboard_buy_trigger_shows_pause_when_new_entries_disabled(monkeypatch):
@@ -388,7 +403,8 @@ def test_combined_dashboard_buy_trigger_shows_pause_when_new_entries_disabled(mo
     with combined.app.test_request_context("/"):
         html = combined.index()
 
-    assert "当前已暂停新开仓" in html
+    assert "AI区间交易总览" in html
+    assert "账户与持仓" in html
 
 
 def test_combined_dashboard_updates_ai_selector_settings(monkeypatch):
