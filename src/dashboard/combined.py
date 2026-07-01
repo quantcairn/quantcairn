@@ -390,7 +390,7 @@ HTML = """<!DOCTYPE html>
         display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;
     }
     .account-strip{
-        display:grid;grid-template-columns:.85fr 1.15fr;gap:10px;align-items:start
+        display:flex;flex-direction:column;gap:10px
     }
     .account-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
     .metric,.section,.card{
@@ -667,25 +667,31 @@ HTML = """<!DOCTYPE html>
                                 <span class="metric-value small">{% if live_account and live_account.positions_count is not none %}{{ live_account.positions_count }}{% else %}暂无{% endif %}</span>
                             </div>
                         </div>
-                        {% if live_account and live_account.positions %}
-                        <div class="position-list">
-                            {% for pos in live_account.positions %}
-                            <div class="position-item">
-                                <div class="position-cell">
-                                    <span class="position-ticker">{{ pos.ticker }}</span>
-                                    <span class="val">{{ pos.quantity }} 股</span>
-                                </div>
-                                <div class="position-cell"><span class="label">成本</span><span class="val">${{ "%.2f"|format(pos.avg_entry_price) }}</span></div>
-                                <div class="position-cell"><span class="label">现价</span><span class="val">${{ "%.2f"|format(pos.current_price) }}</span></div>
-                                <div class="position-cell"><span class="label">市值</span><span class="val">${{ "%.2f"|format(pos.market_value) }}</span></div>
-                                <div class="position-cell"><span class="label">浮盈亏</span><span class="val {{ 'green' if pos.unrealized_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(pos.unrealized_pnl) }}</span></div>
-                                <div class="position-cell"><span class="label">收益率</span><span class="val {{ 'green' if pos.unrealized_pnl_pct >= 0 else 'red' }}">{{ "%+.2f"|format(pos.unrealized_pnl_pct) }}%</span></div>
+                        <div>
+                            <div class="panel-head" style="margin:0 0 8px 0;">
+                                <h2>真实仓位</h2>
+                                <span class="hint">仅显示 TOP1-5 对应标的</span>
                             </div>
-                            {% endfor %}
+                            {% if live_account and live_account.positions %}
+                            <div class="position-list">
+                                {% for pos in live_account.positions %}
+                                <div class="position-item">
+                                    <div class="position-cell">
+                                        <span class="position-ticker">{{ pos.ticker }}</span>
+                                        <span class="val">{{ pos.quantity }} 股</span>
+                                    </div>
+                                    <div class="position-cell"><span class="label">成本</span><span class="val">${{ "%.2f"|format(pos.avg_entry_price) }}</span></div>
+                                    <div class="position-cell"><span class="label">现价</span><span class="val">${{ "%.2f"|format(pos.current_price) }}</span></div>
+                                    <div class="position-cell"><span class="label">市值</span><span class="val">${{ "%.2f"|format(pos.market_value) }}</span></div>
+                                    <div class="position-cell"><span class="label">浮盈亏</span><span class="val {{ 'green' if pos.unrealized_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(pos.unrealized_pnl) }}</span></div>
+                                    <div class="position-cell"><span class="label">收益率</span><span class="val {{ 'green' if pos.unrealized_pnl_pct >= 0 else 'red' }}">{{ "%+.2f"|format(pos.unrealized_pnl_pct) }}%</span></div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <div class="position-empty">当前没有持仓。</div>
+                            {% endif %}
                         </div>
-                        {% else %}
-                        <div class="position-empty">当前没有持仓。</div>
-                        {% endif %}
                     </div>
                 </div>
 
