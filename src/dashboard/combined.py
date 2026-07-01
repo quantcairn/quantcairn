@@ -663,7 +663,7 @@ HTML = """<!DOCTYPE html>
                                 <span class="metric-value">{% if live_account and live_account.buying_power is not none %}${{ "%.2f"|format(live_account.buying_power) }}{% else %}暂无{% endif %}</span>
                             </div>
                             <div class="metric">
-                                <span class="metric-label">持仓数量</span>
+                                <span class="metric-label">精选持仓数量</span>
                                 <span class="metric-value small">{% if live_account and live_account.positions_count is not none %}{{ live_account.positions_count }}{% else %}暂无{% endif %}</span>
                             </div>
                         </div>

@@ -100,7 +100,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         <!-- Position Card -->
         <div class="card">
-            <h2>📊 Position</h2>
+            <h2>📊 账户与持仓</h2>
             <div class="stat-row"><span class="stat-label">策略分配本金</span><span class="stat-value">${{ "%.2f"|format(initial_capital) }}</span></div>
             <div class="stat-row"><span class="stat-label">账户现金</span><span class="stat-value">${{ "%.2f"|format(cash) }}</span></div>
             <div class="stat-row"><span class="stat-label">可买额度</span><span class="stat-value">${{ "%.2f"|format(buying_power) }}</span></div>
