@@ -183,7 +183,7 @@ class LongBridgeBroker(BrokerBase):
         self._account_retry_not_before = 0.0
         self._positions_retry_not_before = 0.0
         ttl_env = os.environ.get("LONGBRIDGE_CACHE_TTL_SECONDS")
-        ttl_seconds = float(ttl_env) if ttl_env else 8.0
+        ttl_seconds = float(ttl_env) if ttl_env else 60.0
         self._account_cache_ttl_seconds = max(5.0, ttl_seconds)
         self._positions_cache_ttl_seconds = max(5.0, ttl_seconds)
         self._cache_retry_backoff_seconds = max(5.0, min(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds))
@@ -427,7 +427,9 @@ class LongBridgeBroker(BrokerBase):
             self._write_audit("get_order", request, {"status": "rejected"}, ok=False, error="Not connected")
             return None
         try:
-            od: lb.OrderDetail = self._trade_ctx.order_detail(order_id=order_id)
+            # The SDK declares order_id as positional-only. Passing it by keyword
+            # causes every reconciliation request to fail after a live submission.
+            od: lb.OrderDetail = self._trade_ctx.order_detail(order_id)
             status_map = {
                 lb.OrderStatus.Filled: OrderStatus.FILLED,
                 lb.OrderStatus.PartialFilled: OrderStatus.PARTIALLY_FILLED,
@@ -446,9 +448,9 @@ class LongBridgeBroker(BrokerBase):
                 ticker=od.symbol,
                 side=OrderSide.BUY if od.side == lb.OrderSide.Buy else OrderSide.SELL,
                 order_type=OrderType.MARKET if od.order_type == lb.OrderType.MO else OrderType.LIMIT,
-                quantity=od.quantity,
-                filled_quantity=od.executed_quantity,
-                avg_fill_price=od.executed_price,
+                quantity=int(od.quantity or 0),
+                filled_quantity=int(od.executed_quantity or 0),
+                avg_fill_price=float(od.executed_price or 0.0),
                 status=mapped_status,
                 notes=str(od.msg or ""),
             )
@@ -457,12 +459,68 @@ class LongBridgeBroker(BrokerBase):
             self._write_audit("get_order", request, {"error": str(e)}, ok=False, error=str(e))
             return None
 
+    def get_active_orders(self, ticker: str) -> Optional[list[Order]]:
+        """Return unresolved orders for a symbol so engine startup can fail closed."""
+        if not self.is_connected():
+            return []
+        try:
+            details = self._trade_ctx.today_orders(_longbridge_symbol(ticker))
+            active_statuses = {
+                lb.OrderStatus.New,
+                lb.OrderStatus.PartialFilled,
+                lb.OrderStatus.PendingCancel,
+                lb.OrderStatus.WaitToNew,
+                lb.OrderStatus.NotReported,
+                lb.OrderStatus.ProtectedNotReported,
+                lb.OrderStatus.VarietiesNotReported,
+            }
+            orders = []
+            for od in details or []:
+                if od.status not in active_statuses:
+                    continue
+                orders.append(Order(
+                    order_id=od.order_id,
+                    ticker=od.symbol,
+                    side=OrderSide.BUY if od.side == lb.OrderSide.Buy else OrderSide.SELL,
+                    order_type=OrderType.MARKET if od.order_type == lb.OrderType.MO else OrderType.LIMIT,
+                    quantity=int(od.quantity or 0),
+                    filled_quantity=int(od.executed_quantity or 0),
+                    avg_fill_price=float(od.executed_price or 0.0),
+                    status=(
+                        OrderStatus.PARTIALLY_FILLED
+                        if od.status == lb.OrderStatus.PartialFilled
+                        else OrderStatus.PENDING
+                    ),
+                    notes=str(od.msg or ""),
+                ))
+            self._write_audit(
+                "get_active_orders",
+                {"ticker": ticker},
+                {"count": len(orders), "order_ids": [o.order_id for o in orders]},
+                ok=True,
+            )
+            return orders
+        except Exception as exc:
+            logger.error("Get active orders failed: %s", exc)
+            self._write_audit(
+                "get_active_orders",
+                {"ticker": ticker},
+                {"error": str(exc)},
+                ok=False,
+                error=str(exc),
+            )
+            # None distinguishes an API failure from a confirmed empty result.
+            return None
+
     def get_positions(self) -> list[Position]:
         request = {}
         now = time.time()
         if now < self._positions_retry_not_before:
             return list(self._positions_cache)
-        if self._positions_cache and (now - self._positions_cache_fetched_at) < self._positions_cache_ttl_seconds:
+        if (
+            self._positions_cache_fetched_at > 0
+            and (now - self._positions_cache_fetched_at) < self._positions_cache_ttl_seconds
+        ):
             return list(self._positions_cache)
         if not self.is_connected():
             self._write_audit("get_positions", request, {"positions": []}, ok=False, error="Not connected")
@@ -538,7 +596,7 @@ class LongBridgeBroker(BrokerBase):
         if now < self._account_retry_not_before:
             return self._account_cache
         if (
-            (self._account_cache.cash > 0 or self._account_cache.equity > 0 or self._account_cache.buying_power > 0)
+            self._account_cache_fetched_at > 0
             and (now - self._account_cache_fetched_at) < self._account_cache_ttl_seconds
         ):
             return self._account_cache
@@ -566,9 +624,8 @@ class LongBridgeBroker(BrokerBase):
                 buying_power=round(bp, 2),
                 positions=list(self._positions_cache),
             )
-            if account.cash > 0 or account.equity > 0 or account.buying_power > 0 or account.positions:
-                self._account_cache = account
-                self._account_cache_fetched_at = now
+            self._account_cache = account
+            self._account_cache_fetched_at = now
             self._account_retry_not_before = now
             self._write_audit("get_account", request, account, ok=True)
             return self._account_cache

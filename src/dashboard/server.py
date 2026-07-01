@@ -232,6 +232,7 @@ def get_dashboard_data() -> dict:
             cash = float(getattr(acct, "cash", 0.0) or 0.0) if acct else 0.0
             buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0) if acct else 0.0
             equity = float(getattr(acct, "equity", 0.0) or 0.0) if acct else 0.0
+            initial_capital = buying_power
         else:
             cash = acct.cash if acct else 0.0
             buying_power = acct.buying_power if acct else 0.0

@@ -181,7 +181,8 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
         def cancel_order(self, **kwargs):
             return SimpleNamespace(ok=True)
 
-        def order_detail(self, **kwargs):
+        def order_detail(self, order_id):
+            assert order_id == "LB-12345"
             return SimpleNamespace(
                 order_id="LB-12345",
                 symbol="AAPL",

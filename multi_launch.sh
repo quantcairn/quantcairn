@@ -110,7 +110,7 @@ EOF
             if [ "$ENGINE_MODE" = "live" ]; then
                 cli_mode="--live"
                 : > "$LOG_DIR/${log_name}.log"
-                nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
+                nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
             else
                 : > "$LOG_DIR/${log_name}.log"
                 SOXS_SYNTHETIC_MARKET=1 \

@@ -17,8 +17,6 @@
     <key>Minute</key>
     <integer>25</integer>
   </dict>
-  <key>RunAtLoad</key>
-  <true/>
   <key>EnvironmentVariables</key>
   <dict>
     <key>SOXS_USE_LAUNCHD_TOPS</key>
@@ -31,6 +29,6 @@
   <key>WorkingDirectory</key>
   <string>/Users/chenwei/soxs-range-arbitrage</string>
   <key>KeepAlive</key>
-  <true/>
+  <false/>
 </dict>
 </plist>

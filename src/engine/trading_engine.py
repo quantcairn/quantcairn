@@ -77,6 +77,7 @@ class TradingEngine:
             max_position=config.position.max_position,
             max_drawdown_pct=config.risk.max_drawdown_pct,
             cool_down_seconds=config.position.cool_down_seconds,
+            state_path=PROJECT_DIR / "state" / "risk" / f"{self.ticker.upper()}.json",
         )
 
         # Broker setup
@@ -117,6 +118,10 @@ class TradingEngine:
         self._trade_in_progress = False
         self._last_signal_reason: str = "暂无"
         self._pending_order: Optional[dict] = None
+        self._pending_order_state_path = (
+            PROJECT_DIR / "state" / "pending_orders" / f"{self.ticker.upper()}.json"
+        )
+        self._load_pending_order()
         self._reduce_only = bool(getattr(config.position, "reduce_only", False))
 
         # NY timezone
@@ -187,6 +192,10 @@ class TradingEngine:
         # Connect broker
         if not self.broker.connect():
             self.notifier.alert("Failed to connect to broker", "error")
+            return
+
+        if self.mode == "live" and not self._adopt_active_live_order():
+            self.broker.disconnect()
             return
 
         # Seed auto range from historical data (so it's ready immediately)
@@ -281,16 +290,14 @@ class TradingEngine:
                         self._handle_buy_signal(signal, current_price, quote.ask)
 
                 elif signal.type == SignalType.SELL and has_position:
-                    if is_halted:
-                        pass
-                    else:
-                        self._handle_sell_signal(signal, current_price, quote.bid)
+                    # A risk halt blocks new exposure, not position reduction.
+                    self._handle_sell_signal(signal, current_price, quote.bid)
 
                 elif signal.type == SignalType.STOP_LOSS and has_position:
                     self._handle_stop_loss(signal, current_price, quote.bid)  # Stop loss always fires
 
                 # 9. Risk: check stop loss (always fires, even during halt)
-                if has_position and self._entry_price:
+                if has_position and self._entry_price and not self._pending_order:
                     rs = self.strategy.get_range_state()
                     sl_check = self.risk.check_stop_loss(
                         current_price, self._entry_price, rs.support
@@ -341,7 +348,9 @@ class TradingEngine:
             acct = self.broker.get_account()
             cash = float(getattr(acct, "cash", 0.0) or 0.0)
             buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
-            available_cash = buying_power if buying_power > 0 else cash
+            # Do not size live orders from margin buying power. The strategy's
+            # capital limit is the settled/available cash reported by the broker.
+            available_cash = max(0.0, cash)
             shares = determine_buy_quantity(
                 current_price=current_price,
                 available_cash=available_cash,
@@ -424,7 +433,9 @@ class TradingEngine:
                 )
 
             if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
-                pnl = self._calculate_pnl(order.avg_fill_price)
+                pnl = self._calculate_pnl(
+                    order.avg_fill_price, int(order.filled_quantity or 0)
+                )
                 self.notifier.trade(
                     self.ticker, "SELL", order.filled_quantity, order.avg_fill_price, pnl
                 )
@@ -442,9 +453,12 @@ class TradingEngine:
                     side="LONG",
                 ))
 
-                self._entry_price = None
-                self._position_shares = 0
-                self.strategy.clear_entry()
+                self._position_shares = max(
+                    0, self._position_shares - int(order.filled_quantity or 0)
+                )
+                if self._position_shares <= 0:
+                    self._entry_price = None
+                    self.strategy.clear_entry()
         finally:
             self._trade_in_progress = False
 
@@ -477,7 +491,9 @@ class TradingEngine:
                 )
 
             if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
-                pnl = self._calculate_pnl(order.avg_fill_price)
+                pnl = self._calculate_pnl(
+                    order.avg_fill_price, int(order.filled_quantity or 0)
+                )
                 self.risk.record_trade(TradeRecord(
                     entry_time=datetime.now(),
                     exit_time=datetime.now(),
@@ -489,19 +505,25 @@ class TradingEngine:
                              / (self._entry_price or 1) * 100),
                     side="LONG",
                 ))
-                self._entry_price = None
-                self._position_shares = 0
-                self.strategy.clear_entry()
+                self._position_shares = max(
+                    0, self._position_shares - int(order.filled_quantity or 0)
+                )
+                if self._position_shares <= 0:
+                    self._entry_price = None
+                    self.strategy.clear_entry()
         finally:
             self._trade_in_progress = False
 
     # ---- Helpers ----
 
-    def _calculate_pnl(self, exit_price: float) -> Optional[float]:
+    def _calculate_pnl(
+        self, exit_price: float, shares: Optional[int] = None
+    ) -> Optional[float]:
         """Calculate realized P&L for current position."""
         if self._entry_price is None:
             return None
-        return (exit_price - self._entry_price) * self._position_shares
+        quantity = self._position_shares if shares is None else shares
+        return (exit_price - self._entry_price) * quantity
 
     def _remember_pending_order(self, order, side: str, signal_type: str) -> None:
         """Store a submitted live order so later fills can be reconciled."""
@@ -514,7 +536,98 @@ class TradingEngine:
             "entry_price_before": self._entry_price,
             "created_at": datetime.now(),
         }
+        self._persist_pending_order()
         self._last_signal_reason = f"订单已提交，等待成交：{side} {order.quantity} 股"
+
+    def _adopt_active_live_order(self) -> bool:
+        """Block startup unless broker-side open orders are safely accounted for."""
+        get_active_orders = getattr(self.broker, "get_active_orders", None)
+        if not callable(get_active_orders):
+            return True
+        active_orders = get_active_orders(self.ticker)
+        if active_orders is None:
+            self.notifier.alert(
+                f"{self.ticker} 无法核对活动订单，拒绝启动实盘交易",
+                "error",
+            )
+            return False
+        if self._pending_order:
+            known_id = str(self._pending_order.get("order_id") or "")
+            unknown = [order for order in active_orders if str(order.order_id) != known_id]
+            if unknown:
+                self.notifier.alert(
+                    f"{self.ticker} 存在 {len(unknown)} 笔未接管活动订单，拒绝启动",
+                    "error",
+                )
+                return False
+            return True
+        if len(active_orders) > 1:
+            self.notifier.alert(
+                f"{self.ticker} 存在 {len(active_orders)} 笔活动订单，拒绝启动",
+                "error",
+            )
+            return False
+        if len(active_orders) == 1:
+            order = active_orders[0]
+            self._remember_pending_order(
+                order,
+                "BUY" if order.side == OrderSide.BUY else "SELL",
+                "RECOVERED",
+            )
+            self._last_signal_reason = (
+                f"已接管券商活动订单：{self._pending_order['side']} "
+                f"{str(order.order_id)[:12]}"
+            )
+        return True
+
+    def _load_pending_order(self) -> None:
+        """Restore an unresolved live order so restarts cannot submit duplicates."""
+        path = self._pending_order_state_path
+        if not path.exists():
+            return
+        try:
+            pending = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(pending, dict) or not pending.get("order_id"):
+                return
+            created_at = pending.get("created_at")
+            if isinstance(created_at, str):
+                pending["created_at"] = datetime.fromisoformat(created_at)
+            self._pending_order = pending
+            self._last_signal_reason = (
+                f"恢复待成交订单：{pending.get('side', 'UNKNOWN')} "
+                f"{str(pending['order_id'])[:12]}"
+            )
+        except Exception as exc:
+            logger.error("Pending-order state is invalid for %s: %s", self.ticker, exc)
+            # Fail closed: a corrupt order-state file must not permit new orders.
+            self._pending_order = {
+                "order_id": "STATE_ERROR",
+                "side": "UNKNOWN",
+                "requested_quantity": 0,
+                "acknowledged_filled_quantity": 0,
+                "created_at": datetime.now(),
+            }
+
+    def _persist_pending_order(self) -> None:
+        path = self._pending_order_state_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(self._pending_order or {})
+        created_at = payload.get("created_at")
+        if isinstance(created_at, datetime):
+            payload["created_at"] = created_at.isoformat()
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+
+    def _clear_pending_order(self) -> None:
+        self._pending_order = None
+        try:
+            self._pending_order_state_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("Could not clear pending-order state for %s: %s", self.ticker, exc)
 
     def _reconcile_pending_order(self) -> None:
         """Pull the latest broker status for any submitted live order."""
@@ -536,6 +649,7 @@ class TradingEngine:
             else:
                 self._apply_sell_fill(order, delta_filled, pending)
             pending["acknowledged_filled_quantity"] = current_filled
+            self._persist_pending_order()
 
         if order.status == OrderStatus.PARTIALLY_FILLED:
             self._last_signal_reason = (
@@ -544,18 +658,18 @@ class TradingEngine:
             return
 
         if order.status == OrderStatus.FILLED:
-            self._pending_order = None
+            self._clear_pending_order()
             return
 
         if order.status == OrderStatus.CANCELLED:
             self._last_signal_reason = f"订单已取消：{pending['side']} {pending['order_id'][:12]}"
-            self._pending_order = None
+            self._clear_pending_order()
             return
 
         if order.status == OrderStatus.REJECTED:
             self._last_signal_reason = f"订单被拒绝：{order.notes or pending['order_id'][:12]}"
             self.notifier.alert(self._last_signal_reason, "warning")
-            self._pending_order = None
+            self._clear_pending_order()
 
     def _apply_buy_fill(self, order, filled_quantity: int) -> None:
         fill_price = float(order.avg_fill_price or self._entry_price or 0.0)

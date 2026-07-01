@@ -1,5 +1,5 @@
 """Combined dashboard aggregating the selected TOP5 trading engines."""
-import json, os, subprocess, urllib.request
+import json, os, subprocess, threading, urllib.request
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +25,8 @@ TICKERS = [
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
 _LIVE_ACCOUNT_CACHE = None
 _LIVE_ACCOUNT_CACHE_AT = 0.0
-_LIVE_ACCOUNT_CACHE_TTL = float(os.getenv("SOXS_LIVE_ACCOUNT_CACHE_TTL", "8"))
+_LIVE_ACCOUNT_CACHE_TTL = float(os.getenv("SOXS_LIVE_ACCOUNT_CACHE_TTL", "60"))
+_LIVE_ACCOUNT_LOCK = threading.Lock()
 _STATUS_CACHE: dict[int, dict] = {}
 _STATUS_FAILURES: dict[int, int] = {}
 _STATUS_OFFLINE_THRESHOLD = 3
@@ -64,10 +65,17 @@ def _fetch_live_account_summary():
     """Read live buying power from LongBridge if credentials are present."""
     global _LIVE_ACCOUNT_CACHE, _LIVE_ACCOUNT_CACHE_AT
     now = time.time()
-    if _LIVE_ACCOUNT_CACHE and (now - _LIVE_ACCOUNT_CACHE_AT) < _LIVE_ACCOUNT_CACHE_TTL:
-        return _LIVE_ACCOUNT_CACHE
-    if not _has_live_account_env():
-        return None
+    with _LIVE_ACCOUNT_LOCK:
+        if _LIVE_ACCOUNT_CACHE and (now - _LIVE_ACCOUNT_CACHE_AT) < _LIVE_ACCOUNT_CACHE_TTL:
+            return _LIVE_ACCOUNT_CACHE
+        if not _has_live_account_env():
+            return None
+        return _refresh_live_account_summary(now)
+
+
+def _refresh_live_account_summary(now: float):
+    """Refresh the account once while the caller holds the process lock."""
+    global _LIVE_ACCOUNT_CACHE, _LIVE_ACCOUNT_CACHE_AT
     try:
         from src.broker.longbridge_broker import LongBridgeBroker
     except Exception:
@@ -87,7 +95,7 @@ def _fetch_live_account_summary():
             log_path=_env("LONGBRIDGE_LOG_PATH"),
         )
         if not broker.connect():
-            return None
+            return _LIVE_ACCOUNT_CACHE
         positions = broker.get_positions()
         account = broker.get_account()
         position_rows = []
@@ -112,7 +120,7 @@ def _fetch_live_account_summary():
             "mode": "live",
         }
     except Exception:
-        return None
+        return _LIVE_ACCOUNT_CACHE
     finally:
         if broker is not None:
             try:

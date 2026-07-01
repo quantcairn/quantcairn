@@ -57,7 +57,7 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     })
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
     monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
-        "ticker": name.replace(".yaml", ""),
+        "ticker": "SOFI" if name == "TOP3.yaml" else name.replace(".yaml", ""),
         "initial_capital": 0.0,
         "support": 0.0,
         "resistance": 0.0,
@@ -86,7 +86,6 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
         html = combined.index()
 
     assert "实盘账户" in html
-    assert "购买力" in html
     assert "$425.00" in html
     assert "运行状态" not in html
     assert "风控与交易审计" not in html

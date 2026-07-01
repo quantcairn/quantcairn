@@ -8,9 +8,12 @@ Rules (in priority order):
 4. Position Size Limit — never exceed max_position
 5. Cool-down — minimum time between trades
 """
+import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,7 @@ class RiskManager:
         max_position: int = 300,
         max_drawdown_pct: float = 10.0,
         cool_down_seconds: int = 30,
+        state_path: Optional[Path] = None,
     ):
         self.stop_loss_pct = stop_loss_pct
         self.daily_loss_limit = daily_loss_limit
@@ -57,6 +61,7 @@ class RiskManager:
         self.max_position = max_position
         self.max_drawdown_pct = max_drawdown_pct
         self.cool_down_seconds = cool_down_seconds
+        self._state_path = Path(state_path) if state_path else None
 
         # State tracking
         self._trade_history: list[TradeRecord] = []
@@ -68,6 +73,8 @@ class RiskManager:
         self._halted: bool = False
         self._halt_reason: str = ""
         self._halt_until: Optional[datetime] = None
+        self._last_state_save_at = 0.0
+        self._load_state()
 
     # ---- Public API ----
 
@@ -101,6 +108,7 @@ class RiskManager:
                 self._halt_reason = ""
                 self._halt_until = None
                 self._consecutive_losses = 0
+                self._save_state(force=True)
                 logger.info("Trading halt expired — consecutive losses reset, resuming")
 
         # 2. Position size limit
@@ -204,6 +212,7 @@ class RiskManager:
             )
         else:
             self._consecutive_losses = 0
+        self._save_state(force=True)
 
     def _trading_date(self) -> str:
         """Use ET timezone date so trading day doesn't reset at Beijing midnight."""
@@ -265,6 +274,7 @@ class RiskManager:
         # 30 minute halt
         from datetime import timedelta
         self._halt_until += timedelta(minutes=30)
+        self._save_state(force=True)
         logger.critical(f"⚠️  TRADING HALTED: {reason}")
 
     def update_equity(self, current_equity: float) -> None:
@@ -276,3 +286,86 @@ class RiskManager:
             self._daily_peak_equity[today] = current_equity
         else:
             self._current_equity = current_equity
+        self._save_state()
+
+    def _load_state(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            self._consecutive_losses = int(data.get("consecutive_losses", 0) or 0)
+            self._daily_pnl = {
+                str(k): float(v) for k, v in (data.get("daily_pnl") or {}).items()
+            }
+            self._daily_peak_equity = {
+                str(k): float(v)
+                for k, v in (data.get("daily_peak_equity") or {}).items()
+            }
+            self._current_equity = float(data.get("current_equity", 0.0) or 0.0)
+            self._halted = bool(data.get("halted", False))
+            self._halt_reason = str(data.get("halt_reason", "") or "")
+            if data.get("halt_until"):
+                self._halt_until = datetime.fromisoformat(data["halt_until"])
+            if data.get("last_trade_time"):
+                self._last_trade_time = datetime.fromisoformat(data["last_trade_time"])
+            self._trade_history = [
+                TradeRecord(
+                    entry_time=datetime.fromisoformat(row["entry_time"]),
+                    exit_time=datetime.fromisoformat(row["exit_time"]),
+                    entry_price=float(row["entry_price"]),
+                    exit_price=float(row["exit_price"]),
+                    shares=int(row["shares"]),
+                    pnl=float(row["pnl"]),
+                    pnl_pct=float(row["pnl_pct"]),
+                    side=str(row["side"]),
+                )
+                for row in (data.get("trade_history") or [])
+            ]
+        except Exception as exc:
+            logger.error("Risk state is invalid at %s: %s", self._state_path, exc)
+            self._halted = True
+            self._halt_reason = "risk state invalid"
+            self._halt_until = None
+
+    def _save_state(self, force: bool = False) -> None:
+        if self._state_path is None:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_state_save_at) < 30.0:
+            return
+        payload = {
+            "consecutive_losses": self._consecutive_losses,
+            "daily_pnl": self._daily_pnl,
+            "daily_peak_equity": self._daily_peak_equity,
+            "current_equity": self._current_equity,
+            "halted": self._halted,
+            "halt_reason": self._halt_reason,
+            "halt_until": self._halt_until.isoformat() if self._halt_until else None,
+            "last_trade_time": (
+                self._last_trade_time.isoformat() if self._last_trade_time else None
+            ),
+            "trade_history": [
+                {
+                    "entry_time": trade.entry_time.isoformat(),
+                    "exit_time": trade.exit_time.isoformat(),
+                    "entry_price": trade.entry_price,
+                    "exit_price": trade.exit_price,
+                    "shares": trade.shares,
+                    "pnl": trade.pnl,
+                    "pnl_pct": trade.pnl_pct,
+                    "side": trade.side,
+                }
+                for trade in self._trade_history[-500:]
+            ],
+        }
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._state_path.with_suffix(".tmp")
+            temp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp_path.replace(self._state_path)
+            self._last_state_save_at = now
+        except OSError as exc:
+            logger.error("Could not persist risk state at %s: %s", self._state_path, exc)
