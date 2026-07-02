@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import time
+import json
+import urllib.request
 from pathlib import Path
 
 import yaml
@@ -22,6 +24,7 @@ logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 TOP_CONFIGS = [PROJECT_DIR / "configs" / f"TOP{idx}.yaml" for idx in range(1, 6)]
+TOP_PORTS = [8091, 8092, 8093, 8094, 8095]
 
 
 def _normalize_ticker(value: str) -> str:
@@ -41,6 +44,19 @@ def _load_assigned_symbols() -> set[str]:
     return symbols
 
 
+def _load_configured_assignments() -> dict[int, str]:
+    assignments: dict[int, str] = {}
+    for path, port in zip(TOP_CONFIGS, TOP_PORTS):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        ticker = _normalize_ticker(data.get("ticker"))
+        if ticker and EQUITY_SYMBOL_RE.fullmatch(ticker):
+            assignments[port] = ticker
+    return assignments
+
+
 def _is_equity_position(position: Position) -> bool:
     return bool(EQUITY_SYMBOL_RE.fullmatch(_normalize_ticker(getattr(position, "ticker", ""))))
 
@@ -51,6 +67,9 @@ class OrphanPositionMonitor:
         self.poll_interval_seconds = max(60, int(poll_interval_seconds or 60))
         self._running = False
         self._engines: dict[str, TradingEngine] = {}
+        self._startup_at = time.monotonic()
+        self._assignment_failures: dict[int, int] = {}
+        self._last_orphan_symbols: set[str] | None = None
 
     def verify_broker_positions(self) -> list[Position] | None:
         positions = self.broker.get_positions()
@@ -116,7 +135,7 @@ class OrphanPositionMonitor:
         return positions, account
 
     def scan_orphans(self, positions: list[Position] | None = None) -> dict[str, Position]:
-        assigned = _load_assigned_symbols()
+        assigned = self._active_assigned_symbols()
         if positions is None:
             positions = self.verify_broker_positions()
         if positions is None:
@@ -130,6 +149,34 @@ class OrphanPositionMonitor:
             orphans[ticker] = pos
         return orphans
 
+    def _is_top_process_active(self, port: int) -> bool:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(f"http://127.0.0.1:{port}/api/status", timeout=1.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            return bool(isinstance(payload, dict) and payload.get("running"))
+        except Exception:
+            return False
+
+    def _active_assigned_symbols(self) -> set[str]:
+        assignments = _load_configured_assignments()
+        # TOP processes are started after the orphan monitor. Avoid takeover
+        # during their normal sequential startup window.
+        if (time.monotonic() - self._startup_at) < 120:
+            return set(assignments.values())
+
+        active: set[str] = set()
+        for port, ticker in assignments.items():
+            if self._is_top_process_active(port):
+                self._assignment_failures[port] = 0
+                active.add(ticker)
+                continue
+            failures = self._assignment_failures.get(port, 0) + 1
+            self._assignment_failures[port] = failures
+            if failures < 3:
+                active.add(ticker)
+        return active
+
     def log_startup_scan(self, orphans: dict[str, Position]) -> None:
         append_runtime_audit(
             {
@@ -142,6 +189,25 @@ class OrphanPositionMonitor:
                 "orphan_count": len(orphans),
             }
         )
+        self._last_orphan_symbols = set(orphans)
+
+    def _log_orphan_change(self, orphans: dict[str, Position]) -> None:
+        symbols = set(orphans)
+        if self._last_orphan_symbols is None:
+            self._last_orphan_symbols = symbols
+            return
+        if symbols == self._last_orphan_symbols:
+            return
+        append_runtime_audit(
+            {
+                "phase": "orphan_assignment_change",
+                "execution_mode": "live",
+                "symbols": sorted(symbols),
+                "added": sorted(symbols - self._last_orphan_symbols),
+                "removed": sorted(self._last_orphan_symbols - symbols),
+            }
+        )
+        self._last_orphan_symbols = symbols
 
     def run(self) -> int:
         positions = self.verify_broker_positions()
@@ -159,6 +225,7 @@ class OrphanPositionMonitor:
                 time.sleep(30)
                 positions = self.verify_broker_positions()
                 orphans = self.scan_orphans(positions)
+                self._log_orphan_change(orphans)
                 continue
 
             positions = self.verify_broker_positions()
@@ -167,6 +234,7 @@ class OrphanPositionMonitor:
                 continue
 
             orphans = self.scan_orphans(positions)
+            self._log_orphan_change(orphans)
             for symbol, pos in list(orphans.items()):
                 self._evaluate_symbol(symbol, pos)
             time.sleep(self.poll_interval_seconds)

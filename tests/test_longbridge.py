@@ -36,7 +36,25 @@ def test_longbridge_validates_order(tmp_path):
         raise AssertionError("invalid side should fail")
 
 
+def test_longbridge_live_buy_is_blocked_by_global_reduce_only(tmp_path):
+    broker = LongBridgeBroker(
+        dry_run=False,
+        log_dir=str(tmp_path),
+        api_key="key",
+        api_secret="secret",
+        base_url="https://example.invalid",
+    )
+
+    response = broker.place_order(
+        {"symbol": "AAPL", "side": "buy", "qty": 1, "order_type": "market"}
+    )
+
+    assert response["status"] == "rejected"
+    assert response["reason"] == "global reduce-only blocks live BUY"
+
+
 def run_test_direct():
     tmp_root = Path(tempfile.mkdtemp(prefix="longbridge-legacy-test-"))
     test_longbridge_dry_run_audit_log(tmp_root)
     test_longbridge_validates_order(tmp_root)
+    test_longbridge_live_buy_is_blocked_by_global_reduce_only(tmp_root)

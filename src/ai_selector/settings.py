@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-SETTINGS_PATH = PROJECT_DIR / "state" / "ai_selector_settings.json"
+STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
+SETTINGS_PATH = STATE_DIR / "ai_selector_settings.json"
 
 
 def load_runtime_settings() -> dict:

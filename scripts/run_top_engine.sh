@@ -51,7 +51,7 @@ if [ "$ENGINE_MODE" = "live" ]; then
     if [ "$engine_index" -gt 0 ] && [ "$startup_delay" -gt 0 ] 2>/dev/null; then
         sleep $((engine_index * startup_delay))
     fi
-    exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --anytime --port "$port" \
+    exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --port "$port" \
         >> "${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}/${log_name}.log" 2>&1
 fi
 

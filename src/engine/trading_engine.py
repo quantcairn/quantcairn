@@ -29,6 +29,7 @@ from .position_sizing import determine_buy_quantity
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
 INVERSE_ETF_SYMBOLS = {"SOXS", "SQQQ", "SPXU", "SDOW", "FAZ", "SOXL"}
 
 # Try to import pytz, fall back if not available
@@ -167,7 +168,7 @@ class TradingEngine:
             max_position=config.position.max_position,
             max_drawdown_pct=config.risk.max_drawdown_pct,
             cool_down_seconds=config.position.cool_down_seconds,
-            state_path=PROJECT_DIR / "state" / "risk" / f"{self.ticker.upper()}.json",
+            state_path=STATE_DIR / "risk" / f"{self.ticker.upper()}.json",
         )
 
         # Broker setup
@@ -210,15 +211,26 @@ class TradingEngine:
         self._pending_order: Optional[dict] = None
         self._last_exit_check_at = 0.0
         self._pending_order_state_path = (
-            PROJECT_DIR / "state" / "pending_orders" / f"{self.ticker.upper()}.json"
+            STATE_DIR / "pending_orders" / f"{self.ticker.upper()}.json"
         )
         self._position_sync_state_path = (
-            PROJECT_DIR / "state" / "position_sync" / f"{self.ticker.upper()}.json"
+            STATE_DIR / "position_sync" / f"{self.ticker.upper()}.json"
+        )
+        self._sell_lock_path = (
+            STATE_DIR / "sell_locks" / f"{self.ticker.upper()}.lock"
         )
         self._position_sync_fence: Optional[dict] = None
         self._load_pending_order()
         self._load_position_sync_fence()
         self._reduce_only = bool(getattr(config.position, "reduce_only", False))
+        if self.mode == "live" and (
+            self._position_sync_fence
+            or (
+                self._pending_order
+                and str(self._pending_order.get("side") or "").upper() == "SELL"
+            )
+        ):
+            self._acquire_sell_lock("restored_sell_protection")
 
         # NY timezone
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
@@ -530,6 +542,9 @@ class TradingEngine:
 
     def _handle_sell_signal(self, signal, current_price: float, bid: float) -> None:
         """Handle a SELL signal (take profit at resistance)."""
+        if not self._acquire_sell_lock("range_sell"):
+            self._last_signal_reason = "卖出已跳过：同标的卖出锁已生效"
+            return
         self._trade_in_progress = True
         try:
             order = self.broker.place_order(
@@ -579,11 +594,16 @@ class TradingEngine:
                 if self._position_shares <= 0:
                     self._entry_price = None
                     self.strategy.clear_entry()
+            if order.status == OrderStatus.REJECTED:
+                self._release_sell_lock("order_rejected")
         finally:
             self._trade_in_progress = False
 
     def _handle_stop_loss(self, signal, current_price: float, bid: float) -> None:
         """Handle stop loss: exit position immediately."""
+        if not self._acquire_sell_lock("strategy_stop_loss"):
+            self._last_signal_reason = "止损卖出已跳过：同标的卖出锁已生效"
+            return
         self._trade_in_progress = True
         try:
             self.notifier.alert(
@@ -632,6 +652,8 @@ class TradingEngine:
                 if self._position_shares <= 0:
                     self._entry_price = None
                     self.strategy.clear_entry()
+            if order.status == OrderStatus.REJECTED:
+                self._release_sell_lock("order_rejected")
         finally:
             self._trade_in_progress = False
 
@@ -707,6 +729,8 @@ class TradingEngine:
         return True
 
     def _has_active_sell_protection(self) -> bool:
+        if self.mode == "live" and self._sell_lock_path.exists():
+            return True
         if self._position_sync_fence:
             return True
         if self._pending_order and str(self._pending_order.get("side") or "").upper() == "SELL":
@@ -790,6 +814,17 @@ class TradingEngine:
     ) -> Optional[str]:
         if quantity <= 0:
             return None
+        if not self._acquire_sell_lock(f"{mode}:{reason}"):
+            self._last_signal_reason = "动态退出已跳过：同标的卖出锁已生效"
+            self._write_runtime_audit(
+                audit_phase,
+                reason=reason,
+                quantity=quantity,
+                mode=mode,
+                skipped=True,
+                skip_reason="cross_process_sell_lock_active",
+            )
+            return None
         self._trade_in_progress = True
         order_id = None
         try:
@@ -854,6 +889,8 @@ class TradingEngine:
                     self._entry_price = None
                     self.strategy.clear_entry()
                 self._last_signal_reason = f"动态退出已执行：{reason}"
+            if order.status == OrderStatus.REJECTED:
+                self._release_sell_lock("order_rejected")
             return order_id or None
         finally:
             self._trade_in_progress = False
@@ -923,6 +960,10 @@ class TradingEngine:
             return False
         if len(active_orders) == 1:
             order = active_orders[0]
+            if order.side == OrderSide.SELL:
+                self._acquire_sell_lock("recovered_active_sell")
+            else:
+                self._release_sell_lock("active_order_is_buy")
             self._remember_pending_order(
                 order,
                 "BUY" if order.side == OrderSide.BUY else "SELL",
@@ -932,7 +973,56 @@ class TradingEngine:
                 f"已接管券商活动订单：{self._pending_order['side']} "
                 f"{str(order.order_id)[:12]}"
             )
+        elif not self._position_sync_fence:
+            self._release_sell_lock("startup_no_active_sell")
         return True
+
+    def _acquire_sell_lock(self, reason: str) -> bool:
+        """Atomically reserve this symbol's live SELL path across processes."""
+        if self.mode != "live":
+            return True
+        path = self._sell_lock_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "symbol": self.ticker.upper(),
+            "pid": os.getpid(),
+            "reason": reason,
+            "created_at": datetime.now().isoformat(),
+        }
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            self._write_runtime_audit(
+                "sell_lock_blocked",
+                lock_path=str(path),
+                reason=reason,
+            )
+            return False
+        try:
+            os.write(descriptor, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        finally:
+            os.close(descriptor)
+        self._write_runtime_audit(
+            "sell_lock_acquired",
+            lock_path=str(path),
+            reason=reason,
+        )
+        return True
+
+    def _release_sell_lock(self, reason: str) -> None:
+        if self.mode != "live":
+            return
+        try:
+            existed = self._sell_lock_path.exists()
+            self._sell_lock_path.unlink(missing_ok=True)
+            if existed:
+                self._write_runtime_audit(
+                    "sell_lock_released",
+                    lock_path=str(self._sell_lock_path),
+                    reason=reason,
+                )
+        except OSError as exc:
+            logger.error("Could not release sell lock for %s: %s", self.ticker, exc)
 
     def _load_pending_order(self) -> None:
         """Restore an unresolved live order so restarts cannot submit duplicates."""
@@ -1026,6 +1116,11 @@ class TradingEngine:
             self._position_sync_state_path.unlink(missing_ok=True)
         except OSError as exc:
             logger.error("Could not clear position-sync state for %s: %s", self.ticker, exc)
+        if not (
+            self._pending_order
+            and str(self._pending_order.get("side") or "").upper() == "SELL"
+        ):
+            self._release_sell_lock("broker_position_confirmed")
 
     def _apply_position_sync_fence(self, observed_quantity: int) -> int:
         """Accept a broker position only after it reflects the latest sell fill."""
@@ -1076,12 +1171,16 @@ class TradingEngine:
         if order.status == OrderStatus.CANCELLED:
             self._last_signal_reason = f"订单已取消：{pending['side']} {pending['order_id'][:12]}"
             self._clear_pending_order()
+            if not self._position_sync_fence:
+                self._release_sell_lock("order_cancelled")
             return
 
         if order.status == OrderStatus.REJECTED:
             self._last_signal_reason = f"订单被拒绝：{order.notes or pending['order_id'][:12]}"
             self.notifier.alert(self._last_signal_reason, "warning")
             self._clear_pending_order()
+            if not self._position_sync_fence:
+                self._release_sell_lock("order_rejected")
 
     def _apply_buy_fill(self, order, filled_quantity: int) -> None:
         fill_price = float(order.avg_fill_price or self._entry_price or 0.0)
@@ -1133,7 +1232,9 @@ class TradingEngine:
 
     def _is_trading_hours(self) -> bool:
         """Check if we're currently in US regular trading hours."""
-        if self._ignore_trading_hours:
+        # The anytime override is for paper simulations only. Live execution
+        # must always remain inside the verified regular-market session.
+        if self._ignore_trading_hours and self.mode != "live":
             return True
 
         th = self.config.trading_hours

@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
+
+from scripts.ai_selector_wrapper import is_market_time
 
 
 def test_dry_run_exits_nonzero_for_invalid_config():
@@ -41,8 +44,14 @@ range:
     assert "Configuration is valid" not in result.stdout
 
 
+def test_ai_selector_does_not_run_on_market_holiday():
+    assert is_market_time(datetime(2026, 7, 3, 9, 25)) is False
+    assert is_market_time(datetime(2026, 7, 2, 9, 25)) is True
+
+
 def run_test_direct():
     test_dry_run_exits_nonzero_for_invalid_config()
+    test_ai_selector_does_not_run_on_market_holiday()
 
 
 if __name__ == "__main__":

@@ -15,6 +15,9 @@ def _use_test_state(engine: TradingEngine, name: str) -> None:
     engine._position_sync_state_path = sync
     engine._pending_order = None
     engine._position_sync_fence = None
+    lock = Path(tempfile.gettempdir()) / f"soxs-orphan-sell-lock-{name}.lock"
+    lock.unlink(missing_ok=True)
+    engine._sell_lock_path = lock
 
 
 class FakeBroker:
@@ -190,6 +193,18 @@ def test_position_qty_zero_stops_orphan_monitoring():
     assert broker.orders == []
 
 
+def test_offline_assigned_process_becomes_orphan_after_three_failures():
+    pos = _position("PLTR", 2, 100.0, 92.0)
+    broker = FakeBroker(positions=[pos])
+    monitor = OrphanPositionMonitor(broker=broker)
+    monitor._startup_at = 0
+    monitor._is_top_process_active = lambda _port: False
+
+    assert "PLTR" not in monitor.scan_orphans([pos])
+    assert "PLTR" not in monitor.scan_orphans([pos])
+    assert "PLTR" in monitor.scan_orphans([pos])
+
+
 def test_market_hours_check_prevents_execution_outside_regular_hours():
     broker = FakeBroker(positions=[_position("PLTR", 2, 100.0, 92.0)], reliable=True)
     monitor = OrphanPositionMonitor(broker=broker, poll_interval_seconds=60)
@@ -235,4 +250,5 @@ def run_test_direct():
     test_startup_safety_accepts_verified_positions_and_account()
     test_existing_sell_lock_prevents_duplicate_sell()
     test_position_qty_zero_stops_orphan_monitoring()
+    test_offline_assigned_process_becomes_orphan_after_three_failures()
     test_market_hours_check_prevents_execution_outside_regular_hours()

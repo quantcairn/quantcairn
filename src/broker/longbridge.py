@@ -32,6 +32,20 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _global_reduce_only_enabled() -> bool:
+    try:
+        state_dir = Path(
+            os.environ.get("SOXS_STATE_DIR", "").strip()
+            or (_project_root() / "state")
+        )
+        flags = json.loads(
+            (state_dir / "trading_flags.json").read_text(encoding="utf-8")
+        )
+        return bool(flags.get("reduce_only_all", False))
+    except Exception:
+        return True
+
+
 def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
     redacted = dict(headers)
     for key in list(redacted):
@@ -222,6 +236,25 @@ class LongBridgeBroker(BrokerInterface):
 
     def place_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self._normalize_order(order)
+        if (
+            not self.dry_run
+            and normalized["side"] == "buy"
+            and _global_reduce_only_enabled()
+        ):
+            result = {
+                "status": "rejected",
+                "ok": False,
+                "reason": "global reduce-only blocks live BUY",
+            }
+            self._write_audit(
+                {
+                    "action": "place_order",
+                    "dry_run": False,
+                    "request": normalized,
+                    "response": result,
+                }
+            )
+            return result
         result = self._request("POST", self.place_order_path, normalized, action="place_order")
         if result.get("dry_run"):
             result["order_id"] = f"dryrun-{result['trace_id'][:12]}"

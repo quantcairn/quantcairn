@@ -13,8 +13,11 @@ import tempfile
 def main():
     # Keep simulated order and startup events out of the production audit trail.
     audit_dir = tempfile.TemporaryDirectory(prefix="soxs-test-audit-")
+    state_dir = tempfile.TemporaryDirectory(prefix="soxs-test-state-")
     previous_audit_dir = os.environ.get("SOXS_RUNTIME_AUDIT_DIR")
+    previous_state_dir = os.environ.get("SOXS_STATE_DIR")
     os.environ["SOXS_RUNTIME_AUDIT_DIR"] = audit_dir.name
+    os.environ["SOXS_STATE_DIR"] = state_dir.name
     tests_dir = Path(__file__).resolve().parent / "tests"
     try:
         test_files = sorted(
@@ -52,7 +55,12 @@ def main():
             os.environ.pop("SOXS_RUNTIME_AUDIT_DIR", None)
         else:
             os.environ["SOXS_RUNTIME_AUDIT_DIR"] = previous_audit_dir
+        if previous_state_dir is None:
+            os.environ.pop("SOXS_STATE_DIR", None)
+        else:
+            os.environ["SOXS_STATE_DIR"] = previous_state_dir
         audit_dir.cleanup()
+        state_dir.cleanup()
 
 
 if __name__ == '__main__':

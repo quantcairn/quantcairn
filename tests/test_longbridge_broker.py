@@ -250,7 +250,7 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
         log_path.unlink()
 
     assert broker.connect() is True
-    order = broker.place_order("AAPL", module.OrderSide.BUY, 1)
+    order = broker.place_order("AAPL", module.OrderSide.SELL, 1)
 
     assert order.order_id == "LB-12345"
     assert log_path.exists()
@@ -686,7 +686,7 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
     )
 
     assert broker.connect() is True
-    order = broker.place_order("AAPL", module.OrderSide.BUY, 1)
+    order = broker.place_order("AAPL", module.OrderSide.SELL, 1)
 
     assert order.order_id == "LB-99999"
     assert order.status == module.OrderStatus.PENDING
@@ -715,6 +715,25 @@ def test_positions_failure_marks_snapshot_unreliable(tmp_path):
     assert broker.is_positions_snapshot_reliable() is False
 
 
+def test_primary_live_broker_blocks_buy_in_global_reduce_only(tmp_path):
+    from src.broker import longbridge_broker as module
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        audit_dir=str(tmp_path / "logs"),
+    )
+    broker._connected = True
+    broker._trade_ctx = SimpleNamespace()
+
+    order = broker.place_order("AAPL", module.OrderSide.BUY, 1)
+
+    assert order.status == module.OrderStatus.REJECTED
+    assert order.order_id == ""
+    assert "reduce-only" in order.notes
+
+
 def run_test_direct():
     tmp_root = Path(tempfile.mkdtemp(prefix="longbridge-broker-test-"))
     test_longbridge_env_aliases_and_sandbox_config(tmp_root)
@@ -723,4 +742,5 @@ def run_test_direct():
     test_longbridge_broker_account_balance_handles_list_response(tmp_root)
     test_longbridge_broker_reuses_cached_positions_and_account(tmp_root)
     test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_root)
+    test_primary_live_broker_blocks_buy_in_global_reduce_only(tmp_root)
     test_positions_failure_marks_snapshot_unreliable(tmp_root)

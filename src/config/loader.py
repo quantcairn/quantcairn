@@ -10,7 +10,8 @@ from typing import Optional, Literal
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-TRADING_FLAGS_PATH = os.path.join(PROJECT_DIR, "state", "trading_flags.json")
+STATE_DIR = os.environ.get("SOXS_STATE_DIR") or os.path.join(PROJECT_DIR, "state")
+TRADING_FLAGS_PATH = os.path.join(STATE_DIR, "trading_flags.json")
 
 
 @dataclass

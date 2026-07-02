@@ -27,6 +27,7 @@ EXEC_PRICE_RE = re.compile(r"executed_price:\s*Some\(([0-9.]+)\)")
 SUBMITTED_AT_RE = re.compile(r'submitted_at:\s*"([^"]+)"')
 _SCHEDULER_LOCK = threading.Lock()
 _SCHEDULER_STARTED = False
+TEST_ORDER_ID_RE = re.compile(r"^(?:TEST-.*|(?:BUY|SELL)-[0-9]+)$", re.IGNORECASE)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -171,6 +172,17 @@ def _event_key(event: dict[str, Any]) -> str:
     )
 
 
+def _is_test_audit_record(record: dict[str, Any]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    phase = str(record.get("phase") or "").strip().lower()
+    if phase not in {"risk_exit_trigger", "orphan_stop_loss"}:
+        return False
+    order = record.get("order") if isinstance(record.get("order"), dict) else {}
+    order_id = str(record.get("order_id") or order.get("order_id") or "").strip()
+    return bool(order_id and TEST_ORDER_ID_RE.fullmatch(order_id))
+
+
 def _fill_event_from_runtime_record(record: dict[str, Any]) -> dict[str, Any] | None:
     response = record.get("response") if isinstance(record.get("response"), dict) else {}
     order = record.get("order") if isinstance(record.get("order"), dict) else {}
@@ -233,6 +245,8 @@ def extract_fill_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: dict[str, dict[str, Any]] = {}
     for record in records:
         if not isinstance(record, dict):
+            continue
+        if _is_test_audit_record(record):
             continue
         candidates = [
             _fill_event_from_runtime_record(record),
@@ -412,8 +426,20 @@ def generate_daily_report(
             raise RuntimeError("broker_connect_failed")
 
         positions = broker.get_positions() or []
+        positions_reliable = getattr(
+            broker, "is_positions_snapshot_reliable", lambda: True
+        )()
+        if not positions_reliable:
+            raise RuntimeError("broker_positions_unverified")
         account = broker.get_account()
+        account_reliable = getattr(
+            broker, "is_account_snapshot_reliable", lambda: True
+        )()
+        if not account_reliable:
+            raise RuntimeError("broker_account_unverified")
         records = load_trade_records(log_dir=log_dir or (PROJECT_DIR / "logs"), day=trade_day.strftime("%Y%m%d"))
+        if any(_is_test_audit_record(record) for record in records):
+            warnings.append("test_audit_events_ignored")
         fill_events = extract_fill_events(records)
         realized_pnl, trade_stats, realized_warnings = _compute_realized_pnl(fill_events)
         warnings.extend(realized_warnings)

@@ -128,6 +128,20 @@ def _longbridge_symbol(symbol: str) -> str:
     return base if "." in base else f"{base}.US"
 
 
+def _global_reduce_only_enabled() -> bool:
+    try:
+        state_dir = Path(
+            os.environ.get("SOXS_STATE_DIR", "").strip()
+            or (Path(__file__).resolve().parents[2] / "state")
+        )
+        flags_path = state_dir / "trading_flags.json"
+        flags = json.loads(flags_path.read_text(encoding="utf-8"))
+        return bool(flags.get("reduce_only_all", False))
+    except Exception:
+        # Direct live broker calls fail closed when the shared flag cannot be read.
+        return True
+
+
 class LongBridgeBroker(BrokerBase):
     """Long Bridge Securities live broker with sandbox support and audits."""
 
@@ -369,6 +383,24 @@ class LongBridgeBroker(BrokerBase):
                 quantity=quantity,
                 status=OrderStatus.REJECTED,
                 notes="Not connected to Long Bridge",
+            )
+        if side == OrderSide.BUY and _global_reduce_only_enabled():
+            response = {"status": "rejected", "reason": "global reduce-only blocks live BUY"}
+            self._write_audit(
+                "place_order",
+                request,
+                response,
+                ok=False,
+                error="global_reduce_only",
+            )
+            return Order(
+                order_id="",
+                ticker=ticker,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                status=OrderStatus.REJECTED,
+                notes="Global reduce-only blocks live BUY",
             )
 
         try:

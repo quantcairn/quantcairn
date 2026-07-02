@@ -24,9 +24,17 @@ class SimpleMonkeyPatch:
 
 
 class FakeBroker:
-    def __init__(self, positions=None, account=None):
+    def __init__(
+        self,
+        positions=None,
+        account=None,
+        positions_reliable=True,
+        account_reliable=True,
+    ):
         self._positions = list(positions or [])
         self._account = account or SimpleNamespace(cash=700.0, equity=1500.0, buying_power=350.0)
+        self._positions_reliable = positions_reliable
+        self._account_reliable = account_reliable
 
     def connect(self):
         return True
@@ -39,6 +47,12 @@ class FakeBroker:
 
     def get_account(self):
         return self._account
+
+    def is_positions_snapshot_reliable(self):
+        return self._positions_reliable
+
+    def is_account_snapshot_reliable(self):
+        return self._account_reliable
 
 
 def _position(symbol: str, quantity: int, avg_cost: float, current_price: float):
@@ -209,6 +223,67 @@ def test_report_handles_incomplete_fill_data_without_inventing_values():
         assert "incomplete_fill_data" in report["warnings"]
 
 
+def test_report_refuses_unverified_broker_snapshot():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        reports_dir = root / "reports"
+        log_dir = root / "logs"
+        log_dir.mkdir()
+        broker = FakeBroker(positions_reliable=False)
+
+        try:
+            daily_report.generate_daily_report(
+                date(2026, 7, 2),
+                broker=broker,
+                reports_dir=reports_dir,
+                log_dir=log_dir,
+                now_et=datetime(2026, 7, 2, 16, 5),
+            )
+        except RuntimeError as exc:
+            assert str(exc) == "broker_positions_unverified"
+        else:
+            raise AssertionError("unverified broker data must not generate a report")
+
+        assert not (reports_dir / "daily_2026-07-02.json").exists()
+
+
+def test_report_ignores_test_fill_events():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        reports_dir = root / "reports"
+        log_dir = root / "logs"
+        log_dir.mkdir()
+        _write_log(
+            log_dir,
+            "20260702",
+            [
+                {
+                    "phase": "orphan_stop_loss",
+                    "timestamp": "2026-07-02T15:00:00Z",
+                    "symbol": "PLTR",
+                    "order_id": "SELL-1",
+                    "avg_cost": 100.0,
+                    "current_price": 92.0,
+                    "quantity": 2,
+                    "order": {"side": "sell", "qty": 2},
+                    "response": {"status": "filled"},
+                }
+            ],
+        )
+
+        report = daily_report.generate_daily_report(
+            date(2026, 7, 2),
+            broker=FakeBroker(),
+            reports_dir=reports_dir,
+            log_dir=log_dir,
+            now_et=datetime(2026, 7, 2, 16, 5),
+        )
+
+        assert report["realized_pnl"]["total"] == 0.0
+        assert report["trades"]["total_trades_today"] == 0
+        assert "test_audit_events_ignored" in report["warnings"]
+
+
 def test_daily_report_endpoint_returns_latest_report_json():
     monkeypatch = SimpleMonkeyPatch()
     try:
@@ -265,6 +340,8 @@ def run_test_direct():
     test_report_calculates_total_realized_pnl_from_audit_fills()
     test_report_handles_missing_previous_daily_report()
     test_report_handles_incomplete_fill_data_without_inventing_values()
+    test_report_refuses_unverified_broker_snapshot()
+    test_report_ignores_test_fill_events()
     test_daily_report_endpoint_returns_latest_report_json()
     test_daily_report_endpoint_handles_no_report_available()
     test_scheduler_only_triggers_at_1605_et_on_trading_days()

@@ -13,7 +13,8 @@ from src.reports.trade_audit import summarize_trade_log
 app = Flask(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-TRADING_FLAGS_PATH = PROJECT_DIR / "state" / "trading_flags.json"
+STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
+TRADING_FLAGS_PATH = STATE_DIR / "trading_flags.json"
 
 TICKERS = [
     {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
@@ -98,7 +99,15 @@ def _refresh_live_account_summary(now: float):
         if not broker.connect():
             return _stale_live_account("券商连接失败")
         positions = broker.get_positions()
+        if not getattr(
+            broker, "is_positions_snapshot_reliable", lambda: True
+        )():
+            return _stale_live_account("券商持仓快照未确认")
         account = broker.get_account()
+        if not getattr(
+            broker, "is_account_snapshot_reliable", lambda: True
+        )():
+            return _stale_live_account("券商账户快照未确认")
         position_rows = []
         for pos in positions or []:
             position_rows.append(

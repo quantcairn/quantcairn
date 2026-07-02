@@ -48,6 +48,9 @@ def use_test_pending_path(engine: TradingEngine, name: str) -> None:
     sync_path.unlink(missing_ok=True)
     engine._position_sync_state_path = sync_path
     engine._position_sync_fence = None
+    lock_path = Path(tempfile.gettempdir()) / f"soxs-test-sell-lock-{name}.lock"
+    lock_path.unlink(missing_ok=True)
+    engine._sell_lock_path = lock_path
 
 
 def test_reconcile_pending_buy_fill_updates_local_state():
@@ -330,6 +333,16 @@ def test_market_calendar_blocks_holidays_and_uses_early_close():
     assert engine._market_session_end(date(2026, 7, 6)) == "16:00"
 
 
+def test_live_anytime_override_cannot_bypass_market_calendar():
+    engine = TradingEngine(
+        AppConfig(ticker="SOFI", mode="live"),
+        ignore_trading_hours=True,
+    )
+    engine._market_session_end = lambda _day: None
+
+    assert engine._is_trading_hours() is False
+
+
 def test_sell_fill_blocks_stale_position_from_triggering_duplicate_sell():
     config = AppConfig(ticker="PLTR", mode="live")
     engine = TradingEngine(config, ignore_trading_hours=True)
@@ -380,6 +393,20 @@ def test_live_startup_safety_blocks_unreliable_account():
     assert engine._verify_live_startup_safety() is False
 
 
+def test_cross_process_sell_lock_allows_only_one_engine():
+    first = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    second = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    use_test_pending_path(first, "atomic-sell-lock")
+    second._sell_lock_path = first._sell_lock_path
+
+    assert first._acquire_sell_lock("first") is True
+    assert second._acquire_sell_lock("second") is False
+
+    first._release_sell_lock("test_complete")
+    assert second._acquire_sell_lock("retry") is True
+    second._release_sell_lock("test_complete")
+
+
 def test_paper_sell_does_not_create_live_position_fence():
     engine = TradingEngine(AppConfig(ticker="SOFI", mode="paper"), ignore_trading_hours=True)
     use_test_pending_path(engine, "paper-no-fence")
@@ -400,8 +427,12 @@ def run_test_direct():
     test_pending_order_survives_engine_restart()
     test_live_startup_adopts_existing_broker_order()
     test_market_calendar_blocks_holidays_and_uses_early_close()
+    test_live_anytime_override_cannot_bypass_market_calendar()
     test_sell_fill_blocks_stale_position_from_triggering_duplicate_sell()
     test_position_sync_fence_survives_restart()
+    test_live_startup_safety_blocks_when_reduce_only_disabled()
+    test_live_startup_safety_blocks_unreliable_account()
+    test_cross_process_sell_lock_allows_only_one_engine()
     test_paper_sell_does_not_create_live_position_fence()
 
 

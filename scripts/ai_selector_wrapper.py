@@ -19,17 +19,24 @@ except Exception:
 
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
+
+from src.engine.trading_engine import TradingEngine
+
 VENV_PY = os.path.join(PROJECT_DIR, '.venv', 'bin', 'python')
 SELECTOR = os.path.join(PROJECT_DIR, 'scripts', 'run_ai_selector.py')
 OUT_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.out.log')
 ERR_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.err.log')
-STATE_DIR = os.path.join(PROJECT_DIR, 'state')
+STATE_DIR = os.environ.get("SOXS_STATE_DIR") or os.path.join(PROJECT_DIR, 'state')
 LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
 
 
 def is_market_time(now_et: datetime) -> bool:
-    # Trading days: Mon-Fri. (This wrapper does not yet account for exchange holidays.)
-    if now_et.weekday() >= 5:
+    if (
+        now_et.weekday() >= 5
+        or now_et.date() in TradingEngine._market_holidays(now_et.year)
+    ):
         return False
     # Leave enough time to verify holdings and restart all engines before 09:30.
     target = now_et.replace(hour=9, minute=25, second=0, microsecond=0)
