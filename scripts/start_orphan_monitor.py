@@ -33,7 +33,7 @@ def main() -> int:
     try:
         monitor = OrphanPositionMonitor(broker=broker, poll_interval_seconds=60)
         if "--verify-only" in sys.argv:
-            return 0 if monitor.verify_broker_positions() is not None else 1
+            return 0 if monitor.verify_startup_safety() is not None else 1
         return monitor.run()
     finally:
         broker.disconnect()

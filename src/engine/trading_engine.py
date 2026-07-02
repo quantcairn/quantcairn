@@ -9,6 +9,7 @@ Runs in paper or live mode.
 """
 import json
 import logging
+import os
 import time
 import calendar
 from datetime import datetime, date, timedelta
@@ -39,7 +40,8 @@ except ImportError:
 
 
 def _audit_log_path() -> Path:
-    log_dir = PROJECT_DIR / "logs"
+    configured_dir = os.environ.get("SOXS_RUNTIME_AUDIT_DIR", "").strip()
+    log_dir = Path(configured_dir) if configured_dir else PROJECT_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
 
@@ -286,6 +288,10 @@ class TradingEngine:
         # Connect broker
         if not self.broker.connect():
             self.notifier.alert("Failed to connect to broker", "error")
+            return
+
+        if self.mode == "live" and not self._verify_live_startup_safety():
+            self.broker.disconnect()
             return
 
         if self.mode == "live" and not self._adopt_active_live_order():
@@ -633,6 +639,72 @@ class TradingEngine:
 
     def _should_run_exit_check(self, now_ts: float) -> bool:
         return (now_ts - self._last_exit_check_at) >= 60.0
+
+    def _verify_live_startup_safety(self) -> bool:
+        """Fail closed unless live startup is reduce-only with verified broker data."""
+        if not self._reduce_only:
+            self._last_signal_reason = "实盘启动已阻止：全局只减仓未启用"
+            self._write_runtime_audit(
+                "startup_safety_check",
+                broker_position_verified=False,
+                broker_account_verified=False,
+                startup_allowed=False,
+                reason="reduce_only_disabled",
+            )
+            self.notifier.alert(self._last_signal_reason, "error")
+            return False
+
+        invalidate = getattr(self.broker, "invalidate_cache", None)
+        if callable(invalidate):
+            invalidate()
+        positions = self.broker.get_positions()
+        positions_reliable = getattr(
+            self.broker, "is_positions_snapshot_reliable", lambda: True
+        )()
+        if not positions_reliable:
+            self._last_signal_reason = "实盘启动已阻止：券商持仓无法确认"
+            self._write_runtime_audit(
+                "startup_safety_check",
+                broker_position_verified=False,
+                broker_account_verified=False,
+                startup_allowed=False,
+                reason="broker_position_verification_failed",
+            )
+            self.notifier.alert(self._last_signal_reason, "error")
+            return False
+
+        account = self.broker.get_account()
+        account_reliable = getattr(
+            self.broker, "is_account_snapshot_reliable", lambda: True
+        )()
+        if not account_reliable:
+            self._last_signal_reason = "实盘启动已阻止：券商账户快照无法确认"
+            self._write_runtime_audit(
+                "startup_safety_check",
+                broker_position_verified=True,
+                broker_account_verified=False,
+                startup_allowed=False,
+                reason="broker_account_verification_failed",
+            )
+            self.notifier.alert(self._last_signal_reason, "error")
+            return False
+
+        self._write_runtime_audit(
+            "startup_safety_check",
+            broker_position_verified=True,
+            broker_account_verified=True,
+            startup_allowed=True,
+            positions=[
+                {
+                    "symbol": str(getattr(pos, "ticker", "") or "").split(".")[0].upper(),
+                    "quantity": int(getattr(pos, "quantity", 0) or 0),
+                }
+                for pos in positions or []
+                if int(getattr(pos, "quantity", 0) or 0) > 0
+            ],
+            equity=float(getattr(account, "equity", 0.0) or 0.0),
+        )
+        return True
 
     def _has_active_sell_protection(self) -> bool:
         if self._position_sync_fence:

@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from src.broker.base import Order, OrderSide, OrderStatus, OrderType, Position
+from src.broker.base import AccountInfo, Order, OrderSide, OrderStatus, OrderType, Position
 from src.engine.orphan_monitor import OrphanPositionMonitor
 from src.engine.trading_engine import TradingEngine, check_exit_conditions
 
@@ -18,9 +18,10 @@ def _use_test_state(engine: TradingEngine, name: str) -> None:
 
 
 class FakeBroker:
-    def __init__(self, positions=None, reliable=True):
+    def __init__(self, positions=None, reliable=True, account_reliable=True):
         self.positions = list(positions or [])
         self.reliable = reliable
+        self.account_reliable = account_reliable
         self.orders = []
 
     def get_positions(self):
@@ -28,6 +29,12 @@ class FakeBroker:
 
     def is_positions_snapshot_reliable(self):
         return self.reliable
+
+    def get_account(self):
+        return AccountInfo(cash=100.0, equity=100.0, buying_power=100.0, positions=self.positions)
+
+    def is_account_snapshot_reliable(self):
+        return self.account_reliable
 
     def get_position_for_ticker(self, ticker):
         for pos in self.positions:
@@ -136,6 +143,28 @@ def test_broker_position_verification_failure_skips_symbol():
     assert monitor.scan_orphans() == {}
 
 
+def test_startup_safety_requires_reliable_account_snapshot():
+    broker = FakeBroker(
+        positions=[_position("PLTR", 2, 100.0, 92.0)],
+        reliable=True,
+        account_reliable=False,
+    )
+    monitor = OrphanPositionMonitor(broker=broker)
+
+    assert monitor.verify_startup_safety() is None
+
+
+def test_startup_safety_accepts_verified_positions_and_account():
+    positions = [_position("PLTR", 2, 100.0, 92.0)]
+    broker = FakeBroker(positions=positions, reliable=True, account_reliable=True)
+    monitor = OrphanPositionMonitor(broker=broker)
+
+    verified = monitor.verify_startup_safety()
+
+    assert verified is not None
+    assert verified[0] == positions
+
+
 def test_existing_sell_lock_prevents_duplicate_sell():
     broker = FakeBroker()
     monitor = OrphanPositionMonitor(broker=broker)
@@ -202,6 +231,8 @@ def run_test_direct():
     test_orphan_monitor_never_submits_buy()
     test_orphan_monitor_does_not_take_profit()
     test_broker_position_verification_failure_skips_symbol()
+    test_startup_safety_requires_reliable_account_snapshot()
+    test_startup_safety_accepts_verified_positions_and_account()
     test_existing_sell_lock_prevents_duplicate_sell()
     test_position_qty_zero_stops_orphan_monitoring()
     test_market_hours_check_prevents_execution_outside_regular_hours()

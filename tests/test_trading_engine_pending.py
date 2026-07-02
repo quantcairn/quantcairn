@@ -360,6 +360,26 @@ def test_position_sync_fence_survives_restart():
     second._clear_position_sync_fence()
 
 
+def test_live_startup_safety_blocks_when_reduce_only_disabled():
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine._reduce_only = False
+
+    assert engine._verify_live_startup_safety() is False
+
+
+def test_live_startup_safety_blocks_unreliable_account():
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine._reduce_only = True
+    engine.broker = SimpleNamespace(
+        get_positions=lambda: [],
+        is_positions_snapshot_reliable=lambda: True,
+        get_account=lambda: SimpleNamespace(equity=0.0),
+        is_account_snapshot_reliable=lambda: False,
+    )
+
+    assert engine._verify_live_startup_safety() is False
+
+
 def test_paper_sell_does_not_create_live_position_fence():
     engine = TradingEngine(AppConfig(ticker="SOFI", mode="paper"), ignore_trading_hours=True)
     use_test_pending_path(engine, "paper-no-fence")

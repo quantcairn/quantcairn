@@ -59,6 +59,62 @@ class OrphanPositionMonitor:
             return None
         return list(positions or [])
 
+    def verify_startup_safety(self) -> tuple[list[Position], object] | None:
+        """Require fresh, broker-confirmed positions and account data before live startup."""
+        invalidate = getattr(self.broker, "invalidate_cache", None)
+        if callable(invalidate):
+            invalidate()
+        positions = self.verify_broker_positions()
+        if positions is None:
+            append_runtime_audit(
+                {
+                    "phase": "startup_safety_check",
+                    "execution_mode": "live",
+                    "broker_position_verified": False,
+                    "broker_account_verified": False,
+                    "startup_allowed": False,
+                    "reason": "broker_position_verification_failed",
+                }
+            )
+            return None
+
+        account = self.broker.get_account()
+        account_reliable = getattr(
+            self.broker, "is_account_snapshot_reliable", lambda: True
+        )()
+        if not account_reliable:
+            append_runtime_audit(
+                {
+                    "phase": "startup_safety_check",
+                    "execution_mode": "live",
+                    "broker_position_verified": True,
+                    "broker_account_verified": False,
+                    "startup_allowed": False,
+                    "reason": "broker_account_verification_failed",
+                }
+            )
+            return None
+
+        append_runtime_audit(
+            {
+                "phase": "startup_safety_check",
+                "execution_mode": "live",
+                "broker_position_verified": True,
+                "broker_account_verified": True,
+                "startup_allowed": True,
+                "positions": [
+                    {
+                        "symbol": _normalize_ticker(getattr(pos, "ticker", "")),
+                        "quantity": int(getattr(pos, "quantity", 0) or 0),
+                    }
+                    for pos in positions
+                    if int(getattr(pos, "quantity", 0) or 0) > 0
+                ],
+                "equity": float(getattr(account, "equity", 0.0) or 0.0),
+            }
+        )
+        return positions, account
+
     def scan_orphans(self, positions: list[Position] | None = None) -> dict[str, Position]:
         assigned = _load_assigned_symbols()
         if positions is None:
