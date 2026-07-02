@@ -26,6 +26,10 @@ def test_live_equity_positions_are_pinned_into_top5():
     assert [item["ticker"] for item in result[:2]] == ["SOFI", "SOXS"]
     assert len(result) == 5
     assert all(item.get("pinned_live_position") for item in result[:2])
+    assert result[0]["existing_position"] is True
+    assert result[0]["reduce_only"] is False
+    assert result[1]["existing_position"] is True
+    assert result[1]["reduce_only"] is True
     assert "QCOM" not in [item["ticker"] for item in result]
 
 

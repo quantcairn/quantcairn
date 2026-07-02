@@ -112,6 +112,27 @@ def test_config_writer_uses_auto_refresh_env_override(tmp_path, monkeypatch):
     assert updated["range"]["auto_refresh_minutes"] == 12
 
 
+def test_config_writer_persists_reduce_only_for_preserved_positions(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    write_top_configs([
+        {
+            "ticker": "SOXS",
+            "range_low": 3.5,
+            "range_high": 4.2,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 50,
+            "reduce_only": True,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    assert updated["position"]["reduce_only"] is True
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:

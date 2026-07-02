@@ -53,6 +53,7 @@ def write_top_configs(top_items):
         size_per_trade = max(1, min(requested_size, fallback_size))
         mode = _load_existing_mode(i, default_mode)
         live_enabled = mode == "live"
+        reduce_only = bool(item.get("reduce_only", False))
 
         cfg = {
             "ticker": item["ticker"],
@@ -78,6 +79,7 @@ def write_top_configs(top_items):
                 "max_position": 9999,
                 "cool_down_seconds": 30,
                 "initial_capital": initial_capital,
+                "reduce_only": reduce_only,
             },
             "risk": {
                 "stop_loss_pct": float(item.get("risk", {}).get("stop_loss_pct", 1.5)),

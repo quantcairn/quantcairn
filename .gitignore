@@ -9,7 +9,7 @@ logs/
 *.log
 snapshots.log
 trading-*.log
-reports/
+/reports/
 state/
 config.local.yaml
 

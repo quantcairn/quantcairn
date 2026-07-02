@@ -3,10 +3,11 @@ import json, os, subprocess, threading, urllib.request
 import time
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, redirect, render_template_string, request
+from flask import Flask, jsonify, redirect, render_template_string, request
 import yaml
 
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
+from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import summarize_trade_log
 
 app = Flask(__name__)
@@ -1261,6 +1262,13 @@ def update_ai_selector_settings():
     return redirect("/")
 
 
+@app.route("/daily-report")
+def daily_report():
+    payload, status = daily_report_module.latest_daily_report_response()
+    return jsonify(payload), status
+
+
 def start_combined(port=8090):
     """Start combined dashboard as a foreground Flask server."""
+    daily_report_module.ensure_daily_report_scheduler()
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)

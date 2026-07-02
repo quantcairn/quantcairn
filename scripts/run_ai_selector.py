@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 from src.ai_selector.settings import load_runtime_settings
+from src.ai_selector.selector import write_selection_filter_log
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -99,6 +100,14 @@ def _pin_live_positions(selected: list[dict], positions: list[dict], limit: int 
                 "size": int(position.get("quantity") or 1),
                 "selection_penalty_reason": "live position protection",
             }
+            item["ai_selected"] = False
+            item["reduce_only"] = True
+        else:
+            item["ai_selected"] = True
+            item["reduce_only"] = bool(item.get("reduce_only", False))
+        item["existing_position"] = True
+        if ticker == "SOXS":
+            item["reduce_only"] = True
         item["pinned_live_position"] = True
         pinned.append(item)
         pinned_tickers.add(ticker)
@@ -131,6 +140,18 @@ def main():
         live_positions or [],
         limit=sel.selection_size,
     )
+    preserved_positions = [
+        str(item.get("ticker") or "").upper()
+        for item in selected
+        if item.get("existing_position")
+    ]
+    quality_report = dict(out.get("quality_filter_report") or {})
+    quality_report["final_selected_symbols"] = [
+        str(item.get("ticker") or "").upper() for item in selected
+    ]
+    quality_report["existing_real_positions_preserved"] = preserved_positions
+    out["quality_filter_report"] = quality_report
+    write_selection_filter_log(quality_report)
     if selected:
         from src.ai_selector.config_writer import write_top_configs
 

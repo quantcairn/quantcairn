@@ -12,6 +12,7 @@ from threading import Thread
 from typing import Optional
 
 from flask import Flask, jsonify, render_template_string
+from src.reports import daily_report as daily_report_module
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,12 @@ def api_recent():
 def api_status():
     """JSON API endpoint."""
     return jsonify(get_dashboard_data())
+
+
+@app.route("/daily-report")
+def daily_report():
+    payload, status = daily_report_module.latest_daily_report_response()
+    return jsonify(payload), status
 
 
 def get_dashboard_data() -> dict:
