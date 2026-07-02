@@ -30,7 +30,7 @@ from .position_sizing import determine_buy_quantity
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
-INVERSE_ETF_SYMBOLS = {"SOXS", "SQQQ", "SPXU", "SDOW", "FAZ", "SOXL"}
+INVERSE_ETF_SYMBOLS = {"SOXS", "SQQQ", "SPXU", "SDOW", "FAZ"}
 
 # Try to import pytz, fall back if not available
 try:
@@ -84,29 +84,11 @@ def check_exit_conditions(
     if qty <= 0 or cost <= 0 or price <= 0:
         return decision
 
-    if is_inverse_etf:
-        stop_trigger = round(cost * 1.05, 6)
-        take_trigger = round(cost * 0.90, 6)
-        if mode == "orphan":
-            stop_trigger = round(cost * 1.08, 6)
-            take_trigger = None
-            if price >= stop_trigger:
-                decision["should_exit"] = True
-                decision["reason"] = "stop_loss"
-                decision["trigger_price"] = stop_trigger
-            return decision
-        if price >= stop_trigger:
-            decision["should_exit"] = True
-            decision["reason"] = "stop_loss"
-            decision["trigger_price"] = stop_trigger
-        elif price <= take_trigger:
-            decision["should_exit"] = True
-            decision["reason"] = "take_profit"
-            decision["trigger_price"] = take_trigger
-        return decision
-
     stop_trigger = round(cost * 0.95, 6)
     take_trigger = round(cost * 1.10, 6)
+    # The system only holds cash long positions, including inverse ETFs such as SOXS.
+    # Realized P&L for a held position still follows long-position math:
+    # price down from cost is a loss, price up from cost is a gain.
     if mode == "orphan":
         take_trigger = None
         stop_trigger = round(cost * 0.92, 6)

@@ -1,4 +1,4 @@
-ticker: PLTR
+ticker: QBTS
 mode: live
 range:
   mode: auto
@@ -11,14 +11,15 @@ range:
     ma_period: 20
     min_trend_strength: 0.3
   tolerance_pct: 0.8
-  min_profit_per_trade: 1.0
+  min_profit_per_trade: 0.91
   min_range_width_pct: 0.8
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 4
+  size_per_trade: 24
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0
+  reduce_only: false
 risk:
   stop_loss_pct: 1.5
   take_profit_pct: null

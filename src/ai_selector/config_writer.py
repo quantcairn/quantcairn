@@ -39,6 +39,17 @@ def _load_existing_mode(index: int, fallback: str) -> str:
         pass
     return fallback
 
+
+def _dynamic_min_profit_per_trade(estimated_price: float) -> float:
+    """Scale the minimum tradable range for lower-priced stocks."""
+    try:
+        price = float(estimated_price)
+    except (TypeError, ValueError):
+        price = 0.0
+    if price <= 0:
+        return 1.0
+    return round(max(0.35, min(1.0, price * 0.04)), 2)
+
 def write_top_configs(top_items):
     default_mode = _default_top_mode()
     for i, item in enumerate(top_items, start=1):
@@ -70,7 +81,7 @@ def write_top_configs(top_items):
                     "min_trend_strength": 0.3,
                 },
                 "tolerance_pct": 0.8,
-                "min_profit_per_trade": 1.0,
+                "min_profit_per_trade": _dynamic_min_profit_per_trade(estimated_price),
                 "min_range_width_pct": 0.8,
                 "quick_stop_pct": 3.0,
             },

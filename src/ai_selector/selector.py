@@ -51,23 +51,101 @@ def _normalize_ticker(value: Any) -> str:
 
 class _QualityFilterContext:
     def __init__(self):
-        self._quotes: dict[str, tuple[float | None, float | None, float | None]] = {}
+        self._quotes: dict[str, tuple[float | None, float | None, float | None, bool]] = {}
         self._history: dict[str, tuple[float | None, float | None, float | None]] = {}
+        self._longbridge_quote_ctx = None
+        self._longbridge_available = None
 
-    def quote_metrics(self, symbol: str) -> tuple[float | None, float | None, float | None]:
+    def _get_longbridge_quote_ctx(self):
+        if self._longbridge_available is False:
+            return None
+        if self._longbridge_quote_ctx is not None:
+            return self._longbridge_quote_ctx
+        app_key = os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY")
+        app_secret = os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET")
+        access_token = os.environ.get("LONGBRIDGE_ACCESS_TOKEN")
+        if not (app_key and app_secret and access_token):
+            self._longbridge_available = False
+            return None
+        try:
+            import longbridge.openapi as lb
+
+            cfg = lb.Config.from_apikey(
+                app_key,
+                app_secret,
+                access_token,
+                http_url=os.environ.get("LONGBRIDGE_HTTP_URL")
+                or os.environ.get("LONGBRIDGE_BASE_URL")
+                or "https://openapi.longbridgeapp.com",
+                quote_ws_url=os.environ.get("LONGBRIDGE_QUOTE_WS_URL"),
+                trade_ws_url=os.environ.get("LONGBRIDGE_TRADE_WS_URL"),
+                log_path=os.environ.get("LONGBRIDGE_LOG_PATH"),
+            )
+            self._longbridge_quote_ctx = lb.QuoteContext(cfg)
+            self._longbridge_available = True
+            return self._longbridge_quote_ctx
+        except Exception:
+            self._longbridge_available = False
+            return None
+
+    def _longbridge_depth(self, symbol: str) -> tuple[float | None, float | None, bool]:
+        ctx = self._get_longbridge_quote_ctx()
+        if ctx is None:
+            return None, None, False
+        try:
+            depth = ctx.depth(symbol=f"{_normalize_ticker(symbol)}.US")
+            asks = list(getattr(depth, "asks", []) or [])
+            bids = list(getattr(depth, "bids", []) or [])
+            best_ask = float(getattr(asks[0], "price", 0.0) or 0.0) if asks else 0.0
+            best_bid = float(getattr(bids[0], "price", 0.0) or 0.0) if bids else 0.0
+            if best_bid > 0 and best_ask > 0 and best_ask >= best_bid:
+                return best_bid, best_ask, True
+        except Exception:
+            pass
+        return None, None, False
+
+    def _longbridge_last_price(self, symbol: str) -> float | None:
+        ctx = self._get_longbridge_quote_ctx()
+        if ctx is None:
+            return None
+        try:
+            resp = ctx.quote(symbols=[f"{_normalize_ticker(symbol)}.US"])
+            items = resp if isinstance(resp, (list, tuple)) else [resp]
+            item = items[0] if items else None
+            if item is None:
+                return None
+            price = float(getattr(item, "last_done", 0.0) or 0.0)
+            return price if price > 0 else None
+        except Exception:
+            return None
+
+    def quote_metrics(self, symbol: str) -> tuple[float | None, float | None, float | None, bool]:
         key = _normalize_ticker(symbol)
         if key in self._quotes:
             return self._quotes[key]
-        fetcher = PriceFetcher(key, poll_interval=0)
-        quote = fetcher.get_quote()
-        if quote is None or quote.price <= 0:
-            result = (None, None, None)
-        else:
+        longbridge_price = self._longbridge_last_price(key)
+        longbridge_bid, longbridge_ask, longbridge_confirmed = self._longbridge_depth(key)
+        if longbridge_price and longbridge_confirmed:
             result = (
-                float(quote.price or 0.0) or None,
-                float(quote.bid or 0.0) or None,
-                float(quote.ask or 0.0) or None,
+                longbridge_price,
+                longbridge_bid,
+                longbridge_ask,
+                True,
             )
+        else:
+            fetcher = PriceFetcher(key, poll_interval=0)
+            quote = fetcher.get_quote()
+            if quote is None or quote.price <= 0:
+                result = (longbridge_price, longbridge_bid, longbridge_ask, bool(longbridge_confirmed))
+            else:
+                bid = longbridge_bid if longbridge_confirmed else (float(quote.bid or 0.0) or None)
+                ask = longbridge_ask if longbridge_confirmed else (float(quote.ask or 0.0) or None)
+                result = (
+                    longbridge_price or (float(quote.price or 0.0) or None),
+                    bid,
+                    ask,
+                    bool(longbridge_confirmed or getattr(quote, "bid_ask_confirmed", False)),
+                )
         self._quotes[key] = result
         return result
 
@@ -108,10 +186,17 @@ def _apply_quality_filters_with_report(candidates: Sequence[dict]) -> tuple[list
         ai_selected = bool(item.get("ai_selected", True))
 
         avg_volume_10, three_day_change_pct, hist_price = context.history_metrics(symbol)
-        current_price, bid, ask = context.quote_metrics(symbol)
+        current_price, bid, ask, bid_ask_confirmed = context.quote_metrics(symbol)
         current_price = current_price or hist_price
         spread_pct = None
-        if current_price and bid and ask and current_price > 0 and ask >= bid > 0:
+        if (
+            bid_ask_confirmed
+            and current_price
+            and bid
+            and ask
+            and current_price > 0
+            and ask >= bid > 0
+        ):
             spread_pct = ((ask - bid) / current_price) * 100.0
         liquidity_score = (
             float(avg_volume_10) * float(current_price)
@@ -132,7 +217,7 @@ def _apply_quality_filters_with_report(candidates: Sequence[dict]) -> tuple[list
             removed = True
             reason = "volume_filter"
             removed_volume += 1
-        elif spread_pct is None:
+        elif not bid_ask_confirmed or spread_pct is None:
             removed = True
             reason = "spread_unavailable"
             removed_missing += 1

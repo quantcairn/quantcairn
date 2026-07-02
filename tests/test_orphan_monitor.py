@@ -90,13 +90,13 @@ def test_normal_stock_take_profit_triggers():
 
 
 def test_soxs_stop_loss_triggers():
-    result = check_exit_conditions("SOXS", 10.5, 10.0, 10, is_inverse_etf=True)
+    result = check_exit_conditions("SOXS", 9.5, 10.0, 10, is_inverse_etf=True)
     assert result["should_exit"] is True
     assert result["reason"] == "stop_loss"
 
 
 def test_soxs_take_profit_triggers():
-    result = check_exit_conditions("SOXS", 9.0, 10.0, 10, is_inverse_etf=True)
+    result = check_exit_conditions("SOXS", 11.0, 10.0, 10, is_inverse_etf=True)
     assert result["should_exit"] is True
     assert result["reason"] == "take_profit"
 
@@ -108,9 +108,15 @@ def test_orphan_normal_stock_stop_loss_triggers():
 
 
 def test_orphan_soxs_stop_loss_triggers():
-    result = check_exit_conditions("SOXS", 10.8, 10.0, 5, is_inverse_etf=True, mode="orphan")
+    result = check_exit_conditions("SOXS", 9.2, 10.0, 5, is_inverse_etf=True, mode="orphan")
     assert result["should_exit"] is True
     assert result["reason"] == "stop_loss"
+
+
+def test_soxl_is_not_treated_as_inverse_etf():
+    from src.engine.trading_engine import is_inverse_etf_symbol
+
+    assert is_inverse_etf_symbol("SOXL") is False
 
 
 def test_orphan_monitor_never_submits_buy():
@@ -241,6 +247,7 @@ def run_test_direct():
     test_normal_stock_take_profit_triggers()
     test_soxs_stop_loss_triggers()
     test_soxs_take_profit_triggers()
+    test_soxl_is_not_treated_as_inverse_etf()
     test_orphan_normal_stock_stop_loss_triggers()
     test_orphan_soxs_stop_loss_triggers()
     test_orphan_monitor_never_submits_buy()

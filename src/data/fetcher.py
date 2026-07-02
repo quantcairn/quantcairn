@@ -38,6 +38,7 @@ class Quote:
     timestamp: datetime
     high_1m: Optional[float] = None
     low_1m: Optional[float] = None
+    bid_ask_confirmed: bool = False
 
 
 @dataclass
@@ -218,6 +219,7 @@ class PriceFetcher:
             timestamp=datetime.now(),
             high_1m=round(price + spread, 4),
             low_1m=round(price - spread, 4),
+            bid_ask_confirmed=True,
         )
         self._cached_quote = quote
         self._last_fetch_time = now
@@ -245,6 +247,7 @@ class PriceFetcher:
             )
             bid = _positive_float(fast.get("bid"))
             ask = _positive_float(fast.get("ask"))
+            bid_ask_confirmed = bid > 0 and ask > 0
 
             price = _positive_float(chart.get("price"))
             volume = int(_positive_float(chart.get("volume")))
@@ -359,6 +362,7 @@ class PriceFetcher:
                 timestamp=datetime.now(),
                 high_1m=high_1m,
                 low_1m=low_1m,
+                bid_ask_confirmed=bid_ask_confirmed,
             )
 
             self._cached_quote = quote

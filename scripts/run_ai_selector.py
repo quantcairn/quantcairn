@@ -33,6 +33,25 @@ def _write_reports(summary: dict):
     dated_json.write_text(payload, encoding="utf-8")
 
 
+def _merge_live_position_flags(items: list[dict], positions: list[dict]) -> list[dict]:
+    live_map = {
+        str(pos.get("ticker") or "").strip().upper(): dict(pos)
+        for pos in (positions or [])
+    }
+    merged = []
+    for raw in items or []:
+        item = dict(raw)
+        ticker = str(item.get("ticker") or "").strip().upper()
+        live_pos = live_map.get(ticker)
+        if live_pos:
+            item["existing_position"] = True
+            item["live_quantity"] = int(live_pos.get("quantity") or 0)
+            if ticker == "SOXS":
+                item["reduce_only"] = True
+        merged.append(item)
+    return merged
+
+
 def _restart_top_engines() -> int:
     if os.environ.get("AI_SELECTOR_RESTART_TOP", "1") == "0":
         print("AI_SELECTOR_RESTART_TOP=0; skipping TOP engine restart.")
@@ -134,6 +153,7 @@ def main():
 
     sel = AIStrategySelector()
     out = sel.run_selection(write_configs=False)
+    out["top10"] = _merge_live_position_flags(list(out.get("top10") or []), live_positions or [])
     selected = out.get('top5') or out.get('top3') or []
     selected = _pin_live_positions(
         selected,
@@ -158,6 +178,7 @@ def main():
         write_top_configs(selected)
         out["top5"] = selected
         out["top3"] = selected[:3]
+        out["report"] = sel._format_report_rows(selected)
     timestamp = datetime.now().isoformat()
     print(f"AI selection completed at {timestamp}")
     print("Top10:")
@@ -176,6 +197,7 @@ def main():
         'top3': out.get('top3', []),
         'report': out.get('report', []),
         'settings': out.get('settings', {}),
+        'quality_filter_report': out.get('quality_filter_report', {}),
     }
 
     _write_reports(summary)

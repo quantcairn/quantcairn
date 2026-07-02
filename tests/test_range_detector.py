@@ -128,6 +128,28 @@ def test_auto_range_seed_rejects_too_narrow_range():
     assert detector.get_range_state().is_valid is False
 
 
+def test_auto_range_seed_allows_lower_priced_stock_with_dynamic_spread_floor():
+    detector = RangeDetector(
+        ticker="SOFI",
+        mode="auto",
+        auto_lookback=10,
+        trend_enabled=False,
+        min_profit_per_trade=1.0,
+        min_range_width_pct=0.8,
+    )
+    candles = [
+        DummyCandle(high=18.60, low=17.70, close=18.00 + i * 0.02, volume=10_000 + i * 50)
+        for i in range(10)
+    ]
+
+    seeded = detector.seed_from_ohlcv(candles)
+    state = detector.get_range_state()
+
+    assert seeded is True
+    assert state.is_valid is True
+    assert state.spread_dollars >= 0.35
+
+
 def test_auto_range_buy_is_blocked_when_support_confidence_is_weak():
     detector = RangeDetector(
         ticker="TOP1",

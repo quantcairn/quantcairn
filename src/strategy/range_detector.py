@@ -293,13 +293,29 @@ class RangeDetector:
         resistance = sorted_prices[min(n - 1, int(n * 0.95))]
         return (round(support, 2), round(resistance, 2), 0.3, 0.3)
 
+    def _effective_min_profit_per_trade(self, reference_price: float) -> float:
+        """
+        Relax the absolute spread floor for lower-priced stocks while keeping
+        the configured ceiling for higher-priced names.
+        """
+        try:
+            price = float(reference_price)
+        except (TypeError, ValueError):
+            price = 0.0
+        configured = max(0.0, float(self.min_profit_per_trade or 0.0))
+        if price <= 0:
+            return configured
+        dynamic_floor = max(0.35, min(configured or 1.0, price * 0.04))
+        return round(dynamic_floor, 2)
+
     def _is_range_tradeable(self, support: float, resistance: float) -> bool:
         """Reject ranges that are too narrow to cover slippage and fees."""
         if support <= 0 or resistance <= support:
             return False
         spread = resistance - support
         spread_pct = (spread / support * 100) if support > 0 else 0.0
-        if spread < self.min_profit_per_trade:
+        min_profit = self._effective_min_profit_per_trade(support)
+        if spread < min_profit:
             return False
         if spread_pct < self.min_range_width_pct:
             return False
@@ -418,9 +434,16 @@ class RangeDetector:
         supp, res, supp_conf, res_conf = self._calc_volume_weighted_range() if self._volume_profile and len(self._volume_profile) >= 10 else self._percentile_range()
 
         if not self._is_range_tradeable(supp, res):
+            spread = max(0.0, res - supp)
+            spread_pct = (spread / supp * 100) if supp > 0 else 0.0
+            min_profit = self._effective_min_profit_per_trade(supp)
             logger.warning(
-                "Could not seed auto range for %s: derived range too narrow or invalid",
+                "Could not seed auto range for %s: spread=$%.2f (%.1f%%), min=$%.2f / %.1f%%",
                 self.ticker,
+                spread,
+                spread_pct,
+                min_profit,
+                self.min_range_width_pct,
             )
             return False
 
@@ -555,10 +578,11 @@ class RangeDetector:
                 # Minimum profit check: ensure the spread covers costs
                 spread_dollars = resistance - support
                 spread_pct = (spread_dollars / support * 100) if support > 0 else 0.0
+                min_profit = self._effective_min_profit_per_trade(support)
                 est_profit = (resistance - current_price) / current_price * 100  # % return
                 commission_pct = 0.0012  # ~0.12% round-trip commission on 2 trades
 
-                if spread_dollars < self.min_profit_per_trade or spread_pct < self.min_range_width_pct:
+                if spread_dollars < min_profit or spread_pct < self.min_range_width_pct:
                     return Signal(
                         type=SignalType.HOLD,
                         ticker=self.ticker,
@@ -567,7 +591,7 @@ class RangeDetector:
                         resistance=resistance,
                         reason=(
                             f"Range too narrow (spread ${spread_dollars:.2f}, {spread_pct:.1f}%) "
-                            f"< min ${self.min_profit_per_trade:.2f} / {self.min_range_width_pct:.1f}%"
+                            f"< min ${min_profit:.2f} / {self.min_range_width_pct:.1f}%"
                         ),
                         confidence=0.0,
                     )
