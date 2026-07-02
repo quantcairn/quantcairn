@@ -1,4 +1,5 @@
 import tempfile
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -316,6 +317,15 @@ def test_live_startup_adopts_existing_broker_order():
     engine._clear_pending_order()
 
 
+def test_market_calendar_blocks_holidays_and_uses_early_close():
+    engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=False)
+
+    assert engine._market_session_end(date(2026, 7, 3)) is None
+    assert engine._market_session_end(date(2026, 7, 2)) == "13:00"
+    assert engine._market_session_end(date(2026, 11, 27)) == "13:00"
+    assert engine._market_session_end(date(2026, 7, 6)) == "16:00"
+
+
 def run_test_direct():
     test_reconcile_pending_buy_fill_updates_local_state()
     test_reconcile_partial_buy_fill_keeps_pending_order()
@@ -325,6 +335,7 @@ def run_test_direct():
     test_partial_immediate_sell_keeps_unfilled_position()
     test_pending_order_survives_engine_restart()
     test_live_startup_adopts_existing_broker_order()
+    test_market_calendar_blocks_holidays_and_uses_early_close()
 
 
 if __name__ == "__main__":

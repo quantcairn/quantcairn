@@ -25,7 +25,7 @@ TICKERS = [
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
 _LIVE_ACCOUNT_CACHE = None
 _LIVE_ACCOUNT_CACHE_AT = 0.0
-_LIVE_ACCOUNT_CACHE_TTL = float(os.getenv("SOXS_LIVE_ACCOUNT_CACHE_TTL", "15"))
+_LIVE_ACCOUNT_CACHE_TTL = float(os.getenv("SOXS_LIVE_ACCOUNT_CACHE_TTL", "60"))
 _LIVE_ACCOUNT_LOCK = threading.Lock()
 _STATUS_CACHE: dict[int, dict] = {}
 _STATUS_FAILURES: dict[int, int] = {}
@@ -95,7 +95,7 @@ def _refresh_live_account_summary(now: float):
             log_path=_env("LONGBRIDGE_LOG_PATH"),
         )
         if not broker.connect():
-            return _LIVE_ACCOUNT_CACHE
+            return _stale_live_account("券商连接失败")
         positions = broker.get_positions()
         account = broker.get_account()
         position_rows = []
@@ -118,9 +118,11 @@ def _refresh_live_account_summary(now: float):
             "positions_count": len(positions or []),
             "positions": position_rows,
             "mode": "live",
+            "data_stale": False,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
         }
-    except Exception:
-        return _LIVE_ACCOUNT_CACHE
+    except Exception as exc:
+        return _stale_live_account(str(exc))
     finally:
         if broker is not None:
             try:
@@ -131,6 +133,16 @@ def _refresh_live_account_summary(now: float):
         _LIVE_ACCOUNT_CACHE = summary
         _LIVE_ACCOUNT_CACHE_AT = now
     return summary
+
+
+def _stale_live_account(reason: str):
+    if not isinstance(_LIVE_ACCOUNT_CACHE, dict):
+        return None
+    return {
+        **_LIVE_ACCOUNT_CACHE,
+        "data_stale": True,
+        "stale_reason": reason or "刷新失败",
+    }
 
 
 def _position_lookup(live_account: dict | None) -> dict[str, dict]:
@@ -666,6 +678,9 @@ HTML = """<!DOCTYPE html>
             <span class="pill {% if live_account and live_account.mode == 'live' %}live{% else %}warn{% endif %}">
                 {% if live_account and live_account.mode == 'live' %}实盘账户{% else %}模拟盘 / 离线{% endif %}
             </span>
+            {% if live_account and live_account.data_stale %}
+            <span class="pill warn">账户数据已过期 · {{ live_account.fetched_at or '未知时间' }}</span>
+            {% endif %}
             {% if footer_buying_power is not none %}
             <span class="pill live">{{ account_labels.footer_buying_power }} ${{ "%.2f"|format(footer_buying_power) }}</span>
             {% endif %}

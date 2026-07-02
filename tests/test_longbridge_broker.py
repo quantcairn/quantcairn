@@ -697,6 +697,24 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
     assert records[-1]["response"]["order_id"] == "LB-99999"
 
 
+def test_positions_failure_marks_snapshot_unreliable(tmp_path):
+    from src.broker import longbridge_broker as module
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        audit_dir=str(tmp_path / "logs"),
+    )
+    broker._connected = True
+    broker._trade_ctx = SimpleNamespace(
+        stock_positions=lambda: (_ for _ in ()).throw(RuntimeError("rate limited"))
+    )
+
+    assert broker.get_positions() == []
+    assert broker.is_positions_snapshot_reliable() is False
+
+
 def run_test_direct():
     tmp_root = Path(tempfile.mkdtemp(prefix="longbridge-broker-test-"))
     test_longbridge_env_aliases_and_sandbox_config(tmp_root)
@@ -705,3 +723,4 @@ def run_test_direct():
     test_longbridge_broker_account_balance_handles_list_response(tmp_root)
     test_longbridge_broker_reuses_cached_positions_and_account(tmp_root)
     test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_root)
+    test_positions_failure_marks_snapshot_unreliable(tmp_root)

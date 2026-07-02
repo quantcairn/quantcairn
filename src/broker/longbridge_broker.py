@@ -186,6 +186,7 @@ class LongBridgeBroker(BrokerBase):
         self._quote_ctx: Optional[lb.QuoteContext] = None
         self._account_cache = AccountInfo(cash=0, equity=0, buying_power=0, positions=[])
         self._positions_cache: list[Position] = []
+        self._positions_snapshot_reliable = False
         self._account_cache_fetched_at = 0.0
         self._positions_cache_fetched_at = 0.0
         self._account_retry_not_before = 0.0
@@ -210,6 +211,10 @@ class LongBridgeBroker(BrokerBase):
         self._positions_cache_fetched_at = 0.0
         self._account_retry_not_before = 0.0
         self._positions_retry_not_before = 0.0
+
+    def is_positions_snapshot_reliable(self) -> bool:
+        """Whether the latest positions response is confirmed by the broker."""
+        return self._positions_snapshot_reliable
 
     def _audit_path(self) -> Path:
         return self._audit_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
@@ -556,6 +561,7 @@ class LongBridgeBroker(BrokerBase):
         ):
             return list(self._positions_cache)
         if not self.is_connected():
+            self._positions_snapshot_reliable = False
             self._write_audit("get_positions", request, {"positions": []}, ok=False, error="Not connected")
             return list(self._positions_cache)
         try:
@@ -606,12 +612,14 @@ class LongBridgeBroker(BrokerBase):
                     )
                 )
             self._positions_cache = positions
+            self._positions_snapshot_reliable = True
             self._positions_cache_fetched_at = now
             self._positions_retry_not_before = now
             self._write_audit("get_positions", request, {"positions": positions}, ok=True)
             return positions
         except Exception as e:
             logger.error(f"Get positions failed: {e}")
+            self._positions_snapshot_reliable = False
             self._positions_retry_not_before = now + self._cache_retry_backoff_seconds
             self._write_audit("get_positions", request, {"error": str(e)}, ok=False, error=str(e))
             return list(self._positions_cache)

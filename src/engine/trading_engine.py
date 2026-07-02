@@ -10,7 +10,8 @@ Runs in paper or live mode.
 import json
 import logging
 import time
-from datetime import datetime, date
+import calendar
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -245,6 +246,14 @@ class TradingEngine:
 
                 # 5. Get current position
                 pos = self.broker.get_position_for_ticker(self.ticker)
+                positions_reliable = getattr(
+                    self.broker, "is_positions_snapshot_reliable", lambda: True
+                )()
+                if self.mode == "live" and not positions_reliable:
+                    self._last_signal_reason = "券商持仓状态无法确认，已暂停本轮交易"
+                    logger.error("%s: %s", self.ticker, self._last_signal_reason)
+                    self._sleep_with_status(15, self._last_signal_reason)
+                    continue
                 self._position_shares = pos.quantity if pos else 0
                 has_position = self._position_shares > 0
 
@@ -738,24 +747,107 @@ class TradingEngine:
         th = self.config.trading_hours
 
         if not HAS_PYTZ or self._ny_tz is None:
-            # Without pytz, assume always trading (for demo/paper)
-            return True
+            # Live trading must fail closed when its configured timezone is unavailable.
+            return self.mode != "live"
 
         now_ny = datetime.now(self._ny_tz)
-
-        # Weekend check
-        if now_ny.weekday() >= 5:
+        session_end = self._market_session_end(now_ny.date())
+        if session_end is None:
             return False
 
         # Parse time strings
         start_h, start_m = map(int, th.start.split(":"))
-        end_h, end_m = map(int, th.end.split(":"))
+        end_h, end_m = map(int, session_end.split(":"))
 
         current_minutes = now_ny.hour * 60 + now_ny.minute
         start_minutes = start_h * 60 + start_m
         end_minutes = end_h * 60 + end_m
 
         return start_minutes <= current_minutes <= end_minutes
+
+    def _market_session_end(self, session_date: date) -> Optional[str]:
+        """Return the NYSE close time, or None for weekends and major holidays."""
+        if session_date.weekday() >= 5 or session_date in self._market_holidays(session_date.year):
+            return None
+        if session_date in self._market_early_closes(session_date.year):
+            return self.config.trading_hours.early_close
+        return self.config.trading_hours.end
+
+    @classmethod
+    def _market_holidays(cls, year: int) -> set[date]:
+        def nth_weekday(month: int, weekday: int, n: int) -> date:
+            first = date(year, month, 1)
+            day = 1 + ((weekday - first.weekday()) % 7) + (n - 1) * 7
+            return date(year, month, day)
+
+        def last_weekday(month: int, weekday: int) -> date:
+            day = calendar.monthrange(year, month)[1]
+            value = date(year, month, day)
+            return value - timedelta(days=(value.weekday() - weekday) % 7)
+
+        def observed(value: date) -> date:
+            if value.weekday() == 5:
+                return value - timedelta(days=1)
+            if value.weekday() == 6:
+                return value + timedelta(days=1)
+            return value
+
+        easter = cls._easter_sunday(year)
+        holidays = {
+            observed(date(year, 1, 1)),
+            nth_weekday(1, 0, 3),
+            nth_weekday(2, 0, 3),
+            easter - timedelta(days=2),
+            last_weekday(5, 0),
+            observed(date(year, 6, 19)),
+            observed(date(year, 7, 4)),
+            nth_weekday(9, 0, 1),
+            nth_weekday(11, 3, 4),
+            observed(date(year, 12, 25)),
+        }
+        # A Monday-observed New Year can belong to the following calendar year.
+        next_new_year = observed(date(year + 1, 1, 1))
+        if next_new_year.year == year:
+            holidays.add(next_new_year)
+        return holidays
+
+    @classmethod
+    def _market_early_closes(cls, year: int) -> set[date]:
+        holidays = cls._market_holidays(year)
+
+        def previous_session(value: date) -> date:
+            value -= timedelta(days=1)
+            while value.weekday() >= 5 or value in holidays:
+                value -= timedelta(days=1)
+            return value
+
+        thanksgiving = next(
+            value for value in holidays if value.month == 11 and value.weekday() == 3
+        )
+        closes = {
+            previous_session(date(year, 7, 4)),
+            thanksgiving + timedelta(days=1),
+        }
+        christmas_eve = date(year, 12, 24)
+        if christmas_eve.weekday() < 5 and christmas_eve not in holidays:
+            closes.add(christmas_eve)
+        return closes
+
+    @staticmethod
+    def _easter_sunday(year: int) -> date:
+        """Gregorian Easter date used to derive the Good Friday closure."""
+        a = year % 19
+        b, c = divmod(year, 100)
+        d, e = divmod(b, 4)
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i, k = divmod(c, 4)
+        month_seed = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * month_seed) // 451
+        month = (h + month_seed - 7 * m + 114) // 31
+        day = (h + month_seed - 7 * m + 114) % 31 + 1
+        return date(year, month, day)
 
     def _sleep_with_status(self, seconds: int, reason: str) -> None:
         """Sleep with status message."""

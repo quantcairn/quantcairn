@@ -102,6 +102,33 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     assert "30 股" in html
 
 
+def test_combined_dashboard_marks_stale_live_account(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
+        "cash": 25.0,
+        "equity": 700.0,
+        "buying_power": 25.0,
+        "positions_count": 0,
+        "positions": [],
+        "mode": "live",
+        "data_stale": True,
+        "fetched_at": "2026-07-02T10:00:00",
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 0.0,
+        "support": 0.0,
+        "resistance": 0.0,
+    })
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {})
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "账户数据已过期" in html
+    assert "2026-07-02T10:00:00" in html
+
+
 def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
@@ -443,6 +470,7 @@ def run_test_direct():
     try:
         test_combined_status_fetch_needs_consecutive_failures_before_offline(monkeypatch)
         test_combined_dashboard_renders_live_account_summary(monkeypatch)
+        test_combined_dashboard_marks_stale_live_account(monkeypatch)
         test_combined_dashboard_renders_ai_selection_report(monkeypatch)
         test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch)
         test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch)

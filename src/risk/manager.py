@@ -230,7 +230,22 @@ class RiskManager:
     def get_daily_trades(self) -> int:
         """Count trades executed today (ET trading day)."""
         tday = self._trading_date()
-        return sum(1 for t in self._trade_history if t.entry_time.date().isoformat() == tday)
+        return sum(
+            1 for trade in self._trade_history
+            if self._datetime_trading_date(trade.entry_time) == tday
+        )
+
+    @staticmethod
+    def _datetime_trading_date(value: datetime) -> str:
+        """Convert a stored local/aware timestamp to its New York trading date."""
+        try:
+            import pytz
+
+            if value.tzinfo is None:
+                value = value.astimezone()
+            return value.astimezone(pytz.timezone("America/New_York")).date().isoformat()
+        except Exception:
+            return value.date().isoformat()
 
     def get_stats(self) -> dict:
         """Get summary statistics."""
