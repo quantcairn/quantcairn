@@ -118,14 +118,14 @@ def main():
         "AI_SELECTOR_AUTO_REFRESH_MINUTES",
         str(runtime_settings.get("auto_refresh_minutes", 5)),
     )
-    sel = AIStrategySelector()
-    # Do not overwrite TOP configs until live positions have been verified.
-    out = sel.run_selection(write_configs=False)
-    selected = out.get('top5') or out.get('top3') or []
     live_positions = _live_equity_positions()
     if live_positions is None and _has_live_top_configs():
-        print("Live position verification failed; refusing to replace or restart TOP engines.")
+        print("Live position verification failed; refusing to run selection or replace TOP configs.")
         sys.exit(1)
+
+    sel = AIStrategySelector()
+    out = sel.run_selection(write_configs=False)
+    selected = out.get('top5') or out.get('top3') or []
     selected = _pin_live_positions(
         selected,
         live_positions or [],

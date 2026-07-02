@@ -9,6 +9,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-0}"
 UID_NUM="$(id -u)"
 TOP_ENGINES=(TOP1 TOP2 TOP3 TOP4 TOP5)
+ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
 
 cd "$PROJECT_DIR" || exit 1
 
@@ -43,6 +44,7 @@ stop_existing() {
     pkill -f "run.py --config configs/SMR.yaml" 2>/dev/null
     stop_top
     pkill -f "scripts/start_combined.py" 2>/dev/null
+    pkill -f "scripts/start_orphan_monitor.py" 2>/dev/null
     pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
     pkill -f "start_combined(8090)" 2>/dev/null
     kill_dashboard_ports
@@ -141,11 +143,21 @@ start_all() {
 
     find "$PROJECT_DIR" -type d -name __pycache__ -not -path '*/.venv/*' -exec rm -rf {} + 2>/dev/null
 
+    if ! "$VENV_PYTHON" "$ORPHAN_MONITOR_SCRIPT" --verify-only >> "$LOG_DIR/combined.log" 2>&1; then
+        echo "❌ Broker position verification failed; aborting live startup"
+        return 1
+    fi
+
     # Start combined dashboard with the dedicated launcher.
     : > "$LOG_DIR/combined.log"
     nohup "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 &
     pids="$pids $!"
     echo "📊 COMBINED on :8090 (PID $!)"
+
+    : > "$LOG_DIR/orphan-monitor.log"
+    nohup "$VENV_PYTHON" "$ORPHAN_MONITOR_SCRIPT" >> "$LOG_DIR/orphan-monitor.log" 2>&1 &
+    pids="$pids $!"
+    echo "🛡️ ORPHAN MONITOR started (PID $!)"
 
     start_top
     pids="$pids $TOP_PIDS"

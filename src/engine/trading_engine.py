@@ -28,6 +28,7 @@ from .position_sizing import determine_buy_quantity
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+INVERSE_ETF_SYMBOLS = {"SOXS", "SQQQ", "SPXU", "SDOW", "FAZ", "SOXL"}
 
 # Try to import pytz, fall back if not available
 try:
@@ -35,6 +36,92 @@ try:
     HAS_PYTZ = True
 except ImportError:
     HAS_PYTZ = False
+
+
+def _audit_log_path() -> Path:
+    log_dir = PROJECT_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
+
+
+def append_runtime_audit(record: dict) -> None:
+    payload = dict(record or {})
+    payload.setdefault(
+        "timestamp",
+        datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+    )
+    with _audit_log_path().open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+
+def is_inverse_etf_symbol(symbol: str) -> bool:
+    return str(symbol or "").strip().upper().split(".")[0] in INVERSE_ETF_SYMBOLS
+
+
+def check_exit_conditions(
+    symbol,
+    current_price,
+    avg_cost,
+    position_qty,
+    is_inverse_etf=False,
+    mode="normal",
+):
+    decision = {
+        "should_exit": False,
+        "reason": None,
+        "trigger_price": None,
+        "avg_cost": float(avg_cost or 0.0),
+        "position_qty": int(position_qty or 0),
+        "symbol": str(symbol or "").strip().upper(),
+        "mode": mode,
+    }
+    qty = decision["position_qty"]
+    cost = decision["avg_cost"]
+    price = float(current_price or 0.0)
+    if qty <= 0 or cost <= 0 or price <= 0:
+        return decision
+
+    if is_inverse_etf:
+        stop_trigger = round(cost * 1.05, 6)
+        take_trigger = round(cost * 0.90, 6)
+        if mode == "orphan":
+            stop_trigger = round(cost * 1.08, 6)
+            take_trigger = None
+            if price >= stop_trigger:
+                decision["should_exit"] = True
+                decision["reason"] = "stop_loss"
+                decision["trigger_price"] = stop_trigger
+            return decision
+        if price >= stop_trigger:
+            decision["should_exit"] = True
+            decision["reason"] = "stop_loss"
+            decision["trigger_price"] = stop_trigger
+        elif price <= take_trigger:
+            decision["should_exit"] = True
+            decision["reason"] = "take_profit"
+            decision["trigger_price"] = take_trigger
+        return decision
+
+    stop_trigger = round(cost * 0.95, 6)
+    take_trigger = round(cost * 1.10, 6)
+    if mode == "orphan":
+        take_trigger = None
+        stop_trigger = round(cost * 0.92, 6)
+        if price <= stop_trigger:
+            decision["should_exit"] = True
+            decision["reason"] = "stop_loss"
+            decision["trigger_price"] = stop_trigger
+        return decision
+
+    if price <= stop_trigger:
+        decision["should_exit"] = True
+        decision["reason"] = "stop_loss"
+        decision["trigger_price"] = stop_trigger
+    elif price >= take_trigger:
+        decision["should_exit"] = True
+        decision["reason"] = "take_profit"
+        decision["trigger_price"] = take_trigger
+    return decision
 
 
 class TradingEngine:
@@ -119,6 +206,7 @@ class TradingEngine:
         self._trade_in_progress = False
         self._last_signal_reason: str = "暂无"
         self._pending_order: Optional[dict] = None
+        self._last_exit_check_at = 0.0
         self._pending_order_state_path = (
             PROJECT_DIR / "state" / "pending_orders" / f"{self.ticker.upper()}.json"
         )
@@ -285,6 +373,12 @@ class TradingEngine:
                 # 6c. Reconcile pending live orders before evaluating new signals.
                 self._reconcile_pending_order()
                 has_position = self._position_shares > 0
+
+                # 6d. Dynamic exit checks run independently from the range signal.
+                if self._should_run_exit_check(loop_start):
+                    self._last_exit_check_at = loop_start
+                    self._run_dynamic_exit_check(current_price, quote.bid)
+                    has_position = self._position_shares > 0
 
                 # 7. Evaluate strategy
                 signal = self.strategy.evaluate(current_price, has_position)
@@ -536,6 +630,161 @@ class TradingEngine:
             self._trade_in_progress = False
 
     # ---- Helpers ----
+
+    def _should_run_exit_check(self, now_ts: float) -> bool:
+        return (now_ts - self._last_exit_check_at) >= 60.0
+
+    def _has_active_sell_protection(self) -> bool:
+        if self._position_sync_fence:
+            return True
+        if self._pending_order and str(self._pending_order.get("side") or "").upper() == "SELL":
+            return True
+        return False
+
+    def _write_runtime_audit(self, phase: str, **fields) -> None:
+        append_runtime_audit(
+            {
+                "phase": phase,
+                "ticker": self.ticker,
+                "symbol": self.ticker,
+                "execution_mode": self.mode,
+                "reduce_only": self._reduce_only,
+                **fields,
+            }
+        )
+
+    def _run_dynamic_exit_check(self, current_price: float, bid: float) -> None:
+        pos = self.broker.get_position_for_ticker(self.ticker)
+        positions_reliable = getattr(
+            self.broker, "is_positions_snapshot_reliable", lambda: True
+        )()
+        if self.mode == "live" and not positions_reliable:
+            self._last_signal_reason = "动态退出跳过：券商持仓未确认"
+            return
+        if pos is None:
+            return
+        confirmed_qty = self._apply_position_sync_fence(pos.quantity)
+        if confirmed_qty <= 0:
+            return
+        avg_cost = float(getattr(pos, "avg_entry_price", 0.0) or 0.0)
+        decision = check_exit_conditions(
+            self.ticker,
+            current_price,
+            avg_cost,
+            confirmed_qty,
+            is_inverse_etf=is_inverse_etf_symbol(self.ticker),
+            mode="normal",
+        )
+        if not decision["should_exit"]:
+            return
+        if self._has_active_sell_protection():
+            self._last_signal_reason = f"动态退出待执行：{decision['reason']}，但卖出保护已生效"
+            self._write_runtime_audit(
+                "risk_exit_trigger",
+                reason=decision["reason"],
+                current_price=current_price,
+                avg_cost=avg_cost,
+                quantity=confirmed_qty,
+                mode="normal",
+                trigger_price=decision["trigger_price"],
+                broker_position_verified=positions_reliable,
+                skipped=True,
+                skip_reason="sell_protection_active",
+            )
+            return
+        self._submit_reduce_order(
+            quantity=confirmed_qty,
+            current_price=current_price,
+            execution_price=bid if bid > 0 else current_price,
+            reason=str(decision["reason"]),
+            mode="normal",
+            avg_cost=avg_cost,
+            broker_position_verified=positions_reliable,
+            trigger_price=decision["trigger_price"],
+        )
+
+    def _submit_reduce_order(
+        self,
+        *,
+        quantity: int,
+        current_price: float,
+        execution_price: float,
+        reason: str,
+        mode: str,
+        avg_cost: Optional[float] = None,
+        broker_position_verified: bool = True,
+        trigger_price: Optional[float] = None,
+        audit_phase: str = "risk_exit_trigger",
+    ) -> Optional[str]:
+        if quantity <= 0:
+            return None
+        self._trade_in_progress = True
+        order_id = None
+        try:
+            order = self.broker.place_order(
+                ticker=self.ticker,
+                side=OrderSide.SELL,
+                quantity=quantity,
+                order_type=OrderType.MARKET,
+                current_bid=execution_price,
+                current_ask=current_price,
+                notes=f"{mode}:{reason}",
+            )
+            order_id = str(getattr(order, "order_id", "") or "")
+            self._write_runtime_audit(
+                audit_phase,
+                reason=reason,
+                current_price=current_price,
+                avg_cost=avg_cost if avg_cost is not None else self._entry_price,
+                quantity=quantity,
+                mode=mode,
+                trigger_price=trigger_price if trigger_price is not None else current_price,
+                broker_position_verified=broker_position_verified,
+                order_id=order_id or None,
+                order={
+                    "side": "sell",
+                    "qty": quantity,
+                    "type": "market",
+                },
+                response={"status": str(order.status.value).lower()},
+            )
+
+            if order.status == OrderStatus.PENDING:
+                self._remember_pending_order(
+                    order=order,
+                    side="SELL",
+                    signal_type=reason.upper(),
+                )
+                self.notifier.order_submitted(
+                    self.ticker, "SELL", order.quantity, order.order_id
+                )
+
+            if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
+                filled_qty = int(order.filled_quantity or 0)
+                pnl = self._calculate_pnl(order.avg_fill_price, filled_qty)
+                self.notifier.trade(
+                    self.ticker, "SELL", filled_qty, order.avg_fill_price, pnl
+                )
+                if self._entry_price and order.avg_fill_price:
+                    self.risk.record_trade(TradeRecord(
+                        entry_time=datetime.now(),
+                        exit_time=datetime.now(),
+                        entry_price=self._entry_price,
+                        exit_price=order.avg_fill_price,
+                        shares=filled_qty,
+                        pnl=pnl or 0.0,
+                        pnl_pct=((order.avg_fill_price - self._entry_price) / self._entry_price * 100),
+                        side="LONG",
+                    ))
+                self._position_shares = max(0, self._position_shares - filled_qty)
+                self._set_position_sync_fence(self._position_shares)
+                if self._position_shares <= 0:
+                    self._entry_price = None
+                    self.strategy.clear_entry()
+                self._last_signal_reason = f"动态退出已执行：{reason}"
+            return order_id or None
+        finally:
+            self._trade_in_progress = False
 
     def _calculate_pnl(
         self, exit_price: float, shares: Optional[int] = None
