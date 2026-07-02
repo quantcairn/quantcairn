@@ -187,6 +187,19 @@ def _filter_live_positions(live_account: dict | None, allowed_tickers: set[str])
     }
 
 
+def _selected_stock_positions_count(live_account: dict | None, selected_tickers: set[str]) -> int:
+    if not isinstance(live_account, dict) or not selected_tickers:
+        return 0
+    count = 0
+    for pos in live_account.get("positions") or []:
+        if not isinstance(pos, dict):
+            continue
+        ticker = str(pos.get("ticker") or "").strip().upper()
+        if ticker and ticker in selected_tickers:
+            count += 1
+    return count
+
+
 def _load_ai_selection_report():
     path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
     if not path.exists():
@@ -739,7 +752,7 @@ HTML = """<!DOCTYPE html>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">精选持仓数量</span>
-                                <span class="metric-value small">{% if live_account and live_account.positions_count is not none %}{{ live_account.positions_count }}{% else %}暂无{% endif %}</span>
+                                <span class="metric-value small">{% if live_account %}{{ selected_positions_count }}{% else %}暂无{% endif %}</span>
                             </div>
                         </div>
                         <div>
@@ -1131,6 +1144,7 @@ def index():
             total_equity += initial_capital
 
     display_live_account = live_account
+    selected_positions_count = _selected_stock_positions_count(live_account, selected_tickers)
 
     if live_account and live_account.get("mode") == "live":
         total_pnl = sum(float((pos or {}).get("unrealized_pnl", 0.0) or 0.0) for pos in (live_account.get("positions") or []))
@@ -1209,6 +1223,7 @@ def index():
         account_labels=account_labels,
         footer_buying_power=footer_buying_power,
         live_account=display_live_account or live_account,
+        selected_positions_count=selected_positions_count,
         ai_selection=ai_selection,
         runtime_settings={
             "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),

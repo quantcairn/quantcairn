@@ -38,6 +38,37 @@ kill_dashboard_ports() {
     done
 }
 
+wait_for_port() {
+    local port="$1"
+    local timeout="${2:-15}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+start_combined_dashboard() {
+    : > "$LOG_DIR/combined.log"
+    nohup "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 < /dev/null &
+    local combined_pid=$!
+    if wait_for_port 8090 15; then
+        echo "$combined_pid"
+        return 0
+    fi
+    if ! kill -0 "$combined_pid" >/dev/null 2>&1; then
+        echo "❌ Combined dashboard failed to start (PID $combined_pid exited)"
+    else
+        echo "❌ Combined dashboard did not bind to :8090 within timeout (PID $combined_pid)"
+    fi
+    tail -n 40 "$LOG_DIR/combined.log" 2>/dev/null || true
+    return 1
+}
+
 stop_existing() {
     pkill -f "run.py --config configs/DRIP.yaml" 2>/dev/null
     pkill -f "run.py --config configs/AMC.yaml" 2>/dev/null
@@ -149,10 +180,9 @@ start_all() {
     fi
 
     # Start combined dashboard with the dedicated launcher.
-    : > "$LOG_DIR/combined.log"
-    nohup "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 &
-    pids="$pids $!"
-    echo "📊 COMBINED on :8090 (PID $!)"
+    combined_pid="$(start_combined_dashboard)" || return 1
+    pids="$pids $combined_pid"
+    echo "📊 COMBINED on :8090 (PID $combined_pid)"
 
     : > "$LOG_DIR/orphan-monitor.log"
     nohup "$VENV_PYTHON" "$ORPHAN_MONITOR_SCRIPT" >> "$LOG_DIR/orphan-monitor.log" 2>&1 &
@@ -200,10 +230,13 @@ case "$1" in
         pkill -f "scripts/start_combined.py" 2>/dev/null
         pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
         pkill -f "start_combined(8090)" 2>/dev/null
+        kill_listener_on_port 8090
         sleep 1
-        : > "$LOG_DIR/combined.log"
-        nohup "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 &
-        echo "🔄 Combined dashboard restarted"
+        if combined_pid="$(start_combined_dashboard)"; then
+            echo "🔄 Combined dashboard restarted (PID $combined_pid)"
+        else
+            exit 1
+        fi
         ;;
 
     status)
