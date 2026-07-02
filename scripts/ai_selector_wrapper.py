@@ -3,13 +3,14 @@
 
 Behavior:
 - Checks current time in America/New_York.
-- If it's a weekday (Mon-Fri) and time is near 09:29 ET, runs the selector once per ET day.
+- If it's a weekday (Mon-Fri) and time is near 09:25 ET, runs the selector once per ET day.
 - After a successful selection, restarts the TOP engines so they use the new configs.
 - Respects env var `FORCE_AI_RUN=1` to force execution regardless of time.
 """
 import os
 import sys
 import subprocess
+import fcntl
 from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
@@ -23,14 +24,15 @@ SELECTOR = os.path.join(PROJECT_DIR, 'scripts', 'run_ai_selector.py')
 OUT_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.out.log')
 ERR_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.err.log')
 STATE_DIR = os.path.join(PROJECT_DIR, 'state')
+LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
 
 
 def is_market_time(now_et: datetime) -> bool:
     # Trading days: Mon-Fri. (This wrapper does not yet account for exchange holidays.)
     if now_et.weekday() >= 5:
         return False
-    # Accept a tight window around 09:29 ET. launchd runs this wrapper every minute.
-    target = now_et.replace(hour=9, minute=29, second=0, microsecond=0)
+    # Leave enough time to verify holdings and restart all engines before 09:30.
+    target = now_et.replace(hour=9, minute=25, second=0, microsecond=0)
     delta = abs((now_et - target).total_seconds())
     return delta <= 90
 
@@ -47,7 +49,7 @@ def mark_ran_today(now_et: datetime) -> None:
         f.write(datetime.now().isoformat() + "\n")
 
 
-def main():
+def _run_selection_if_due():
     force = os.environ.get('FORCE_AI_RUN') == '1'
 
     if ZoneInfo is None:
@@ -82,6 +84,15 @@ def main():
 
     mark_ran_today(now_et)
     print(f'AI selector completed and TOP engines refreshed for ET date {now_et.date().isoformat()}.')
+
+
+def main():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(LOCK_FILE, "w", encoding="utf-8") as lock:
+        # The launch job and minute-based wrapper can fire together. Serialize
+        # them so trading never starts while configs are half-written.
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _run_selection_if_due()
 
 
 if __name__ == '__main__':

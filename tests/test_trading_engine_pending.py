@@ -44,6 +44,10 @@ def use_test_pending_path(engine: TradingEngine, name: str) -> None:
     path = Path(tempfile.gettempdir()) / f"soxs-test-pending-{name}.json"
     path.unlink(missing_ok=True)
     engine._pending_order_state_path = path
+    sync_path = Path(tempfile.gettempdir()) / f"soxs-test-position-sync-{name}.json"
+    sync_path.unlink(missing_ok=True)
+    engine._position_sync_state_path = sync_path
+    engine._position_sync_fence = None
 
 
 def test_reconcile_pending_buy_fill_updates_local_state():
@@ -326,6 +330,46 @@ def test_market_calendar_blocks_holidays_and_uses_early_close():
     assert engine._market_session_end(date(2026, 7, 6)) == "16:00"
 
 
+def test_sell_fill_blocks_stale_position_from_triggering_duplicate_sell():
+    config = AppConfig(ticker="PLTR", mode="live")
+    engine = TradingEngine(config, ignore_trading_hours=True)
+    use_test_pending_path(engine, "stale-after-sell")
+    engine._position_shares = 2
+
+    engine._set_position_sync_fence(0)
+
+    assert engine._apply_position_sync_fence(2) == 0
+    assert engine._position_sync_fence is not None
+    assert "等待券商确认" in engine._last_signal_reason
+    assert engine._apply_position_sync_fence(0) == 0
+    assert engine._position_sync_fence is None
+
+
+def test_position_sync_fence_survives_restart():
+    first = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    use_test_pending_path(first, "sync-restart")
+    first._set_position_sync_fence(0)
+
+    second = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    second._position_sync_state_path = first._position_sync_state_path
+    second._position_sync_fence = None
+    second._load_position_sync_fence()
+
+    assert second._apply_position_sync_fence(2) == 0
+    assert second._position_sync_fence is not None
+    second._clear_position_sync_fence()
+
+
+def test_paper_sell_does_not_create_live_position_fence():
+    engine = TradingEngine(AppConfig(ticker="SOFI", mode="paper"), ignore_trading_hours=True)
+    use_test_pending_path(engine, "paper-no-fence")
+
+    engine._set_position_sync_fence(0)
+
+    assert engine._position_sync_fence is None
+    assert not engine._position_sync_state_path.exists()
+
+
 def run_test_direct():
     test_reconcile_pending_buy_fill_updates_local_state()
     test_reconcile_partial_buy_fill_keeps_pending_order()
@@ -336,6 +380,9 @@ def run_test_direct():
     test_pending_order_survives_engine_restart()
     test_live_startup_adopts_existing_broker_order()
     test_market_calendar_blocks_holidays_and_uses_early_close()
+    test_sell_fill_blocks_stale_position_from_triggering_duplicate_sell()
+    test_position_sync_fence_survives_restart()
+    test_paper_sell_does_not_create_live_position_fence()
 
 
 if __name__ == "__main__":

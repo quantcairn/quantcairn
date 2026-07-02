@@ -50,7 +50,7 @@ class AIStrategySelector:
                 os.environ["AI_SELECTOR_LIVE_DATA"] = previous
             self.scorer = Scorer()
 
-    def run_selection(self):
+    def run_selection(self, write_configs: bool = True):
         # 1. build universe
         source = os.environ.get("AI_SELECTOR_UNIVERSE", "sample")
         if source == "sample":
@@ -88,8 +88,9 @@ class AIStrategySelector:
         topk = self._select_diversified_top_k(top10, self.selection_size)
 
         # write configs for selected TopK
-        from src.ai_selector.config_writer import write_top_configs
-        write_top_configs(topk)
+        if write_configs:
+            from src.ai_selector.config_writer import write_top_configs
+            write_top_configs(topk)
 
         report_rows = self._format_report_rows(topk)
         return {

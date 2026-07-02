@@ -22,6 +22,16 @@ case "$1" in
         > "$LOG_FILE"
         > "$PROJECT_DIR/snapshots.log"
 
+        # Refresh configs only after live holdings are verified. A failed
+        # selector must prevent old TOP configs from entering live trading.
+        if ! FORCE_AI_RUN=1 AI_SELECTOR_RESTART_TOP=0 \
+            "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/scripts/ai_selector_wrapper.py" \
+            >> "$LOG_FILE" 2>&1; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] AI selection failed; trading start aborted" \
+                | tee -a "$LOG_FILE"
+            exit 1
+        fi
+
         "$MULTI_LAUNCH" start-foreground >> "$LOG_FILE" 2>&1
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🚀 AI Top3 trading started" | tee -a "$LOG_FILE"
         ;;

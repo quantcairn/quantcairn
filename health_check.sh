@@ -3,6 +3,19 @@
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 LOG_DIR="$PROJECT_DIR/logs"
+cd "$PROJECT_DIR" || exit 1
+
+market_is_open() {
+    "$PROJECT_DIR/.venv/bin/python" - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from src.config.loader import AppConfig
+from src.engine.trading_engine import TradingEngine
+
+engine = TradingEngine(AppConfig(), ignore_trading_hours=False)
+raise SystemExit(0 if engine._is_trading_hours() else 1)
+PY
+}
 
 check_launchd() {
     local label="$1"
@@ -54,6 +67,16 @@ check_api() {
     fi
 }
 
+check_combined() {
+    local body
+    body=$(curl -fsS --max-time 5 "http://127.0.0.1:8090/" 2>/dev/null)
+    if [[ "$body" == *"AI 区间交易总览"* ]] || [[ "$body" == *"真实账户"* ]]; then
+        echo "OK   combined dashboard responding"
+    else
+        echo "WARN combined dashboard not responding correctly"
+    fi
+}
+
 check_log_risks() {
     local file="$1"
     local name="$2"
@@ -79,26 +102,33 @@ check_launchd "com.soxs.arbitrage.stop"
 
 echo
 echo "== ports =="
-check_port 8091 "TOP1"
-check_fd 8091 "TOP1"
-check_port 8092 "TOP2"
-check_fd 8092 "TOP2"
-check_port 8093 "TOP3"
-check_fd 8093 "TOP3"
-check_port 8094 "TOP4"
-check_fd 8094 "TOP4"
-check_port 8095 "TOP5"
-check_fd 8095 "TOP5"
+if market_is_open; then
+    check_port 8091 "TOP1"
+    check_fd 8091 "TOP1"
+    check_port 8092 "TOP2"
+    check_fd 8092 "TOP2"
+    check_port 8093 "TOP3"
+    check_fd 8093 "TOP3"
+    check_port 8094 "TOP4"
+    check_fd 8094 "TOP4"
+    check_port 8095 "TOP5"
+    check_fd 8095 "TOP5"
+else
+    echo "OK   US market closed; TOP1-TOP5 are expected to be stopped"
+fi
 check_port 8090 "combined"
 check_fd 8090 "combined"
 
 echo
 echo "== APIs =="
-check_api 8091 "TOP1"
-check_api 8092 "TOP2"
-check_api 8093 "TOP3"
-check_api 8094 "TOP4"
-check_api 8095 "TOP5"
+if market_is_open; then
+    check_api 8091 "TOP1"
+    check_api 8092 "TOP2"
+    check_api 8093 "TOP3"
+    check_api 8094 "TOP4"
+    check_api 8095 "TOP5"
+fi
+check_combined
 
 echo
 echo "== logs =="

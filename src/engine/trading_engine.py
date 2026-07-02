@@ -122,7 +122,12 @@ class TradingEngine:
         self._pending_order_state_path = (
             PROJECT_DIR / "state" / "pending_orders" / f"{self.ticker.upper()}.json"
         )
+        self._position_sync_state_path = (
+            PROJECT_DIR / "state" / "position_sync" / f"{self.ticker.upper()}.json"
+        )
+        self._position_sync_fence: Optional[dict] = None
         self._load_pending_order()
+        self._load_position_sync_fence()
         self._reduce_only = bool(getattr(config.position, "reduce_only", False))
 
         # NY timezone
@@ -254,7 +259,8 @@ class TradingEngine:
                     logger.error("%s: %s", self.ticker, self._last_signal_reason)
                     self._sleep_with_status(15, self._last_signal_reason)
                     continue
-                self._position_shares = pos.quantity if pos else 0
+                observed_shares = pos.quantity if pos else 0
+                self._position_shares = self._apply_position_sync_fence(observed_shares)
                 has_position = self._position_shares > 0
 
                 # 6. Sync equity for risk calculations
@@ -265,10 +271,10 @@ class TradingEngine:
                 self.risk.update_equity(acct.equity)
 
                 if pos:
-                    self._position_shares = pos.quantity
-                    if pos.quantity > 0 and pos.avg_entry_price > 0:
+                    self._position_shares = self._apply_position_sync_fence(pos.quantity)
+                    if self._position_shares > 0 and pos.avg_entry_price > 0:
                         self._entry_price = pos.avg_entry_price
-                elif not self._pending_order:
+                elif not self._pending_order and not self._position_sync_fence:
                     self._position_shares = 0
                     self._entry_price = None
 
@@ -292,6 +298,10 @@ class TradingEngine:
                     self._last_signal_reason = (
                         f"等待订单成交：{self._pending_order['side']} {self._pending_order['order_id'][:12]}"
                     )
+                elif self._position_sync_fence:
+                    # Do not place any order while the broker still reports a
+                    # pre-fill position snapshot.
+                    pass
                 elif signal.type == SignalType.BUY and not has_position:
                     if self._reduce_only:
                         self._last_signal_reason = "仅减仓模式：今晚不新开仓"
@@ -465,6 +475,7 @@ class TradingEngine:
                 self._position_shares = max(
                     0, self._position_shares - int(order.filled_quantity or 0)
                 )
+                self._set_position_sync_fence(self._position_shares)
                 if self._position_shares <= 0:
                     self._entry_price = None
                     self.strategy.clear_entry()
@@ -517,6 +528,7 @@ class TradingEngine:
                 self._position_shares = max(
                     0, self._position_shares - int(order.filled_quantity or 0)
                 )
+                self._set_position_sync_fence(self._position_shares)
                 if self._position_shares <= 0:
                     self._entry_price = None
                     self.strategy.clear_entry()
@@ -650,6 +662,64 @@ class TradingEngine:
         except OSError as exc:
             logger.error("Could not clear pending-order state for %s: %s", self.ticker, exc)
 
+    def _load_position_sync_fence(self) -> None:
+        """Restore the post-sell fence that protects against stale broker positions."""
+        path = self._position_sync_state_path
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            expected = int(payload["expected_max_quantity"])
+            if expected < 0:
+                raise ValueError("expected quantity cannot be negative")
+            self._position_sync_fence = payload
+        except Exception as exc:
+            logger.error("Position-sync state is invalid for %s: %s", self.ticker, exc)
+            # A corrupt fence must fail closed instead of permitting another sell.
+            self._position_sync_fence = {
+                "expected_max_quantity": 0,
+                "created_at": datetime.now().isoformat(),
+                "state_error": True,
+            }
+
+    def _set_position_sync_fence(self, expected_max_quantity: int) -> None:
+        """Block another sell until the broker confirms the post-fill quantity."""
+        if self.mode != "live":
+            return
+        self._position_sync_fence = {
+            "expected_max_quantity": max(0, int(expected_max_quantity)),
+            "created_at": datetime.now().isoformat(),
+        }
+        path = self._position_sync_state_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(self._position_sync_fence, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+
+    def _clear_position_sync_fence(self) -> None:
+        self._position_sync_fence = None
+        try:
+            self._position_sync_state_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("Could not clear position-sync state for %s: %s", self.ticker, exc)
+
+    def _apply_position_sync_fence(self, observed_quantity: int) -> int:
+        """Accept a broker position only after it reflects the latest sell fill."""
+        observed = max(0, int(observed_quantity or 0))
+        if self.mode != "live" or not self._position_sync_fence:
+            return observed
+        expected = int(self._position_sync_fence.get("expected_max_quantity", 0) or 0)
+        if observed <= expected:
+            self._clear_position_sync_fence()
+            return observed
+        self._last_signal_reason = (
+            f"等待券商确认卖出后仓位：预期不超过 {expected} 股，当前仍显示 {observed} 股"
+        )
+        return expected
+
     def _reconcile_pending_order(self) -> None:
         """Pull the latest broker status for any submitted live order."""
         pending = self._pending_order
@@ -730,6 +800,7 @@ class TradingEngine:
 
         remaining = max(0, self._position_shares - filled_quantity)
         self._position_shares = remaining
+        self._set_position_sync_fence(remaining)
         if remaining <= 0:
             self._entry_price = None
             self.strategy.clear_entry()

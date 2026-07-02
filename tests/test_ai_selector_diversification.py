@@ -73,3 +73,23 @@ def test_selector_falls_back_when_live_scoring_returns_too_few(monkeypatch):
     assert len(result["top5"]) == 3
     assert result["settings"]["fallback_used"] is True
     assert result["settings"]["data_mode"] == "mixed"
+
+
+def test_selector_can_defer_config_writes_until_positions_are_verified(monkeypatch):
+    selector = AIStrategySelector()
+    selector.selection_size = 1
+    selector.universe._load_local_snapshot = lambda: ["AAA"]
+    selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
+    selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
+        _candidate("AAA", "Technology", 90.0, 1)
+    ]
+    writes = []
+    monkeypatch.setattr(
+        "src.ai_selector.config_writer.write_top_configs",
+        lambda top_items: writes.append(top_items),
+    )
+
+    result = selector.run_selection(write_configs=False)
+
+    assert result["top5"][0]["ticker"] == "AAA"
+    assert writes == []
