@@ -32,11 +32,15 @@ STATE_DIR = os.environ.get("SOXS_STATE_DIR") or os.path.join(PROJECT_DIR, 'state
 LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
 
 
-def is_market_time(now_et: datetime) -> bool:
-    if (
+def is_trading_day(now_et: datetime) -> bool:
+    return not (
         now_et.weekday() >= 5
         or now_et.date() in TradingEngine._market_holidays(now_et.year)
-    ):
+    )
+
+
+def is_market_time(now_et: datetime) -> bool:
+    if not is_trading_day(now_et):
         return False
     # Run 30 minutes before the regular US session open.
     target = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -67,6 +71,12 @@ def _run_selection_if_due():
     else:
         now_et = datetime.now(ZoneInfo('America/New_York'))
 
+    if not is_trading_day(now_et):
+        print(f'Not a US trading day (ET now={now_et}). Exiting.')
+        if force and os.environ.get("FORCE_AI_RUN_ON_NON_TRADING_DAY") != "1":
+            sys.exit(2)
+        if not force:
+            return
     if not force and not is_market_time(now_et):
         print(f'Not market time (ET now={now_et}). Exiting.')
         return

@@ -198,6 +198,7 @@ soxs-range-arbitrage/
 - 如果同时启用，会造成重复启动，日志里会反复出现 `AI Top3 trading started`
 - 无论使用 `launchd` 还是 `cron`，都应调用 `auto_trade.sh start|stop`
 - 不要再直接用 `multi_launch.sh start|stop` 做定时启停，因为它会绕过“当天选股配置校验”
+- `auto_trade.sh start` 和 `multi_launch.sh start` 现在都会先检查是否为美股交易日；像 `2026-07-03` 这类休市日会直接跳过启动
 
 示例如下：
 

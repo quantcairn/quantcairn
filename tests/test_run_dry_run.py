@@ -6,7 +6,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from scripts.ai_selector_wrapper import is_market_time
+from scripts.ai_selector_wrapper import is_market_time, is_trading_day
 
 
 def test_dry_run_exits_nonzero_for_invalid_config():
@@ -45,6 +45,8 @@ range:
 
 
 def test_ai_selector_does_not_run_on_market_holiday():
+    assert is_trading_day(datetime(2026, 7, 3, 9, 0)) is False
+    assert is_trading_day(datetime(2026, 7, 2, 9, 0)) is True
     assert is_market_time(datetime(2026, 7, 3, 9, 25)) is False
     assert is_market_time(datetime(2026, 7, 2, 9, 25)) is True
 

@@ -14,6 +14,21 @@ COMBINED_JOB="com.soxs.combined"
 
 cd "$PROJECT_DIR" || exit 1
 
+is_trading_day_now() {
+    "$VENV_PYTHON" - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from scripts.ai_selector_wrapper import is_trading_day
+
+now_et = datetime.now(ZoneInfo("America/New_York"))
+if not is_trading_day(now_et):
+    print(f"Non-trading day in ET: {now_et.date().isoformat()}")
+    raise SystemExit(1)
+print(f"Trading day verified in ET: {now_et.date().isoformat()}")
+PY
+}
+
 port_for_top() {
     local top_name="$1"
     printf '%s' $((8090 + ${top_name:3}))
@@ -190,6 +205,13 @@ EOF
 
 start_all() {
     wait_for_children="$1"
+
+    if [ "${SOXS_ALLOW_NON_TRADING_DAY_START:-0}" != "1" ]; then
+        if ! is_trading_day_now >> "$LOG_DIR/combined.log" 2>&1; then
+            echo "❌ Non-trading day; startup aborted"
+            return 1
+        fi
+    fi
 
     stop_existing
     sleep 1

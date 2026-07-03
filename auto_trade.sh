@@ -11,8 +11,29 @@ MULTI_LAUNCH="$PROJECT_DIR/multi_launch.sh"
 
 cd "$PROJECT_DIR" || exit 1
 
+is_trading_day_now() {
+    "$PROJECT_DIR/.venv/bin/python" - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from scripts.ai_selector_wrapper import is_trading_day
+
+now_et = datetime.now(ZoneInfo("America/New_York"))
+if not is_trading_day(now_et):
+    print(f"Non-trading day in ET: {now_et.date().isoformat()}")
+    raise SystemExit(1)
+print(f"Trading day verified in ET: {now_et.date().isoformat()}")
+PY
+}
+
 case "$1" in
     start)
+        if ! is_trading_day_now >> "$LOG_FILE" 2>&1; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Non-trading day; trading start skipped" \
+                | tee -a "$LOG_FILE"
+            exit 0
+        fi
+
         # 清缓存
         find "$PROJECT_DIR" -type d -name __pycache__ -not -path '*/.venv/*' -exec rm -rf {} + 2>/dev/null
 
