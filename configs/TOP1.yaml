@@ -19,7 +19,7 @@ position:
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0
-  reduce_only: false
+  reduce_only: true
 risk:
   stop_loss_pct: 1.5
   take_profit_pct: null

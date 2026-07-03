@@ -1,5 +1,6 @@
 import yaml
 import os
+import json
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
@@ -50,8 +51,20 @@ def _dynamic_min_profit_per_trade(estimated_price: float) -> float:
         return 1.0
     return round(max(0.35, min(1.0, price * 0.04)), 2)
 
+
+def _global_reduce_only_enabled() -> bool:
+    state_dir = os.environ.get("SOXS_STATE_DIR") or os.path.join(BASE, "state")
+    flags_path = os.path.join(state_dir, "trading_flags.json")
+    try:
+        with open(flags_path, "r", encoding="utf-8") as f:
+            flags = json.load(f)
+        return bool((flags or {}).get("reduce_only_all", False))
+    except Exception:
+        return False
+
 def write_top_configs(top_items):
     default_mode = _default_top_mode()
+    global_reduce_only = _global_reduce_only_enabled()
     for i, item in enumerate(top_items, start=1):
         support = float(item["range_low"])
         resistance = float(item["range_high"])
@@ -64,7 +77,7 @@ def write_top_configs(top_items):
         size_per_trade = max(1, min(requested_size, fallback_size))
         mode = _load_existing_mode(i, default_mode)
         live_enabled = mode == "live"
-        reduce_only = bool(item.get("reduce_only", False))
+        reduce_only = bool(item.get("reduce_only", False) or global_reduce_only)
 
         cfg = {
             "ticker": item["ticker"],

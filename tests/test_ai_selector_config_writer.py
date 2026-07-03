@@ -162,6 +162,30 @@ def test_config_writer_scales_min_profit_for_lower_priced_stocks(tmp_path, monke
     assert high_price["range"]["min_profit_per_trade"] == 1.0
 
 
+def test_config_writer_honors_global_reduce_only_flag(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    state_dir = repo_root / "state"
+    configs_dir.mkdir()
+    state_dir.mkdir()
+    (state_dir / "trading_flags.json").write_text('{"reduce_only_all": true}', encoding="utf-8")
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+
+    write_top_configs([
+        {
+            "ticker": "SOFI",
+            "range_low": 17.0,
+            "range_high": 19.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 10,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    assert updated["position"]["reduce_only"] is True
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:

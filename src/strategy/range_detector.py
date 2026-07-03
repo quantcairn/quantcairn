@@ -96,6 +96,7 @@ class RangeDetector:
 
         # Volume-profile data: (price, volume) tuples for weighted S/R
         self._volume_profile: list[tuple[float, float]] = []  # (price_midpoint, volume)
+        self._bar_extremes: list[tuple[float, float]] = []  # (high, low)
 
         # Trend filter state
         self.trend_enabled = trend_enabled
@@ -177,9 +178,12 @@ class RangeDetector:
         """Feed a single OHLCV bar for volume-profile range detection."""
         mid = (high + low) / 2
         self._volume_profile.append((mid, float(volume or 0)))
+        self._bar_extremes.append((float(high or 0.0), float(low or 0.0)))
         max_bars = self.auto_lookback * 2
         if len(self._volume_profile) > max_bars:
             self._volume_profile = self._volume_profile[-max_bars:]
+        if len(self._bar_extremes) > max_bars:
+            self._bar_extremes = self._bar_extremes[-max_bars:]
 
     def _calc_volume_weighted_range(self) -> tuple[float, float, float, float]:
         """
@@ -293,6 +297,27 @@ class RangeDetector:
         resistance = sorted_prices[min(n - 1, int(n * 0.95))]
         return (round(support, 2), round(resistance, 2), 0.3, 0.3)
 
+    def _extrema_range(self) -> tuple[float, float, float, float]:
+        """Use raw candle highs/lows to avoid over-compressed startup ranges."""
+        if not self._bar_extremes or len(self._bar_extremes) < 5:
+            return (0.0, 0.0, 0.0, 0.0)
+        return self._extrema_range_from_pairs(self._bar_extremes[-self.auto_lookback:])
+
+    def _extrema_range_from_pairs(
+        self,
+        bar_pairs: list[tuple[float, float]],
+    ) -> tuple[float, float, float, float]:
+        """Build a range from explicit high/low pairs."""
+        if not bar_pairs or len(bar_pairs) < 5:
+            return (0.0, 0.0, 0.0, 0.0)
+        highs = [high for high, _ in bar_pairs if high > 0]
+        lows = [low for _, low in bar_pairs if low > 0]
+        if not highs or not lows:
+            return (0.0, 0.0, 0.0, 0.0)
+        support = min(lows)
+        resistance = max(highs)
+        return (round(support, 2), round(resistance, 2), 0.25, 0.25)
+
     def _effective_min_profit_per_trade(self, reference_price: float) -> float:
         """
         Relax the absolute spread floor for lower-priced stocks while keeping
@@ -400,6 +425,18 @@ class RangeDetector:
                 )
                 return True
 
+        # ── Option C: raw candle envelope fallback ──
+        supp, res, supp_conf, _ = self._extrema_range()
+        if self._is_range_tradeable(supp, res):
+            self.apply_auto_range(supp, res, confidence=supp_conf, source="bar_extrema")
+            spread = res - supp
+            spread_pct = (spread / supp * 100) if supp > 0 else 0
+            logger.info(
+                f"[Extrema Range] Supp=${supp:.2f} Res=${res:.2f} "
+                f"Spread={spread:.2f} ({spread_pct:.1f}%)"
+            )
+            return True
+
         return False
 
     def seed_from_ohlcv(self, candles: list) -> bool:
@@ -429,11 +466,30 @@ class RangeDetector:
         for c in recent:
             mid = (c.high + c.low) / 2
             self._volume_profile.append((mid, float(c.volume or 0)))
+            self._bar_extremes.append((float(c.high or 0.0), float(c.low or 0.0)))
 
-        # ── Try Volume Profile first, fall back to percentile ──
-        supp, res, supp_conf, res_conf = self._calc_volume_weighted_range() if self._volume_profile and len(self._volume_profile) >= 10 else self._percentile_range()
+        full_extrema_pairs = [
+            (float(c.high or 0.0), float(c.low or 0.0))
+            for c in candles
+        ]
+        candidates = []
+        if self._volume_profile and len(self._volume_profile) >= 10:
+            candidates.append(("seeded_history",) + self._calc_volume_weighted_range())
+        candidates.append(("bar_extrema_seed",) + self._extrema_range())
+        if len(full_extrema_pairs) > len(self._bar_extremes):
+            candidates.append(("multi_day_extrema_seed",) + self._extrema_range_from_pairs(full_extrema_pairs))
+        candidates.append(("percentile",) + self._percentile_range())
 
-        if not self._is_range_tradeable(supp, res):
+        selected = None
+        failure = None
+        for source, supp, res, supp_conf, res_conf in candidates:
+            if self._is_range_tradeable(supp, res):
+                selected = (source, supp, res, supp_conf, res_conf)
+                break
+            failure = (supp, res)
+
+        if selected is None:
+            supp, res = failure or (0.0, 0.0)
             spread = max(0.0, res - supp)
             spread_pct = (spread / supp * 100) if supp > 0 else 0.0
             min_profit = self._effective_min_profit_per_trade(supp)
@@ -447,12 +503,21 @@ class RangeDetector:
             )
             return False
 
-        self.apply_auto_range(supp, res, confidence=supp_conf, source="seeded_history")
+        source, supp, res, supp_conf, res_conf = selected
+        self.apply_auto_range(supp, res, confidence=supp_conf, source=source)
 
         spread = res - supp
         spread_pct = (spread / supp * 100) if supp > 0 else 0
 
-        method = "Volume Profile" if supp_conf > 0.3 else "Percentile"
+        method = (
+            "Volume Profile"
+            if source == "seeded_history"
+            else "Multi-day Extrema"
+            if source == "multi_day_extrema_seed"
+            else "Extrema"
+            if source == "bar_extrema_seed"
+            else "Percentile"
+        )
         logger.info(
             f"[{method}] Seeded: ${supp:.2f}−${res:.2f} "
             f"({spread:.1f}% spread, conf={supp_conf:.1f})"

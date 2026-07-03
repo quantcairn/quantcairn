@@ -715,6 +715,67 @@ def test_positions_failure_marks_snapshot_unreliable(tmp_path):
     assert broker.is_positions_snapshot_reliable() is False
 
 
+def test_rate_limited_positions_reuse_recent_cache(tmp_path):
+    from src.broker import longbridge_broker as module
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        audit_dir=str(tmp_path / "logs"),
+    )
+    broker._connected = True
+    broker._positions_cache = [
+        module.Position(
+            ticker="SOFI",
+            quantity=30,
+            avg_entry_price=18.095,
+            current_price=18.24,
+            market_value=547.2,
+            unrealized_pnl=4.35,
+            unrealized_pnl_pct=0.801,
+        )
+    ]
+    broker._positions_cache_fetched_at = module.time.time()
+    broker._positions_snapshot_reliable = True
+    broker._trade_ctx = SimpleNamespace(
+        stock_positions=lambda: (_ for _ in ()).throw(RuntimeError("rate limited"))
+    )
+
+    positions = broker.get_positions()
+
+    assert positions == broker._positions_cache
+    assert broker.is_positions_snapshot_reliable() is True
+
+
+def test_rate_limited_account_reuses_recent_cache(tmp_path):
+    from src.broker import longbridge_broker as module
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        audit_dir=str(tmp_path / "logs"),
+    )
+    broker._connected = True
+    broker._account_cache = module.AccountInfo(
+        cash=829.93,
+        equity=1619.88,
+        buying_power=1177.85,
+        positions=[],
+    )
+    broker._account_cache_fetched_at = module.time.time()
+    broker._account_snapshot_reliable = True
+    broker._trade_ctx = SimpleNamespace(
+        account_balance=lambda: (_ for _ in ()).throw(RuntimeError("Too many requests"))
+    )
+
+    account = broker.get_account()
+
+    assert account == broker._account_cache
+    assert broker.is_account_snapshot_reliable() is True
+
+
 def test_primary_live_broker_blocks_buy_in_global_reduce_only(tmp_path):
     from src.broker import longbridge_broker as module
 

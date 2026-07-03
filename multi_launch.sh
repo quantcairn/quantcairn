@@ -6,7 +6,7 @@ PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
-USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-0}"
+USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-1}"
 UID_NUM="$(id -u)"
 TOP_ENGINES=(TOP1 TOP2 TOP3 TOP4 TOP5)
 ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
@@ -124,7 +124,11 @@ start_top() {
                 launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
                 launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
                 launchctl kickstart -k gui/"$UID_NUM"/"$job" 2>/dev/null || true
-                sleep "$startup_delay"
+                port="$(port_for_top "TOP${job##*.top}")"
+                wait_for_port "$port" "$startup_delay" || {
+                    echo "❌ $job failed to bind to :$port"
+                    return 1
+                }
             fi
         done
         echo "🚀 TOP engines managed by launchd"
@@ -207,7 +211,7 @@ start_all() {
     pids="$pids $!"
     echo "🛡️ ORPHAN MONITOR started (PID $!)"
 
-    start_top
+    start_top || return 1
     pids="$pids $TOP_PIDS"
 
     echo ""
@@ -240,7 +244,7 @@ case "$1" in
     restart-top)
         stop_top
         sleep 1
-        start_top >/dev/null
+        start_top >/dev/null || exit 1
         echo "🔄 TOP engines restarted"
         ;;
 

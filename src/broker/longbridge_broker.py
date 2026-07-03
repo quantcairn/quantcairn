@@ -128,6 +128,11 @@ def _longbridge_symbol(symbol: str) -> str:
     return base if "." in base else f"{base}.US"
 
 
+def _is_rate_limit_error(error: Exception | str) -> bool:
+    message = str(error or "").strip().lower()
+    return "rate limit" in message or "too many request" in message or "too many requests" in message
+
+
 def _global_reduce_only_enabled() -> bool:
     try:
         state_dir = Path(
@@ -218,6 +223,19 @@ class LongBridgeBroker(BrokerBase):
                 retry_seconds,
                 max(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds),
             ),
+        )
+
+    def _can_reuse_positions_cache(self, now: float) -> bool:
+        return bool(
+            self._positions_cache
+            and self._positions_cache_fetched_at > 0
+            and (now - self._positions_cache_fetched_at) <= (self._positions_cache_ttl_seconds * 2)
+        )
+
+    def _can_reuse_account_cache(self, now: float) -> bool:
+        return bool(
+            self._account_cache_fetched_at > 0
+            and (now - self._account_cache_fetched_at) <= (self._account_cache_ttl_seconds * 2)
         )
 
     def invalidate_cache(self) -> None:
@@ -656,7 +674,11 @@ class LongBridgeBroker(BrokerBase):
             return positions
         except Exception as e:
             logger.error(f"Get positions failed: {e}")
-            self._positions_snapshot_reliable = False
+            if _is_rate_limit_error(e) and self._can_reuse_positions_cache(now):
+                logger.warning("Get positions rate limited; reusing cached positions snapshot")
+                self._positions_snapshot_reliable = True
+            else:
+                self._positions_snapshot_reliable = False
             self._positions_retry_not_before = now + self._cache_retry_backoff_seconds
             self._write_audit("get_positions", request, {"error": str(e)}, ok=False, error=str(e))
             return list(self._positions_cache)
@@ -711,7 +733,11 @@ class LongBridgeBroker(BrokerBase):
             return self._account_cache
         except Exception as e:
             logger.error(f"Get account failed: {e}")
-            self._account_snapshot_reliable = False
+            if _is_rate_limit_error(e) and self._can_reuse_account_cache(now):
+                logger.warning("Get account rate limited; reusing cached account snapshot")
+                self._account_snapshot_reliable = True
+            else:
+                self._account_snapshot_reliable = False
             self._account_retry_not_before = now + self._cache_retry_backoff_seconds
             self._write_audit("get_account", request, {"error": str(e)}, ok=False, error=str(e))
             return self._account_cache

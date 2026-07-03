@@ -151,6 +151,62 @@ def test_auto_range_seed_allows_lower_priced_stock_with_dynamic_spread_floor():
     assert state.spread_dollars >= 0.35
 
 
+def test_auto_range_seed_uses_bar_extrema_when_volume_profile_is_too_narrow():
+    detector = RangeDetector(
+        ticker="SOFI",
+        mode="auto",
+        auto_lookback=10,
+        trend_enabled=False,
+        min_profit_per_trade=1.0,
+        min_range_width_pct=0.8,
+    )
+    candles = [
+        DummyCandle(high=18.60, low=17.70, close=18.00 + i * 0.02, volume=10_000 + i * 50)
+        for i in range(10)
+    ]
+    detector._calc_volume_weighted_range = lambda: (18.05, 18.28, 0.5, 0.5)
+
+    seeded = detector.seed_from_ohlcv(candles)
+    state = detector.get_range_state()
+
+    assert seeded is True
+    assert state.source == "bar_extrema_seed"
+    assert state.support == 17.7
+    assert state.resistance == 18.6
+
+
+def test_auto_range_seed_uses_multi_day_extrema_when_recent_window_is_too_narrow():
+    detector = RangeDetector(
+        ticker="SOFI",
+        mode="auto",
+        auto_lookback=5,
+        trend_enabled=False,
+        min_profit_per_trade=0.72,
+        min_range_width_pct=0.8,
+    )
+    candles = [
+        DummyCandle(high=16.9, low=16.7, close=16.8, volume=10_000),
+        DummyCandle(high=17.2, low=16.9, close=17.1, volume=10_100),
+        DummyCandle(high=17.8, low=17.1, close=17.5, volume=10_200),
+        DummyCandle(high=18.4, low=17.6, close=18.0, volume=10_300),
+        DummyCandle(high=19.2, low=18.1, close=18.8, volume=10_400),
+        DummyCandle(high=18.2, low=18.0, close=18.1, volume=10_500),
+        DummyCandle(high=18.21, low=18.02, close=18.11, volume=10_600),
+        DummyCandle(high=18.22, low=18.03, close=18.12, volume=10_700),
+        DummyCandle(high=18.23, low=18.04, close=18.13, volume=10_800),
+        DummyCandle(high=18.24, low=18.05, close=18.14, volume=10_900),
+    ]
+    detector._calc_volume_weighted_range = lambda: (18.05, 18.24, 0.5, 0.5)
+
+    seeded = detector.seed_from_ohlcv(candles)
+    state = detector.get_range_state()
+
+    assert seeded is True
+    assert state.source == "multi_day_extrema_seed"
+    assert state.support == 16.7
+    assert state.resistance == 19.2
+
+
 def test_auto_range_buy_is_blocked_when_support_confidence_is_weak():
     detector = RangeDetector(
         ticker="TOP1",

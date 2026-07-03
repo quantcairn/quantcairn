@@ -39,18 +39,6 @@ EOF
 mkdir -p "${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}" 2>/dev/null || true
 
 if [ "$ENGINE_MODE" = "live" ]; then
-    engine_index=0
-    case "$log_name" in
-        top1) engine_index=0 ;;
-        top2) engine_index=1 ;;
-        top3) engine_index=2 ;;
-        top4) engine_index=3 ;;
-        top5) engine_index=4 ;;
-    esac
-    startup_delay="${SOXS_ENGINE_STARTUP_DELAY_SECONDS:-6}"
-    if [ "$engine_index" -gt 0 ] && [ "$startup_delay" -gt 0 ] 2>/dev/null; then
-        sleep $((engine_index * startup_delay))
-    fi
     exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --port "$port" \
         >> "${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}/${log_name}.log" 2>&1
 fi
