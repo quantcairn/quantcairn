@@ -184,7 +184,22 @@ soxs-range-arbitrage/
 
 ## 自动启动（可选）
 
-推荐将 `launchd/com.soxs.arbitrage.plist`、`launchd/com.soxs.arbitrage.stop.plist` 与 `launchd/com.soxs.ai_selector.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。其中 AI 选股由 `scripts/ai_selector_wrapper.py` 在美东时间 `09:00` 自动执行一次，再由交易启动任务接管。示例如下：
+推荐将 `launchd/com.soxs.arbitrage.plist`、`launchd/com.soxs.arbitrage.stop.plist` 与 `launchd/com.soxs.ai_selector.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。其中 AI 选股由 `scripts/ai_selector_wrapper.py` 在美东时间 `09:00` 自动执行一次，再由交易启动任务接管。
+
+当前默认时刻与美股常规时段对齐如下：
+
+- 上海时间 `21:00` = 美东时间 `09:00`：执行 AI 选股
+- 上海时间 `21:25` = 美东时间 `09:25`：启动交易任务
+- 上海时间 `04:05` = 美东时间 `16:05`：停止交易任务并进入收盘后状态
+
+调度注意事项：
+
+- `launchd` 与 `cron` 的启动/停止任务二选一，不要同时启用
+- 如果同时启用，会造成重复启动，日志里会反复出现 `AI Top3 trading started`
+- 无论使用 `launchd` 还是 `cron`，都应调用 `auto_trade.sh start|stop`
+- 不要再直接用 `multi_launch.sh start|stop` 做定时启停，因为它会绕过“当天选股配置校验”
+
+示例如下：
 
 ```bash
 # 使用 launchd（示例）
@@ -196,11 +211,11 @@ launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.plist
 launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.stop.plist
 launchctl load ~/Library/LaunchAgents/com.soxs.ai_selector.plist
 
-# 或使用 crontab（示例）
-# 每天 21:25 启动交易引擎（AI 选股已在美东 09:00 单独完成）
-25 21 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh start
-# 每天 04:05 停止
-5 4 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh stop
+# 或使用 crontab（示例，只在不使用 launchd 时启用）
+# 每个交易日 21:25 启动交易引擎（上海时间，对应美东 09:25）
+25 21 * * 1-5 /Users/chenwei/soxs-range-arbitrage/auto_trade.sh start
+# 每个交易日 04:05 停止（上海时间，对应美东 16:05）
+5 4 * * 1-5 /Users/chenwei/soxs-range-arbitrage/auto_trade.sh stop
 ```
 
 ## AI 选股日报
