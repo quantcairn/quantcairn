@@ -35,9 +35,13 @@ class FakeNotifier:
 class FakeRisk:
     def __init__(self):
         self.records = []
+        self.equity_updates = []
 
     def record_trade(self, trade):
         self.records.append(trade)
+
+    def update_equity(self, equity: float):
+        self.equity_updates.append(equity)
 
 
 def use_test_pending_path(engine: TradingEngine, name: str) -> None:
@@ -415,6 +419,62 @@ def test_paper_sell_does_not_create_live_position_fence():
 
     assert engine._position_sync_fence is None
     assert not engine._position_sync_state_path.exists()
+
+
+def test_refresh_broker_snapshots_updates_live_cache_outside_hours():
+    engine = TradingEngine(AppConfig(ticker="SOFI", mode="live"), ignore_trading_hours=False)
+    use_test_pending_path(engine, "outside-hours-refresh")
+    engine.risk = FakeRisk()
+    engine._pending_order = None
+    engine._position_sync_fence = None
+    engine.broker = SimpleNamespace(
+        get_position_for_ticker=lambda ticker: SimpleNamespace(
+            quantity=30,
+            avg_entry_price=18.09,
+            unrealized_pnl=-4.95,
+        ),
+        is_positions_snapshot_reliable=lambda: True,
+        get_account=lambda: SimpleNamespace(
+            cash=707.61,
+            buying_power=707.43,
+            equity=1558.11,
+        ),
+        is_account_snapshot_reliable=lambda: True,
+    )
+
+    engine._refresh_broker_snapshots(outside_trading_hours=True)
+
+    assert engine._latest_position.quantity == 30
+    assert engine._latest_account.cash == 707.61
+    assert engine._position_shares == 30
+    assert engine._entry_price == 18.09
+    assert engine.risk.equity_updates == [1558.11]
+    assert engine._last_signal_reason == "盘后仅同步真实持仓，不执行新交易"
+
+
+def test_refresh_broker_snapshots_keeps_reduce_only_and_places_no_order():
+    engine = TradingEngine(AppConfig(ticker="SOFI", mode="live"), ignore_trading_hours=False)
+    use_test_pending_path(engine, "snapshot-no-order")
+    engine.risk = FakeRisk()
+    order_calls = []
+    engine.broker = SimpleNamespace(
+        get_position_for_ticker=lambda ticker: None,
+        is_positions_snapshot_reliable=lambda: True,
+        get_account=lambda: SimpleNamespace(
+            cash=707.61,
+            buying_power=707.43,
+            equity=707.61,
+        ),
+        is_account_snapshot_reliable=lambda: True,
+        place_order=lambda **kwargs: order_calls.append(kwargs),
+    )
+    engine._reduce_only = True
+
+    engine._refresh_broker_snapshots(outside_trading_hours=True)
+
+    assert engine._reduce_only is True
+    assert order_calls == []
+    assert engine._position_shares == 0
 
 
 def run_test_direct():

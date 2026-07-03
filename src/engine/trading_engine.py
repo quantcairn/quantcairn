@@ -303,6 +303,7 @@ class TradingEngine:
 
                 # 1. Check trading hours
                 if not self._is_trading_hours():
+                    self._refresh_broker_snapshots(outside_trading_hours=True)
                     self._sleep_with_status(30, "Outside trading hours")
                     continue
 
@@ -444,6 +445,47 @@ class TradingEngine:
             logger.info("\nShutdown requested...")
         finally:
             self._shutdown()
+
+    def _refresh_broker_snapshots(self, outside_trading_hours: bool = False) -> None:
+        """Refresh cached position/account snapshots without evaluating signals."""
+        try:
+            pos = self.broker.get_position_for_ticker(self.ticker)
+            positions_reliable = getattr(
+                self.broker, "is_positions_snapshot_reliable", lambda: True
+            )()
+            if self.mode == "live" and not positions_reliable:
+                self._last_signal_reason = "券商持仓状态无法确认，已暂停仓位同步"
+                logger.error("%s: %s", self.ticker, self._last_signal_reason)
+                return
+
+            acct = self.broker.get_account()
+            account_reliable = getattr(
+                self.broker, "is_account_snapshot_reliable", lambda: True
+            )()
+            if self.mode == "live" and not account_reliable:
+                self._last_signal_reason = "券商账户状态无法确认，已暂停账户同步"
+                logger.error("%s: %s", self.ticker, self._last_signal_reason)
+                return
+
+            observed_shares = pos.quantity if pos else 0
+            self._position_shares = self._apply_position_sync_fence(observed_shares)
+            self._latest_position = pos
+            self._latest_account = acct
+            self._latest_snapshot_at = datetime.now()
+            self.risk.update_equity(acct.equity)
+
+            if pos:
+                self._position_shares = self._apply_position_sync_fence(pos.quantity)
+                if self._position_shares > 0 and pos.avg_entry_price > 0:
+                    self._entry_price = pos.avg_entry_price
+            elif not self._pending_order and not self._position_sync_fence:
+                self._position_shares = 0
+                self._entry_price = None
+
+            if outside_trading_hours and self.mode == "live" and self._position_shares > 0:
+                self._last_signal_reason = "盘后仅同步真实持仓，不执行新交易"
+        except Exception as exc:
+            logger.exception("Failed to refresh broker snapshots for %s: %s", self.ticker, exc)
 
     def stop(self) -> None:
         """Gracefully stop the engine."""

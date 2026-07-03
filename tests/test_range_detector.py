@@ -141,6 +141,7 @@ def test_auto_range_seed_allows_lower_priced_stock_with_dynamic_spread_floor():
         DummyCandle(high=18.60, low=17.70, close=18.00 + i * 0.02, volume=10_000 + i * 50)
         for i in range(10)
     ]
+    detector._calc_volume_weighted_range = lambda: (17.90, 18.62, 0.5, 0.5)
 
     seeded = detector.seed_from_ohlcv(candles)
     state = detector.get_range_state()
