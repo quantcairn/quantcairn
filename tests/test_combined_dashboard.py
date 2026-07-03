@@ -133,6 +133,13 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-06-30）",
+        "state_date": "2026-06-30",
+    })
     monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
         "ticker": name.replace(".yaml", ""),
         "initial_capital": 1000.0,
@@ -190,6 +197,8 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "自动刷新：5 分钟" in html
     assert "扫描数量：50" in html
     assert "数据模式：live" in html
+    assert "选股配置校验：已对齐" in html
+    assert "当天配置已对齐（美东 2026-06-30）" in html
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html

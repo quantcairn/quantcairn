@@ -15,22 +15,29 @@ import requests
 import subprocess
 import re
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector.selector import write_selection_filter_log
+from src.ai_selector.selection_state import write_selection_state
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 
 
-def _write_reports(summary: dict):
+def _et_now() -> datetime:
+    return datetime.now(ZoneInfo("America/New_York"))
+
+
+def _write_reports(summary: dict) -> tuple[Path, Path]:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     latest_json = REPORTS_DIR / "ai_selection_latest.json"
-    dated_json = REPORTS_DIR / f"ai_selection_{datetime.now().strftime('%Y%m%d')}.json"
+    dated_json = REPORTS_DIR / f"ai_selection_{_et_now().strftime('%Y%m%d')}.json"
     payload = json.dumps(summary, ensure_ascii=False, indent=2, default=str)
     latest_json.write_text(payload, encoding="utf-8")
     dated_json.write_text(payload, encoding="utf-8")
+    return latest_json, dated_json
 
 
 def _merge_live_position_flags(items: list[dict], positions: list[dict]) -> list[dict]:
@@ -200,7 +207,13 @@ def main():
         'quality_filter_report': out.get('quality_filter_report', {}),
     }
 
-    _write_reports(summary)
+    latest_report_path, _ = _write_reports(summary)
+    write_selection_state(
+        et_date=_et_now().date().isoformat(),
+        generated_at=timestamp,
+        selected_symbols=[str(item.get("ticker") or "").strip().upper() for item in selected],
+        report_path=str(latest_report_path),
+    )
 
     restart_code = _restart_top_engines()
     if restart_code != 0:

@@ -7,6 +7,7 @@ from flask import Flask, jsonify, redirect, render_template_string, request
 import yaml
 
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
+from src.ai_selector.selection_state import load_selection_state, verify_selection_state
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log
 
@@ -220,6 +221,56 @@ def _load_ai_selection_report():
         }
     except Exception:
         return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
+
+
+def _current_et_date() -> str:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        return datetime.utcnow().date().isoformat()
+
+
+def _selection_sync_status() -> dict:
+    required_date = _current_et_date()
+    ok, reason, state = verify_selection_state(required_et_date=required_date)
+    state = state or load_selection_state() or {}
+    state_date = str(state.get("et_date") or "").strip() or None
+    label = "已对齐"
+    level = "green"
+    detail = f"当天配置已对齐（美东 {required_date}）"
+    if ok:
+        return {
+            "ok": True,
+            "level": level,
+            "label": label,
+            "detail": detail,
+            "state_date": state_date,
+        }
+    if reason == "selection_state_missing":
+        label = "未校验"
+        level = "yellow"
+        detail = "还没有当天选股校验记录，启动前会先重选并校验。"
+    elif reason.startswith("selection_state_date_mismatch"):
+        label = "不是今天"
+        level = "yellow"
+        detail = f"当前记录日期是美东 {state_date or '未知'}，不是今天 {required_date}。"
+    elif reason == "top_config_symbols_mismatch":
+        label = "配置不一致"
+        level = "red"
+        detail = "TOP1-5 配置和最近一次选股结果不一致，交易启动会被拦下。"
+    else:
+        label = "校验失败"
+        level = "red"
+        detail = f"选股配置校验失败：{reason}"
+    return {
+        "ok": False,
+        "level": level,
+        "label": label,
+        "detail": detail,
+        "state_date": state_date,
+    }
 
 
 def _desired_audit_mode() -> str:
@@ -840,6 +891,8 @@ HTML = """<!DOCTYPE html>
                         {% else %}
                             暂无 AI 选股报告。
                         {% endif %}
+                        <br>
+                        选股配置校验：<span class="{{ selection_sync.level }}">{{ selection_sync.label }}</span> · {{ selection_sync.detail }}
                     </div>
                     <form class="settings-form" method="post" action="/ai-selector-settings">
                         <div class="settings-field">
@@ -1153,6 +1206,7 @@ def index():
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
+    selection_sync = _selection_sync_status()
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
     audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
@@ -1354,6 +1408,7 @@ def index():
         live_account=display_live_account or live_account,
         selected_positions_count=selected_positions_count,
         ai_selection=ai_selection,
+        selection_sync=selection_sync,
         runtime_settings={
             "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),
             "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 200.0)) or 200.0),

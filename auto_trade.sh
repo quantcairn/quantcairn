@@ -33,6 +33,25 @@ case "$1" in
             exit 1
         fi
 
+        if ! "$PROJECT_DIR/.venv/bin/python" - <<'PY' >> "$LOG_FILE" 2>&1
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from src.ai_selector.selection_state import verify_selection_state
+
+required_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+ok, reason, state = verify_selection_state(required_et_date=required_date)
+if not ok:
+    print(f"Selection state verification failed: {reason}; state={state}")
+    raise SystemExit(1)
+print(f"Selection state verified for ET date {required_date}.")
+PY
+        then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Selection freshness check failed; trading start aborted" \
+                | tee -a "$LOG_FILE"
+            exit 1
+        fi
+
         "$MULTI_LAUNCH" start-foreground >> "$LOG_FILE" 2>&1
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🚀 AI Top3 trading started" | tee -a "$LOG_FILE"
         ;;
