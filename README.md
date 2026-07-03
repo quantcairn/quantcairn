@@ -184,18 +184,20 @@ soxs-range-arbitrage/
 
 ## 自动启动（可选）
 
-推荐将 `launchd/com.soxs.arbitrage.plist` 与 `launchd/com.soxs.arbitrage.stop.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。启动后系统会先由 `scripts/ai_selector_wrapper.py` 刷新 TOP5，再启动这 5 只。示例如下：
+推荐将 `launchd/com.soxs.arbitrage.plist`、`launchd/com.soxs.arbitrage.stop.plist` 与 `launchd/com.soxs.ai_selector.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。其中 AI 选股由 `scripts/ai_selector_wrapper.py` 在美东时间 `09:00` 自动执行一次，再由交易启动任务接管。示例如下：
 
 ```bash
 # 使用 launchd（示例）
 mkdir -p ~/Library/LaunchAgents
 cp launchd/com.soxs.arbitrage.plist ~/Library/LaunchAgents/
 cp launchd/com.soxs.arbitrage.stop.plist ~/Library/LaunchAgents/
+cp launchd/com.soxs.ai_selector.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.plist
 launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.stop.plist
+launchctl load ~/Library/LaunchAgents/com.soxs.ai_selector.plist
 
 # 或使用 crontab（示例）
-# 每天 21:25 启动（开盘前刷新并启动 TOP5）
+# 每天 21:25 启动交易引擎（AI 选股已在美东 09:00 单独完成）
 25 21 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh start
 # 每天 04:05 停止
 5 4 * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh stop

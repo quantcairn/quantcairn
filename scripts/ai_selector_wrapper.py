@@ -3,7 +3,7 @@
 
 Behavior:
 - Checks current time in America/New_York.
-- If it's a weekday (Mon-Fri) and time is near 09:25 ET, runs the selector once per ET day.
+- If it's a weekday (Mon-Fri) and time is near 09:00 ET, runs the selector once per ET day.
 - After a successful selection, restarts the TOP engines so they use the new configs.
 - Respects env var `FORCE_AI_RUN=1` to force execution regardless of time.
 """
@@ -38,8 +38,8 @@ def is_market_time(now_et: datetime) -> bool:
         or now_et.date() in TradingEngine._market_holidays(now_et.year)
     ):
         return False
-    # Leave enough time to verify holdings and restart all engines before 09:30.
-    target = now_et.replace(hour=9, minute=25, second=0, microsecond=0)
+    # Run 30 minutes before the regular US session open.
+    target = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
     delta = abs((now_et - target).total_seconds())
     return delta <= 90
 

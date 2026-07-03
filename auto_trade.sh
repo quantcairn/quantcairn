@@ -1,6 +1,7 @@
 #!/bin/bash
-# AI Top3 区间套利 — 自动启停脚本
-# 由 cron 或 launchd 调用，北京时间 21:25 启动，04:05 停止
+# AI Top5 区间套利 — 自动启停脚本
+# 由 cron 或 launchd 调用。
+# AI 选股由独立任务在美东 09:00 运行；本脚本负责后续启动/停止交易引擎。
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
