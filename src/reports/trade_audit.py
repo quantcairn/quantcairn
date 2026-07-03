@@ -84,6 +84,13 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return None
 
 
+def _normalize_ticker(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return ""
+    return raw.split(".")[0]
+
+
 def _filter_records_by_mode(records: list[dict[str, Any]], mode: str | None = None) -> list[dict[str, Any]]:
     if not mode:
         return records
@@ -116,9 +123,30 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
     order_qty = sum(int(record.get("order", {}).get("qty", 0) or 0) for record in execution_records)
     submitted_orders: dict[str, dict[str, Any]] = {}
     order_updates: dict[str, str] = {}
+    broker_activity_by_ticker: dict[str, dict[str, Any]] = {}
     latest_submitted = {}
     latest_filled = {}
     unresolved_oldest_seconds = 0.0
+
+    def _ticker_bucket(ticker: str) -> dict[str, Any]:
+        key = _normalize_ticker(ticker)
+        return broker_activity_by_ticker.setdefault(
+            key,
+            {
+                "ticker": key,
+                "submitted_count": 0,
+                "filled_count": 0,
+                "partial_filled_count": 0,
+                "rejected_count": 0,
+                "cancelled_count": 0,
+                "unresolved_count": 0,
+                "latest_submitted_line": None,
+                "latest_filled_line": None,
+                "latest_submitted_at": "",
+                "latest_filled_at": "",
+                "unresolved_oldest_seconds": 0.0,
+            },
+        )
 
     for record in records:
         if str(record.get("action") or "").strip().lower() == "place_order":
@@ -126,19 +154,29 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
             request = record.get("request") if isinstance(record.get("request"), dict) else {}
             order_id = str(response.get("order_id") or "").strip()
             status = _normalize_status(response.get("status"))
+            ticker = _normalize_ticker(request.get("ticker"))
+            bucket = _ticker_bucket(ticker) if ticker else None
             if order_id:
                 submitted_orders[order_id] = {
                     "order_id": order_id,
-                    "ticker": request.get("ticker") or "",
+                    "ticker": ticker,
                     "side": str(request.get("side") or "").lower(),
                     "qty": int(request.get("quantity") or 0),
                     "status": status,
                     "timestamp": record.get("timestamp") or "",
                 }
             if status == "submitted":
+                if bucket is not None:
+                    bucket["submitted_count"] += 1
+                    bucket["latest_submitted_line"] = " ".join(
+                        str(part)
+                        for part in [ticker, str(request.get("side") or "").lower(), int(request.get("quantity") or 0), "submitted"]
+                        if part not in ("", None)
+                    )
+                    bucket["latest_submitted_at"] = record.get("timestamp") or ""
                 latest_submitted = {
                     "order_id": order_id,
-                    "ticker": request.get("ticker") or "",
+                    "ticker": ticker,
                     "side": str(request.get("side") or "").lower(),
                     "qty": int(request.get("quantity") or 0),
                     "timestamp": record.get("timestamp") or "",
@@ -150,12 +188,36 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
             mapped_status = _normalize_status(response.get("mapped_status"))
             if order_id and mapped_status:
                 order_updates[order_id] = mapped_status
+                submitted_meta = submitted_orders.get(order_id) or {}
+                ticker = _normalize_ticker(submitted_meta.get("ticker"))
+                bucket = _ticker_bucket(ticker) if ticker else None
+                if bucket is not None:
+                    if mapped_status == "filled":
+                        bucket["filled_count"] += 1
+                    elif mapped_status == "partially_filled":
+                        bucket["partial_filled_count"] += 1
+                    elif mapped_status == "rejected":
+                        bucket["rejected_count"] += 1
+                    elif mapped_status == "cancelled":
+                        bucket["cancelled_count"] += 1
                 if mapped_status in {"filled", "partially_filled"}:
                     latest_filled = {
                         "order_id": order_id,
                         "status": mapped_status,
                         "timestamp": record.get("timestamp") or "",
                     }
+                    if bucket is not None:
+                        bucket["latest_filled_line"] = " ".join(
+                            str(part)
+                            for part in [
+                                ticker,
+                                submitted_meta.get("side") or "",
+                                submitted_meta.get("qty") or "",
+                                mapped_status,
+                            ]
+                            if part not in ("", None)
+                        )
+                        bucket["latest_filled_at"] = record.get("timestamp") or ""
 
     order_status_counts = Counter(order_updates.values())
     unresolved_order_ids = sorted(
@@ -167,10 +229,17 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
     for order_id in unresolved_order_ids:
         payload = submitted_orders.get(order_id) or {}
         placed_at = _parse_timestamp(payload.get("timestamp"))
+        ticker = _normalize_ticker(payload.get("ticker"))
+        bucket = _ticker_bucket(ticker) if ticker else None
         if placed_at is None:
+            if bucket is not None:
+                bucket["unresolved_count"] += 1
             continue
         age_seconds = max(0.0, (now_utc - placed_at.astimezone(timezone.utc)).total_seconds())
         unresolved_oldest_seconds = max(unresolved_oldest_seconds, age_seconds)
+        if bucket is not None:
+            bucket["unresolved_count"] += 1
+            bucket["unresolved_oldest_seconds"] = max(float(bucket.get("unresolved_oldest_seconds", 0.0) or 0.0), age_seconds)
     latest_submitted_line = None
     if latest_submitted:
         latest_submitted_line = " ".join(
@@ -196,6 +265,25 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
             ]
             if part not in ("", None)
         )
+
+    broker_activity_rows = sorted(
+        (
+            row
+            for row in broker_activity_by_ticker.values()
+            if row.get("ticker")
+            and (
+                int(row.get("submitted_count", 0) or 0) > 0
+                or int(row.get("filled_count", 0) or 0) > 0
+                or int(row.get("partial_filled_count", 0) or 0) > 0
+                or int(row.get("unresolved_count", 0) or 0) > 0
+            )
+        ),
+        key=lambda row: (
+            -int(row.get("unresolved_count", 0) or 0),
+            -int(row.get("submitted_count", 0) or 0),
+            str(row.get("ticker") or ""),
+        ),
+    )
 
     latest_source = latest_execution or latest_record
     latest_line = None
@@ -271,6 +359,7 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
         "latest_filled_line": latest_filled_line,
         "latest_filled_at": latest_filled.get("timestamp") or "",
         "notification_reconcile_ok": len(unresolved_order_ids) == 0,
+        "broker_activity_by_ticker": broker_activity_rows,
         "mode_filter": mode or "",
     }
 

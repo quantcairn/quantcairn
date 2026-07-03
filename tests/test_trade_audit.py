@@ -108,6 +108,10 @@ def test_trade_audit_summarizes_broker_order_reconcile():
     assert summary["notification_reconcile_ok"] is False
     assert summary["latest_submitted_line"] == "PLTR buy 2 submitted"
     assert summary["latest_filled_line"] == "SOFI sell 30 filled"
+    assert summary["broker_activity_by_ticker"][0]["ticker"] == "PLTR"
+    sofi_row = next(row for row in summary["broker_activity_by_ticker"] if row["ticker"] == "SOFI")
+    assert sofi_row["filled_count"] == 1
+    assert sofi_row["latest_filled_line"] == "SOFI sell 30 filled"
 
 
 def test_trade_audit_tracks_unresolved_age_and_latest_day(tmp_path):

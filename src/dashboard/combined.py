@@ -662,6 +662,15 @@ HTML = """<!DOCTYPE html>
         margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(251,113,133,.12);
         color:#fecdd3;border:1px solid rgba(251,113,133,.24);font-size:13px;font-weight:700
     }
+    .ticker-audit-list{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px}
+    .ticker-audit-item{
+        padding:12px 13px;border-radius:14px;background:rgba(255,255,255,.03);
+        border:1px solid rgba(255,255,255,.06)
+    }
+    .ticker-audit-head{display:flex;justify-content:space-between;gap:10px;align-items:center}
+    .ticker-audit-title{font-size:15px;font-weight:800;color:#eef4ff}
+    .ticker-audit-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+    .ticker-audit-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
     .sparkline{display:none}
     .spark-bar{flex:1;min-width:2px;border-radius:999px;opacity:.95}
     .sig-buy{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.22)}
@@ -921,6 +930,30 @@ HTML = """<!DOCTYPE html>
                             <span class="val">{{ trade_audit.latest_line or '暂无' }}</span>
                         </div>
                     </div>
+                    {% if trade_audit.broker_activity_by_ticker %}
+                    <div class="ticker-audit-list">
+                        {% for row in trade_audit.broker_activity_by_ticker %}
+                        <div class="ticker-audit-item">
+                            <div class="ticker-audit-head">
+                                <span class="ticker-audit-title">{{ row.ticker }}</span>
+                                <span class="pill {{ 'warn' if row.unresolved_count > 0 else 'live' }}">
+                                    {{ '有未决订单' if row.unresolved_count > 0 else '已对齐' }}
+                                </span>
+                            </div>
+                            <div class="ticker-audit-stats">
+                                <div class="quote-item"><span class="label">提交</span><span class="val">{{ row.submitted_count }}</span></div>
+                                <div class="quote-item"><span class="label">成交</span><span class="val">{{ row.filled_count }}</span></div>
+                                <div class="quote-item"><span class="label">部分成交</span><span class="val">{{ row.partial_filled_count }}</span></div>
+                                <div class="quote-item"><span class="label">未决</span><span class="val {{ 'red' if row.unresolved_count > 0 else 'green' }}">{{ row.unresolved_count }}</span></div>
+                            </div>
+                            <div class="ticker-audit-meta">
+                                <div class="quote-item"><span class="label">最新提交</span><span class="val">{{ row.latest_submitted_line or '暂无' }}</span></div>
+                                <div class="quote-item"><span class="label">最新成交</span><span class="val">{{ row.latest_filled_line or '暂无' }}</span></div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
