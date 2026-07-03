@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,30 @@ def _parse_date(value: str | None) -> str:
 def trade_log_path(log_dir: str | Path | None = None, day: str | None = None) -> Path:
     root = Path(log_dir) if log_dir is not None else Path(__file__).resolve().parents[2] / "logs"
     return root / f"trades-{_parse_date(day)}.jsonl"
+
+
+def latest_trade_log_day(log_dir: str | Path | None = None) -> str | None:
+    root = Path(log_dir) if log_dir is not None else Path(__file__).resolve().parents[2] / "logs"
+    candidates = sorted(root.glob("trades-*.jsonl"))
+    if not candidates:
+        return None
+    latest = candidates[-1].stem.replace("trades-", "")
+    return latest or None
+
+
+def latest_trade_activity_day(log_dir: str | Path | None = None, mode: str | None = None) -> str | None:
+    root = Path(log_dir) if log_dir is not None else Path(__file__).resolve().parents[2] / "logs"
+    candidates = sorted(root.glob("trades-*.jsonl"), reverse=True)
+    for path in candidates:
+        day = path.stem.replace("trades-", "")
+        summary = summarize_trade_log(root, day=day, mode=mode)
+        if (
+            int(summary.get("broker_submitted_count", 0) or 0) > 0
+            or int(summary.get("broker_filled_count", 0) or 0) > 0
+            or int(summary.get("broker_partial_filled_count", 0) or 0) > 0
+        ):
+            return day
+    return latest_trade_log_day(root)
 
 
 def load_trade_records(log_dir: str | Path | None = None, day: str | None = None) -> list[dict[str, Any]]:
@@ -46,6 +70,18 @@ def _first_non_empty(*values: Any) -> Any:
 
 def _normalize_status(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_")
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
 
 
 def _filter_records_by_mode(records: list[dict[str, Any]], mode: str | None = None) -> list[dict[str, Any]]:
@@ -82,6 +118,7 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
     order_updates: dict[str, str] = {}
     latest_submitted = {}
     latest_filled = {}
+    unresolved_oldest_seconds = 0.0
 
     for record in records:
         if str(record.get("action") or "").strip().lower() == "place_order":
@@ -126,6 +163,14 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
         for order_id, payload in submitted_orders.items()
         if _normalize_status(payload.get("status")) == "submitted" and order_id not in order_updates
     )
+    now_utc = datetime.now(timezone.utc)
+    for order_id in unresolved_order_ids:
+        payload = submitted_orders.get(order_id) or {}
+        placed_at = _parse_timestamp(payload.get("timestamp"))
+        if placed_at is None:
+            continue
+        age_seconds = max(0.0, (now_utc - placed_at.astimezone(timezone.utc)).total_seconds())
+        unresolved_oldest_seconds = max(unresolved_oldest_seconds, age_seconds)
     latest_submitted_line = None
     if latest_submitted:
         latest_submitted_line = " ".join(
@@ -220,8 +265,11 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
         "broker_cancelled_count": int(order_status_counts.get("cancelled", 0)),
         "broker_unresolved_count": len(unresolved_order_ids),
         "broker_unresolved_order_ids": unresolved_order_ids,
+        "broker_unresolved_oldest_seconds": round(unresolved_oldest_seconds, 1),
         "latest_submitted_line": latest_submitted_line,
+        "latest_submitted_at": latest_submitted.get("timestamp") or "",
         "latest_filled_line": latest_filled_line,
+        "latest_filled_at": latest_filled.get("timestamp") or "",
         "notification_reconcile_ok": len(unresolved_order_ids) == 0,
         "mode_filter": mode or "",
     }

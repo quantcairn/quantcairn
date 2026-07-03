@@ -8,7 +8,7 @@ import yaml
 
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
 from src.reports import daily_report as daily_report_module
-from src.reports.trade_audit import summarize_trade_log
+from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log
 
 app = Flask(__name__)
 
@@ -32,6 +32,7 @@ _LIVE_ACCOUNT_LOCK = threading.Lock()
 _STATUS_CACHE: dict[int, dict] = {}
 _STATUS_FAILURES: dict[int, int] = {}
 _STATUS_OFFLINE_THRESHOLD = 3
+_UNRESOLVED_ALERT_SECONDS = float(os.getenv("SOXS_UNRESOLVED_ALERT_SECONDS", "120"))
 
 
 def _env(name: str, default: str = "") -> str:
@@ -650,6 +651,17 @@ HTML = """<!DOCTYPE html>
     .source-chip.fallback{background:rgba(251,191,36,.12);color:#fde68a;border-color:rgba(251,191,36,.2)}
     .source-chip.offline{background:rgba(148,163,184,.12);color:#cbd5e1;border-color:rgba(148,163,184,.2)}
     .audit-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .scope-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    .scope-tab{
+        display:inline-flex;align-items:center;padding:7px 11px;border-radius:999px;
+        border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:var(--muted);
+        text-decoration:none;font-size:12px;font-weight:700;letter-spacing:.05em
+    }
+    .scope-tab.active{background:rgba(52,211,153,.12);color:#b8f5d0;border-color:rgba(52,211,153,.22)}
+    .warning-banner{
+        margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(251,113,133,.12);
+        color:#fecdd3;border:1px solid rgba(251,113,133,.24);font-size:13px;font-weight:700
+    }
     .sparkline{display:none}
     .spark-bar{flex:1;min-width:2px;border-radius:999px;opacity:.95}
     .sig-buy{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.22)}
@@ -729,8 +741,18 @@ HTML = """<!DOCTYPE html>
             {% if footer_buying_power is not none %}
             <span class="pill live">{{ account_labels.footer_buying_power }} ${{ "%.2f"|format(footer_buying_power) }}</span>
             {% endif %}
+            {% if trade_audit.unresolved_alert %}
+            <span class="pill warn">未决订单告警 · {{ trade_audit.broker_unresolved_count }} 笔</span>
+            {% endif %}
         </div>
     </div>
+    {% if trade_audit.unresolved_alert %}
+    <div class="warning-banner">
+        存在未决订单超过 {{ trade_audit.unresolved_alert_threshold_seconds|int }} 秒。
+        最久未决约 {{ trade_audit.broker_unresolved_oldest_seconds|int }} 秒。
+        {{ trade_audit.latest_submitted_line or '请检查最近提交订单' }}
+    </div>
+    {% endif %}
 
     <div class="overview-layout">
         <div class="overview-panel">
@@ -855,6 +877,10 @@ HTML = """<!DOCTYPE html>
                         <h2>通知与成交对账</h2>
                         <span class="hint">提交、成交、未决订单快速核对</span>
                     </div>
+                    <div class="scope-tabs">
+                        <a class="scope-tab {{ 'active' if audit_scope == 'today' else '' }}" href="/?audit_scope=today">只看今天</a>
+                        <a class="scope-tab {{ 'active' if audit_scope == 'latest' else '' }}" href="/?audit_scope=latest">最新有记录</a>
+                    </div>
                     <div class="audit-strip">
                         <div class="quote-item">
                             <span class="label">已提交</span>
@@ -877,10 +903,12 @@ HTML = """<!DOCTYPE html>
                         <div class="quote-item">
                             <span class="label">最新提交</span>
                             <span class="val">{{ trade_audit.latest_submitted_line or '暂无' }}</span>
+                            <span class="label" style="margin-top:6px">{{ trade_audit.latest_submitted_at or audit_day_label }}</span>
                         </div>
                         <div class="quote-item">
                             <span class="label">最新成交</span>
                             <span class="val">{{ trade_audit.latest_filled_line or '暂无' }}</span>
+                            <span class="label" style="margin-top:6px">{{ trade_audit.latest_filled_at or audit_day_label }}</span>
                         </div>
                         <div class="quote-item">
                             <span class="label">对账状态</span>
@@ -1092,7 +1120,9 @@ def index():
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
-    trade_audit = summarize_trade_log(PROJECT_DIR / "logs", mode=_desired_audit_mode())
+    audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
+    audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
+    trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
     latest_line = _latest_trade_line(trade_audit)
     trade_audit = {
         **trade_audit,
@@ -1100,7 +1130,17 @@ def index():
         "execution_mode": _resolve_dashboard_execution_mode(trade_audit),
         "new_entries_allowed": bool(trade_audit.get("new_entries_allowed", True)),
         "reduce_only": bool(trade_audit.get("reduce_only", False)),
+        "unresolved_alert_threshold_seconds": _UNRESOLVED_ALERT_SECONDS,
+        "unresolved_alert": bool(
+            int(trade_audit.get("broker_unresolved_count", 0) or 0) > 0
+            and float(trade_audit.get("broker_unresolved_oldest_seconds", 0.0) or 0.0) >= _UNRESOLVED_ALERT_SECONDS
+        ),
     }
+    audit_day_label = (
+        (audit_day or datetime.now().strftime("%Y%m%d"))
+        if audit_scope in {"today", "latest"}
+        else datetime.now().strftime("%Y%m%d")
+    )
     selected_tickers: set[str] = set()
 
     for t in TICKERS:
@@ -1292,6 +1332,8 @@ def index():
         nearest_sell_trigger_name=nearest_sell_trigger_name,
         nearest_sell_trigger=nearest_sell_trigger,
         trade_audit=trade_audit,
+        audit_scope=audit_scope,
+        audit_day_label=audit_day_label,
         total_pnl=round(total_pnl, 2),
         today_total_pnl=round(today_total_pnl, 2),
         total_capital=round(total_capital, 2),

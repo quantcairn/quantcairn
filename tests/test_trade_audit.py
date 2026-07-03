@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.reports.trade_audit import summarize_trade_log, summarize_trade_records
+from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log, summarize_trade_records
 
 
 def test_trade_audit_summarizes_latest_execution(tmp_path):
@@ -108,3 +108,50 @@ def test_trade_audit_summarizes_broker_order_reconcile():
     assert summary["notification_reconcile_ok"] is False
     assert summary["latest_submitted_line"] == "PLTR buy 2 submitted"
     assert summary["latest_filled_line"] == "SOFI sell 30 filled"
+
+
+def test_trade_audit_tracks_unresolved_age_and_latest_day(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "trades-20260701.jsonl").write_text("", encoding="utf-8")
+    (log_dir / "trades-20260703.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-07-03T00:00:00Z",
+                "action": "place_order",
+                "request": {"ticker": "SOFI", "side": "SELL", "quantity": 30},
+                "response": {"order_id": "OID-3", "status": "submitted"},
+                "execution_mode": "live",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = summarize_trade_log(log_dir, day="20260703", mode="live")
+
+    assert latest_trade_log_day(log_dir) == "20260703"
+    assert summary["broker_unresolved_count"] == 1
+    assert summary["broker_unresolved_oldest_seconds"] >= 0
+
+
+def test_trade_audit_prefers_latest_day_with_broker_activity(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "trades-20260703.jsonl").write_text(
+        json.dumps({"phase": "decision", "execution_mode": "live", "ticker": "SOFI"}),
+        encoding="utf-8",
+    )
+    (log_dir / "trades-20260702.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-07-02T13:30:11Z",
+                "action": "place_order",
+                "request": {"ticker": "SOXS", "side": "SELL", "quantity": 132},
+                "response": {"order_id": "OID-4", "status": "submitted"},
+                "execution_mode": "live",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert latest_trade_activity_day(log_dir, mode="live") == "20260702"
