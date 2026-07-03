@@ -642,6 +642,14 @@ HTML = """<!DOCTYPE html>
     .quote-item .val{
         display:block;margin-top:6px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.38
     }
+    .source-chip{
+        display:inline-flex;align-items:center;gap:6px;margin-top:10px;
+        padding:6px 10px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.08em;
+        text-transform:uppercase;background:rgba(125,211,252,.12);color:#c6ecff;border:1px solid rgba(125,211,252,.2)
+    }
+    .source-chip.fallback{background:rgba(251,191,36,.12);color:#fde68a;border-color:rgba(251,191,36,.2)}
+    .source-chip.offline{background:rgba(148,163,184,.12);color:#cbd5e1;border-color:rgba(148,163,184,.2)}
+    .audit-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
     .sparkline{display:none}
     .spark-bar{flex:1;min-width:2px;border-radius:999px;opacity:.95}
     .sig-buy{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.22)}
@@ -665,7 +673,7 @@ HTML = """<!DOCTYPE html>
         .headline-stats{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
         .headline-stat{padding:14px 15px}
         .headline-stat .value{font-size:24px}
-        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column{grid-template-columns:1fr}
+        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column,.audit-strip{grid-template-columns:1fr}
         .settings-form{align-items:stretch}
         .settings-note{margin-left:0;width:100%}
         .price{font-size:30px}
@@ -841,6 +849,51 @@ HTML = """<!DOCTYPE html>
                     <div class="selector-empty">先运行一次 `scripts/run_ai_selector.py`，这里就会显示最新的 AI 区间选股结果。</div>
                     {% endif %}
                 </div>
+
+                <div class="overview-panel compact">
+                    <div class="panel-head">
+                        <h2>通知与成交对账</h2>
+                        <span class="hint">提交、成交、未决订单快速核对</span>
+                    </div>
+                    <div class="audit-strip">
+                        <div class="quote-item">
+                            <span class="label">已提交</span>
+                            <span class="val">{{ trade_audit.broker_submitted_count }}</span>
+                        </div>
+                        <div class="quote-item">
+                            <span class="label">已成交</span>
+                            <span class="val">{{ trade_audit.broker_filled_count }}</span>
+                        </div>
+                        <div class="quote-item">
+                            <span class="label">部分成交</span>
+                            <span class="val">{{ trade_audit.broker_partial_filled_count }}</span>
+                        </div>
+                        <div class="quote-item">
+                            <span class="label">未决</span>
+                            <span class="val {{ 'red' if trade_audit.broker_unresolved_count > 0 else 'green' }}">{{ trade_audit.broker_unresolved_count }}</span>
+                        </div>
+                    </div>
+                    <div class="pnl-grid" style="margin-top:10px">
+                        <div class="quote-item">
+                            <span class="label">最新提交</span>
+                            <span class="val">{{ trade_audit.latest_submitted_line or '暂无' }}</span>
+                        </div>
+                        <div class="quote-item">
+                            <span class="label">最新成交</span>
+                            <span class="val">{{ trade_audit.latest_filled_line or '暂无' }}</span>
+                        </div>
+                        <div class="quote-item">
+                            <span class="label">对账状态</span>
+                            <span class="val {{ 'green' if trade_audit.notification_reconcile_ok else 'red' }}">
+                                {{ '正常' if trade_audit.notification_reconcile_ok else '存在未决订单' }}
+                            </span>
+                        </div>
+                        <div class="quote-item">
+                            <span class="label">最新审计</span>
+                            <span class="val">{{ trade_audit.latest_line or '暂无' }}</span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -894,6 +947,9 @@ HTML = """<!DOCTYPE html>
                         <div class="range-fill" style="width:{{ card.pos_pct }}%;background:{% if card.pos_pct > 70 %}#fb7185{% elif card.pos_pct < 30 %}#34d399{% else %}#fbbf24{% endif %}"></div>
                     </div>
                     <div class="row" style="margin-top:8px"><span class="label">区间位置</span><span class="val">{{ "%.0f"|format(card.pos_pct) }}%</span></div>
+                    <div class="source-chip {% if 'fallback' in card.range_source %}fallback{% elif card.range_source == 'offline' %}offline{% endif %}">
+                        区间来源 · {{ card.range_source }}
+                    </div>
                 </div>
 
                 <div class="signal {% if card.signal == 'BUY' %}sig-buy{% elif card.signal == 'SELL' %}sig-sell{% elif 'TREND' in card.signal %}sig-block{% else %}sig-hold{% endif %}">

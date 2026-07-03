@@ -72,3 +72,39 @@ def test_trade_audit_can_filter_live_records():
     assert summary["decision_count"] == 1
     assert summary["execution_count"] == 1
     assert summary["tickers"] == ["NVDA.US"]
+
+
+def test_trade_audit_summarizes_broker_order_reconcile():
+    summary = summarize_trade_records(
+        [
+            {
+                "timestamp": "2026-07-03T01:00:00Z",
+                "action": "place_order",
+                "request": {"ticker": "SOFI", "side": "SELL", "quantity": 30},
+                "response": {"order_id": "OID-1", "status": "submitted"},
+                "execution_mode": "live",
+            },
+            {
+                "timestamp": "2026-07-03T01:00:05Z",
+                "action": "get_order",
+                "request": {"order_id": "OID-1"},
+                "response": {"mapped_status": "FILLED"},
+                "execution_mode": "live",
+            },
+            {
+                "timestamp": "2026-07-03T01:10:00Z",
+                "action": "place_order",
+                "request": {"ticker": "PLTR", "side": "BUY", "quantity": 2},
+                "response": {"order_id": "OID-2", "status": "submitted"},
+                "execution_mode": "live",
+            },
+        ],
+        mode="live",
+    )
+
+    assert summary["broker_submitted_count"] == 2
+    assert summary["broker_filled_count"] == 1
+    assert summary["broker_unresolved_count"] == 1
+    assert summary["notification_reconcile_ok"] is False
+    assert summary["latest_submitted_line"] == "PLTR buy 2 submitted"
+    assert summary["latest_filled_line"] == "SOFI sell 30 filled"

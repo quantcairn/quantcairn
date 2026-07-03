@@ -44,6 +44,10 @@ def _first_non_empty(*values: Any) -> Any:
     return None
 
 
+def _normalize_status(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_")
+
+
 def _filter_records_by_mode(records: list[dict[str, Any]], mode: str | None = None) -> list[dict[str, Any]]:
     if not mode:
         return records
@@ -53,7 +57,10 @@ def _filter_records_by_mode(records: list[dict[str, Any]], mode: str | None = No
     filtered = [
         record
         for record in records
-        if str(record.get("execution_mode", "")).strip().lower() == normalized
+        if (
+            str(record.get("execution_mode", "")).strip().lower() == normalized
+            or str(record.get("action", "")).strip().lower() in {"place_order", "get_order", "cancel_order"}
+        )
     ]
     return filtered if filtered else records
 
@@ -71,6 +78,79 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
     buy_count = sum(1 for record in execution_records if str(record.get("order", {}).get("side", "")).lower() == "buy")
     sell_count = sum(1 for record in execution_records if str(record.get("order", {}).get("side", "")).lower() == "sell")
     order_qty = sum(int(record.get("order", {}).get("qty", 0) or 0) for record in execution_records)
+    submitted_orders: dict[str, dict[str, Any]] = {}
+    order_updates: dict[str, str] = {}
+    latest_submitted = {}
+    latest_filled = {}
+
+    for record in records:
+        if str(record.get("action") or "").strip().lower() == "place_order":
+            response = record.get("response") if isinstance(record.get("response"), dict) else {}
+            request = record.get("request") if isinstance(record.get("request"), dict) else {}
+            order_id = str(response.get("order_id") or "").strip()
+            status = _normalize_status(response.get("status"))
+            if order_id:
+                submitted_orders[order_id] = {
+                    "order_id": order_id,
+                    "ticker": request.get("ticker") or "",
+                    "side": str(request.get("side") or "").lower(),
+                    "qty": int(request.get("quantity") or 0),
+                    "status": status,
+                    "timestamp": record.get("timestamp") or "",
+                }
+            if status == "submitted":
+                latest_submitted = {
+                    "order_id": order_id,
+                    "ticker": request.get("ticker") or "",
+                    "side": str(request.get("side") or "").lower(),
+                    "qty": int(request.get("quantity") or 0),
+                    "timestamp": record.get("timestamp") or "",
+                }
+        elif str(record.get("action") or "").strip().lower() == "get_order":
+            request = record.get("request") if isinstance(record.get("request"), dict) else {}
+            response = record.get("response") if isinstance(record.get("response"), dict) else {}
+            order_id = str(request.get("order_id") or "").strip()
+            mapped_status = _normalize_status(response.get("mapped_status"))
+            if order_id and mapped_status:
+                order_updates[order_id] = mapped_status
+                if mapped_status in {"filled", "partially_filled"}:
+                    latest_filled = {
+                        "order_id": order_id,
+                        "status": mapped_status,
+                        "timestamp": record.get("timestamp") or "",
+                    }
+
+    order_status_counts = Counter(order_updates.values())
+    unresolved_order_ids = sorted(
+        order_id
+        for order_id, payload in submitted_orders.items()
+        if _normalize_status(payload.get("status")) == "submitted" and order_id not in order_updates
+    )
+    latest_submitted_line = None
+    if latest_submitted:
+        latest_submitted_line = " ".join(
+            str(part)
+            for part in [
+                latest_submitted.get("ticker"),
+                latest_submitted.get("side"),
+                latest_submitted.get("qty"),
+                "submitted",
+            ]
+            if part not in ("", None)
+        )
+    latest_filled_line = None
+    if latest_filled:
+        submitted_meta = submitted_orders.get(str(latest_filled.get("order_id") or ""), {})
+        latest_filled_line = " ".join(
+            str(part)
+            for part in [
+                submitted_meta.get("ticker") or "",
+                submitted_meta.get("side") or "",
+                submitted_meta.get("qty") or "",
+                latest_filled.get("status") or "",
+            ]
+            if part not in ("", None)
+        )
 
     latest_source = latest_execution or latest_record
     latest_line = None
@@ -129,6 +209,20 @@ def summarize_trade_records(records: list[dict[str, Any]], mode: str | None = No
             latest_record.get("risk_pause_reasons"),
             [],
         ),
+        "broker_submitted_count": sum(
+            1
+            for payload in submitted_orders.values()
+            if _normalize_status(payload.get("status")) == "submitted"
+        ),
+        "broker_filled_count": int(order_status_counts.get("filled", 0)),
+        "broker_partial_filled_count": int(order_status_counts.get("partially_filled", 0)),
+        "broker_rejected_count": int(order_status_counts.get("rejected", 0)),
+        "broker_cancelled_count": int(order_status_counts.get("cancelled", 0)),
+        "broker_unresolved_count": len(unresolved_order_ids),
+        "broker_unresolved_order_ids": unresolved_order_ids,
+        "latest_submitted_line": latest_submitted_line,
+        "latest_filled_line": latest_filled_line,
+        "notification_reconcile_ok": len(unresolved_order_ids) == 0,
         "mode_filter": mode or "",
     }
 
