@@ -20,6 +20,7 @@ from enum import Enum
 
 import longbridge.openapi as lb
 
+from ..config.runtime_values import get_runtime_env
 from .base import (
     AccountInfo,
     BrokerBase,
@@ -164,31 +165,31 @@ class LongBridgeBroker(BrokerBase):
         audit_dir: str | None = None,
     ):
         self._app_key = (
-            os.environ.get("LONGBRIDGE_APP_KEY")
-            or os.environ.get("LONGBRIDGE_API_KEY")
+            get_runtime_env("LONGBRIDGE_APP_KEY")
+            or get_runtime_env("LONGBRIDGE_API_KEY")
             or app_key
         )
         self._app_secret = (
-            os.environ.get("LONGBRIDGE_APP_SECRET")
-            or os.environ.get("LONGBRIDGE_API_SECRET")
+            get_runtime_env("LONGBRIDGE_APP_SECRET")
+            or get_runtime_env("LONGBRIDGE_API_SECRET")
             or app_secret
         )
-        self._access_token = os.environ.get("LONGBRIDGE_ACCESS_TOKEN", access_token)
-        self._region = os.environ.get("LONGBRIDGE_REGION", region)
-        self._environment = os.environ.get("LONGBRIDGE_ENV", environment).strip().lower()
+        self._access_token = get_runtime_env("LONGBRIDGE_ACCESS_TOKEN", access_token)
+        self._region = get_runtime_env("LONGBRIDGE_REGION", region)
+        self._environment = get_runtime_env("LONGBRIDGE_ENV", environment).strip().lower()
 
-        self._http_url = os.environ.get("LONGBRIDGE_HTTP_URL", http_url or "") or None
-        self._quote_ws_url = os.environ.get("LONGBRIDGE_QUOTE_WS_URL", quote_ws_url or "") or None
-        self._trade_ws_url = os.environ.get("LONGBRIDGE_TRADE_WS_URL", trade_ws_url or "") or None
+        self._http_url = get_runtime_env("LONGBRIDGE_HTTP_URL", http_url or "") or None
+        self._quote_ws_url = get_runtime_env("LONGBRIDGE_QUOTE_WS_URL", quote_ws_url or "") or None
+        self._trade_ws_url = get_runtime_env("LONGBRIDGE_TRADE_WS_URL", trade_ws_url or "") or None
 
         if self._environment == "sandbox":
-            self._http_url = self._http_url or os.environ.get("LONGBRIDGE_SANDBOX_HTTP_URL")
-            self._quote_ws_url = self._quote_ws_url or os.environ.get("LONGBRIDGE_SANDBOX_QUOTE_WS_URL")
-            self._trade_ws_url = self._trade_ws_url or os.environ.get("LONGBRIDGE_SANDBOX_TRADE_WS_URL")
+            self._http_url = self._http_url or get_runtime_env("LONGBRIDGE_SANDBOX_HTTP_URL")
+            self._quote_ws_url = self._quote_ws_url or get_runtime_env("LONGBRIDGE_SANDBOX_QUOTE_WS_URL")
+            self._trade_ws_url = self._trade_ws_url or get_runtime_env("LONGBRIDGE_SANDBOX_TRADE_WS_URL")
 
-        self._sdk_log_path = os.environ.get("LONGBRIDGE_LOG_PATH", log_path or "") or None
+        self._sdk_log_path = get_runtime_env("LONGBRIDGE_LOG_PATH", log_path or "") or None
 
-        audit_dir_value = os.environ.get("LONGBRIDGE_AUDIT_DIR", audit_dir or "") or None
+        audit_dir_value = get_runtime_env("LONGBRIDGE_AUDIT_DIR", audit_dir or "") or None
         if audit_dir_value:
             self._audit_dir = Path(audit_dir_value)
         else:

@@ -36,6 +36,8 @@ python run.py --paper --dashboard
 python run.py --backtest
 ```
 
+实盘凭证建议只放在本机私有的 `config.local.yaml` 里。该文件已被 Git 忽略，不要再把 `LONGBRIDGE_*` 凭证长期挂在用户级 `launchd` 全局环境中。
+
 ## 两种区间模式
 
 ### 手动模式（推荐）

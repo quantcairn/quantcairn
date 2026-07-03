@@ -7,6 +7,7 @@ from typing import Dict, List, Sequence, Any
 
 import numpy as np
 
+from src.config.runtime_values import get_runtime_env
 from src.universe.universe import Universe
 from src.scoring.scorer import Scorer
 from src.news_agent.news_collector import NewsCollector
@@ -61,9 +62,9 @@ class _QualityFilterContext:
             return None
         if self._longbridge_quote_ctx is not None:
             return self._longbridge_quote_ctx
-        app_key = os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY")
-        app_secret = os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET")
-        access_token = os.environ.get("LONGBRIDGE_ACCESS_TOKEN")
+        app_key = get_runtime_env("LONGBRIDGE_APP_KEY") or get_runtime_env("LONGBRIDGE_API_KEY")
+        app_secret = get_runtime_env("LONGBRIDGE_APP_SECRET") or get_runtime_env("LONGBRIDGE_API_SECRET")
+        access_token = get_runtime_env("LONGBRIDGE_ACCESS_TOKEN")
         if not (app_key and app_secret and access_token):
             self._longbridge_available = False
             return None
@@ -74,12 +75,12 @@ class _QualityFilterContext:
                 app_key,
                 app_secret,
                 access_token,
-                http_url=os.environ.get("LONGBRIDGE_HTTP_URL")
-                or os.environ.get("LONGBRIDGE_BASE_URL")
+                http_url=get_runtime_env("LONGBRIDGE_HTTP_URL")
+                or get_runtime_env("LONGBRIDGE_BASE_URL")
                 or "https://openapi.longbridgeapp.com",
-                quote_ws_url=os.environ.get("LONGBRIDGE_QUOTE_WS_URL"),
-                trade_ws_url=os.environ.get("LONGBRIDGE_TRADE_WS_URL"),
-                log_path=os.environ.get("LONGBRIDGE_LOG_PATH"),
+                quote_ws_url=get_runtime_env("LONGBRIDGE_QUOTE_WS_URL"),
+                trade_ws_url=get_runtime_env("LONGBRIDGE_TRADE_WS_URL"),
+                log_path=get_runtime_env("LONGBRIDGE_LOG_PATH"),
             )
             self._longbridge_quote_ctx = lb.QuoteContext(cfg)
             self._longbridge_available = True

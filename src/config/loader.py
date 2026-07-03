@@ -4,6 +4,7 @@ Configuration loader: reads config.yaml and returns typed config objects.
 import json
 import os
 import yaml
+from .runtime_values import load_private_longbridge_config
 from dataclasses import dataclass, field
 from typing import Optional, Literal
 
@@ -225,12 +226,23 @@ def _parse_config(raw: dict) -> AppConfig:
 
     # Broker
     lb = raw.get("broker", {}).get("longbridge", {})
-    app_key = os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY") or lb.get("app_key", "")
-    app_secret = os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET") or lb.get("app_secret", "")
-    environment = os.environ.get("LONGBRIDGE_ENV", lb.get("environment", "prod"))
-    http_url = os.environ.get("LONGBRIDGE_HTTP_URL", lb.get("http_url"))
-    quote_ws_url = os.environ.get("LONGBRIDGE_QUOTE_WS_URL", lb.get("quote_ws_url"))
-    trade_ws_url = os.environ.get("LONGBRIDGE_TRADE_WS_URL", lb.get("trade_ws_url"))
+    private_lb = load_private_longbridge_config()
+    app_key = (
+        os.environ.get("LONGBRIDGE_APP_KEY")
+        or os.environ.get("LONGBRIDGE_API_KEY")
+        or lb.get("app_key", "")
+        or private_lb.get("app_key", "")
+    )
+    app_secret = (
+        os.environ.get("LONGBRIDGE_APP_SECRET")
+        or os.environ.get("LONGBRIDGE_API_SECRET")
+        or lb.get("app_secret", "")
+        or private_lb.get("app_secret", "")
+    )
+    environment = os.environ.get("LONGBRIDGE_ENV", lb.get("environment") or private_lb.get("environment", "prod"))
+    http_url = os.environ.get("LONGBRIDGE_HTTP_URL", lb.get("http_url") or private_lb.get("http_url"))
+    quote_ws_url = os.environ.get("LONGBRIDGE_QUOTE_WS_URL", lb.get("quote_ws_url") or private_lb.get("quote_ws_url"))
+    trade_ws_url = os.environ.get("LONGBRIDGE_TRADE_WS_URL", lb.get("trade_ws_url") or private_lb.get("trade_ws_url"))
     if environment.strip().lower() == "sandbox":
         http_url = http_url or os.environ.get("LONGBRIDGE_SANDBOX_HTTP_URL")
         quote_ws_url = quote_ws_url or os.environ.get("LONGBRIDGE_SANDBOX_QUOTE_WS_URL")
@@ -239,14 +251,14 @@ def _parse_config(raw: dict) -> AppConfig:
         longbridge=LongBridgeConfig(
             app_key=app_key,
             app_secret=app_secret,
-            access_token=os.environ.get("LONGBRIDGE_ACCESS_TOKEN", lb.get("access_token", "")),
-            region=os.environ.get("LONGBRIDGE_REGION", lb.get("region", "cn")),
-            enabled=_bool_env("LONGBRIDGE_ENABLED", lb.get("enabled", False)),
+            access_token=os.environ.get("LONGBRIDGE_ACCESS_TOKEN", lb.get("access_token") or private_lb.get("access_token", "")),
+            region=os.environ.get("LONGBRIDGE_REGION", lb.get("region") or private_lb.get("region", "cn")),
+            enabled=_bool_env("LONGBRIDGE_ENABLED", lb.get("enabled", private_lb.get("enabled", False))),
             environment=environment,
             http_url=http_url,
             quote_ws_url=quote_ws_url,
             trade_ws_url=trade_ws_url,
-            log_path=os.environ.get("LONGBRIDGE_LOG_PATH", lb.get("log_path")),
+            log_path=os.environ.get("LONGBRIDGE_LOG_PATH", lb.get("log_path") or private_lb.get("log_path")),
         )
     )
 

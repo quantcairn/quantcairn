@@ -11,6 +11,7 @@ from ta.momentum import rsi
 from ta.trend import MACD
 from ta.volatility import AverageTrueRange
 
+from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.ai_selector.settings import get_float_setting
 
 
@@ -143,23 +144,19 @@ class Scorer:
         return default
 
     def _fetch_longbridge_snapshot(self, symbol: str) -> dict:
-        if not (
-            os.environ.get("LONGBRIDGE_ACCESS_TOKEN")
-            and (os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY"))
-            and (os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET"))
-        ):
+        if not has_longbridge_runtime_credentials():
             raise RuntimeError("longbridge credentials unavailable")
 
         import longbridge.openapi as lb
 
         config = lb.Config.from_apikey(
-            os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY") or "",
-            os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET") or "",
-            os.environ.get("LONGBRIDGE_ACCESS_TOKEN", ""),
-            http_url=os.environ.get("LONGBRIDGE_HTTP_URL") or os.environ.get("LONGBRIDGE_BASE_URL"),
-            quote_ws_url=os.environ.get("LONGBRIDGE_QUOTE_WS_URL"),
-            trade_ws_url=os.environ.get("LONGBRIDGE_TRADE_WS_URL"),
-            log_path=os.environ.get("LONGBRIDGE_LOG_PATH"),
+            get_runtime_env("LONGBRIDGE_APP_KEY") or get_runtime_env("LONGBRIDGE_API_KEY") or "",
+            get_runtime_env("LONGBRIDGE_APP_SECRET") or get_runtime_env("LONGBRIDGE_API_SECRET") or "",
+            get_runtime_env("LONGBRIDGE_ACCESS_TOKEN", ""),
+            http_url=get_runtime_env("LONGBRIDGE_HTTP_URL") or get_runtime_env("LONGBRIDGE_BASE_URL"),
+            quote_ws_url=get_runtime_env("LONGBRIDGE_QUOTE_WS_URL"),
+            trade_ws_url=get_runtime_env("LONGBRIDGE_TRADE_WS_URL"),
+            log_path=get_runtime_env("LONGBRIDGE_LOG_PATH"),
         )
         ctx = lb.QuoteContext(config)
         resp = ctx.quote(symbols=[self._longbridge_symbol(symbol)])

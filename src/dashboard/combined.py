@@ -8,6 +8,7 @@ import yaml
 
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
 from src.ai_selector.selection_state import load_selection_state, verify_selection_state
+from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log
 
@@ -37,32 +38,11 @@ _UNRESOLVED_ALERT_SECONDS = float(os.getenv("SOXS_UNRESOLVED_ALERT_SECONDS", "12
 
 
 def _env(name: str, default: str = "") -> str:
-    value = os.getenv(name)
-    if value is not None and str(value).strip():
-        return str(value).strip()
-    try:
-        proc = subprocess.run(
-            ["launchctl", "getenv", name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        value = (proc.stdout or "").strip()
-        if value:
-            return value
-    except Exception:
-        pass
-    return default.strip()
+    return get_runtime_env(name, default)
 
 
 def _has_live_account_env() -> bool:
-    return bool(
-        _env("LONGBRIDGE_ACCESS_TOKEN")
-        and (
-            (_env("LONGBRIDGE_APP_KEY") or _env("LONGBRIDGE_API_KEY"))
-            and (_env("LONGBRIDGE_APP_SECRET") or _env("LONGBRIDGE_API_SECRET"))
-        )
-    )
+    return has_longbridge_runtime_credentials()
 
 
 def _fetch_live_account_summary():

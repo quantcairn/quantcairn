@@ -2,6 +2,8 @@ import yaml
 import os
 import json
 
+from src.config.runtime_values import has_longbridge_runtime_credentials
+
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
 
@@ -20,11 +22,7 @@ def _default_top_mode() -> str:
     if mode in {"live", "paper"}:
         return mode
 
-    has_live_creds = bool(
-        os.environ.get("LONGBRIDGE_ACCESS_TOKEN")
-        and (os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY"))
-        and (os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET"))
-    )
+    has_live_creds = has_longbridge_runtime_credentials()
     return "live" if has_live_creds else "paper"
 
 

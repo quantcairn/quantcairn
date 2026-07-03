@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..engine.trading_engine import TradingEngine, append_runtime_audit
+from ..config.runtime_values import get_runtime_env
 from .trade_audit import load_trade_records
 
 logger = logging.getLogger(__name__)
@@ -31,22 +32,7 @@ TEST_ORDER_ID_RE = re.compile(r"^(?:TEST-.*|(?:BUY|SELL)-[0-9]+)$", re.IGNORECAS
 
 
 def _env(name: str, default: str = "") -> str:
-    value = os.getenv(name)
-    if value is not None and str(value).strip():
-        return str(value).strip()
-    try:
-        proc = subprocess.run(
-            ["launchctl", "getenv", name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        value = (proc.stdout or "").strip()
-        if value:
-            return value
-    except Exception:
-        pass
-    return default.strip()
+    return get_runtime_env(name, default)
 
 
 def _ny_now() -> datetime:
