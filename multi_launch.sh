@@ -10,6 +10,7 @@ USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-0}"
 UID_NUM="$(id -u)"
 TOP_ENGINES=(TOP1 TOP2 TOP3 TOP4 TOP5)
 ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
+COMBINED_JOB="com.soxs.combined"
 
 cd "$PROJECT_DIR" || exit 1
 
@@ -54,16 +55,31 @@ wait_for_port() {
 
 start_combined_dashboard() {
     : > "$LOG_DIR/combined.log"
-    nohup "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 < /dev/null &
-    local combined_pid=$!
+    COMBINED_PID=""
+    if command -v launchctl >/dev/null 2>&1; then
+        local plist="$PROJECT_DIR/launchd/${COMBINED_JOB}.plist"
+        if [ -f "$plist" ]; then
+            launchctl enable gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+            launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
+            launchctl kickstart -k gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+            COMBINED_PID="launchd"
+        fi
+    fi
+    if [ -z "${COMBINED_PID:-}" ]; then
+        if command -v setsid >/dev/null 2>&1; then
+            setsid "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 < /dev/null &
+        else
+            nohup "$VENV_PYTHON" scripts/start_combined.py >> "$LOG_DIR/combined.log" 2>&1 < /dev/null &
+        fi
+        COMBINED_PID=$!
+    fi
     if wait_for_port 8090 15; then
-        echo "$combined_pid"
         return 0
     fi
-    if ! kill -0 "$combined_pid" >/dev/null 2>&1; then
-        echo "❌ Combined dashboard failed to start (PID $combined_pid exited)"
+    if [ "${COMBINED_PID:-}" != "launchd" ] && [ -n "${COMBINED_PID:-}" ] && ! kill -0 "$COMBINED_PID" >/dev/null 2>&1; then
+        echo "❌ Combined dashboard failed to start (PID $COMBINED_PID exited)"
     else
-        echo "❌ Combined dashboard did not bind to :8090 within timeout (PID $combined_pid)"
+        echo "❌ Combined dashboard did not bind to :8090 within timeout"
     fi
     tail -n 40 "$LOG_DIR/combined.log" 2>/dev/null || true
     return 1
@@ -78,6 +94,8 @@ stop_existing() {
     pkill -f "scripts/start_orphan_monitor.py" 2>/dev/null
     pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
     pkill -f "start_combined(8090)" 2>/dev/null
+    launchctl bootout gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+    launchctl disable gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
     kill_dashboard_ports
 }
 
@@ -180,9 +198,9 @@ start_all() {
     fi
 
     # Start combined dashboard with the dedicated launcher.
-    combined_pid="$(start_combined_dashboard)" || return 1
-    pids="$pids $combined_pid"
-    echo "📊 COMBINED on :8090 (PID $combined_pid)"
+    start_combined_dashboard || return 1
+    pids="$pids $COMBINED_PID"
+    echo "📊 COMBINED on :8090 (PID $COMBINED_PID)"
 
     : > "$LOG_DIR/orphan-monitor.log"
     nohup "$VENV_PYTHON" "$ORPHAN_MONITOR_SCRIPT" >> "$LOG_DIR/orphan-monitor.log" 2>&1 &
@@ -230,10 +248,16 @@ case "$1" in
         pkill -f "scripts/start_combined.py" 2>/dev/null
         pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
         pkill -f "start_combined(8090)" 2>/dev/null
+        launchctl bootout gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+        launchctl disable gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
         kill_listener_on_port 8090
         sleep 1
-        if combined_pid="$(start_combined_dashboard)"; then
-            echo "🔄 Combined dashboard restarted (PID $combined_pid)"
+        if start_combined_dashboard; then
+            if [ -n "${COMBINED_PID:-}" ]; then
+                echo "🔄 Combined dashboard restarted (PID $COMBINED_PID)"
+            else
+                echo "🔄 Combined dashboard restarted (launchd)"
+            fi
         else
             exit 1
         fi

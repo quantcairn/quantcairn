@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.soxs.combined</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/chenwei/soxs-range-arbitrage/.venv/bin/python</string>
+        <string>/Users/chenwei/soxs-range-arbitrage/scripts/start_combined.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>/Users/chenwei/soxs-range-arbitrage</string>
+    <key>StandardOutPath</key>
+    <string>/Users/chenwei/soxs-range-arbitrage/logs/combined.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chenwei/soxs-range-arbitrage/logs/combined.err.log</string>
+</dict>
+</plist>
