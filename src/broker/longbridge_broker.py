@@ -208,6 +208,9 @@ class LongBridgeBroker(BrokerBase):
         self._positions_cache: list[Position] = []
         self._positions_snapshot_reliable = False
         self._account_snapshot_reliable = False
+        self._last_connect_error = ""
+        self._last_positions_error = ""
+        self._last_account_error = ""
         self._account_cache_fetched_at = 0.0
         self._positions_cache_fetched_at = 0.0
         self._account_retry_not_before = 0.0
@@ -253,6 +256,15 @@ class LongBridgeBroker(BrokerBase):
     def is_account_snapshot_reliable(self) -> bool:
         """Whether the latest account response is confirmed by the broker."""
         return self._account_snapshot_reliable
+
+    def last_connect_error(self) -> str:
+        return self._last_connect_error
+
+    def last_positions_error(self) -> str:
+        return self._last_positions_error
+
+    def last_account_error(self) -> str:
+        return self._last_account_error
 
     def _audit_path(self) -> Path:
         return self._audit_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
@@ -309,6 +321,7 @@ class LongBridgeBroker(BrokerBase):
             self._trade_ctx = lb.TradeContext(self._sdk_config)
             self._quote_ctx = lb.QuoteContext(self._sdk_config)
             self._connected = True
+            self._last_connect_error = ""
             logger.info(
                 "✅ Long Bridge connected (environment: %s, region: %s)",
                 self._environment,
@@ -328,6 +341,7 @@ class LongBridgeBroker(BrokerBase):
             )
             return True
         except lb.OpenApiException as e:
+            self._last_connect_error = str(e)
             logger.error(f"Long Bridge auth failed: {e}")
             self._write_audit(
                 "connect",
@@ -344,6 +358,7 @@ class LongBridgeBroker(BrokerBase):
             )
             return False
         except Exception as e:
+            self._last_connect_error = str(e)
             logger.error(f"Long Bridge connection failed: {e}")
             self._write_audit(
                 "connect",
@@ -618,6 +633,7 @@ class LongBridgeBroker(BrokerBase):
             return list(self._positions_cache)
         if not self.is_connected():
             self._positions_snapshot_reliable = False
+            self._last_positions_error = "Not connected"
             self._write_audit("get_positions", request, {"positions": []}, ok=False, error="Not connected")
             return list(self._positions_cache)
         try:
@@ -669,12 +685,14 @@ class LongBridgeBroker(BrokerBase):
                 )
             self._positions_cache = positions
             self._positions_snapshot_reliable = True
+            self._last_positions_error = ""
             self._positions_cache_fetched_at = now
             self._positions_retry_not_before = now
             self._write_audit("get_positions", request, {"positions": positions}, ok=True)
             return positions
         except Exception as e:
             logger.error(f"Get positions failed: {e}")
+            self._last_positions_error = str(e)
             if _is_rate_limit_error(e) and self._can_reuse_positions_cache(now):
                 logger.warning("Get positions rate limited; reusing cached positions snapshot")
                 self._positions_snapshot_reliable = True
@@ -703,6 +721,7 @@ class LongBridgeBroker(BrokerBase):
             return self._account_cache
         if not self.is_connected():
             self._account_snapshot_reliable = False
+            self._last_account_error = "Not connected"
             self._write_audit(
                 "get_account",
                 request,
@@ -728,12 +747,14 @@ class LongBridgeBroker(BrokerBase):
             )
             self._account_cache = account
             self._account_snapshot_reliable = True
+            self._last_account_error = ""
             self._account_cache_fetched_at = now
             self._account_retry_not_before = now
             self._write_audit("get_account", request, account, ok=True)
             return self._account_cache
         except Exception as e:
             logger.error(f"Get account failed: {e}")
+            self._last_account_error = str(e)
             if _is_rate_limit_error(e) and self._can_reuse_account_cache(now):
                 logger.warning("Get account rate limited; reusing cached account snapshot")
                 self._account_snapshot_reliable = True

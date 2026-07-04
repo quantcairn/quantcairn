@@ -79,17 +79,23 @@ def _refresh_live_account_summary(now: float):
             log_path=_env("LONGBRIDGE_LOG_PATH"),
         )
         if not broker.connect():
-            return _stale_live_account("券商连接失败")
+            return _stale_live_account(
+                getattr(broker, "last_connect_error", lambda: "")() or "券商连接失败"
+            )
         positions = broker.get_positions()
         if not getattr(
             broker, "is_positions_snapshot_reliable", lambda: True
         )():
-            return _stale_live_account("券商持仓快照未确认")
+            return _stale_live_account(
+                getattr(broker, "last_positions_error", lambda: "")() or "券商持仓快照未确认"
+            )
         account = broker.get_account()
         if not getattr(
             broker, "is_account_snapshot_reliable", lambda: True
         )():
-            return _stale_live_account("券商账户快照未确认")
+            return _stale_live_account(
+                getattr(broker, "last_account_error", lambda: "")() or "券商账户快照未确认"
+            )
         position_rows = []
         for pos in positions or []:
             position_rows.append(
@@ -127,13 +133,42 @@ def _refresh_live_account_summary(now: float):
     return summary
 
 
+def _friendly_live_account_error(reason: str) -> str:
+    text = str(reason or "").strip()
+    if not text:
+        return "账户刷新失败"
+    lowered = text.lower()
+    if "401004" in text or "token invalid" in lowered:
+        return "凭证无效，请更新 LongBridge Access Token"
+    if "connect" in lowered:
+        return "券商连接失败"
+    return text
+
+
+def _failed_live_account(reason: str):
+    cached = _LIVE_ACCOUNT_CACHE if isinstance(_LIVE_ACCOUNT_CACHE, dict) else {}
+    return {
+        "cash": cached.get("cash"),
+        "equity": cached.get("equity"),
+        "buying_power": cached.get("buying_power"),
+        "positions_count": cached.get("positions_count", 0) if cached else 0,
+        "positions": list(cached.get("positions") or []),
+        "mode": "live_error",
+        "data_stale": True,
+        "account_error": True,
+        "stale_reason": _friendly_live_account_error(reason),
+        "fetched_at": cached.get("fetched_at"),
+    }
+
+
 def _stale_live_account(reason: str):
     if not isinstance(_LIVE_ACCOUNT_CACHE, dict):
-        return None
+        return _failed_live_account(reason)
     return {
         **_LIVE_ACCOUNT_CACHE,
         "data_stale": True,
-        "stale_reason": reason or "刷新失败",
+        "account_error": True,
+        "stale_reason": _friendly_live_account_error(reason),
     }
 
 
@@ -754,8 +789,8 @@ HTML = """<!DOCTYPE html>
                 </div>
                 <div class="headline-stat">
                     <span class="label">{{ account_labels.footer_capital }}</span>
-                    <span class="value">${{ "%.2f"|format(total_capital) }}</span>
-                    <span class="sub">{{ account_labels.footer_equity }}：${{ "%.2f"|format(total_equity) }}</span>
+                    <span class="value">{% if total_capital is not none %}${{ "%.2f"|format(total_capital) }}{% else %}暂无{% endif %}</span>
+                    <span class="sub">{% if total_equity is not none %}{{ account_labels.footer_equity }}：${{ "%.2f"|format(total_equity) }}{% else %}{{ account_labels.footer_equity }}：暂无{% endif %}</span>
                 </div>
                 <div class="headline-stat">
                     <span class="label">最近买点</span>
@@ -773,10 +808,14 @@ HTML = """<!DOCTYPE html>
             <span class="pill live">实时监控</span>
             <span class="pill">更新于 {{ update_time }}</span>
             <span class="pill {% if live_account and live_account.mode == 'live' %}live{% else %}warn{% endif %}">
-                {% if live_account and live_account.mode == 'live' %}实盘账户{% else %}模拟盘 / 离线{% endif %}
+                {% if live_account and live_account.mode == 'live' %}实盘账户{% elif live_account and live_account.account_error %}实盘账户异常{% else %}模拟盘 / 离线{% endif %}
             </span>
             {% if live_account and live_account.data_stale %}
+                {% if live_account.account_error %}
+            <span class="pill warn">账户拉取失败 · {{ live_account.stale_reason }}</span>
+                {% else %}
             <span class="pill warn">账户数据已过期 · {{ live_account.fetched_at or '未知时间' }}</span>
+                {% endif %}
             {% endif %}
             {% if footer_buying_power is not none %}
             <span class="pill live">{{ account_labels.footer_buying_power }} ${{ "%.2f"|format(footer_buying_power) }}</span>
@@ -846,6 +885,8 @@ HTML = """<!DOCTYPE html>
                                 </div>
                                 {% endfor %}
                             </div>
+                            {% elif live_account and live_account.account_error %}
+                            <div class="position-empty">账户持仓拉取失败：{{ live_account.stale_reason }}</div>
                             {% else %}
                             <div class="position-empty">当前没有持仓。</div>
                             {% endif %}
@@ -1192,6 +1233,9 @@ def index():
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
     latest_line = _latest_trade_line(trade_audit)
     trade_audit = {
+        "broker_unresolved_count": int(trade_audit.get("broker_unresolved_count", 0) or 0),
+        "broker_unresolved_oldest_seconds": float(trade_audit.get("broker_unresolved_oldest_seconds", 0.0) or 0.0),
+        "latest_submitted_line": str(trade_audit.get("latest_submitted_line", "") or ""),
         **trade_audit,
         "latest_line": latest_line,
         "execution_mode": _resolve_dashboard_execution_mode(trade_audit),
@@ -1319,6 +1363,15 @@ def index():
             "footer_equity": "账户权益",
             "footer_buying_power": "可买额度",
         }
+    elif live_account and live_account.get("account_error"):
+        total_capital = None
+        total_equity = None
+        footer_buying_power = None
+        account_labels = {
+            "footer_capital": "账户现金",
+            "footer_equity": "账户权益",
+            "footer_buying_power": "可买额度",
+        }
     else:
         footer_buying_power = None
         account_labels = {
@@ -1404,8 +1457,8 @@ def index():
         audit_day_label=audit_day_label,
         total_pnl=round(total_pnl, 2),
         today_total_pnl=round(today_total_pnl, 2),
-        total_capital=round(total_capital, 2),
-        total_equity=round(total_equity, 2),
+        total_capital=round(total_capital, 2) if total_capital is not None else None,
+        total_equity=round(total_equity, 2) if total_equity is not None else None,
         total_trades=total_trades,
         update_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )

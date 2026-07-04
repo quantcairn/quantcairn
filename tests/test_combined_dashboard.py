@@ -62,7 +62,7 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
         "support": 0.0,
         "resistance": 0.0,
     })
-    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "live",
         "reduce_only": True,
         "new_entries_allowed": False,
@@ -120,13 +120,96 @@ def test_combined_dashboard_marks_stale_live_account(monkeypatch):
         "support": 0.0,
         "resistance": 0.0,
     })
-    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {})
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {})
 
     with combined.app.test_request_context("/"):
         html = combined.index()
 
     assert "账户数据已过期" in html
     assert "2026-07-02T10:00:00" in html
+
+
+def test_combined_dashboard_shows_live_account_error_without_cache(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
+        "cash": None,
+        "equity": None,
+        "buying_power": None,
+        "positions_count": 0,
+        "positions": [],
+        "mode": "live_error",
+        "data_stale": True,
+        "account_error": True,
+        "stale_reason": "凭证无效，请更新 LongBridge Access Token",
+        "fetched_at": None,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 0.0,
+        "support": 0.0,
+        "resistance": 0.0,
+    })
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {})
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "实盘账户异常" in html
+    assert "账户拉取失败" in html
+    assert "凭证无效，请更新 LongBridge Access Token" in html
+    assert "账户现金" in html
+    assert "暂无" in html
+
+
+def test_stale_live_account_without_cache_returns_error_state():
+    combined._LIVE_ACCOUNT_CACHE = None
+    result = combined._stale_live_account(
+        "OpenApiException: (kind=ErrorKind.OpenApi, code=401004) token invalid"
+    )
+
+    assert result["mode"] == "live_error"
+    assert result["account_error"] is True
+    assert result["data_stale"] is True
+    assert result["stale_reason"] == "凭证无效，请更新 LongBridge Access Token"
+
+
+def test_refresh_live_account_uses_broker_error_details(monkeypatch):
+    class FakeBroker:
+        def __init__(self, **kwargs):
+            pass
+
+        def connect(self):
+            return True
+
+        def get_positions(self):
+            return []
+
+        def is_positions_snapshot_reliable(self):
+            return False
+
+        def last_positions_error(self):
+            return "OpenApiException: (kind=ErrorKind.OpenApi, code=401004) token invalid"
+
+        def disconnect(self):
+            pass
+
+    original_cache = combined._LIVE_ACCOUNT_CACHE
+    combined._LIVE_ACCOUNT_CACHE = None
+    fake_module = type("FakeModule", (), {"LongBridgeBroker": FakeBroker})
+    original = sys.modules.get("src.broker.longbridge_broker")
+    sys.modules["src.broker.longbridge_broker"] = fake_module
+    try:
+        result = combined._refresh_live_account_summary(0.0)
+    finally:
+        combined._LIVE_ACCOUNT_CACHE = original_cache
+        if original is None:
+            sys.modules.pop("src.broker.longbridge_broker", None)
+        else:
+            sys.modules["src.broker.longbridge_broker"] = original
+
+    assert result["mode"] == "live_error"
+    assert result["account_error"] is True
+    assert result["stale_reason"] == "凭证无效，请更新 LongBridge Access Token"
 
 
 def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
@@ -174,7 +257,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
         "top3": [],
         "top10": [],
     })
-    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "live",
         "reduce_only": False,
         "new_entries_allowed": True,
@@ -197,7 +280,8 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "自动刷新：5 分钟" in html
     assert "扫描数量：50" in html
     assert "数据模式：live" in html
-    assert "选股配置校验：已对齐" in html
+    assert "选股配置校验" in html
+    assert "已对齐" in html
     assert "当天配置已对齐（美东 2026-06-30）" in html
     assert "NVDA" in html
     assert "84.19" in html
@@ -217,7 +301,7 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
-    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "paper",
         "reduce_only": False,
         "new_entries_allowed": True,
@@ -337,7 +421,7 @@ def test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0})
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
-    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "live",
         "reduce_only": False,
         "new_entries_allowed": True,
@@ -414,7 +498,7 @@ def test_combined_dashboard_buy_trigger_shows_pause_when_new_entries_disabled(mo
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0})
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
-    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, mode=None: {
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "live",
         "reduce_only": True,
         "new_entries_allowed": False,
@@ -480,6 +564,9 @@ def run_test_direct():
         test_combined_status_fetch_needs_consecutive_failures_before_offline(monkeypatch)
         test_combined_dashboard_renders_live_account_summary(monkeypatch)
         test_combined_dashboard_marks_stale_live_account(monkeypatch)
+        test_combined_dashboard_shows_live_account_error_without_cache(monkeypatch)
+        test_stale_live_account_without_cache_returns_error_state()
+        test_refresh_live_account_uses_broker_error_details(monkeypatch)
         test_combined_dashboard_renders_ai_selection_report(monkeypatch)
         test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch)
         test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch)
