@@ -36,3 +36,33 @@ def test_runtime_values_fall_back_to_config_local(tmp_path, monkeypatch):
     assert runtime_values.get_runtime_env("LONGBRIDGE_APP_SECRET") == "local-secret"
     assert runtime_values.get_runtime_env("LONGBRIDGE_ACCESS_TOKEN") == "local-token"
     assert runtime_values.has_longbridge_runtime_credentials() is True
+
+
+def test_runtime_values_prefer_config_local_over_shell_env(tmp_path, monkeypatch):
+    config_local = tmp_path / "config.local.yaml"
+    config_local.write_text(
+        yaml.safe_dump(
+            {
+                "broker": {
+                    "longbridge": {
+                        "app_key": "file-key",
+                        "app_secret": "file-secret",
+                        "access_token": "file-token",
+                        "region": "cn",
+                        "environment": "prod",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime_values, "PROJECT_DIR", tmp_path)
+    runtime_values.clear_private_config_cache()
+    monkeypatch.setenv("LONGBRIDGE_APP_KEY", "env-key")
+    monkeypatch.setenv("LONGBRIDGE_APP_SECRET", "env-secret")
+    monkeypatch.setenv("LONGBRIDGE_ACCESS_TOKEN", "env-token")
+
+    assert runtime_values.get_runtime_env("LONGBRIDGE_APP_KEY") == "file-key"
+    assert runtime_values.get_runtime_env("LONGBRIDGE_APP_SECRET") == "file-secret"
+    assert runtime_values.get_runtime_env("LONGBRIDGE_ACCESS_TOKEN") == "file-token"

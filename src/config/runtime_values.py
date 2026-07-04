@@ -66,16 +66,16 @@ def _launchctl_getenv(name: str) -> str:
 
 
 def get_runtime_env(name: str, default: str = "") -> str:
-    value = os.getenv(name)
-    if value is not None and str(value).strip():
-        return str(value).strip()
-
     mapped_key = _LONGBRIDGE_KEY_MAP.get(name)
     if mapped_key:
         config = load_private_longbridge_config()
         candidate = config.get(mapped_key)
         if candidate not in (None, ""):
             return str(candidate).strip()
+
+    value = os.getenv(name)
+    if value is not None and str(value).strip():
+        return str(value).strip()
 
     launchd_value = _launchctl_getenv(name)
     if launchd_value:
