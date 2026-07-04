@@ -153,6 +153,12 @@ def main():
         "AI_SELECTOR_AUTO_REFRESH_MINUTES",
         str(runtime_settings.get("auto_refresh_minutes", 5)),
     )
+    configured_max_symbols = int(runtime_settings.get("max_symbols", 20) or 20)
+    os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
+    os.environ.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
+    os.environ.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
+    os.environ.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "1")
+    os.environ.setdefault("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3")
     live_positions = _live_equity_positions()
     if live_positions is None and _has_live_top_configs():
         print("Live position verification failed; refusing to run selection or replace TOP configs.")
@@ -179,6 +185,9 @@ def main():
     quality_report["existing_real_positions_preserved"] = preserved_positions
     out["quality_filter_report"] = quality_report
     write_selection_filter_log(quality_report)
+    if not selected:
+        print("AI selection produced no tradable symbols; aborting without updating TOP configs.")
+        sys.exit(1)
     if selected:
         from src.ai_selector.config_writer import write_top_configs
 
@@ -226,13 +235,18 @@ def main():
         except Exception:
             print('Failed to send webhook notification')
 
-    # macOS notification (optional)
-    try:
-        top5tickers = ', '.join([t['ticker'] for t in selected])
-        msg = f"Top5: {top5tickers} (非成交提醒)"
-        subprocess.run(['osascript', '-e', f'display notification "{msg}" with title "AI 选股更新"' ], check=False)
-    except Exception:
-        pass
+    # macOS notification is optional and must never block the selector.
+    if os.environ.get("AI_SELECTOR_MAC_NOTIFY", "0") == "1":
+        try:
+            top5tickers = ', '.join([t['ticker'] for t in selected])
+            msg = f"Top5: {top5tickers} (非成交提醒)"
+            subprocess.run(
+                ['osascript', '-e', f'display notification "{msg}" with title "AI 选股更新"'],
+                check=False,
+                timeout=2,
+            )
+        except Exception:
+            pass
 
 
 def _has_live_top_configs() -> bool:

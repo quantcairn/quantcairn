@@ -89,6 +89,20 @@ class _QualityFilterContext:
             self._longbridge_available = False
             return None
 
+    def close(self) -> None:
+        ctx = self._longbridge_quote_ctx
+        self._longbridge_quote_ctx = None
+        if ctx is None:
+            return
+        for attr in ("close", "dispose", "release"):
+            fn = getattr(ctx, attr, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                break
+
     def _longbridge_depth(self, symbol: str) -> tuple[float | None, float | None, bool]:
         ctx = self._get_longbridge_quote_ctx()
         if ctx is None:
@@ -180,80 +194,90 @@ def _apply_quality_filters_with_report(candidates: Sequence[dict]) -> tuple[list
     removed_volatility = 0
     removed_missing = 0
 
-    for raw in candidates:
-        item = dict(raw)
-        symbol = _normalize_ticker(item.get("ticker"))
-        existing_position = bool(item.get("existing_position"))
-        ai_selected = bool(item.get("ai_selected", True))
+    try:
+        for raw in candidates:
+            item = dict(raw)
+            symbol = _normalize_ticker(item.get("ticker"))
+            existing_position = bool(item.get("existing_position"))
+            ai_selected = bool(item.get("ai_selected", True))
 
-        avg_volume_10, three_day_change_pct, hist_price = context.history_metrics(symbol)
-        current_price, bid, ask, bid_ask_confirmed = context.quote_metrics(symbol)
-        current_price = current_price or hist_price
-        spread_pct = None
-        if (
-            bid_ask_confirmed
-            and current_price
-            and bid
-            and ask
-            and current_price > 0
-            and ask >= bid > 0
-        ):
-            spread_pct = ((ask - bid) / current_price) * 100.0
-        liquidity_score = (
-            float(avg_volume_10) * float(current_price)
-            if avg_volume_10 is not None and current_price is not None
-            else None
-        )
+            avg_volume_10, three_day_change_pct, hist_price = context.history_metrics(symbol)
+            current_price, bid, ask, bid_ask_confirmed = context.quote_metrics(symbol)
+            if item.get("data_source") == "fallback":
+                avg_volume_10 = avg_volume_10 or _safe_float(item.get("avg_daily_volume_hint"), 0.0) or None
+                current_price = current_price or _safe_float(item.get("price_midpoint_hint"), 0.0) or hist_price
+                if three_day_change_pct is None:
+                    three_day_change_pct = 0.0
+            current_price = current_price or hist_price
+            spread_pct = None
+            if (
+                bid_ask_confirmed
+                and current_price
+                and bid
+                and ask
+                and current_price > 0
+                and ask >= bid > 0
+            ):
+                spread_pct = ((ask - bid) / current_price) * 100.0
+            liquidity_score = (
+                float(avg_volume_10) * float(current_price)
+                if avg_volume_10 is not None and current_price is not None
+                else None
+            )
 
-        removed = False
-        reason = "passed"
+            removed = False
+            reason = "passed"
 
-        if existing_position:
-            reason = "existing_position_bypass"
-        elif avg_volume_10 is None or three_day_change_pct is None or current_price is None:
-            removed = True
-            reason = "missing_market_data"
-            removed_missing += 1
-        elif avg_volume_10 <= 500_000:
-            removed = True
-            reason = "volume_filter"
-            removed_volume += 1
-        elif not bid_ask_confirmed or spread_pct is None:
-            removed = True
-            reason = "spread_unavailable"
-            removed_missing += 1
-        elif spread_pct >= 0.5:
-            removed = True
-            reason = "spread_filter"
-            removed_spread += 1
-        elif abs(float(three_day_change_pct)) > 15.0:
-            removed = True
-            reason = "volatility_filter"
-            removed_volatility += 1
+            if existing_position:
+                reason = "existing_position_bypass"
+            elif avg_volume_10 is None or three_day_change_pct is None or current_price is None:
+                removed = True
+                reason = "missing_market_data"
+                removed_missing += 1
+            elif avg_volume_10 <= 500_000:
+                removed = True
+                reason = "volume_filter"
+                removed_volume += 1
+            elif not bid_ask_confirmed or spread_pct is None:
+                removed = True
+                reason = "spread_unavailable"
+                removed_missing += 1
+            elif spread_pct >= 0.5:
+                removed = True
+                reason = "spread_filter"
+                removed_spread += 1
+            elif abs(float(three_day_change_pct)) > 15.0:
+                removed = True
+                reason = "volatility_filter"
+                removed_volatility += 1
 
-        item["existing_position"] = existing_position
-        item["avg_10d_volume"] = round(avg_volume_10, 2) if avg_volume_10 is not None else None
-        item["spread_pct_live"] = round(spread_pct, 4) if spread_pct is not None else None
-        item["three_day_change_pct"] = round(three_day_change_pct, 4) if three_day_change_pct is not None else None
-        item["liquidity_score"] = round(liquidity_score, 2) if liquidity_score is not None else None
-        item["current_price"] = round(current_price, 4) if current_price is not None else None
-        item["reduce_only"] = bool(item.get("reduce_only", False))
-        item["ai_selected"] = ai_selected
+            item["existing_position"] = existing_position
+            item["avg_10d_volume"] = round(avg_volume_10, 2) if avg_volume_10 is not None else None
+            item["spread_pct_live"] = round(spread_pct, 4) if spread_pct is not None else None
+            item["three_day_change_pct"] = round(three_day_change_pct, 4) if three_day_change_pct is not None else None
+            item["liquidity_score"] = round(liquidity_score, 2) if liquidity_score is not None else None
+            item["current_price"] = round(current_price, 4) if current_price is not None else None
+            item["reduce_only"] = bool(item.get("reduce_only", False))
+            item["ai_selected"] = ai_selected
 
-        rows.append(
-            {
-                "symbol": symbol,
-                "removed": removed,
-                "reason": reason,
-                "avg_10d_volume": item["avg_10d_volume"],
-                "spread_pct": item["spread_pct_live"],
-                "three_day_change_pct": item["three_day_change_pct"],
-                "liquidity_score": item["liquidity_score"],
-                "existing_position": existing_position,
-            }
-        )
-        if not removed:
-            filtered.append(item)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "removed": removed,
+                    "reason": reason,
+                    "avg_10d_volume": item["avg_10d_volume"],
+                    "spread_pct": item["spread_pct_live"],
+                    "three_day_change_pct": item["three_day_change_pct"],
+                    "liquidity_score": item["liquidity_score"],
+                    "existing_position": existing_position,
+                }
+            )
+            if not removed:
+                filtered.append(item)
+    finally:
+        close_fn = getattr(context, "close", None)
+        if callable(close_fn):
+            close_fn()
 
     filtered.sort(
         key=lambda item: (
@@ -294,6 +318,7 @@ def write_selection_filter_log(report: dict[str, Any], now: datetime | None = No
                     "removed_by_volatility_filter": int(report.get("removed_by_volatility_filter", 0) or 0),
                     "removed_due_to_missing_data": int(report.get("removed_due_to_missing_data", 0) or 0),
                     "final_selected_symbols": list(report.get("final_selected_symbols") or []),
+                    "backfilled_symbols": list(report.get("backfilled_symbols") or []),
                     "existing_real_positions_preserved": list(report.get("existing_real_positions_preserved") or []),
                     "generated_at": report.get("generated_at"),
                 }
@@ -330,6 +355,14 @@ class AIStrategySelector:
         except (TypeError, ValueError):
             return 50
         return max(1, value)
+
+    def _filter_candidate_limit_from_env(self) -> int:
+        raw = os.environ.get("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "5")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 5
+        return max(self.selection_size, value)
 
     def _live_data_requested(self) -> bool:
         return os.environ.get("AI_SELECTOR_LIVE_DATA", "1") != "0"
@@ -379,14 +412,35 @@ class AIStrategySelector:
                 scored.sort(key=lambda x: x.get("score", 0.0), reverse=True)
                 data_mode = "mixed" if existing else "fallback"
 
-        filtered_candidates, filter_report = _apply_quality_filters_with_report(scored)
+        scored = sorted(scored, key=lambda item: item.get("score", 0.0), reverse=True)
+        candidate_limit = self._filter_candidate_limit_from_env()
+        candidates_for_filter = scored[:candidate_limit]
+        filtered_candidates, filter_report = _apply_quality_filters_with_report(candidates_for_filter)
+        filter_report["pre_filter_candidate_limit"] = candidate_limit
         self._last_quality_filter_report = filter_report
 
         # 4. prefer liquidity after quality checks, then diversify TopK by sector/correlation
         scored_sorted = list(filtered_candidates)
         top10 = scored_sorted[:10]
         topk = self._select_diversified_top_k(top10, self.selection_size)
+        backfilled_symbols: list[str] = []
+        if len(topk) < self.selection_size:
+            selected_tickers = {_normalize_ticker(item.get("ticker")) for item in topk}
+            for item in scored:
+                ticker = _normalize_ticker(item.get("ticker"))
+                if not ticker or ticker in selected_tickers:
+                    continue
+                candidate = dict(item)
+                candidate["reduce_only"] = True
+                candidate["quality_backfill"] = True
+                candidate["selection_penalty_reason"] = "quality_filter_backfill"
+                topk.append(candidate)
+                selected_tickers.add(ticker)
+                backfilled_symbols.append(ticker)
+                if len(topk) >= self.selection_size:
+                    break
         filter_report["final_selected_symbols"] = [_normalize_ticker(item.get("ticker")) for item in topk]
+        filter_report["backfilled_symbols"] = backfilled_symbols
         write_selection_filter_log(filter_report)
 
         # write configs for selected TopK

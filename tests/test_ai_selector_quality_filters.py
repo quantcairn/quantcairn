@@ -102,6 +102,30 @@ def test_apply_quality_filters_blocks_unconfirmed_spread():
         monkeypatch.restore()
 
 
+def test_apply_quality_filters_accepts_fallback_candidate_with_quote_and_volume_hint():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        class FakeContext:
+            def history_metrics(self, symbol):
+                return (None, None, None)
+
+            def quote_metrics(self, symbol):
+                return (20.0, 19.98, 20.02, True)
+
+        monkeypatch.setattr(selector_module, "_QualityFilterContext", FakeContext)
+        candidate = _candidate("PASS", 80.0)
+        candidate["data_source"] = "fallback"
+        candidate["avg_daily_volume_hint"] = 2_000_000
+        candidate["price_midpoint_hint"] = 20.0
+
+        filtered = apply_quality_filters([candidate])
+
+        assert [item["ticker"] for item in filtered] == ["PASS"]
+        assert filtered[0]["avg_10d_volume"] == 2000000.0
+    finally:
+        monkeypatch.restore()
+
+
 def test_selector_runs_quality_filters_before_final_top5_and_writes_log():
     monkeypatch = SimpleMonkeyPatch()
     try:
@@ -133,12 +157,55 @@ def test_selector_runs_quality_filters_before_final_top5_and_writes_log():
 
             result = selector.run_selection(write_configs=False)
 
-            assert [item["ticker"] for item in result["top5"]] == ["BBB"]
+            assert [item["ticker"] for item in result["top5"]] == ["BBB", "AAA"]
+            assert result["top5"][1]["reduce_only"] is True
+            assert result["top5"][1]["quality_backfill"] is True
             log_path = log_dir / f"selection_{selector_module.datetime.now().strftime('%Y-%m-%d')}.log"
             assert log_path.exists()
             lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
             assert lines[0]["summary"]["removed_by_volume_filter"] == 1
-            assert lines[0]["summary"]["final_selected_symbols"] == ["BBB"]
+            assert lines[0]["summary"]["final_selected_symbols"] == ["BBB", "AAA"]
+            assert lines[0]["summary"]["backfilled_symbols"] == ["AAA"]
+    finally:
+        monkeypatch.restore()
+
+
+def test_selector_backfills_reduce_only_when_quality_filters_leave_too_few():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_dir = Path(tmpdir) / "logs"
+
+            class FakeContext:
+                def history_metrics(self, symbol):
+                    return {
+                        "AAA": (2_000_000, 0.0, 20.0),
+                        "BBB": (100_000, 0.0, 20.0),
+                        "CCC": (100_000, 0.0, 20.0),
+                    }[symbol]
+
+                def quote_metrics(self, symbol):
+                    return (20.0, 19.99, 20.01, True)
+
+            monkeypatch.setattr(selector_module, "_QualityFilterContext", FakeContext)
+            monkeypatch.setattr(selector_module, "LOG_DIR", log_dir)
+
+            selector = AIStrategySelector()
+            selector.selection_size = 3
+            selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
+            selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
+            selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
+                _candidate("AAA", 95.0),
+                _candidate("BBB", 90.0),
+                _candidate("CCC", 85.0),
+            ]
+
+            result = selector.run_selection(write_configs=False)
+
+            assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
+            assert result["top5"][1]["reduce_only"] is True
+            assert result["top5"][1]["quality_backfill"] is True
+            assert result["quality_filter_report"]["backfilled_symbols"] == ["BBB", "CCC"]
     finally:
         monkeypatch.restore()
 
@@ -146,7 +213,9 @@ def test_selector_runs_quality_filters_before_final_top5_and_writes_log():
 def run_test_direct():
     test_apply_quality_filters_removes_volume_spread_and_volatility_failures()
     test_apply_quality_filters_blocks_unconfirmed_spread()
+    test_apply_quality_filters_accepts_fallback_candidate_with_quote_and_volume_hint()
     test_selector_runs_quality_filters_before_final_top5_and_writes_log()
+    test_selector_backfills_reduce_only_when_quality_filters_leave_too_few()
 
 
 if __name__ == "__main__":

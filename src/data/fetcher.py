@@ -139,7 +139,7 @@ class PriceFetcher:
                     url,
                     params={"range": "1d", "interval": "1m", "includePrePost": "true"},
                     headers={"User-Agent": "Mozilla/5.0"},
-                    timeout=8,
+                    timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -193,6 +193,53 @@ class PriceFetcher:
         except Exception as e:
             logger.debug("Yahoo chart fallback parse failed for %s: %s", self.ticker, e)
             return {}
+
+    def _fetch_chart_history(self, period: str, interval: str) -> list[OHLCV]:
+        range_map = {
+            ("1mo", "1d"): "1mo",
+            ("5d", "1d"): "5d",
+            ("1d", "5m"): "1d",
+            ("1d", "1m"): "1d",
+        }
+        yahoo_range = range_map.get((period, interval))
+        if not yahoo_range:
+            return []
+        session = requests.Session()
+        session.trust_env = False
+        try:
+            resp = session.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{self.ticker}",
+                params={"range": yahoo_range, "interval": interval, "includePrePost": "true"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
+            )
+            resp.raise_for_status()
+            result = ((resp.json().get("chart") or {}).get("result") or [None])[0] or {}
+            timestamps = result.get("timestamp") or []
+            quote = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
+            opens = quote.get("open") or []
+            highs = quote.get("high") or []
+            lows = quote.get("low") or []
+            closes = quote.get("close") or []
+            volumes = quote.get("volume") or []
+            candles: list[OHLCV] = []
+            for ts, opn, high, low, close, volume in zip(timestamps, opens, highs, lows, closes, volumes):
+                if None in (ts, opn, high, low, close):
+                    continue
+                candles.append(
+                    OHLCV(
+                        timestamp=datetime.fromtimestamp(ts),
+                        open=float(opn),
+                        high=float(high),
+                        low=float(low),
+                        close=float(close),
+                        volume=int(volume or 0),
+                    )
+                )
+            return candles
+        except Exception as e:
+            logger.debug("Direct chart history failed for %s (%s %s): %s", self.ticker, period, interval, e)
+            return []
 
     def _synthetic_quote(self) -> Quote:
         """Generate a deterministic synthetic quote when all live data sources fail."""
@@ -382,6 +429,21 @@ class PriceFetcher:
             period: yfinance period string (1d, 5d, 1mo, etc.)
             interval: yfinance interval string (1m, 5m, 15m, 1h, etc.)
         """
+        direct_first = os.environ.get("AI_SELECTOR_DIRECT_HISTORY", "1") == "1"
+        skip_slow_fallbacks = os.environ.get("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "0") == "1"
+        if direct_first:
+            candles = self._fetch_chart_history(period=period, interval=interval)
+            if candles:
+                return candles
+            if skip_slow_fallbacks:
+                logger.warning(
+                    "Direct history unavailable for %s (%s %s); skipping slow yfinance fallback",
+                    self.ticker,
+                    period,
+                    interval,
+                )
+                return []
+
         hist = self._fetch_history(period=period, interval=interval, prepost=True)
         if hist is None or hist.empty:
             logger.error(f"Failed to fetch OHLCV for {self.ticker}: no data returned")

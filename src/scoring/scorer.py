@@ -112,6 +112,7 @@ class Scorer:
         self.market_timeout = self._env_float("AI_SELECTOR_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
         self.score_workers = max(1, self._env_int("AI_SELECTOR_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
         self.min_spread_dollars = self._env_float("AI_SELECTOR_MIN_SPREAD_DOLLARS", self.DEFAULT_MIN_SPREAD_DOLLARS)
+        self.allow_proxy_market = os.environ.get("AI_SELECTOR_ALLOW_PROXY_MARKET", "0") == "1"
 
     def _env_float(self, name: str, default: float) -> float:
         raw = os.environ.get(name)
@@ -159,29 +160,39 @@ class Scorer:
             log_path=get_runtime_env("LONGBRIDGE_LOG_PATH"),
         )
         ctx = lb.QuoteContext(config)
-        resp = ctx.quote(symbols=[self._longbridge_symbol(symbol)])
-        items = resp if isinstance(resp, (list, tuple)) else [resp]
-        item = items[0] if items else None
-        if item is None:
-            raise RuntimeError("longbridge quote unavailable")
+        try:
+            resp = ctx.quote(symbols=[self._longbridge_symbol(symbol)])
+            items = resp if isinstance(resp, (list, tuple)) else [resp]
+            item = items[0] if items else None
+            if item is None:
+                raise RuntimeError("longbridge quote unavailable")
 
-        price = self._longbridge_value(item, "last_done", "price", "last_price", default=0.0)
-        high = self._longbridge_value(item, "high", "day_high", default=price)
-        low = self._longbridge_value(item, "low", "day_low", default=price)
-        volume = self._longbridge_value(item, "volume", "turnover", default=0)
-        price = float(price or 0.0)
-        high = float(high or price or 0.0)
-        low = float(low or price or 0.0)
-        volume = int(float(volume or 0))
-        if price <= 0:
-            raise RuntimeError("longbridge quote missing price")
+            price = self._longbridge_value(item, "last_done", "price", "last_price", default=0.0)
+            high = self._longbridge_value(item, "high", "day_high", default=price)
+            low = self._longbridge_value(item, "low", "day_low", default=price)
+            volume = self._longbridge_value(item, "volume", "turnover", default=0)
+            price = float(price or 0.0)
+            high = float(high or price or 0.0)
+            low = float(low or price or 0.0)
+            volume = int(float(volume or 0))
+            if price <= 0:
+                raise RuntimeError("longbridge quote missing price")
 
-        return {
-            "price": price,
-            "recent_high": high if high > 0 else price,
-            "recent_low": low if low > 0 else price,
-            "volume": volume,
-        }
+            return {
+                "price": price,
+                "recent_high": high if high > 0 else price,
+                "recent_low": low if low > 0 else price,
+                "volume": volume,
+            }
+        finally:
+            for attr in ("close", "dispose", "release"):
+                fn = getattr(ctx, attr, None)
+                if callable(fn):
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+                    break
 
     def _fetch_chart_daily(self, symbol: str, days: int = 320) -> pd.DataFrame:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -198,7 +209,8 @@ class Scorer:
         }
         last_error = None
         resp = None
-        for trust_env in (False, True):
+        trust_env_options = (False, True) if self.allow_proxy_market else (False,)
+        for trust_env in trust_env_options:
             try:
                 session = requests.Session()
                 session.trust_env = trust_env
@@ -278,7 +290,8 @@ class Scorer:
 
     def _fetch_live_snapshot(self, symbol: str) -> dict:
         last_error = None
-        for trust_env in (False, True):
+        trust_env_options = (False, True) if self.allow_proxy_market else (False,)
+        for trust_env in trust_env_options:
             try:
                 url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
                 params = {"range": "5d", "interval": "1d", "includePrePost": "false"}
@@ -576,6 +589,9 @@ class Scorer:
             "risk": {"stop_loss_pct": 1.5},
             "size": int(max(1, min(1000, profile["volume"] // 1000))),
             "data_source": "fallback",
+            "avg_daily_volume_hint": int(profile["volume"]),
+            "price_midpoint_hint": float(round(price_mid, 4)),
+            "fallback_history_incomplete": True,
             "metrics": {
                 "last_close": float(round(price_mid, 4)),
                 "atr_pct": float(round(band_pct / 2.0, 4)),

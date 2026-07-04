@@ -54,11 +54,16 @@ def test_get_quote_from_history(monkeypatch=None):
         monkeypatch = SimpleMonkeyPatch()
 
     monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    original_fetch_chart_quote = fetcher_mod.PriceFetcher._fetch_chart_quote
+    fetcher_mod.PriceFetcher._fetch_chart_quote = lambda self: {}
     pf = PriceFetcher('FOO')
-    q = pf.get_quote()
-    assert q is not None
-    assert abs(q.price - 10.0) < 1e-6
-    assert q.volume == 100
+    try:
+        q = pf.get_quote()
+        assert q is not None
+        assert abs(q.price - 10.0) < 1e-6
+        assert q.volume == 100
+    finally:
+        fetcher_mod.PriceFetcher._fetch_chart_quote = original_fetch_chart_quote
 
 
 def test_validate_live_mode_requires_longbridge_credentials():
@@ -162,11 +167,68 @@ def test_fetch_chart_quote_prefers_day_high_low_from_meta():
     assert quote["low"] == 97.75
 
 
+def test_get_ohlcv_prefers_direct_chart_history():
+    original_session = fetcher_mod.requests.Session
+    original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
+    original_env = os.environ.get("AI_SELECTOR_DIRECT_HISTORY")
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "chart": {
+                    "result": [{
+                        "timestamp": [1700000000, 1700086400],
+                        "indicators": {
+                            "quote": [{
+                                "open": [10.0, 10.5],
+                                "high": [10.2, 10.7],
+                                "low": [9.9, 10.3],
+                                "close": [10.1, 10.6],
+                                "volume": [1000, 1200],
+                            }]
+                        },
+                    }]
+                }
+            }
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, *args, **kwargs):
+            return DummyResponse()
+
+    try:
+        os.environ["AI_SELECTOR_DIRECT_HISTORY"] = "1"
+        fetcher_mod.requests.Session = DummySession
+        fetcher_mod.PriceFetcher._fetch_history = lambda self, period, interval, prepost=True: (_ for _ in ()).throw(
+            AssertionError("yfinance history should not be used when direct chart history succeeds")
+        )
+
+        pf = PriceFetcher("MSFT")
+        candles = pf.get_ohlcv(period="1mo", interval="1d")
+    finally:
+        fetcher_mod.requests.Session = original_session
+        fetcher_mod.PriceFetcher._fetch_history = original_fetch_history
+        if original_env is None:
+            os.environ.pop("AI_SELECTOR_DIRECT_HISTORY", None)
+        else:
+            os.environ["AI_SELECTOR_DIRECT_HISTORY"] = original_env
+
+    assert len(candles) == 2
+    assert candles[-1].close == 10.6
+    assert candles[-1].volume == 1200
+
+
 def run_test_direct():
     test_get_quote_from_history()
     test_validate_live_mode_requires_longbridge_credentials()
     test_synthetic_market_fallback()
     test_fetch_chart_quote_prefers_day_high_low_from_meta()
+    test_get_ohlcv_prefers_direct_chart_history()
 
 
 if __name__ == '__main__':
