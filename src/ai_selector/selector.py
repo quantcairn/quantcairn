@@ -185,7 +185,11 @@ class _QualityFilterContext:
         return result
 
 
-def _apply_quality_filters_with_report(candidates: Sequence[dict]) -> tuple[list[dict], dict[str, Any]]:
+def _apply_quality_filters_with_report(
+    candidates: Sequence[dict],
+    *,
+    max_seconds: float | None = None,
+) -> tuple[list[dict], dict[str, Any]]:
     context = _QualityFilterContext()
     rows: list[dict[str, Any]] = []
     filtered: list[dict] = []
@@ -193,9 +197,15 @@ def _apply_quality_filters_with_report(candidates: Sequence[dict]) -> tuple[list
     removed_spread = 0
     removed_volatility = 0
     removed_missing = 0
+    started_at = datetime.now().timestamp()
+    timed_out = False
 
     try:
         for raw in candidates:
+            if max_seconds is not None and max_seconds > 0:
+                if (datetime.now().timestamp() - started_at) >= max_seconds:
+                    timed_out = True
+                    break
             item = dict(raw)
             symbol = _normalize_ticker(item.get("ticker"))
             existing_position = bool(item.get("existing_position"))
@@ -295,6 +305,7 @@ def _apply_quality_filters_with_report(candidates: Sequence[dict]) -> tuple[list
         "removed_due_to_missing_data": removed_missing,
         "final_selected_symbols": [],
         "existing_real_positions_preserved": [],
+        "timed_out": timed_out,
         "rows": rows,
     }
     return filtered, report
@@ -320,6 +331,8 @@ def write_selection_filter_log(report: dict[str, Any], now: datetime | None = No
                     "final_selected_symbols": list(report.get("final_selected_symbols") or []),
                     "backfilled_symbols": list(report.get("backfilled_symbols") or []),
                     "existing_real_positions_preserved": list(report.get("existing_real_positions_preserved") or []),
+                    "selection_stage": str(report.get("selection_stage") or ""),
+                    "timed_out": bool(report.get("timed_out", False)),
                     "generated_at": report.get("generated_at"),
                 }
             }
@@ -364,6 +377,22 @@ class AIStrategySelector:
             value = 5
         return max(self.selection_size, value)
 
+    def _total_budget_seconds_from_env(self) -> float:
+        raw = os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "15")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 15.0
+        return max(3.0, value)
+
+    def _quality_budget_seconds_from_env(self) -> float:
+        raw = os.environ.get("AI_SELECTOR_QUALITY_BUDGET_SECONDS", "8")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 8.0
+        return max(1.0, value)
+
     def _live_data_requested(self) -> bool:
         return os.environ.get("AI_SELECTOR_LIVE_DATA", "1") != "0"
 
@@ -381,6 +410,7 @@ class AIStrategySelector:
             self.scorer = Scorer()
 
     def run_selection(self, write_configs: bool = True):
+        selection_started_at = datetime.now().timestamp()
         # 1. build universe
         source = os.environ.get("AI_SELECTOR_UNIVERSE", "sample")
         if source == "sample":
@@ -413,9 +443,42 @@ class AIStrategySelector:
                 data_mode = "mixed" if existing else "fallback"
 
         scored = sorted(scored, key=lambda item: item.get("score", 0.0), reverse=True)
+        preliminary_pool = [dict(item) for item in scored[: max(self.selection_size, self._filter_candidate_limit_from_env())]]
+        preliminary_topk = self._select_diversified_top_k(preliminary_pool, self.selection_size)
+        for item in preliminary_topk:
+            item["reduce_only"] = True
+            item["selection_penalty_reason"] = item.get("selection_penalty_reason") or "fast_start_preliminary"
+            item["fast_start_preliminary"] = True
+
         candidate_limit = self._filter_candidate_limit_from_env()
         candidates_for_filter = scored[:candidate_limit]
-        filtered_candidates, filter_report = _apply_quality_filters_with_report(candidates_for_filter)
+        total_budget = self._total_budget_seconds_from_env()
+        elapsed_before_quality = max(0.0, datetime.now().timestamp() - selection_started_at)
+        quality_budget = min(
+            self._quality_budget_seconds_from_env(),
+            max(0.0, total_budget - elapsed_before_quality),
+        )
+        selection_stage = "quality_refined"
+        if quality_budget <= 0 or os.environ.get("AI_SELECTOR_FAST_START_ONLY", "0") == "1":
+            filtered_candidates = []
+            filter_report = {
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "total_candidates_before_filters": len(list(candidates_for_filter)),
+                "removed_by_volume_filter": 0,
+                "removed_by_spread_filter": 0,
+                "removed_by_volatility_filter": 0,
+                "removed_due_to_missing_data": 0,
+                "final_selected_symbols": [],
+                "existing_real_positions_preserved": [],
+                "timed_out": True,
+                "rows": [],
+            }
+            selection_stage = "fast_preliminary"
+        else:
+            filtered_candidates, filter_report = _apply_quality_filters_with_report(
+                candidates_for_filter,
+                max_seconds=quality_budget,
+            )
         filter_report["pre_filter_candidate_limit"] = candidate_limit
         self._last_quality_filter_report = filter_report
 
@@ -423,6 +486,9 @@ class AIStrategySelector:
         scored_sorted = list(filtered_candidates)
         top10 = scored_sorted[:10]
         topk = self._select_diversified_top_k(top10, self.selection_size)
+        if not topk:
+            topk = [dict(item) for item in preliminary_topk]
+            selection_stage = "fast_preliminary"
         backfilled_symbols: list[str] = []
         if len(topk) < self.selection_size:
             selected_tickers = {_normalize_ticker(item.get("ticker")) for item in topk}
@@ -439,8 +505,13 @@ class AIStrategySelector:
                 backfilled_symbols.append(ticker)
                 if len(topk) >= self.selection_size:
                     break
+            if filter_report.get("timed_out"):
+                selection_stage = "quality_timed_out_backfilled"
+            elif selection_stage != "fast_preliminary":
+                selection_stage = "quality_backfilled"
         filter_report["final_selected_symbols"] = [_normalize_ticker(item.get("ticker")) for item in topk]
         filter_report["backfilled_symbols"] = backfilled_symbols
+        filter_report["selection_stage"] = selection_stage
         write_selection_filter_log(filter_report)
 
         # write configs for selected TopK
@@ -462,6 +533,7 @@ class AIStrategySelector:
                 "max_symbols": self.max_symbols,
                 "data_mode": data_mode,
                 "fallback_used": fallback_used,
+                "selection_stage": selection_stage,
             },
             "quality_filter_report": filter_report,
         }

@@ -210,12 +210,59 @@ def test_selector_backfills_reduce_only_when_quality_filters_leave_too_few():
         monkeypatch.restore()
 
 
+def test_selector_returns_fast_preliminary_when_quality_stage_times_out():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_dir = Path(tmpdir) / "logs"
+
+            monkeypatch.setattr(selector_module, "LOG_DIR", log_dir)
+            monkeypatch.setattr(
+                selector_module,
+                "_apply_quality_filters_with_report",
+                lambda candidates, max_seconds=None: (
+                    [],
+                    {
+                        "generated_at": "2026-07-05T09:00:00",
+                        "total_candidates_before_filters": len(candidates),
+                        "removed_by_volume_filter": 0,
+                        "removed_by_spread_filter": 0,
+                        "removed_by_volatility_filter": 0,
+                        "removed_due_to_missing_data": 0,
+                        "final_selected_symbols": [],
+                        "existing_real_positions_preserved": [],
+                        "timed_out": True,
+                        "rows": [],
+                    },
+                ),
+            )
+
+            selector = AIStrategySelector()
+            selector.selection_size = 3
+            selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
+            selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
+            selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
+                _candidate("AAA", 95.0),
+                _candidate("BBB", 90.0),
+                _candidate("CCC", 85.0),
+            ]
+
+            result = selector.run_selection(write_configs=False)
+
+            assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
+            assert all(bool(item["reduce_only"]) for item in result["top5"])
+            assert result["settings"]["selection_stage"] == "fast_preliminary"
+    finally:
+        monkeypatch.restore()
+
+
 def run_test_direct():
     test_apply_quality_filters_removes_volume_spread_and_volatility_failures()
     test_apply_quality_filters_blocks_unconfirmed_spread()
     test_apply_quality_filters_accepts_fallback_candidate_with_quote_and_volume_hint()
     test_selector_runs_quality_filters_before_final_top5_and_writes_log()
     test_selector_backfills_reduce_only_when_quality_filters_leave_too_few()
+    test_selector_returns_fast_preliminary_when_quality_stage_times_out()
 
 
 if __name__ == "__main__":
