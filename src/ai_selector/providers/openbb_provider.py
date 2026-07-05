@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Any
 
 from ...data_sources.openbb.client import OpenBBClient, obb
@@ -36,7 +38,11 @@ class OpenBBProvider:
 
     def analyze(self, tickers: list) -> dict:
         results: dict[str, dict[str, Any]] = {}
+        started_at = time.monotonic()
         for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
+            if (time.monotonic() - started_at) >= self._total_budget_seconds():
+                results[ticker] = self._fallback_result(ticker, "openbb_budget_exhausted")
+                continue
             try:
                 if not self._is_available():
                     results[ticker] = self._fallback_result(ticker, "openbb_not_installed")
@@ -49,6 +55,14 @@ class OpenBBProvider:
 
     def _is_available(self) -> bool:
         return obb is not None
+
+    def _total_budget_seconds(self) -> int:
+        raw_value = str(os.environ.get("SOXS_OPENBB_TOTAL_BUDGET_SECONDS", "15") or "15").strip()
+        try:
+            budget = int(raw_value)
+        except (TypeError, ValueError):
+            budget = 15
+        return max(3, min(budget, 120))
 
     def _analyze_ticker(self, ticker: str) -> dict[str, Any]:
         fundamentals = self.client.get_fundamentals(ticker)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -140,8 +141,46 @@ def test_openbb_provider_output_contains_required_fields():
     assert "reason" in payload
 
 
+def test_openbb_client_estimates_disabled_by_default():
+    client = StubOpenBBClient(analyst_estimates={"target_consensus": 300})
+    provider = OpenBBProvider(
+        config=_config(),
+        client=client,
+    )
+
+    result = provider.analyze(["NVDA"])
+
+    assert result["NVDA"]["fallback"] is False
+    assert result["NVDA"]["valuation_score"] >= 0.0
+
+
+def test_openbb_client_statements_disabled_by_default():
+    original_env = os.environ.copy()
+    try:
+        os.environ.pop("SOXS_OPENBB_ENABLE_STATEMENTS", None)
+        client = StubOpenBBClient(
+            income_statement={"epsGrowth": 0.18},
+            balance_sheet={"quickRatio": 1.5},
+            cash_flow={"freeCashFlowGrowth": 0.16},
+        )
+        provider = OpenBBProvider(
+            config=_config(),
+            client=client,
+        )
+
+        result = provider.analyze(["NVDA"])
+
+        assert result["NVDA"]["fallback"] is False
+        assert result["NVDA"]["cash_flow_score"] == 50.0
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+
+
 def run_test_direct():
     test_openbb_provider_without_install_does_not_crash()
     test_openbb_provider_analyze_returns_dict()
     test_openbb_provider_missing_data_uses_neutral_scores()
     test_openbb_provider_output_contains_required_fields()
+    test_openbb_client_estimates_disabled_by_default()
+    test_openbb_client_statements_disabled_by_default()

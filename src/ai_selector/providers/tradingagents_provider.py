@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -33,12 +34,19 @@ class TradingAgentsProvider:
 
     def analyze(self, tickers: list) -> dict:
         results: dict[str, dict[str, Any]] = {}
+        started_at = time.monotonic()
         for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
+            if (time.monotonic() - started_at) >= self._total_budget_seconds():
+                results[ticker] = self._mock_result(ticker, reason="tradingagents_budget_exhausted")
+                continue
             try:
                 if self._is_available():
                     results[ticker] = self._analyze_with_tradingagents(ticker)
                 else:
                     results[ticker] = self._mock_result(ticker, reason="tradingagents_not_installed")
+            except subprocess.TimeoutExpired as exc:
+                logger.warning("TradingAgents analyze timeout for %s: %s", ticker, exc)
+                results[ticker] = self._mock_result(ticker, reason="tradingagents_timeout")
             except Exception as exc:
                 logger.warning("TradingAgents analyze fallback for %s: %s", ticker, exc)
                 results[ticker] = self._mock_result(ticker, reason="tradingagents_error")
@@ -48,12 +56,33 @@ class TradingAgentsProvider:
         return importlib.util.find_spec("tradingagents") is not None or self._resolve_source_path() is not None
 
     def _analyze_with_tradingagents(self, ticker: str) -> dict[str, Any]:
+        if not self._has_required_runtime():
+            raise RuntimeError("tradingagents_missing_openai_api_key")
         source_path = self._resolve_source_path()
         if source_path is not None and importlib.util.find_spec("tradingagents") is None:
             decision = self._run_with_source_path(ticker, source_path)
         else:
             decision = self._run_with_installed_package(ticker)
         return self._normalize_result(ticker, decision)
+
+    def _has_required_runtime(self) -> bool:
+        return bool(str(os.environ.get("OPENAI_API_KEY", "")).strip())
+
+    def _timeout_seconds(self) -> int:
+        raw_value = str(os.environ.get("SOXS_TRADINGAGENTS_TIMEOUT_SECONDS", "45") or "45").strip()
+        try:
+            timeout = int(raw_value)
+        except (TypeError, ValueError):
+            timeout = 45
+        return max(5, min(timeout, 300))
+
+    def _total_budget_seconds(self) -> int:
+        raw_value = str(os.environ.get("SOXS_TRADINGAGENTS_TOTAL_BUDGET_SECONDS", "20") or "20").strip()
+        try:
+            budget = int(raw_value)
+        except (TypeError, ValueError):
+            budget = 20
+        return max(self._timeout_seconds(), min(budget, 300))
 
     def _run_with_installed_package(self, ticker: str) -> Any:
         from tradingagents.default_config import DEFAULT_CONFIG
@@ -84,7 +113,7 @@ print(json.dumps(decision, ensure_ascii=False, default=str))
             text=True,
             cwd=str(source_path),
             env=env,
-            timeout=300,
+            timeout=self._timeout_seconds(),
             check=False,
         )
         if proc.returncode != 0:

@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +35,19 @@ class FinRobotProvider:
 
     def analyze(self, tickers: list) -> dict:
         results: dict[str, dict[str, Any]] = {}
+        started_at = time.monotonic()
         for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
+            if (time.monotonic() - started_at) >= self._total_budget_seconds():
+                results[ticker] = self._mock_result(ticker, reason="finrobot_budget_exhausted")
+                continue
             try:
                 if self._is_available():
                     results[ticker] = self._analyze_with_compatible_interface(ticker)
                 else:
                     results[ticker] = self._mock_result(ticker, reason="finrobot_not_installed")
+            except subprocess.TimeoutExpired as exc:
+                logger.warning("FinRobot analyze timeout for %s: %s", ticker, exc)
+                results[ticker] = self._mock_result(ticker, reason="finrobot_timeout")
             except Exception as exc:
                 logger.warning("FinRobot analyze fallback for %s: %s", ticker, exc)
                 results[ticker] = self._mock_result(ticker, reason="finrobot_error")
@@ -66,8 +74,32 @@ class FinRobotProvider:
                     payload = fn(ticker)
                     return self._normalize_result(ticker, payload)
         if source_path is not None:
+            if not self._has_required_runtime():
+                raise RuntimeError("finrobot_missing_runtime_credentials")
             return self._run_with_source_path(ticker, source_path)
         raise RuntimeError("no_compatible_finrobot_callable")
+
+    def _has_required_runtime(self) -> bool:
+        config_file = str(self.config.finrobot_config_file or "").strip()
+        if config_file:
+            return True
+        return bool(str(os.environ.get("OPENAI_API_KEY", "")).strip())
+
+    def _timeout_seconds(self) -> int:
+        raw_value = str(os.environ.get("SOXS_FINROBOT_TIMEOUT_SECONDS", "45") or "45").strip()
+        try:
+            timeout = int(raw_value)
+        except (TypeError, ValueError):
+            timeout = 45
+        return max(5, min(timeout, 300))
+
+    def _total_budget_seconds(self) -> int:
+        raw_value = str(os.environ.get("SOXS_FINROBOT_TOTAL_BUDGET_SECONDS", "20") or "20").strip()
+        try:
+            budget = int(raw_value)
+        except (TypeError, ValueError):
+            budget = 20
+        return max(self._timeout_seconds(), min(budget, 300))
 
     def _resolve_source_path(self) -> Path | None:
         value = str(self.config.finrobot_path or "").strip()
@@ -107,7 +139,7 @@ class FinRobotProvider:
                 text=True,
                 cwd=str(source_path),
                 env=env,
-                timeout=300,
+                timeout=self._timeout_seconds(),
                 check=False,
             )
             if proc.returncode != 0:

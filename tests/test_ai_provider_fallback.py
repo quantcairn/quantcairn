@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -41,6 +43,67 @@ def test_tradingagents_provider_fallback_does_not_crash():
         monkeypatch.restore()
 
 
+def test_tradingagents_provider_timeout_falls_back_fast():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        provider = TradingAgentsProvider()
+        monkeypatch.setattr(provider, "_is_available", lambda: True)
+        monkeypatch.setattr(
+            provider,
+            "_analyze_with_tradingagents",
+            lambda ticker: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(cmd="tradingagents", timeout=7)
+            ),
+        )
+
+        result = provider.analyze(["NVDA"])
+
+        assert "NVDA" in result
+        assert result["NVDA"]["fallback"] is True
+        assert "tradingagents_timeout" in result["NVDA"]["reason"]
+    finally:
+        monkeypatch.restore()
+
+
+def test_tradingagents_provider_total_budget_skips_remaining_symbols():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        provider = TradingAgentsProvider()
+        monkeypatch.setattr(provider, "_is_available", lambda: True)
+        monkeypatch.setattr(provider, "_total_budget_seconds", lambda: 5)
+
+        clock = {"value": 0.0}
+
+        def _fake_monotonic():
+            return clock["value"]
+
+        def _fake_analyze(ticker: str):
+            clock["value"] += 6.0
+            return {
+                "ticker": ticker,
+                "technical_score": 60.0,
+                "news_score": 60.0,
+                "sentiment_score": 60.0,
+                "risk_score": 60.0,
+                "confidence": 0.7,
+                "reason": "first ticker only",
+                "source": "tradingagents",
+                "fallback": False,
+            }
+
+        monkeypatch.setattr(time, "monotonic", _fake_monotonic)
+        monkeypatch.setattr(provider, "_analyze_with_tradingagents", _fake_analyze)
+
+        result = provider.analyze(["NVDA", "MSFT", "AAPL"])
+
+        assert result["NVDA"]["fallback"] is False
+        assert result["MSFT"]["fallback"] is True
+        assert "tradingagents_budget_exhausted" in result["MSFT"]["reason"]
+        assert result["AAPL"]["fallback"] is True
+    finally:
+        monkeypatch.restore()
+
+
 def test_finrobot_provider_fallback_does_not_crash():
     monkeypatch = SimpleMonkeyPatch()
     try:
@@ -52,6 +115,67 @@ def test_finrobot_provider_fallback_does_not_crash():
         assert "MSFT" in result
         assert result["MSFT"]["fallback"] is True
         assert "fundamental_score" in result["MSFT"]
+    finally:
+        monkeypatch.restore()
+
+
+def test_finrobot_provider_timeout_falls_back_fast():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        provider = FinRobotProvider()
+        monkeypatch.setattr(provider, "_is_available", lambda: True)
+        monkeypatch.setattr(
+            provider,
+            "_analyze_with_compatible_interface",
+            lambda ticker: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(cmd="finrobot", timeout=7)
+            ),
+        )
+
+        result = provider.analyze(["MSFT"])
+
+        assert "MSFT" in result
+        assert result["MSFT"]["fallback"] is True
+        assert "finrobot_timeout" in result["MSFT"]["reason"]
+    finally:
+        monkeypatch.restore()
+
+
+def test_finrobot_provider_total_budget_skips_remaining_symbols():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        provider = FinRobotProvider()
+        monkeypatch.setattr(provider, "_is_available", lambda: True)
+        monkeypatch.setattr(provider, "_total_budget_seconds", lambda: 5)
+
+        clock = {"value": 0.0}
+
+        def _fake_monotonic():
+            return clock["value"]
+
+        def _fake_analyze(ticker: str):
+            clock["value"] += 6.0
+            return {
+                "ticker": ticker,
+                "fundamental_score": 65.0,
+                "valuation_score": 62.0,
+                "earnings_score": 64.0,
+                "risk_score": 66.0,
+                "confidence": 0.7,
+                "reason": "first ticker only",
+                "source": "finrobot",
+                "fallback": False,
+            }
+
+        monkeypatch.setattr(time, "monotonic", _fake_monotonic)
+        monkeypatch.setattr(provider, "_analyze_with_compatible_interface", _fake_analyze)
+
+        result = provider.analyze(["MSFT", "NVDA", "AAPL"])
+
+        assert result["MSFT"]["fallback"] is False
+        assert result["NVDA"]["fallback"] is True
+        assert "finrobot_budget_exhausted" in result["NVDA"]["reason"]
+        assert result["AAPL"]["fallback"] is True
     finally:
         monkeypatch.restore()
 
@@ -117,6 +241,10 @@ def test_finrobot_provider_parses_research_artifacts():
 
 def run_test_direct():
     test_tradingagents_provider_fallback_does_not_crash()
+    test_tradingagents_provider_timeout_falls_back_fast()
+    test_tradingagents_provider_total_budget_skips_remaining_symbols()
     test_finrobot_provider_fallback_does_not_crash()
+    test_finrobot_provider_timeout_falls_back_fast()
+    test_finrobot_provider_total_budget_skips_remaining_symbols()
     test_tradingagents_provider_detects_local_source_path()
     test_finrobot_provider_parses_research_artifacts()
