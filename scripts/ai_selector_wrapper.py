@@ -22,6 +22,7 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
+from src.config.local_env import load_local_ai_env
 from src.engine.trading_engine import TradingEngine
 
 VENV_PY = os.path.join(PROJECT_DIR, '.venv', 'bin', 'python')
@@ -104,6 +105,7 @@ def _run_selection_if_due():
 
 
 def main():
+    load_local_ai_env()
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(LOCK_FILE, "w", encoding="utf-8") as lock:
         # The launch job and minute-based wrapper can fire together. Serialize

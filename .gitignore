@@ -4,6 +4,8 @@ __pycache__/
 
 .env
 .env.*
+.env.ai_selector.local
+!.env.ai_selector.local.example
 
 logs/
 *.log

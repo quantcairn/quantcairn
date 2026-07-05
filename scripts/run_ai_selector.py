@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from src.config.local_env import load_local_ai_env
 from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector.selector import write_selection_filter_log
 from src.ai_selector.selection_state import write_selection_state
@@ -178,6 +179,7 @@ def _pin_live_positions(selected: list[dict], positions: list[dict], limit: int 
     return (pinned + remaining)[:limit]
 
 def main():
+    load_local_ai_env()
     runtime_settings = load_runtime_settings()
     os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(runtime_settings.get("min_price", 10.0)))
     os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(runtime_settings.get("max_price", 200.0)))

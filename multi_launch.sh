@@ -3,6 +3,7 @@
 # TOP1 (8091) + TOP2 (8092) + TOP3 (8093) + TOP4 (8094) + TOP5 (8095)
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -13,6 +14,12 @@ ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
 COMBINED_JOB="com.soxs.combined"
 
 cd "$PROJECT_DIR" || exit 1
+
+if [ -f "$LOCAL_AI_ENV" ]; then
+    set -a
+    . "$LOCAL_AI_ENV"
+    set +a
+fi
 
 is_trading_day_now() {
     "$VENV_PYTHON" - <<'PY'

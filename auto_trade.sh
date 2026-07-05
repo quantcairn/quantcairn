@@ -4,12 +4,19 @@
 # AI 选股由独立任务在美东 09:00 运行；本脚本负责后续启动/停止交易引擎。
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/trading.log"
 MULTI_LAUNCH="$PROJECT_DIR/multi_launch.sh"
 
 cd "$PROJECT_DIR" || exit 1
+
+if [ -f "$LOCAL_AI_ENV" ]; then
+    set -a
+    . "$LOCAL_AI_ENV"
+    set +a
+fi
 
 is_trading_day_now() {
     "$PROJECT_DIR/.venv/bin/python" - <<'PY'

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 
 cfg="${1:?config path required}"
@@ -9,6 +10,12 @@ port="${2:?port required}"
 log_name="${3:?log name required}"
 
 cd "$PROJECT_DIR"
+
+if [ -f "$LOCAL_AI_ENV" ]; then
+    set -a
+    . "$LOCAL_AI_ENV"
+    set +a
+fi
 
 read ENGINE_MODE SYNTH_START SYNTH_AMP <<EOF
 $( "$VENV_PYTHON" - "$cfg" <<'PY'
