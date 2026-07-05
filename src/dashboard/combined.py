@@ -220,11 +220,37 @@ def _selected_stock_positions_count(live_account: dict | None, selected_tickers:
 def _load_ai_selection_report():
     path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
     if not path.exists():
-        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
+        return {
+            "timestamp": None,
+            "report": [],
+            "top5": [],
+            "top3": [],
+            "top10": [],
+            "settings": {},
+            "refined_top5": [],
+            "refined_top3": [],
+            "refined_top10": [],
+            "refined_report": [],
+            "refinement_status": None,
+            "refinement_selection_stage": None,
+        }
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
+            return {
+                "timestamp": None,
+                "report": [],
+                "top5": [],
+                "top3": [],
+                "top10": [],
+                "settings": {},
+                "refined_top5": [],
+                "refined_top3": [],
+                "refined_top10": [],
+                "refined_report": [],
+                "refinement_status": None,
+                "refinement_selection_stage": None,
+            }
         rows = data.get("report") if isinstance(data.get("report"), list) else []
         return {
             "timestamp": data.get("timestamp"),
@@ -233,9 +259,28 @@ def _load_ai_selection_report():
             "top3": data.get("top3") if isinstance(data.get("top3"), list) else [],
             "top10": data.get("top10") if isinstance(data.get("top10"), list) else [],
             "settings": data.get("settings") if isinstance(data.get("settings"), dict) else {},
+            "refined_top5": data.get("refined_top5") if isinstance(data.get("refined_top5"), list) else [],
+            "refined_top3": data.get("refined_top3") if isinstance(data.get("refined_top3"), list) else [],
+            "refined_top10": data.get("refined_top10") if isinstance(data.get("refined_top10"), list) else [],
+            "refined_report": data.get("refined_report") if isinstance(data.get("refined_report"), list) else [],
+            "refinement_status": data.get("refinement_status"),
+            "refinement_selection_stage": data.get("refinement_selection_stage"),
         }
     except Exception:
-        return {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
+        return {
+            "timestamp": None,
+            "report": [],
+            "top5": [],
+            "top3": [],
+            "top10": [],
+            "settings": {},
+            "refined_top5": [],
+            "refined_top3": [],
+            "refined_top10": [],
+            "refined_report": [],
+            "refinement_status": None,
+            "refinement_selection_stage": None,
+        }
 
 
 def _current_et_date() -> str:
@@ -907,7 +952,12 @@ HTML = """<!DOCTYPE html>
                                 · 自动刷新：{{ ai_selection.settings.auto_refresh_minutes or 0 }} 分钟
                                 · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
                                 · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
+                                · 启动阶段：{{ ai_selection.settings.selection_stage or 'unknown' }}
                                 {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
+                            {% endif %}
+                            {% if ai_selection.refinement_status %}
+                                · 后台精筛：{{ ai_selection.refinement_status }}
+                                {% if ai_selection.refinement_selection_stage %}（{{ ai_selection.refinement_selection_stage }}）{% endif %}
                             {% endif %}
                         {% else %}
                             暂无 AI 选股报告。
@@ -949,6 +999,30 @@ HTML = """<!DOCTYPE html>
                             <span class="num">{{ row.suggested_range }}</span>
                         </div>
                         {% endfor %}
+                    </div>
+                    <div class="pnl-grid" style="margin-top:10px">
+                        <div class="quote-item">
+                            <span class="label">当前启用 TOP5</span>
+                            <span class="val">
+                                {% if ai_selection.top5 %}
+                                    {{ ai_selection.top5 | map(attribute='ticker') | join(' / ') }}
+                                {% else %}
+                                    暂无
+                                {% endif %}
+                            </span>
+                            <span class="label" style="margin-top:6px">这组才是当前配置已写入并被启动守卫校验的标的</span>
+                        </div>
+                        <div class="quote-item">
+                            <span class="label">后台 refined TOP5</span>
+                            <span class="val">
+                                {% if ai_selection.refined_top5 %}
+                                    {{ ai_selection.refined_top5 | map(attribute='ticker') | join(' / ') }}
+                                {% else %}
+                                    暂无
+                                {% endif %}
+                            </span>
+                            <span class="label" style="margin-top:6px">仅作补充参考，不会覆盖当前 reduce-only 启动配置</span>
+                        </div>
                     </div>
                     {% else %}
                     <div class="selector-empty">先运行一次 `scripts/run_ai_selector.py`，这里就会显示最新的 AI 区间选股结果。</div>

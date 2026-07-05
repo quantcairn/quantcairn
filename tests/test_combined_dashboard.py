@@ -237,6 +237,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
             "auto_refresh_minutes": 5,
             "max_symbols": 50,
             "data_mode": "live",
+            "selection_stage": "fast_preliminary",
         },
         "report": [
             {
@@ -253,9 +254,12 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
                 "sector": "Semiconductors",
             }
         ],
-        "top5": [],
+        "top5": [{"ticker": "SOFI"}, {"ticker": "NVDA"}],
         "top3": [],
         "top10": [],
+        "refined_top5": [{"ticker": "SOFI"}, {"ticker": "NVDA"}, {"ticker": "AAPL"}],
+        "refinement_status": "background_fast_preliminary",
+        "refinement_selection_stage": "fast_preliminary",
     })
     monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "live",
@@ -280,9 +284,16 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "自动刷新：5 分钟" in html
     assert "扫描数量：50" in html
     assert "数据模式：live" in html
+    assert "启动阶段：fast_preliminary" in html
+    assert "后台精筛：background_fast_preliminary" in html
+    assert "（fast_preliminary）" in html
     assert "选股配置校验" in html
     assert "已对齐" in html
     assert "当天配置已对齐（美东 2026-06-30）" in html
+    assert "当前启用 TOP5" in html
+    assert "SOFI / NVDA" in html
+    assert "后台 refined TOP5" in html
+    assert "SOFI / NVDA / AAPL" in html
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html
