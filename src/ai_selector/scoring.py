@@ -18,14 +18,19 @@ def _avg(values: list[float], default: float) -> float:
     return sum(items) / len(items)
 
 
-def combine_scores(tradingagents_result, finrobot_result) -> list:
+def combine_scores(tradingagents_result, finrobot_result, openbb_result=None) -> list:
     ranked: list[dict[str, Any]] = []
     tickers = sorted(
-        set((tradingagents_result or {}).keys()) | set((finrobot_result or {}).keys())
+        set((tradingagents_result or {}).keys())
+        | set((finrobot_result or {}).keys())
+        | set((openbb_result or {}).keys())
     )
     for ticker in tickers:
         ta = dict((tradingagents_result or {}).get(ticker) or {})
         fr = dict((finrobot_result or {}).get(ticker) or {})
+        ob = dict((openbb_result or {}).get(ticker) or {})
+        if ob.get("fallback") is True:
+            ob = {}
 
         technical_score = _safe_float(ta.get("technical_score"), 50.0)
         news_score = _safe_float(ta.get("news_score"), 50.0)
@@ -35,11 +40,15 @@ def combine_scores(tradingagents_result, finrobot_result) -> list:
                 fr.get("fundamental_score"),
                 fr.get("valuation_score"),
                 fr.get("earnings_score"),
+                ob.get("fundamental_score"),
+                ob.get("valuation_score"),
+                ob.get("growth_score"),
+                ob.get("profitability_score"),
             ],
             50.0,
         )
         risk_score = _avg(
-            [ta.get("risk_score"), fr.get("risk_score")],
+            [ta.get("risk_score"), fr.get("risk_score"), ob.get("risk_score")],
             50.0,
         )
 
@@ -54,16 +63,19 @@ def combine_scores(tradingagents_result, finrobot_result) -> list:
             [
                 (ta.get("confidence") or 0) * 100.0,
                 (fr.get("confidence") or 0) * 100.0,
+                (ob.get("confidence") or 0) * 100.0,
             ],
             max(40.0, min(95.0, final_score)),
         ) / 100.0
         reasons = [
             str(ta.get("reason") or "").strip(),
             str(fr.get("reason") or "").strip(),
+            str(ob.get("reason") or "").strip(),
         ]
         sources = [
             str(ta.get("source") or "").strip(),
             str(fr.get("source") or "").strip(),
+            str(ob.get("source") or "").strip(),
         ]
         ranked.append(
             {

@@ -62,6 +62,31 @@ class StubFinRobotProvider:
         return result
 
 
+class StubOpenBBProvider:
+    def analyze(self, tickers: list) -> dict:
+        scores = {
+            "NVDA": (91, 88, 90, 86, 84),
+            "MSFT": (82, 76, 80, 79, 81),
+            "AAPL": (70, 68, 69, 71, 73),
+            "PLTR": (55, 52, 56, 54, 58),
+        }
+        result = {}
+        for ticker in tickers:
+            fundamental, valuation, growth, profitability, risk = scores.get(ticker, (50, 50, 50, 50, 50))
+            result[ticker] = {
+                "fundamental_score": fundamental,
+                "valuation_score": valuation,
+                "growth_score": growth,
+                "profitability_score": profitability,
+                "risk_score": risk,
+                "confidence": 0.65,
+                "reason": f"ob:{ticker}",
+                "source": "openbb",
+                "fallback": False,
+            }
+        return result
+
+
 class SimpleMonkeyPatch:
     def __init__(self):
         self._originals = []
@@ -105,6 +130,39 @@ def test_ai_selector_returns_top3_and_writes_top10_report():
         assert len(payload["top3"]) == 3
 
 
+def test_ai_selector_with_openbb_enabled_enhances_scores():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        top10_path = Path(tmpdir) / "latest_top10.json"
+        selector = AISelector(
+            config=AISelectorRuntimeConfig(
+                enabled=True,
+                top_n=3,
+                universe=["NVDA", "MSFT", "AAPL", "PLTR"],
+                top10_path=top10_path,
+                tradingagents_path="",
+                tradingagents_python="python3",
+                tradingagents_analysis_date=None,
+                finrobot_path="",
+                finrobot_python="python3",
+                finrobot_config_file="",
+                finrobot_output_dir="",
+                openbb_enabled=True,
+            ),
+            tradingagents_provider=StubTradingAgentsProvider(),
+            finrobot_provider=StubFinRobotProvider(),
+            openbb_provider=StubOpenBBProvider(),
+        )
+
+        signals = selector.get_signals()
+
+        assert [item["ticker"] for item in signals] == ["NVDA", "MSFT", "AAPL"]
+        assert "openbb" in signals[0]["source"]
+        assert "ob:NVDA" in signals[0]["reason"]
+        payload = json.loads(top10_path.read_text(encoding="utf-8"))
+        assert payload["top10"][0]["ticker"] == "NVDA"
+        assert payload["top10"][0]["score"] >= payload["top10"][1]["score"]
+
+
 def test_ai_selector_disabled_does_not_change_engine_behavior():
     monkeypatch = SimpleMonkeyPatch()
     try:
@@ -143,4 +201,5 @@ def test_ai_selector_disabled_does_not_change_engine_behavior():
 
 def run_test_direct():
     test_ai_selector_returns_top3_and_writes_top10_report()
+    test_ai_selector_with_openbb_enabled_enhances_scores()
     test_ai_selector_disabled_does_not_change_engine_behavior()

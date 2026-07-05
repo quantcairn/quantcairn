@@ -8,6 +8,7 @@ from typing import Optional
 
 from .config import AISelectorRuntimeConfig, load_runtime_config
 from .providers.finrobot_provider import FinRobotProvider
+from .providers.openbb_provider import OpenBBProvider
 from .providers.tradingagents_provider import TradingAgentsProvider
 from .scoring import combine_scores
 
@@ -21,10 +22,12 @@ class AISelector:
         config: Optional[AISelectorRuntimeConfig] = None,
         tradingagents_provider: Optional[TradingAgentsProvider] = None,
         finrobot_provider: Optional[FinRobotProvider] = None,
+        openbb_provider: Optional[OpenBBProvider] = None,
     ) -> None:
         self.config = config or load_runtime_config()
         self.tradingagents_provider = tradingagents_provider or TradingAgentsProvider(self.config)
         self.finrobot_provider = finrobot_provider or FinRobotProvider(self.config)
+        self.openbb_provider = openbb_provider or OpenBBProvider(self.config)
         self.last_top10: list[dict] = []
 
     def get_signals(self) -> list:
@@ -42,7 +45,8 @@ class AISelector:
         try:
             ta_result = self.tradingagents_provider.analyze(universe)
             fr_result = self.finrobot_provider.analyze(universe)
-            ranked = combine_scores(ta_result, fr_result)
+            ob_result = self.openbb_provider.analyze(universe) if self.config.openbb_enabled else {}
+            ranked = combine_scores(ta_result, fr_result, ob_result)
         except Exception as exc:
             logger.exception("AI selector failed, fallback to original config: %s", exc)
             self.last_top10 = []
