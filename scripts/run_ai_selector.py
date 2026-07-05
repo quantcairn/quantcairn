@@ -74,6 +74,38 @@ def _restart_top_engines() -> int:
     ).returncode
 
 
+def _spawn_background_refinement(expected_timestamp: str) -> None:
+    if os.environ.get("AI_SELECTOR_BACKGROUND_REFINEMENT", "1") != "1":
+        return
+    refine_script = PROJECT_DIR / "scripts" / "refine_ai_selection_report.py"
+    if not refine_script.exists():
+        return
+    env = os.environ.copy()
+    env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
+    env.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
+    env.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
+    env.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "1")
+    env.setdefault("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "2")
+    env.setdefault("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "20")
+    env.setdefault("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "30")
+    env.setdefault("AI_SELECTOR_QUALITY_BUDGET_SECONDS", "20")
+    env["AI_SELECTOR_EXPECTED_TIMESTAMP"] = expected_timestamp
+    env["AI_SELECTOR_REFINEMENT_ONLY"] = "1"
+    with open(PROJECT_DIR / "logs" / "ai_selector_refine.out.log", "a", encoding="utf-8") as out, open(
+        PROJECT_DIR / "logs" / "ai_selector_refine.err.log",
+        "a",
+        encoding="utf-8",
+    ) as err:
+        subprocess.Popen(
+            [sys.executable, str(refine_script)],
+            cwd=PROJECT_DIR,
+            stdout=out,
+            stderr=err,
+            env=env,
+            start_new_session=True,
+        )
+
+
 def _live_equity_positions() -> list[dict] | None:
     """Return current long equity positions; options are managed outside TOP5."""
     try:
@@ -228,6 +260,9 @@ def main():
     if restart_code != 0:
         print(f"TOP restart failed with exit code {restart_code}.")
         sys.exit(restart_code)
+
+    if str((summary.get("settings") or {}).get("selection_stage") or "") == "fast_preliminary":
+        _spawn_background_refinement(timestamp)
 
     if webhook:
         try:
