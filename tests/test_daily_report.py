@@ -304,6 +304,10 @@ def test_daily_report_endpoint_returns_latest_report_json():
             assert response.status_code == 200
             assert payload["date"] == "2026-07-01"
             assert payload["is_latest_trading_day_report"] is False
+            assert payload["report_freshness"] == "historical_latest_available"
+            assert payload["expected_trading_day"] == "2026-07-02"
+            assert "historical_daily_report" in payload["warnings"]
+            assert "report_notice" in payload
     finally:
         monkeypatch.restore()
 

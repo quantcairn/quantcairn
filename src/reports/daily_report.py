@@ -512,6 +512,21 @@ def latest_daily_report_response(
     payload["status"] = "ok"
     payload["report_path"] = str(latest_path)
     payload["is_latest_trading_day_report"] = bool(report_day == expected_day)
+    payload["report_date"] = report_day.isoformat() if report_day else None
+    payload["expected_trading_day"] = expected_day.isoformat()
+    payload["report_freshness"] = (
+        "current_trading_day" if report_day == expected_day else "historical_latest_available"
+    )
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+    if report_day != expected_day:
+        warnings.append("historical_daily_report")
+        payload["report_notice"] = (
+            f"latest available daily report is for {report_day.isoformat() if report_day else 'unknown'}; "
+            f"expected trading day is {expected_day.isoformat()}"
+        )
+    payload["warnings"] = list(dict.fromkeys(warnings))
     return payload, 200
 
 

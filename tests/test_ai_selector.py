@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -199,7 +200,63 @@ def test_ai_selector_disabled_does_not_change_engine_behavior():
         monkeypatch.restore()
 
 
+def test_engine_reuses_cached_daily_ai_selection():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        root = Path(tempfile.gettempdir())
+        monkeypatch.setattr(
+            engine_module,
+            "load_ai_selector_runtime_config",
+            lambda: AISelectorRuntimeConfig(
+                enabled=True,
+                top_n=3,
+                universe=["SOFI", "NVDA", "AAPL"],
+                top10_path=root / "unused_top10.json",
+                tradingagents_path="",
+                tradingagents_python="python3",
+                tradingagents_analysis_date=None,
+                finrobot_path="",
+                finrobot_python="python3",
+                finrobot_config_file="",
+                finrobot_output_dir="",
+            ),
+        )
+
+        class RaisingAISelector:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("cached selection should skip provider execution")
+
+        monkeypatch.setattr(engine_module, "AISelector", RaisingAISelector)
+
+        engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
+        monkeypatch.setattr(
+            engine,
+            "_load_cached_ai_selection",
+            lambda runtime: (
+                [
+                    {"ticker": "SOFI", "score": 0.0, "reason": "cached_sofi", "confidence": 0.5},
+                    {"ticker": "NVDA", "score": 80.0, "reason": "cached_nvda", "confidence": 0.8},
+                    {"ticker": "AAPL", "score": 78.0, "reason": "cached_aapl", "confidence": 0.78},
+                ],
+                [
+                    {"ticker": "SOFI", "score": 0.0, "reason": "cached_sofi", "confidence": 0.5},
+                    {"ticker": "NVDA", "score": 80.0, "reason": "cached_nvda", "confidence": 0.8},
+                    {"ticker": "AAPL", "score": 78.0, "reason": "cached_aapl", "confidence": 0.78},
+                ],
+            ),
+        )
+
+        engine._initialize_ai_selector()
+
+        assert engine._ai_selection.active is True
+        assert [item["ticker"] for item in engine._ai_selection.top3] == ["SOFI", "NVDA", "AAPL"]
+        assert engine._ai_selection.signal_for_ticker["ticker"] == "SOFI"
+    finally:
+        monkeypatch.restore()
+
+
 def run_test_direct():
     test_ai_selector_returns_top3_and_writes_top10_report()
     test_ai_selector_with_openbb_enabled_enhances_scores()
     test_ai_selector_disabled_does_not_change_engine_behavior()
+    test_engine_reuses_cached_daily_ai_selection()

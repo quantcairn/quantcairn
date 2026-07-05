@@ -29,6 +29,7 @@ from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
 from ..ai_selector.config import load_runtime_config as load_ai_selector_runtime_config
 from ..ai_selector.integration import AISelector
+from ..ai_selector.selection_state import load_selection_state
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -720,14 +721,18 @@ class TradingEngine:
         )
         if not runtime.enabled:
             return
-        try:
-            selector = AISelector(config=runtime)
-            top3 = selector.get_signals()
-            top10 = selector.get_top10()
-        except Exception as exc:
-            logger.exception("AI selector failed, fallback to original config: %s", exc)
-            self._ai_selection.fallback_reason = "ai_selector_exception"
-            return
+        cached_selection = self._load_cached_ai_selection(runtime)
+        if cached_selection is not None:
+            top3, top10 = cached_selection
+        else:
+            try:
+                selector = AISelector(config=runtime)
+                top3 = selector.get_signals()
+                top10 = selector.get_top10()
+            except Exception as exc:
+                logger.exception("AI selector failed, fallback to original config: %s", exc)
+                self._ai_selection.fallback_reason = "ai_selector_exception"
+                return
         if not top3:
             logger.warning("AI selector returned no signals, fallback to original config")
             self._ai_selection.fallback_reason = "empty_ai_signals"
@@ -773,6 +778,54 @@ class TradingEngine:
             strategy=strategy,
             risk_approved=risk_approved,
         )
+
+    def _load_cached_ai_selection(
+        self,
+        runtime,
+    ) -> tuple[list[dict], list[dict]] | None:
+        state = load_selection_state()
+        if not isinstance(state, dict):
+            return None
+        if not HAS_PYTZ or self._ny_tz is None:
+            return None
+        required_day = datetime.now(self._ny_tz).date().isoformat()
+        if str(state.get("et_date") or "").strip() != required_day:
+            return None
+        report_path_raw = str(state.get("report_path") or "").strip()
+        report_path = (
+            Path(report_path_raw)
+            if report_path_raw
+            else (PROJECT_DIR / "reports" / "ai_selection_latest.json")
+        )
+        if not report_path.exists():
+            return None
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        top3 = payload.get("top3") if isinstance(payload.get("top3"), list) else []
+        top10 = payload.get("top10") if isinstance(payload.get("top10"), list) else []
+        if not top10:
+            top10 = payload.get("top5") if isinstance(payload.get("top5"), list) else []
+        top3 = [dict(item) for item in top3 if isinstance(item, dict)]
+        top10 = [dict(item) for item in top10 if isinstance(item, dict)]
+        if not top3:
+            return None
+        logger.info(
+            "AI selector reused cached daily selection for %s from %s",
+            required_day,
+            report_path,
+        )
+        self._write_runtime_audit(
+            "ai_selector_cache_hit",
+            ai_selector_enabled=runtime.enabled,
+            cache_report_path=str(report_path),
+            cache_et_date=required_day,
+            cached_top3=[item.get("ticker") for item in top3],
+        )
+        return top3, top10
 
     def _detect_market_regime(self, top3: list[dict], signal_for_ticker: Optional[dict]) -> str:
         if signal_for_ticker is None:
