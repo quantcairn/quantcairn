@@ -7,7 +7,7 @@ LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
-USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-1}"
+USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-0}"
 UID_NUM="$(id -u)"
 TOP_ENGINES=(TOP1 TOP2 TOP3 TOP4 TOP5)
 ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
@@ -139,31 +139,14 @@ stop_top() {
 
 start_top() {
     startup_delay="${SOXS_ENGINE_STARTUP_DELAY_SECONDS:-6}"
-    if [ "$USE_LAUNCHD_TOPS" = "1" ]; then
-        for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
-            plist="$PROJECT_DIR/launchd/${job}.plist"
-            if [ -f "$plist" ]; then
-                launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
-                launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
-                launchctl kickstart -k gui/"$UID_NUM"/"$job" 2>/dev/null || true
-                port="$(port_for_top "TOP${job##*.top}")"
-                wait_for_port "$port" "$startup_delay" || {
-                    echo "❌ $job failed to bind to :$port"
-                    return 1
-                }
-            fi
-        done
-        echo "🚀 TOP engines managed by launchd"
-        return 0
-    fi
-
-    TOP_PIDS=""
-    for TOP in "${TOP_ENGINES[@]}"; do
-        cfg="$PROJECT_DIR/configs/${TOP}.yaml"
-        if [ -f "$cfg" ]; then
-            port="$(port_for_top "$TOP")"
-            log_name=$(printf '%s' "$TOP" | tr '[:upper:]' '[:lower:]')
-            read ENGINE_MODE SYNTH_START SYNTH_AMP <<EOF
+    start_top_manual() {
+        TOP_PIDS=""
+        for TOP in "${TOP_ENGINES[@]}"; do
+            cfg="$PROJECT_DIR/configs/${TOP}.yaml"
+            if [ -f "$cfg" ]; then
+                port="$(port_for_top "$TOP")"
+                log_name=$(printf '%s' "$TOP" | tr '[:upper:]' '[:lower:]')
+                read ENGINE_MODE SYNTH_START SYNTH_AMP <<EOF
 $( "$VENV_PYTHON" - "$cfg" <<'PY'
 import sys, yaml
 cfg_path = sys.argv[1]
@@ -188,26 +171,61 @@ print(f"{mode} {mid:.4f} {amp:.4f}")
 PY
 )
 EOF
-            cli_mode="--paper"
-            if [ "$ENGINE_MODE" = "live" ]; then
-                cli_mode="--live"
-                : > "$LOG_DIR/${log_name}.log"
-                nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
-            else
-                : > "$LOG_DIR/${log_name}.log"
-                SOXS_SYNTHETIC_MARKET=1 \
-                SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
-                SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
-                SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
-                nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
-            fi
-            TOP_PIDS="$TOP_PIDS $!"
-            echo "🚀 $TOP on :$port (PID $!, mode=$ENGINE_MODE)"
-            if [ "$ENGINE_MODE" = "live" ]; then
+                cli_mode="--paper"
+                if [ "$ENGINE_MODE" = "live" ]; then
+                    cli_mode="--live"
+                    : > "$LOG_DIR/${log_name}.log"
+                    nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
+                    disown $! 2>/dev/null || true
+                else
+                    : > "$LOG_DIR/${log_name}.log"
+                    SOXS_SYNTHETIC_MARKET=1 \
+                    SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
+                    SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
+                    SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
+                    nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
+                    disown $! 2>/dev/null || true
+                fi
+                TOP_PIDS="$TOP_PIDS $!"
+                echo "🚀 $TOP on :$port (PID $!, mode=$ENGINE_MODE)"
                 sleep "$startup_delay"
+                wait_for_port "$port" "$startup_delay" || {
+                    echo "❌ $TOP failed to bind to :$port in manual fallback mode"
+                    return 1
+                }
             fi
+        done
+        return 0
+    }
+
+    if [ "$USE_LAUNCHD_TOPS" = "1" ]; then
+        launchd_failed=0
+        for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
+            plist="$PROJECT_DIR/launchd/${job}.plist"
+            if [ -f "$plist" ]; then
+                launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
+                launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
+                launchctl kickstart -k gui/"$UID_NUM"/"$job" 2>/dev/null || true
+                port="$(port_for_top "TOP${job##*.top}")"
+                wait_for_port "$port" "$startup_delay" || {
+                    echo "⚠️ $job failed to bind to :$port via launchd"
+                    launchd_failed=1
+                    break
+                }
+            fi
+        done
+        if [ "$launchd_failed" = "0" ]; then
+            echo "🚀 TOP engines managed by launchd"
+            return 0
         fi
-    done
+        echo "↩️ Falling back to manual TOP engine startup"
+        stop_top
+        sleep 1
+        start_top_manual
+        return $?
+    fi
+
+    start_top_manual
 }
 
 start_all() {

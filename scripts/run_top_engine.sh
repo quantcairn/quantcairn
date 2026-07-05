@@ -43,17 +43,25 @@ PY
 )
 EOF
 
-mkdir -p "${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}" 2>/dev/null || true
+LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
+REDIRECT_STDIO="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-0}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
 
-if [ "$ENGINE_MODE" = "live" ]; then
-    exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --port "$port" \
-        >> "${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}/${log_name}.log" 2>&1
+run_engine() {
+    if [ "$ENGINE_MODE" = "live" ]; then
+        exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --port "$port"
+    fi
+
+    exec env \
+        SOXS_SYNTHETIC_MARKET=1 \
+        SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
+        SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
+        SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
+        "$VENV_PYTHON" run.py --config "$cfg" --paper --dashboard --anytime --port "$port"
+}
+
+if [ "$REDIRECT_STDIO" = "1" ]; then
+    exec >> "$LOG_DIR/${log_name}.log" 2>&1
 fi
 
-exec env \
-    SOXS_SYNTHETIC_MARKET=1 \
-    SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
-    SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
-    SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
-    "$VENV_PYTHON" run.py --config "$cfg" --paper --dashboard --anytime --port "$port" \
-    >> "${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}/${log_name}.log" 2>&1
+run_engine
