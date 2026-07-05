@@ -229,6 +229,7 @@ cd /Users/chenwei/soxs-range-arbitrage
 ./tradectl.sh up
 ./tradectl.sh status
 ./tradectl.sh restart
+./tradectl.sh reload-launchd
 ./tradectl.sh down
 ```
 
