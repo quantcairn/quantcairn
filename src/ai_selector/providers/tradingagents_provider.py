@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 from typing import Any
+
+from ..config import AISelectorRuntimeConfig, load_runtime_config
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +28,9 @@ def _clamp_score(value: Any, default: float = 50.0) -> float:
 
 
 class TradingAgentsProvider:
+    def __init__(self, config: AISelectorRuntimeConfig | None = None) -> None:
+        self.config = config or load_runtime_config()
+
     def analyze(self, tickers: list) -> dict:
         results: dict[str, dict[str, Any]] = {}
         for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
@@ -36,44 +45,78 @@ class TradingAgentsProvider:
         return results
 
     def _is_available(self) -> bool:
-        return importlib.util.find_spec("tradingagents") is not None
+        return importlib.util.find_spec("tradingagents") is not None or self._resolve_source_path() is not None
 
     def _analyze_with_tradingagents(self, ticker: str) -> dict[str, Any]:
+        source_path = self._resolve_source_path()
+        if source_path is not None and importlib.util.find_spec("tradingagents") is None:
+            decision = self._run_with_source_path(ticker, source_path)
+        else:
+            decision = self._run_with_installed_package(ticker)
+        return self._normalize_result(ticker, decision)
+
+    def _run_with_installed_package(self, ticker: str) -> Any:
         from tradingagents.default_config import DEFAULT_CONFIG
         from tradingagents.graph.trading_graph import TradingAgentsGraph
 
         config = DEFAULT_CONFIG.copy()
         graph = TradingAgentsGraph(debug=False, config=config)
-        _, decision = graph.propagate(ticker, date.today().isoformat())
-        return self._normalize_result(ticker, decision)
+        _, decision = graph.propagate(ticker, self._analysis_date())
+        return decision
+
+    def _run_with_source_path(self, ticker: str, source_path: Path) -> Any:
+        helper = """
+import json
+import sys
+sys.path.insert(0, {repo!r})
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+config = DEFAULT_CONFIG.copy()
+graph = TradingAgentsGraph(debug=False, config=config)
+_, decision = graph.propagate({ticker!r}, {analysis_date!r})
+print(json.dumps(decision, ensure_ascii=False, default=str))
+""".format(repo=str(source_path), ticker=ticker, analysis_date=self._analysis_date())
+        env = os.environ.copy()
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        proc = subprocess.run(
+            [self.config.tradingagents_python, "-c", helper],
+            capture_output=True,
+            text=True,
+            cwd=str(source_path),
+            env=env,
+            timeout=300,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "tradingagents_source_run_failed")
+        output = (proc.stdout or "").strip().splitlines()
+        if not output:
+            raise RuntimeError("tradingagents_source_empty_output")
+        import json
+        return json.loads(output[-1])
+
+    def _resolve_source_path(self) -> Path | None:
+        value = str(self.config.tradingagents_path or "").strip()
+        if not value:
+            return None
+        path = Path(value).expanduser()
+        if not path.exists():
+            return None
+        candidate = path / "tradingagents"
+        if candidate.exists():
+            return path
+        return None
+
+    def _analysis_date(self) -> str:
+        return self.config.tradingagents_analysis_date or date.today().isoformat()
 
     def _normalize_result(self, ticker: str, payload: Any) -> dict[str, Any]:
         if isinstance(payload, dict):
-            technical = _clamp_score(
-                payload.get("technical_score")
-                or payload.get("technical")
-                or payload.get("technical_analysis_score"),
-                60.0,
-            )
-            news = _clamp_score(
-                payload.get("news_score")
-                or payload.get("news")
-                or payload.get("news_analysis_score"),
-                58.0,
-            )
-            sentiment = _clamp_score(
-                payload.get("sentiment_score")
-                or payload.get("sentiment")
-                or payload.get("sentiment_analysis_score"),
-                57.0,
-            )
-            risk = _clamp_score(
-                payload.get("risk_score")
-                or payload.get("risk")
-                or payload.get("risk_management_score"),
-                62.0,
-            )
-            confidence = float(payload.get("confidence") or 0.75)
+            technical = _clamp_score(self._extract_score(payload, "technical", 60.0), 60.0)
+            news = _clamp_score(self._extract_score(payload, "news", 58.0), 58.0)
+            sentiment = _clamp_score(self._extract_score(payload, "sentiment", 57.0), 57.0)
+            risk = _clamp_score(self._extract_score(payload, "risk", 62.0), 62.0)
+            confidence = float(self._extract_score(payload, "confidence", 75.0) or 75.0) / 100.0
             reason = str(
                 payload.get("reason")
                 or payload.get("summary")
@@ -101,6 +144,40 @@ class TradingAgentsProvider:
             "fallback": False,
             "raw": payload,
         }
+
+    def _extract_score(self, payload: dict[str, Any], keyword: str, default: float) -> float:
+        direct_keys = (
+            f"{keyword}_score",
+            keyword,
+            f"{keyword}_analysis_score",
+            f"{keyword}_analyst_score",
+            f"{keyword}_rating",
+        )
+        for key in direct_keys:
+            value = payload.get(key)
+            if value is not None:
+                if keyword == "confidence" and float(value) <= 1.0:
+                    return float(value) * 100.0
+                return float(value)
+        nested_values: list[float] = []
+        for key, value in payload.items():
+            key_str = str(key).lower()
+            if keyword not in key_str:
+                continue
+            if isinstance(value, (int, float)):
+                nested_values.append(float(value))
+            elif isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    if "score" in str(sub_key).lower() and isinstance(sub_value, (int, float)):
+                        nested_values.append(float(sub_value))
+            elif isinstance(value, str) and keyword != "confidence":
+                nested_values.append(self._score_from_text(value, positive=(keyword,), negative=("weak", "bearish", "negative")))
+        if nested_values:
+            return sum(nested_values) / len(nested_values)
+        summary_text = str(payload.get("summary") or payload.get("decision") or "")
+        if summary_text and keyword != "confidence":
+            return self._score_from_text(summary_text, positive=(keyword,), negative=("weak", "bearish", "negative"))
+        return float(default)
 
     def _score_from_text(
         self,

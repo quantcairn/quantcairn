@@ -23,8 +23,8 @@ class AISelector:
         finrobot_provider: Optional[FinRobotProvider] = None,
     ) -> None:
         self.config = config or load_runtime_config()
-        self.tradingagents_provider = tradingagents_provider or TradingAgentsProvider()
-        self.finrobot_provider = finrobot_provider or FinRobotProvider()
+        self.tradingagents_provider = tradingagents_provider or TradingAgentsProvider(self.config)
+        self.finrobot_provider = finrobot_provider or FinRobotProvider(self.config)
         self.last_top10: list[dict] = []
 
     def get_signals(self) -> list:

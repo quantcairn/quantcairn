@@ -33,6 +33,13 @@ class AISelectorRuntimeConfig:
     top_n: int
     universe: list[str]
     top10_path: Path
+    tradingagents_path: str
+    tradingagents_python: str
+    tradingagents_analysis_date: str | None
+    finrobot_path: str
+    finrobot_python: str
+    finrobot_config_file: str
+    finrobot_output_dir: str
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -64,4 +71,11 @@ def load_runtime_config() -> AISelectorRuntimeConfig:
         top_n=_int_env("SOXS_AI_SELECTOR_TOP_N", TOP_N),
         universe=_list_env("SOXS_AI_SELECTOR_UNIVERSE", UNIVERSE),
         top10_path=LATEST_TOP10_PATH,
+        tradingagents_path=os.environ.get("SOXS_TRADINGAGENTS_PATH", "").strip(),
+        tradingagents_python=os.environ.get("SOXS_TRADINGAGENTS_PYTHON", "").strip() or "python3",
+        tradingagents_analysis_date=os.environ.get("SOXS_TRADINGAGENTS_ANALYSIS_DATE", "").strip() or None,
+        finrobot_path=os.environ.get("SOXS_FINROBOT_PATH", "").strip(),
+        finrobot_python=os.environ.get("SOXS_FINROBOT_PYTHON", "").strip() or "python3",
+        finrobot_config_file=os.environ.get("SOXS_FINROBOT_CONFIG", "").strip(),
+        finrobot_output_dir=os.environ.get("SOXS_FINROBOT_OUTPUT_DIR", "").strip(),
     )
