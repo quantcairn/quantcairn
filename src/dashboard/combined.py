@@ -292,6 +292,55 @@ def _current_et_date() -> str:
         return datetime.utcnow().date().isoformat()
 
 
+def _ai_runtime_status() -> dict:
+    enabled = str(_env("SOXS_AI_SELECTOR_ENABLED", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        return {
+            "level": "yellow",
+            "label": "AI 已关闭",
+            "detail": "当前仍按原有选股/配置链路运行。",
+        }
+
+    missing = []
+    if not _env("OPENAI_API_KEY"):
+        missing.append("OPENAI_API_KEY")
+    if not _env("FMP_API_KEY"):
+        missing.append("FMP_API_KEY")
+
+    tradingagents_ready = bool(_env("SOXS_TRADINGAGENTS_PATH"))
+    finrobot_ready = bool(_env("SOXS_FINROBOT_PATH"))
+
+    if not missing and tradingagents_ready and finrobot_ready:
+        return {
+            "level": "green",
+            "label": "完整真实",
+            "detail": "TradingAgents 和 FinRobot 都可走真实分析链路。",
+        }
+
+    if tradingagents_ready or finrobot_ready:
+        detail = "已接通外部项目路径"
+        if missing:
+            detail += f"，缺少 {' / '.join(missing)}，当前会自动降级回退。"
+        else:
+            detail += "，当前可走真实分析。"
+        return {
+            "level": "yellow",
+            "label": "部分降级",
+            "detail": detail,
+        }
+
+    return {
+        "level": "yellow",
+        "label": "仅回退",
+        "detail": "外部 AI 项目未接通，当前只使用本地回退评分。",
+    }
+
+
 def _selection_sync_status() -> dict:
     required_date = _current_et_date()
     ok, reason, state = verify_selection_state(required_et_date=required_date)
@@ -1059,6 +1108,9 @@ HTML = """<!DOCTYPE html>
                             · 后台精筛：{{ ai_selection.refinement_status }}{% if ai_selection.refinement_selection_stage %} / {{ ai_selection.refinement_selection_stage }}{% endif %}
                         {% endif %}
                     </div>
+                    <div class="selection-status">
+                        AI 运行状态：<span class="{{ ai_runtime.level }}">{{ ai_runtime.label }}</span> · {{ ai_runtime.detail }}
+                    </div>
                     {% else %}
                     <div class="selector-empty">先运行一次 `scripts/run_ai_selector.py`，这里就会显示最新的 AI 区间选股结果。</div>
                     {% endif %}
@@ -1336,6 +1388,7 @@ def index():
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
+    ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
     audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
@@ -1550,6 +1603,7 @@ def index():
         live_account=display_live_account or live_account,
         selected_positions_count=selected_positions_count,
         ai_selection=ai_selection,
+        ai_runtime=ai_runtime,
         selection_sync=selection_sync,
         runtime_settings={
             "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),

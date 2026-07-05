@@ -87,7 +87,7 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
 
     assert "实盘账户" in html
     assert "$425.00" in html
-    assert "运行状态" not in html
+    assert "风控运行状态" not in html
     assert "风控与交易审计" not in html
     assert "仅减仓" not in html
     assert "low_funds" not in html
@@ -216,6 +216,13 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "get_runtime_env", lambda name, default="": {
+        "SOXS_AI_SELECTOR_ENABLED": "1",
+        "SOXS_TRADINGAGENTS_PATH": "/tmp/TradingAgents",
+        "SOXS_FINROBOT_PATH": "/tmp/FinRobot",
+        "OPENAI_API_KEY": "",
+        "FMP_API_KEY": "",
+    }.get(name, default))
     monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
         "ok": True,
         "level": "green",
@@ -298,6 +305,9 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "仅供对比，不覆盖当前 reduce-only 配置。" in html
     assert "前台阶段：fast_preliminary" in html
     assert "后台精筛：background_fast_preliminary / fast_preliminary" in html
+    assert "AI 运行状态：" in html
+    assert "部分降级" in html
+    assert "缺少 OPENAI_API_KEY / FMP_API_KEY" in html
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html
