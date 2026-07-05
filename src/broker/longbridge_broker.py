@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from enum import Enum
+from threading import Lock
 
 import longbridge.openapi as lb
 
@@ -32,6 +33,7 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+_SHARED_SNAPSHOT_LOCK = Lock()
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 
@@ -227,6 +229,97 @@ class LongBridgeBroker(BrokerBase):
                 retry_seconds,
                 max(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds),
             ),
+        )
+        state_root = Path(
+            os.environ.get("SOXS_STATE_DIR", "").strip()
+            or (Path(__file__).resolve().parents[2] / "state")
+        )
+        self._shared_snapshot_dir = state_root / "broker_cache"
+        self._shared_snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self._shared_positions_path = self._shared_snapshot_dir / "longbridge_positions.json"
+        self._shared_account_path = self._shared_snapshot_dir / "longbridge_account.json"
+
+    def _shared_cache_ttl_seconds(self) -> float:
+        raw_value = os.environ.get("LONGBRIDGE_SHARED_CACHE_TTL_SECONDS", "").strip()
+        try:
+            ttl = float(raw_value) if raw_value else 45.0
+        except ValueError:
+            ttl = 45.0
+        return max(5.0, min(ttl, 300.0))
+
+    def _load_shared_snapshot(self, path: Path) -> dict | None:
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        fetched_at = float(payload.get("fetched_at") or 0.0)
+        if fetched_at <= 0:
+            return None
+        if (time.time() - fetched_at) > self._shared_cache_ttl_seconds():
+            return None
+        return payload
+
+    def _write_shared_snapshot(self, path: Path, payload: dict) -> None:
+        wrapped = {
+            "fetched_at": time.time(),
+            "payload": payload,
+        }
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        with _SHARED_SNAPSHOT_LOCK:
+            temp_path.write_text(json.dumps(wrapped, ensure_ascii=False, default=str), encoding="utf-8")
+            temp_path.replace(path)
+
+    def _position_to_payload(self, position: Position) -> dict:
+        return {
+            "ticker": position.ticker,
+            "quantity": position.quantity,
+            "avg_entry_price": position.avg_entry_price,
+            "current_price": position.current_price,
+            "market_value": position.market_value,
+            "unrealized_pnl": position.unrealized_pnl,
+            "unrealized_pnl_pct": position.unrealized_pnl_pct,
+        }
+
+    def _positions_from_payload(self, payload: list[dict]) -> list[Position]:
+        rows: list[Position] = []
+        for item in payload or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                rows.append(
+                    Position(
+                        ticker=str(item.get("ticker") or ""),
+                        quantity=int(item.get("quantity") or 0),
+                        avg_entry_price=float(item.get("avg_entry_price") or 0.0),
+                        current_price=float(item.get("current_price") or 0.0),
+                        market_value=float(item.get("market_value") or 0.0),
+                        unrealized_pnl=float(item.get("unrealized_pnl") or 0.0),
+                        unrealized_pnl_pct=float(item.get("unrealized_pnl_pct") or 0.0),
+                    )
+                )
+            except Exception:
+                continue
+        return rows
+
+    def _account_to_payload(self, account: AccountInfo) -> dict:
+        return {
+            "cash": account.cash,
+            "equity": account.equity,
+            "buying_power": account.buying_power,
+            "positions": [self._position_to_payload(position) for position in account.positions],
+        }
+
+    def _account_from_payload(self, payload: dict) -> AccountInfo:
+        positions = self._positions_from_payload(payload.get("positions") or [])
+        return AccountInfo(
+            cash=float(payload.get("cash") or 0.0),
+            equity=float(payload.get("equity") or 0.0),
+            buying_power=float(payload.get("buying_power") or 0.0),
+            positions=positions,
         )
 
     def _can_reuse_positions_cache(self, now: float) -> bool:
@@ -631,6 +724,18 @@ class LongBridgeBroker(BrokerBase):
             and (now - self._positions_cache_fetched_at) < self._positions_cache_ttl_seconds
         ):
             return list(self._positions_cache)
+        shared_positions = self._load_shared_snapshot(self._shared_positions_path)
+        if shared_positions is not None:
+            shared_payload = shared_positions.get("payload") or {}
+            if isinstance(shared_payload, dict):
+                positions = self._positions_from_payload(shared_payload.get("positions") or [])
+                if positions:
+                    self._positions_cache = positions
+                    self._positions_snapshot_reliable = bool(shared_payload.get("reliable", True))
+                    self._last_positions_error = str(shared_payload.get("error") or "")
+                    self._positions_cache_fetched_at = float(shared_positions.get("fetched_at") or now)
+                    self._positions_retry_not_before = now
+                    return list(self._positions_cache)
         if not self.is_connected():
             self._positions_snapshot_reliable = False
             self._last_positions_error = "Not connected"
@@ -688,6 +793,14 @@ class LongBridgeBroker(BrokerBase):
             self._last_positions_error = ""
             self._positions_cache_fetched_at = now
             self._positions_retry_not_before = now
+            self._write_shared_snapshot(
+                self._shared_positions_path,
+                {
+                    "positions": [self._position_to_payload(position) for position in positions],
+                    "reliable": True,
+                    "error": "",
+                },
+            )
             self._write_audit("get_positions", request, {"positions": positions}, ok=True)
             return positions
         except Exception as e:
@@ -699,6 +812,15 @@ class LongBridgeBroker(BrokerBase):
             else:
                 self._positions_snapshot_reliable = False
             self._positions_retry_not_before = now + self._cache_retry_backoff_seconds
+            if self._positions_cache:
+                self._write_shared_snapshot(
+                    self._shared_positions_path,
+                    {
+                        "positions": [self._position_to_payload(position) for position in self._positions_cache],
+                        "reliable": self._positions_snapshot_reliable,
+                        "error": self._last_positions_error,
+                    },
+                )
             self._write_audit("get_positions", request, {"error": str(e)}, ok=False, error=str(e))
             return list(self._positions_cache)
 
@@ -719,6 +841,20 @@ class LongBridgeBroker(BrokerBase):
             and (now - self._account_cache_fetched_at) < self._account_cache_ttl_seconds
         ):
             return self._account_cache
+        shared_account = self._load_shared_snapshot(self._shared_account_path)
+        if shared_account is not None:
+            shared_payload = shared_account.get("payload") or {}
+            if isinstance(shared_payload, dict):
+                account = self._account_from_payload(shared_payload)
+                self._account_cache = account
+                self._account_snapshot_reliable = bool(shared_payload.get("reliable", True))
+                self._last_account_error = str(shared_payload.get("error") or "")
+                self._account_cache_fetched_at = float(shared_account.get("fetched_at") or now)
+                self._account_retry_not_before = now
+                if account.positions:
+                    self._positions_cache = list(account.positions)
+                    self._positions_cache_fetched_at = self._account_cache_fetched_at
+                return self._account_cache
         if not self.is_connected():
             self._account_snapshot_reliable = False
             self._last_account_error = "Not connected"
@@ -750,6 +886,14 @@ class LongBridgeBroker(BrokerBase):
             self._last_account_error = ""
             self._account_cache_fetched_at = now
             self._account_retry_not_before = now
+            self._write_shared_snapshot(
+                self._shared_account_path,
+                {
+                    **self._account_to_payload(account),
+                    "reliable": True,
+                    "error": "",
+                },
+            )
             self._write_audit("get_account", request, account, ok=True)
             return self._account_cache
         except Exception as e:
@@ -761,6 +905,15 @@ class LongBridgeBroker(BrokerBase):
             else:
                 self._account_snapshot_reliable = False
             self._account_retry_not_before = now + self._cache_retry_backoff_seconds
+            if self._account_cache_fetched_at > 0:
+                self._write_shared_snapshot(
+                    self._shared_account_path,
+                    {
+                        **self._account_to_payload(self._account_cache),
+                        "reliable": self._account_snapshot_reliable,
+                        "error": self._last_account_error,
+                    },
+                )
             self._write_audit("get_account", request, {"error": str(e)}, ok=False, error=str(e))
             return self._account_cache
 

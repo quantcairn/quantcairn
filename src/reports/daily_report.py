@@ -490,6 +490,27 @@ def latest_daily_report_response(
     now_et: datetime | None = None,
 ) -> tuple[dict[str, Any], int]:
     root = reports_dir or REPORTS_DIR
+    current_now_et = now_et or _ny_now()
+    expected_day = latest_trading_day(current_now_et.date())
+    expected_path = _report_path(expected_day, root)
+
+    if (
+        is_trading_day(expected_day)
+        and not expected_path.exists()
+        and (
+            current_now_et.date() > expected_day
+            or (current_now_et.date() == expected_day and (current_now_et.hour, current_now_et.minute) >= (16, 5))
+        )
+    ):
+        try:
+            generate_daily_report(
+                trade_day=expected_day,
+                reports_dir=root,
+                now_et=current_now_et,
+            )
+        except Exception as exc:
+            logger.warning("On-demand daily report generation skipped: %s", exc)
+
     if not root.exists():
         return {"status": "no_report_available", "reports_dir": str(root)}, 404
 
@@ -507,7 +528,6 @@ def latest_daily_report_response(
             "warning": "latest_report_invalid",
         }, 404
 
-    expected_day = latest_trading_day((now_et or _ny_now()).date())
     report_day = _parse_report_date(latest_path)
     payload["status"] = "ok"
     payload["report_path"] = str(latest_path)

@@ -318,12 +318,56 @@ def test_daily_report_endpoint_handles_no_report_available():
         with tempfile.TemporaryDirectory() as tmp:
             reports_dir = Path(tmp) / "reports"
             monkeypatch.setattr(daily_report, "REPORTS_DIR", reports_dir)
+            monkeypatch.setattr(
+                daily_report,
+                "generate_daily_report",
+                lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("skip_on_demand_generation")),
+            )
             client = combined.app.test_client()
             response = client.get("/daily-report")
             payload = response.get_json()
 
             assert response.status_code == 404
             assert payload["status"] == "no_report_available"
+    finally:
+        monkeypatch.restore()
+
+
+def test_daily_report_endpoint_generates_missing_latest_report_on_demand():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp) / "reports"
+            reports_dir.mkdir()
+            written = {}
+
+            def _fake_generate_daily_report(trade_day=None, **kwargs):
+                payload = {
+                    "date": "2026-07-02",
+                    "generated_at": "2026-07-05T12:00:00-04:00",
+                    "account": {"equity": 1500.0, "cash": 700.0, "buying_power": 350.0, "equity_change_vs_yesterday": None},
+                    "realized_pnl": {"by_symbol": {}, "total": 0.0},
+                    "unrealized_pnl": {"by_symbol": {}, "total": 0.0},
+                    "trades": {"total_trades_today": 0, "profitable_trades": 0, "losing_trades": 0, "win_rate": None},
+                    "current_holdings": [],
+                    "warnings": ["generated_on_demand"],
+                }
+                path = reports_dir / "daily_2026-07-02.json"
+                path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                written["path"] = str(path)
+                return payload
+
+            monkeypatch.setattr(daily_report, "REPORTS_DIR", reports_dir)
+            monkeypatch.setattr(daily_report, "_ny_now", lambda: datetime(2026, 7, 5, 12, 0))
+            monkeypatch.setattr(daily_report, "generate_daily_report", _fake_generate_daily_report)
+            client = combined.app.test_client()
+            response = client.get("/daily-report")
+            payload = response.get_json()
+
+            assert response.status_code == 200
+            assert payload["date"] == "2026-07-02"
+            assert payload["is_latest_trading_day_report"] is True
+            assert written["path"].endswith("daily_2026-07-02.json")
     finally:
         monkeypatch.restore()
 
@@ -348,6 +392,7 @@ def run_test_direct():
     test_report_ignores_test_fill_events()
     test_daily_report_endpoint_returns_latest_report_json()
     test_daily_report_endpoint_handles_no_report_available()
+    test_daily_report_endpoint_generates_missing_latest_report_on_demand()
     test_scheduler_only_triggers_at_1605_et_on_trading_days()
 
 
