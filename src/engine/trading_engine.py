@@ -12,6 +12,7 @@ import logging
 import os
 import time
 import calendar
+from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -26,6 +27,8 @@ from ..broker.base import BrokerBase, OrderSide, OrderStatus, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
+from ..ai_selector.config import load_runtime_config as load_ai_selector_runtime_config
+from ..ai_selector.integration import AISelector
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -38,6 +41,20 @@ try:
     HAS_PYTZ = True
 except ImportError:
     HAS_PYTZ = False
+
+
+@dataclass
+class AISelectionDecision:
+    enabled: bool = False
+    active: bool = False
+    top10: list[dict] | None = None
+    top3: list[dict] | None = None
+    signal_for_ticker: Optional[dict] = None
+    regime: str = "DISABLED"
+    strategy: str = "range_detector"
+    risk_approved: bool = True
+    allocation_weight: float = 0.0
+    fallback_reason: str = ""
 
 
 def _audit_log_path() -> Path:
@@ -216,6 +233,7 @@ class TradingEngine:
 
         # NY timezone
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
+        self._ai_selection = AISelectionDecision()
 
     def _seed_auto_range(self) -> None:
         """Seed auto range from recent OHLCV history so it's ready immediately."""
@@ -291,6 +309,8 @@ class TradingEngine:
         if self.mode == "live" and not self._adopt_active_live_order():
             self.broker.disconnect()
             return
+
+        self._initialize_ai_selector()
 
         # Seed auto range from historical data (so it's ready immediately)
         self._seed_auto_range()
@@ -400,6 +420,8 @@ class TradingEngine:
                 elif signal.type == SignalType.BUY and not has_position:
                     if self._reduce_only:
                         self._last_signal_reason = "仅减仓模式：今晚不新开仓"
+                    elif not self._ai_entry_allowed():
+                        self._last_signal_reason = self._blocked_ai_reason()
                     elif not is_halted:
                         self._handle_buy_signal(signal, current_price, quote.ask)
 
@@ -506,6 +528,7 @@ class TradingEngine:
             # Do not size live orders from margin buying power. The strategy's
             # capital limit is the settled/available cash reported by the broker.
             available_cash = max(0.0, cash)
+            available_cash = self._cap_ai_available_cash(available_cash, acct)
             shares = determine_buy_quantity(
                 current_price=current_price,
                 available_cash=available_cash,
@@ -685,6 +708,136 @@ class TradingEngine:
 
     def _should_run_exit_check(self, now_ts: float) -> bool:
         return (now_ts - self._last_exit_check_at) >= 60.0
+
+    def _initialize_ai_selector(self) -> None:
+        runtime = load_ai_selector_runtime_config()
+        self._ai_selection = AISelectionDecision(enabled=runtime.enabled)
+        logger.info("AI selector enabled %s", str(runtime.enabled).lower())
+        self._write_runtime_audit(
+            "ai_selector_status",
+            ai_selector_enabled=runtime.enabled,
+            universe=runtime.universe,
+        )
+        if not runtime.enabled:
+            return
+        try:
+            selector = AISelector(config=runtime)
+            top3 = selector.get_signals()
+            top10 = selector.get_top10()
+        except Exception as exc:
+            logger.exception("AI selector failed, fallback to original config: %s", exc)
+            self._ai_selection.fallback_reason = "ai_selector_exception"
+            return
+        if not top3:
+            logger.warning("AI selector returned no signals, fallback to original config")
+            self._ai_selection.fallback_reason = "empty_ai_signals"
+            return
+        signal_for_ticker = next(
+            (item for item in top3 if str(item.get("ticker") or "").upper() == self.ticker.upper()),
+            None,
+        )
+        regime = self._detect_market_regime(top3, signal_for_ticker)
+        strategy = self._route_strategy(regime, signal_for_ticker)
+        allocation_weight = self._allocate_portfolio_weight(top3, signal_for_ticker)
+        risk_approved = self._preapprove_ai_risk(regime, allocation_weight, signal_for_ticker)
+        self._ai_selection = AISelectionDecision(
+            enabled=True,
+            active=True,
+            top10=top10,
+            top3=top3,
+            signal_for_ticker=signal_for_ticker,
+            regime=regime,
+            strategy=strategy,
+            risk_approved=risk_approved,
+            allocation_weight=allocation_weight,
+        )
+        logger.info("AI selector top10 candidates: %s", [item.get("ticker") for item in top10])
+        logger.info("AI selector selected top3: %s", [item.get("ticker") for item in top3])
+        logger.info(
+            "AI selector ticker=%s final_score=%s reason=%s regime=%s strategy=%s risk_approved=%s",
+            self.ticker,
+            signal_for_ticker.get("score") if signal_for_ticker else None,
+            signal_for_ticker.get("reason") if signal_for_ticker else "not_selected",
+            regime,
+            strategy,
+            risk_approved,
+        )
+        self._write_runtime_audit(
+            "ai_selector_decision",
+            ai_selector_enabled=True,
+            top10_candidates=top10,
+            selected_top3=top3,
+            final_score=signal_for_ticker.get("score") if signal_for_ticker else None,
+            ai_reason=signal_for_ticker.get("reason") if signal_for_ticker else "not_selected",
+            regime=regime,
+            strategy=strategy,
+            risk_approved=risk_approved,
+        )
+
+    def _detect_market_regime(self, top3: list[dict], signal_for_ticker: Optional[dict]) -> str:
+        if signal_for_ticker is None:
+            return "NO_SELECTION"
+        avg_confidence = sum(float(item.get("confidence") or 0.0) for item in top3) / max(1, len(top3))
+        if avg_confidence < 0.30:
+            return "EVENT"
+        return "NORMAL"
+
+    def _route_strategy(self, regime: str, signal_for_ticker: Optional[dict]) -> str:
+        if regime == "EVENT":
+            return "blocked"
+        if signal_for_ticker is None:
+            return "watch_only"
+        return "range_detector"
+
+    def _allocate_portfolio_weight(self, top3: list[dict], signal_for_ticker: Optional[dict]) -> float:
+        if signal_for_ticker is None or not top3:
+            return 0.0
+        return min(0.30, 1.0 / len(top3))
+
+    def _preapprove_ai_risk(
+        self,
+        regime: str,
+        allocation_weight: float,
+        signal_for_ticker: Optional[dict],
+    ) -> bool:
+        if signal_for_ticker is None:
+            return False
+        if regime == "EVENT":
+            return False
+        return 0.0 < allocation_weight <= 0.30
+
+    def _ai_entry_allowed(self) -> bool:
+        if not self._ai_selection.enabled:
+            return True
+        if not self._ai_selection.active:
+            return True
+        if self._ai_selection.regime == "EVENT":
+            return False
+        return bool(self._ai_selection.signal_for_ticker and self._ai_selection.risk_approved)
+
+    def _blocked_ai_reason(self) -> str:
+        if not self._ai_selection.enabled:
+            return "AI 选股未启用"
+        if not self._ai_selection.active:
+            return f"AI 选股回退原配置：{self._ai_selection.fallback_reason or 'unknown'}"
+        if self._ai_selection.regime == "EVENT":
+            return "AI 市场状态为 EVENT，禁止开新仓"
+        if not self._ai_selection.signal_for_ticker:
+            return "当前标的不在 AI Top3，跳过新开仓"
+        if not self._ai_selection.risk_approved:
+            return "AI 风控预检未通过，跳过新开仓"
+        return "AI 选股未批准新开仓"
+
+    def _cap_ai_available_cash(self, available_cash: float, acct) -> float:
+        if not self._ai_selection.enabled or not self._ai_selection.active:
+            return available_cash
+        if not self._ai_selection.signal_for_ticker:
+            return 0.0
+        equity = float(getattr(acct, "equity", 0.0) or 0.0)
+        if equity <= 0 or self._ai_selection.allocation_weight <= 0:
+            return available_cash
+        allocation_cap = equity * min(0.30, self._ai_selection.allocation_weight)
+        return max(0.0, min(available_cash, allocation_cap))
 
     def _verify_live_startup_safety(self) -> bool:
         """Fail closed unless live startup is reduce-only with verified broker data."""

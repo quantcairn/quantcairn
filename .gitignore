@@ -10,6 +10,7 @@ logs/
 snapshots.log
 trading-*.log
 /reports/
+src/ai_selector/reports/*.json
 state/
 config.local.yaml
 

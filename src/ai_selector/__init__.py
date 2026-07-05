@@ -1,6 +1,6 @@
-"""AI Stock Selector package entry."""
+"""AI selector package entry."""
 
-__all__ = ["AIStrategySelector"]
+__all__ = ["AIStrategySelector", "AISelector"]
 
 
 def __getattr__(name: str):
@@ -8,4 +8,8 @@ def __getattr__(name: str):
         from .selector import AIStrategySelector
 
         return AIStrategySelector
+    if name == "AISelector":
+        from .integration import AISelector
+
+        return AISelector
     raise AttributeError(name)
