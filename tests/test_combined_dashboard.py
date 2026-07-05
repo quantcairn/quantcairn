@@ -290,10 +290,14 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "选股配置校验" in html
     assert "已对齐" in html
     assert "当天配置已对齐（美东 2026-06-30）" in html
-    assert "当前启用 TOP5" in html
+    assert "启用中" in html
     assert "SOFI / NVDA" in html
-    assert "后台 refined TOP5" in html
+    assert "精筛参考" in html
     assert "SOFI / NVDA / AAPL" in html
+    assert "已写入当前配置，并通过启动校验。" in html
+    assert "仅供对比，不覆盖当前 reduce-only 配置。" in html
+    assert "前台阶段：fast_preliminary" in html
+    assert "后台精筛：background_fast_preliminary / fast_preliminary" in html
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html

@@ -754,6 +754,31 @@ HTML = """<!DOCTYPE html>
     .quote-item .val{
         display:block;margin-top:6px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.38
     }
+    .selection-brief{
+        display:grid;gap:10px;margin-top:10px
+    }
+    .selection-brief-item{
+        display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;
+        padding:12px 13px;border-radius:14px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)
+    }
+    .selection-tag{
+        display:inline-flex;align-items:center;justify-content:center;min-width:62px;
+        padding:6px 10px;border-radius:999px;background:rgba(125,211,252,.12);border:1px solid rgba(125,211,252,.2);
+        color:#d7f0ff;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase
+    }
+    .selection-tag.live{
+        background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.22);color:#b8f5d0
+    }
+    .selection-copy{min-width:0}
+    .selection-copy .symbols{
+        display:block;color:#fff;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.45;word-break:break-word
+    }
+    .selection-copy .note{
+        display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.45
+    }
+    .selection-status{
+        margin-top:10px;color:var(--muted);font-size:12px;line-height:1.45
+    }
     .source-chip{
         display:inline-flex;align-items:center;gap:6px;margin-top:10px;
         padding:6px 10px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.08em;
@@ -1000,29 +1025,39 @@ HTML = """<!DOCTYPE html>
                         </div>
                         {% endfor %}
                     </div>
-                    <div class="pnl-grid" style="margin-top:10px">
-                        <div class="quote-item">
-                            <span class="label">当前启用 TOP5</span>
-                            <span class="val">
-                                {% if ai_selection.top5 %}
-                                    {{ ai_selection.top5 | map(attribute='ticker') | join(' / ') }}
-                                {% else %}
-                                    暂无
-                                {% endif %}
-                            </span>
-                            <span class="label" style="margin-top:6px">这组才是当前配置已写入并被启动守卫校验的标的</span>
+                    <div class="selection-brief">
+                        <div class="selection-brief-item">
+                            <span class="selection-tag live">启用中</span>
+                            <div class="selection-copy">
+                                <span class="symbols">
+                                    {% if ai_selection.top5 %}
+                                        {{ ai_selection.top5 | map(attribute='ticker') | join(' / ') }}
+                                    {% else %}
+                                        暂无
+                                    {% endif %}
+                                </span>
+                                <span class="note">已写入当前配置，并通过启动校验。</span>
+                            </div>
                         </div>
-                        <div class="quote-item">
-                            <span class="label">后台 refined TOP5</span>
-                            <span class="val">
-                                {% if ai_selection.refined_top5 %}
-                                    {{ ai_selection.refined_top5 | map(attribute='ticker') | join(' / ') }}
-                                {% else %}
-                                    暂无
-                                {% endif %}
-                            </span>
-                            <span class="label" style="margin-top:6px">仅作补充参考，不会覆盖当前 reduce-only 启动配置</span>
+                        <div class="selection-brief-item">
+                            <span class="selection-tag">精筛参考</span>
+                            <div class="selection-copy">
+                                <span class="symbols">
+                                    {% if ai_selection.refined_top5 %}
+                                        {{ ai_selection.refined_top5 | map(attribute='ticker') | join(' / ') }}
+                                    {% else %}
+                                        暂无
+                                    {% endif %}
+                                </span>
+                                <span class="note">仅供对比，不覆盖当前 reduce-only 配置。</span>
+                            </div>
                         </div>
+                    </div>
+                    <div class="selection-status">
+                        前台阶段：{{ ai_selection.settings.selection_stage or 'unknown' }}
+                        {% if ai_selection.refinement_status %}
+                            · 后台精筛：{{ ai_selection.refinement_status }}{% if ai_selection.refinement_selection_stage %} / {{ ai_selection.refinement_selection_stage }}{% endif %}
+                        {% endif %}
                     </div>
                     {% else %}
                     <div class="selector-empty">先运行一次 `scripts/run_ai_selector.py`，这里就会显示最新的 AI 区间选股结果。</div>
