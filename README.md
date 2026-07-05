@@ -200,6 +200,7 @@ soxs-range-arbitrage/
 - 如果同时启用，会造成重复启动，日志里会反复出现 `AI Top3 trading started`
 - 无论使用 `launchd` 还是 `cron`，都应调用 `auto_trade.sh start|stop`
 - 不要再直接用 `multi_launch.sh start|stop` 做定时启停，因为它会绕过“当天选股配置校验”
+- `launchd/com.soxs.arbitrage*.plist` 现在默认使用稳定的后台常驻路径，不再强制 TOP1-5 走 `launchd` 子服务
 - `auto_trade.sh start` 和 `multi_launch.sh start` 现在都会先检查是否为美股交易日；像 `2026-07-03` 这类休市日会直接跳过启动
 
 示例如下：
@@ -219,6 +220,16 @@ launchctl load ~/Library/LaunchAgents/com.soxs.ai_selector.plist
 25 21 * * 1-5 /Users/chenwei/soxs-range-arbitrage/auto_trade.sh start
 # 每个交易日 04:05 停止（上海时间，对应美东 16:05）
 5 4 * * 1-5 /Users/chenwei/soxs-range-arbitrage/auto_trade.sh stop
+```
+
+日常手动控制建议直接使用：
+
+```bash
+cd /Users/chenwei/soxs-range-arbitrage
+./tradectl.sh up
+./tradectl.sh status
+./tradectl.sh restart
+./tradectl.sh down
 ```
 
 ## AI 选股日报

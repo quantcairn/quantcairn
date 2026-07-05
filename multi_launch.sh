@@ -314,6 +314,13 @@ case "$1" in
         fi
         ;;
 
+    restart-all)
+        stop_existing
+        sleep 1
+        start_all
+        echo "🔄 All services restarted"
+        ;;
+
     status)
         echo "═══════════════════════════════════"
         echo "  📊 AI Top5 Trading Status"
@@ -360,6 +367,6 @@ case "$1" in
         ;;
 
     *)
-        echo "Usage: $0 {start|start-foreground|stop|restart-top|restart-combined|status|summary}"
+        echo "Usage: $0 {start|start-foreground|stop|restart-top|restart-combined|restart-all|status|summary}"
         ;;
 esac

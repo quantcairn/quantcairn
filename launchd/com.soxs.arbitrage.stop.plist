@@ -20,7 +20,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>SOXS_USE_LAUNCHD_TOPS</key>
-    <string>1</string>
+    <string>0</string>
   </dict>
   <key>StandardOutPath</key>
   <string>/Users/chenwei/soxs-range-arbitrage/logs/launchd.stop.out.log</string>
