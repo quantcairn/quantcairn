@@ -48,8 +48,8 @@ def _dynamic_min_profit_per_trade(estimated_price: float) -> float:
     except (TypeError, ValueError):
         price = 0.0
     if price <= 0:
-        return 1.0
-    return round(max(0.35, min(1.0, price * 0.04)), 2)
+        return 0.8
+    return round(max(0.30, min(0.9, price * 0.03)), 2)
 
 
 def _global_reduce_only_enabled() -> bool:
@@ -107,16 +107,16 @@ def write_top_configs(top_items):
                 "mode": "auto",
                 "support_price": None,
                 "resistance_price": None,
-                "auto_lookback": 78,
+                "auto_lookback": 60,
                 "auto_refresh_minutes": _auto_refresh_minutes(),
                 "trend_filter": {
                     "enabled": True,
                     "ma_period": 20,
                     "min_trend_strength": 0.3,
                 },
-                "tolerance_pct": 0.8,
+                "tolerance_pct": 1.0,
                 "min_profit_per_trade": _dynamic_min_profit_per_trade(estimated_price),
-                "min_range_width_pct": 0.8,
+                "min_range_width_pct": 0.6,
                 "quick_stop_pct": 3.0,
             },
             "position": {
@@ -162,3 +162,11 @@ def write_top_configs(top_items):
         path = os.path.join(BASE, f"configs/TOP{i}.yaml")
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, sort_keys=False)
+
+    max_slots = 5
+    for i in range(len(top_items) + 1, max_slots + 1):
+        path = os.path.join(BASE, f"configs/TOP{i}.yaml")
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass

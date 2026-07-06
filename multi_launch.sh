@@ -1,15 +1,15 @@
 #!/bin/bash
-# AI 选股后的 TOP5 并发交易系统
-# TOP1 (8091) + TOP2 (8092) + TOP3 (8093) + TOP4 (8094) + TOP5 (8095)
+# AI 选股后的 TOP3 并发交易系统
+# TOP1 (8091) + TOP2 (8092) + TOP3 (8093)
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
-USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-0}"
+USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-1}"
 UID_NUM="$(id -u)"
-TOP_ENGINES=(TOP1 TOP2 TOP3 TOP4 TOP5)
+TOP_ENGINES=(TOP1 TOP2 TOP3)
 ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
 COMBINED_JOB="com.soxs.combined"
 
@@ -60,6 +60,13 @@ port_for_top() {
 launchd_job_for_top() {
     local top_name="$1"
     printf 'com.soxs.top%s' "${top_name:3}"
+}
+
+launchd_top_jobs() {
+    local top_name
+    for top_name in "${TOP_ENGINES[@]}"; do
+        launchd_job_for_top "$top_name"
+    done
 }
 
 kill_listener_on_port() {
@@ -147,7 +154,7 @@ stop_top() {
         pkill -f "run.py --config .*configs/${top_name}.yaml" 2>/dev/null || true
         pkill -f "run.py --config ${PROJECT_DIR}/configs/${top_name}.yaml" 2>/dev/null || true
     done
-    for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
+    for job in $(launchd_top_jobs); do
         launchctl disable gui/"$UID_NUM"/"$job" 2>/dev/null || true
         launchctl bootout gui/"$UID_NUM"/"$job" 2>/dev/null || true
     done
@@ -233,7 +240,7 @@ EOF
 
     if [ "$USE_LAUNCHD_TOPS" = "1" ]; then
         launchd_failed=0
-        for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
+        for job in $(launchd_top_jobs); do
             plist="$PROJECT_DIR/launchd/${job}.plist"
             if [ -f "$plist" ]; then
                 launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
@@ -304,7 +311,7 @@ start_all() {
     for top_name in "${TOP_ENGINES[@]}"; do
         echo "   ${top_name}:     http://localhost:$(port_for_top "$top_name")"
     done
-    echo "   COMBINED: http://localhost:8090  ← AI Top5 总览"
+    echo "   COMBINED: http://localhost:8090  ← AI Top3 总览"
 
     if [ "$wait_for_children" = "wait" ]; then
         trap 'stop_existing; exit 0' INT TERM
@@ -361,7 +368,7 @@ case "$1" in
 
     status)
         echo "═══════════════════════════════════"
-        echo "  📊 AI Top5 Trading Status"
+        echo "  📊 AI Top3 Trading Status"
         echo "═══════════════════════════════════"
         for ticker in "${TOP_ENGINES[@]}"; do
             port="$(port_for_top "$ticker")"
@@ -388,7 +395,7 @@ case "$1" in
     summary)
         echo ""
         echo "╔══════════════════════════════════════════════════════════╗"
-        echo "║  📊 AI Top5 总盈亏汇总                                  ║"
+        echo "║  📊 AI Top3 总盈亏汇总                                  ║"
         echo "╠══════════════════════════════════════════════════════════╣"
         total_pnl=0
         for ticker in "${TOP_ENGINES[@]}"; do

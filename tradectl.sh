@@ -16,7 +16,7 @@ show_help() {
   up                启动整套交易服务
   down              停止整套交易服务
   restart           重启整套交易服务
-  restart-top       仅重启 TOP1-5 引擎
+  restart-top       仅重启 TOP1-3 引擎
   restart-combined  仅重启 8090 总览页
   reload-launchd    重载定时任务
   status            查看当前运行状态

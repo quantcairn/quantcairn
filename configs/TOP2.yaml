@@ -14,15 +14,15 @@ range:
   mode: auto
   support_price: null
   resistance_price: null
-  auto_lookback: 78
+  auto_lookback: 60
   auto_refresh_minutes: 5
   trend_filter:
     enabled: true
     ma_period: 20
     min_trend_strength: 0.3
-  tolerance_pct: 0.8
-  min_profit_per_trade: 1.0
-  min_range_width_pct: 0.8
+  tolerance_pct: 1.0
+  min_profit_per_trade: 0.9
+  min_range_width_pct: 0.6
   quick_stop_pct: 3.0
 position:
   size_per_trade: 2

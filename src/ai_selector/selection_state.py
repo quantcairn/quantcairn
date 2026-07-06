@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from src.ai_selector.config import load_runtime_config
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
@@ -20,7 +21,16 @@ def selection_state_path() -> Path:
     return _state_dir() / "ai_selection_state.json"
 
 
-def current_top_config_symbols(limit: int = 5) -> list[str]:
+def configured_top_count() -> int:
+    try:
+        return max(1, int(load_runtime_config().top_n))
+    except Exception:
+        return 3
+
+
+def current_top_config_symbols(limit: int | None = None) -> list[str]:
+    if limit is None:
+        limit = configured_top_count()
     symbols: list[str] = []
     for index in range(1, limit + 1):
         path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
@@ -34,7 +44,9 @@ def current_top_config_symbols(limit: int = 5) -> list[str]:
     return symbols
 
 
-def has_live_top_configs(limit: int = 5) -> bool:
+def has_live_top_configs(limit: int | None = None) -> bool:
+    if limit is None:
+        limit = configured_top_count()
     for index in range(1, limit + 1):
         path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
         try:
@@ -70,7 +82,9 @@ def write_selection_state(
         "et_date": et_date,
         "generated_at": generated_at,
         "selected_symbols": list(selected_symbols),
-        "top_config_symbols": current_top_config_symbols(limit=max(5, len(selected_symbols))),
+        "top_config_symbols": current_top_config_symbols(
+            limit=max(configured_top_count(), len(selected_symbols))
+        ),
         "report_path": report_path,
         "updated_at": datetime.now().isoformat(),
     }
@@ -99,7 +113,7 @@ def verify_selection_state(required_et_date: str | None = None) -> tuple[bool, s
         if str(item or "").strip()
     ]
     expected = expected_top_configs or expected_selected
-    actual = current_top_config_symbols(limit=max(5, len(expected)))
+    actual = current_top_config_symbols(limit=max(configured_top_count(), len(expected)))
     if expected != actual:
         return False, "top_config_symbols_mismatch", state
 

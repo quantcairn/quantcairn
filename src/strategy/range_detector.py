@@ -59,8 +59,8 @@ class RangeDetector:
         Refreshes every auto_refresh_minutes.
     """
 
-    BUY_ZONE_MAX_POSITION_PCT = 55.0
-    TREND_BLOCK_MIN_PCT_FROM_MA = 1.0
+    BUY_ZONE_MAX_POSITION_PCT = 60.0
+    TREND_BLOCK_MIN_PCT_FROM_MA = 1.2
 
     def __init__(
         self,
@@ -662,7 +662,7 @@ class RangeDetector:
                     )
 
                 # Support confidence check: only buy at "real" supports (volume-tested)
-                if self.mode != "manual" and self._support_confidence < 0.15:
+                if self.mode != "manual" and self._support_confidence < 0.10:
                     return Signal(
                         type=SignalType.HOLD,
                         ticker=self.ticker,

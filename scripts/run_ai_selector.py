@@ -22,10 +22,12 @@ from src.config.local_env import load_local_ai_env
 from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector.selector import write_selection_filter_log
 from src.ai_selector.selection_state import write_selection_state
+from src.ai_selector.config import load_runtime_config
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
+TOP_COUNT = max(1, int(load_runtime_config().top_n))
 
 
 def _et_now() -> datetime:
@@ -236,7 +238,7 @@ def _spawn_background_refinement(expected_timestamp: str) -> None:
 
 
 def _live_equity_positions() -> list[dict] | None:
-    """Return current long equity positions; options are managed outside TOP5."""
+    """Return current long equity positions; options are managed outside Top3 stock slots."""
     try:
         from src.dashboard.combined import _fetch_live_account_summary
 
@@ -258,7 +260,7 @@ def _live_equity_positions() -> list[dict] | None:
     return positions
 
 
-def _pin_live_positions(selected: list[dict], positions: list[dict], limit: int = 5) -> list[dict]:
+def _pin_live_positions(selected: list[dict], positions: list[dict], limit: int = TOP_COUNT) -> list[dict]:
     """Reserve TOP slots for real equity holdings so exits remain managed."""
     selected_by_ticker = {
         str(item.get("ticker") or "").upper(): dict(item) for item in selected
@@ -331,21 +333,21 @@ def main():
     preferred_symbols = integrated_ai.get("preferred_symbols") or None
     sel = AIStrategySelector()
     out = sel.run_selection(write_configs=False, symbols_override=preferred_symbols)
-    selected = out.get('top5') or out.get('top3') or []
+    selected = out.get('top3') or out.get('top5') or []
     if not selected and preferred_symbols:
         integrated_ai["fallback_used"] = True
         out = sel.run_selection(write_configs=False)
-        selected = out.get('top5') or out.get('top3') or []
+        selected = out.get('top3') or out.get('top5') or []
 
     out["top10"] = _merge_live_position_flags(list(out.get("top10") or []), live_positions or [])
     out["top10"] = _annotate_with_ai_signals(list(out.get("top10") or []), integrated_ai.get("signal_map") or {})
-    selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
+    selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})[:TOP_COUNT]
     if integrated_ai.get("preferred_symbols"):
         selected = _prioritize_ai_rank(selected, integrated_ai.get("signal_map") or {})
     selected = _pin_live_positions(
         selected,
         live_positions or [],
-        limit=sel.selection_size,
+        limit=min(sel.selection_size, TOP_COUNT),
     )
     preserved_positions = [
         str(item.get("ticker") or "").upper()
@@ -368,15 +370,16 @@ def main():
             item["selection_date"] = _selection_date()
             item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
         write_top_configs(selected)
-        out["top5"] = selected
-        out["top3"] = selected[:3]
+        selected = list(selected[:TOP_COUNT])
+        out["top5"] = list(selected)
+        out["top3"] = list(selected)
         out["report"] = sel._format_report_rows(selected)
     timestamp = datetime.now().isoformat()
     print(f"AI selection completed at {timestamp}")
     print("Top10:")
     for i, t in enumerate(out['top10'], start=1):
         print(f"{i}. {t['ticker']} — {t['score']}")
-    print("Top5:")
+    print("Top3:")
     for i, t in enumerate(selected, start=1):
         print(f"{i}. {t['ticker']} — {t['score']}")
 
@@ -391,8 +394,8 @@ def main():
         'providers_disabled': providers_disabled,
         'fmp_enabled': fmp_enabled,
         'top10': out.get('top10', []),
-        'top5': selected,
-        'top3': out.get('top3', []),
+        'top5': list(selected),
+        'top3': list(out.get('top3', [])),
         'protected_positions': [
             {
                 "ticker": str(item.get("ticker") or "").upper(),
@@ -438,8 +441,8 @@ def main():
     # macOS notification is optional and must never block the selector.
     if os.environ.get("AI_SELECTOR_MAC_NOTIFY", "0") == "1":
         try:
-            top5tickers = ', '.join([t['ticker'] for t in selected])
-            msg = f"Top5: {top5tickers} (非成交提醒)"
+            top3tickers = ', '.join([t['ticker'] for t in selected])
+            msg = f"Top3: {top3tickers} (非成交提醒)"
             subprocess.run(
                 ['osascript', '-e', f'display notification "{msg}" with title "AI 选股更新"'],
                 check=False,

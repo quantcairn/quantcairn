@@ -1,4 +1,4 @@
-"""Combined dashboard aggregating the selected TOP5 trading engines."""
+"""Combined dashboard aggregating the selected TOP3 trading engines."""
 import json, os, subprocess, threading, urllib.request
 import time
 from datetime import datetime
@@ -22,8 +22,6 @@ TICKERS = [
     {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
     {"name": "TOP2", "desc": "AI优选第2名",    "port": 8092, "config": "TOP2.yaml"},
     {"name": "TOP3", "desc": "AI优选第3名",    "port": 8093, "config": "TOP3.yaml"},
-    {"name": "TOP4", "desc": "AI优选第4名",    "port": 8094, "config": "TOP4.yaml"},
-    {"name": "TOP5", "desc": "AI优选第5名",    "port": 8095, "config": "TOP5.yaml"},
 ]
 
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
@@ -369,7 +367,7 @@ def _selection_sync_status() -> dict:
     elif reason == "top_config_symbols_mismatch":
         label = "配置不一致"
         level = "red"
-        detail = "TOP1-5 配置和最近一次选股结果不一致，交易启动会被拦下。"
+        detail = "TOP1-3 配置和最近一次选股结果不一致，交易启动会被拦下。"
     else:
         label = "校验失败"
         level = "red"
@@ -936,12 +934,12 @@ HTML = """<!DOCTYPE html>
     <div class="topbar">
         <div class="brand">
             <h1>AI区间交易总览</h1>
-            <p>TOP1 到 TOP5 五路联动监控，每 5 秒自动刷新。</p>
+            <p>TOP1 到 TOP3 三路联动监控，每 5 秒自动刷新。</p>
             <div class="headline-stats">
                 <div class="headline-stat">
                     <span class="label">今日总收益</span>
                     <span class="value {{ 'green' if today_total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(today_total_pnl) }}</span>
-                    <span class="sub">按 5 路策略今日盈亏汇总</span>
+                    <span class="sub">按 3 路策略今日盈亏汇总</span>
                 </div>
                 <div class="headline-stat">
                     <span class="label">账户浮盈亏</span>
@@ -1114,7 +1112,7 @@ HTML = """<!DOCTYPE html>
                             <span>波动</span>
                             <span>区间</span>
                         </div>
-                        {% for row in ai_selection.report[:5] %}
+                        {% for row in ai_selection.report[:3] %}
                         <div class="selector-row">
                             <span class="num">{{ row.rank }}</span>
                             <span class="ticker">{{ row.ticker }}</span>

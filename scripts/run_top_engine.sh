@@ -53,13 +53,13 @@ kill_listener_on_port() {
         return 0
     fi
     local pids
-    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"
+    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
     if [ -z "$pids" ]; then
         return 0
     fi
     kill $pids 2>/dev/null || true
     sleep 1
-    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"
+    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
     if [ -n "$pids" ]; then
         kill -9 $pids 2>/dev/null || true
     fi
