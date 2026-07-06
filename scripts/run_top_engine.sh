@@ -47,6 +47,24 @@ LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
 REDIRECT_STDIO="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-0}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
+kill_listener_on_port() {
+    local target_port="$1"
+    if ! command -v lsof >/dev/null 2>&1; then
+        return 0
+    fi
+    local pids
+    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"
+    if [ -z "$pids" ]; then
+        return 0
+    fi
+    kill $pids 2>/dev/null || true
+    sleep 1
+    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"
+    if [ -n "$pids" ]; then
+        kill -9 $pids 2>/dev/null || true
+    fi
+}
+
 run_engine() {
     if [ "$ENGINE_MODE" = "live" ]; then
         exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --port "$port"
@@ -64,4 +82,5 @@ if [ "$REDIRECT_STDIO" = "1" ]; then
     exec >> "$LOG_DIR/${log_name}.log" 2>&1
 fi
 
+kill_listener_on_port "$port"
 run_engine
