@@ -85,6 +85,14 @@ wait_until_port_free() {
 
 run_engine() {
     if [ "$ENGINE_MODE" = "live" ]; then
+        local base_delay="${SOXS_LIVE_ENGINE_STARTUP_STAGGER_SECONDS:-4}"
+        local offset=$((port - 8091))
+        if [ "$offset" -gt 0 ] && [ "$base_delay" -gt 0 ] 2>/dev/null; then
+            sleep_seconds=$((offset * base_delay))
+            sleep "$sleep_seconds"
+        fi
+    fi
+    if [ "$ENGINE_MODE" = "live" ]; then
         exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --port "$port"
     fi
 

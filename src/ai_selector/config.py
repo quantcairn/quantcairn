@@ -35,7 +35,6 @@ TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 class AISelectorRuntimeConfig:
     enabled: bool
     top_n: int
-    analysis_universe_limit: int
     universe: list[str]
     top10_path: Path
     tradingagents_path: str
@@ -45,6 +44,7 @@ class AISelectorRuntimeConfig:
     finrobot_python: str
     finrobot_config_file: str
     finrobot_output_dir: str
+    analysis_universe_limit: int = ANALYSIS_UNIVERSE_LIMIT
     openbb_enabled: bool = OPENBB_ENABLED
     fmp_enabled: bool = FMP_ENABLED
     fmp_api_key: str = FMP_API_KEY

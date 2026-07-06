@@ -150,6 +150,37 @@ def _annotate_with_ai_signals(rows: list[dict], signal_map: dict[str, dict]) -> 
     return annotated
 
 
+def _build_report_top10(
+    selector_top10: list[dict],
+    selected: list[dict],
+    signal_map: dict[str, dict],
+    live_positions: list[dict] | None,
+) -> list[dict]:
+    candidates = list(selector_top10 or [])
+    if not candidates:
+        candidates = list(selected or [])
+    candidates = _merge_live_position_flags(candidates, live_positions or [])
+    candidates = _annotate_with_ai_signals(candidates, signal_map or {})
+    if not candidates:
+        fallback_rows = []
+        for item in selected or []:
+            row = dict(item)
+            row.setdefault("selection_penalty_reason", "top10_backfilled_from_selected")
+            fallback_rows.append(row)
+        candidates = fallback_rows
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        ticker = _normalize_ticker(raw.get("ticker"))
+        if not ticker or ticker in seen:
+            continue
+        item = dict(raw)
+        item["ticker"] = ticker
+        deduped.append(item)
+        seen.add(ticker)
+    return deduped
+
+
 def _prioritize_ai_rank(rows: list[dict], signal_map: dict[str, dict]) -> list[dict]:
     def _sort_key(item: dict):
         ticker = _normalize_ticker(item.get("ticker"))
@@ -339,8 +370,6 @@ def main():
         out = sel.run_selection(write_configs=False)
         selected = out.get('top3') or out.get('top5') or []
 
-    out["top10"] = _merge_live_position_flags(list(out.get("top10") or []), live_positions or [])
-    out["top10"] = _annotate_with_ai_signals(list(out.get("top10") or []), integrated_ai.get("signal_map") or {})
     selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})[:TOP_COUNT]
     if integrated_ai.get("preferred_symbols"):
         selected = _prioritize_ai_rank(selected, integrated_ai.get("signal_map") or {})
@@ -360,6 +389,12 @@ def main():
     ]
     quality_report["existing_real_positions_preserved"] = preserved_positions
     out["quality_filter_report"] = quality_report
+    out["top10"] = _build_report_top10(
+        list(out.get("top10") or []),
+        list(selected),
+        integrated_ai.get("signal_map") or {},
+        live_positions or [],
+    )
     write_selection_filter_log(quality_report)
     if not selected:
         print("AI selection produced no tradable symbols; aborting without updating TOP configs.")

@@ -136,6 +136,70 @@ def test_trading_engine_stale_selection_state_falls_back_without_ai_run():
         monkeypatch.restore()
 
 
+def test_trading_engine_blocks_ai_buy_when_cached_selection_used_fallback():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_path = root / "ai_selection_latest.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "selection_date": "2026-07-06",
+                        "fallback_used": True,
+                        "top3": [{"ticker": "SOFI", "score": 55.0, "confidence": 0.58, "reason": "fallback"}],
+                        "top10": [{"ticker": "SOFI", "score": 55.0, "confidence": 0.58, "reason": "fallback"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monkeypatch.setattr(
+                engine_module,
+                "load_ai_selector_runtime_config",
+                lambda: AISelectorRuntimeConfig(
+                    enabled=True,
+                    top_n=3,
+                    universe=["SOFI"],
+                    top10_path=root / "unused.json",
+                    tradingagents_path="",
+                    tradingagents_python="python3",
+                    tradingagents_analysis_date=None,
+                    finrobot_path="",
+                    finrobot_python="python3",
+                    finrobot_config_file="",
+                    finrobot_output_dir="",
+                ),
+            )
+            monkeypatch.setattr(
+                engine_module,
+                "load_selection_state",
+                lambda: {"et_date": "2026-07-06", "report_path": str(report_path)},
+            )
+
+            class FakeDateTime:
+                @classmethod
+                def now(cls, tz=None):
+                    from datetime import datetime
+                    return datetime(2026, 7, 6, 10, 0, 0)
+
+                @classmethod
+                def utcnow(cls):
+                    from datetime import datetime
+                    return datetime(2026, 7, 6, 14, 0, 0)
+
+            monkeypatch.setattr(engine_module, "datetime", FakeDateTime)
+            engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
+            engine._initialize_ai_selector()
+
+            assert engine._ai_selection.active is True
+            assert engine._ai_selection.fallback_used is True
+            assert engine._ai_selection.risk_approved is False
+            assert engine._ai_entry_allowed() is False
+            assert "降级到回退数据" in engine._blocked_ai_reason()
+    finally:
+        monkeypatch.restore()
+
+
 def test_live_top_engine_blocks_when_selection_state_invalid():
     monkeypatch = SimpleMonkeyPatch()
     try:

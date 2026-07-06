@@ -61,6 +61,7 @@ class AISelectionDecision:
     risk_approved: bool = True
     allocation_weight: float = 0.0
     fallback_reason: str = ""
+    fallback_used: bool = False
 
 
 def _audit_log_path() -> Path:
@@ -734,7 +735,7 @@ class TradingEngine:
             return
         cached_selection = self._load_cached_ai_selection(runtime)
         if cached_selection is not None:
-            top3, top10 = cached_selection
+            top3, top10, ai_meta = cached_selection
         else:
             logger.warning("AI selection stale, fallback to configured tickers")
             self._ai_selection.fallback_reason = "ai_selection_stale"
@@ -755,7 +756,12 @@ class TradingEngine:
         regime = self._detect_market_regime(top3, signal_for_ticker)
         strategy = self._route_strategy(regime, signal_for_ticker)
         allocation_weight = self._allocate_portfolio_weight(top3, signal_for_ticker)
-        risk_approved = self._preapprove_ai_risk(regime, allocation_weight, signal_for_ticker)
+        risk_approved = self._preapprove_ai_risk(
+            regime,
+            allocation_weight,
+            signal_for_ticker,
+            fallback_used=bool(ai_meta.get("fallback_used", False)),
+        )
         self._ai_selection = AISelectionDecision(
             enabled=True,
             active=True,
@@ -766,17 +772,19 @@ class TradingEngine:
             strategy=strategy,
             risk_approved=risk_approved,
             allocation_weight=allocation_weight,
+            fallback_used=bool(ai_meta.get("fallback_used", False)),
         )
         logger.info("AI selector top10 candidates: %s", [item.get("ticker") for item in top10])
         logger.info("AI selector selected top3: %s", [item.get("ticker") for item in top3])
         logger.info(
-            "AI selector ticker=%s final_score=%s reason=%s regime=%s strategy=%s risk_approved=%s",
+            "AI selector ticker=%s final_score=%s reason=%s regime=%s strategy=%s risk_approved=%s fallback_used=%s",
             self.ticker,
             signal_for_ticker.get("score") if signal_for_ticker else None,
             signal_for_ticker.get("reason") if signal_for_ticker else "not_selected",
             regime,
             strategy,
             risk_approved,
+            bool(ai_meta.get("fallback_used", False)),
         )
         self._write_runtime_audit(
             "ai_selector_decision",
@@ -788,12 +796,13 @@ class TradingEngine:
             regime=regime,
             strategy=strategy,
             risk_approved=risk_approved,
+            fallback_used=bool(ai_meta.get("fallback_used", False)),
         )
 
     def _load_cached_ai_selection(
         self,
         runtime,
-    ) -> tuple[list[dict], list[dict]] | None:
+    ) -> tuple[list[dict], list[dict], dict] | None:
         state = load_selection_state()
         if not isinstance(state, dict):
             return None
@@ -838,8 +847,9 @@ class TradingEngine:
             cache_report_path=str(report_path),
             cache_et_date=required_day,
             cached_top3=[item.get("ticker") for item in top3],
+            fallback_used=bool(payload.get("fallback_used", False)),
         )
-        return top3, top10
+        return top3, top10, payload
 
     def _detect_market_regime(self, top3: list[dict], signal_for_ticker: Optional[dict]) -> str:
         if signal_for_ticker is None:
@@ -866,10 +876,13 @@ class TradingEngine:
         regime: str,
         allocation_weight: float,
         signal_for_ticker: Optional[dict],
+        fallback_used: bool = False,
     ) -> bool:
         if signal_for_ticker is None:
             return False
         if regime == "EVENT":
+            return False
+        if fallback_used:
             return False
         return 0.0 < allocation_weight <= 0.30
 
@@ -878,6 +891,8 @@ class TradingEngine:
             return True
         if not self._ai_selection.active:
             return True
+        if self._ai_selection.fallback_used:
+            return False
         if self._ai_selection.regime == "EVENT":
             return False
         return bool(self._ai_selection.signal_for_ticker and self._ai_selection.risk_approved)
@@ -887,6 +902,8 @@ class TradingEngine:
             return "AI 选股未启用"
         if not self._ai_selection.active:
             return f"AI 选股回退原配置：{self._ai_selection.fallback_reason or 'unknown'}"
+        if self._ai_selection.fallback_used:
+            return "AI 选股已降级到回退数据，禁止新开仓"
         if self._ai_selection.regime == "EVENT":
             return "AI 市场状态为 EVENT，禁止开新仓"
         if not self._ai_selection.signal_for_ticker:

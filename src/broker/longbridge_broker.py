@@ -215,6 +215,9 @@ class LongBridgeBroker(BrokerBase):
         self._last_account_error = ""
         self._account_cache_fetched_at = 0.0
         self._positions_cache_fetched_at = 0.0
+        self._active_orders_cache: dict[str, list[Order]] = {}
+        self._active_orders_cache_fetched_at: dict[str, float] = {}
+        self._active_orders_retry_not_before: dict[str, float] = {}
         self._account_retry_not_before = 0.0
         self._positions_retry_not_before = 0.0
         ttl_env = os.environ.get("LONGBRIDGE_CACHE_TTL_SECONDS")
@@ -238,6 +241,9 @@ class LongBridgeBroker(BrokerBase):
         self._shared_snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._shared_positions_path = self._shared_snapshot_dir / "longbridge_positions.json"
         self._shared_account_path = self._shared_snapshot_dir / "longbridge_account.json"
+        active_ttl_env = os.environ.get("LONGBRIDGE_ACTIVE_ORDERS_CACHE_TTL_SECONDS")
+        active_ttl_seconds = float(active_ttl_env) if active_ttl_env else 20.0
+        self._active_orders_cache_ttl_seconds = max(5.0, min(active_ttl_seconds, 300.0))
 
     def _shared_cache_ttl_seconds(self) -> float:
         raw_value = os.environ.get("LONGBRIDGE_SHARED_CACHE_TTL_SECONDS", "").strip()
@@ -336,12 +342,25 @@ class LongBridgeBroker(BrokerBase):
             and (now - self._account_cache_fetched_at) <= (self._account_cache_ttl_seconds * 2)
         )
 
+    def _active_orders_cache_path(self, ticker: str) -> Path:
+        return self._shared_snapshot_dir / f"longbridge_active_orders_{_normalize_base_symbol(ticker)}.json"
+
+    def _can_reuse_active_orders_cache(self, ticker: str, now: float) -> bool:
+        fetched_at = float(self._active_orders_cache_fetched_at.get(_normalize_base_symbol(ticker)) or 0.0)
+        return (
+            _normalize_base_symbol(ticker) in self._active_orders_cache
+            and fetched_at > 0
+            and (now - fetched_at) <= (self._active_orders_cache_ttl_seconds * 2)
+        )
+
     def invalidate_cache(self) -> None:
         """Force the next account/position read to hit the broker."""
         self._account_cache_fetched_at = 0.0
         self._positions_cache_fetched_at = 0.0
+        self._active_orders_cache_fetched_at = {}
         self._account_retry_not_before = 0.0
         self._positions_retry_not_before = 0.0
+        self._active_orders_retry_not_before = {}
 
     def is_positions_snapshot_reliable(self) -> bool:
         """Whether the latest positions response is confirmed by the broker."""
@@ -663,6 +682,46 @@ class LongBridgeBroker(BrokerBase):
 
     def get_active_orders(self, ticker: str) -> Optional[list[Order]]:
         """Return unresolved orders for a symbol so engine startup can fail closed."""
+        symbol = _normalize_base_symbol(ticker)
+        now = time.time()
+        retry_not_before = float(self._active_orders_retry_not_before.get(symbol) or 0.0)
+        if now < retry_not_before:
+            return list(self._active_orders_cache.get(symbol) or [])
+        cached_fetched_at = float(self._active_orders_cache_fetched_at.get(symbol) or 0.0)
+        if cached_fetched_at > 0 and (now - cached_fetched_at) < self._active_orders_cache_ttl_seconds:
+            return list(self._active_orders_cache.get(symbol) or [])
+        shared_active_orders = self._load_shared_snapshot(self._active_orders_cache_path(symbol))
+        if shared_active_orders is not None:
+            shared_payload = shared_active_orders.get("payload") or {}
+            if isinstance(shared_payload, dict):
+                orders_payload = shared_payload.get("orders") or []
+                orders = []
+                for item in orders_payload:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        side_value = str(item.get("side") or "").strip().upper()
+                        status_value = str(item.get("status") or "").strip().upper()
+                        order_type_value = str(item.get("order_type") or "").strip().upper()
+                        orders.append(Order(
+                            order_id=str(item.get("order_id") or ""),
+                            ticker=str(item.get("ticker") or symbol),
+                            side=OrderSide.BUY if side_value == "BUY" else OrderSide.SELL,
+                            order_type=OrderType.LIMIT if order_type_value == "LIMIT" else OrderType.MARKET,
+                            quantity=int(item.get("quantity") or 0),
+                            filled_quantity=int(item.get("filled_quantity") or 0),
+                            avg_fill_price=float(item.get("avg_fill_price") or 0.0),
+                            status=OrderStatus.PARTIALLY_FILLED if status_value == "PARTIALLY_FILLED" else OrderStatus.PENDING,
+                            notes=str(item.get("notes") or ""),
+                        ))
+                    except Exception:
+                        continue
+                self._active_orders_cache[symbol] = orders
+                self._active_orders_cache_fetched_at[symbol] = float(
+                    shared_active_orders.get("fetched_at") or now
+                )
+                self._active_orders_retry_not_before[symbol] = now
+                return list(orders)
         if not self.is_connected():
             return []
         try:
@@ -696,6 +755,30 @@ class LongBridgeBroker(BrokerBase):
                     ),
                     notes=str(od.msg or ""),
                 ))
+            self._active_orders_cache[symbol] = list(orders)
+            self._active_orders_cache_fetched_at[symbol] = now
+            self._active_orders_retry_not_before[symbol] = now
+            self._write_shared_snapshot(
+                self._active_orders_cache_path(symbol),
+                {
+                    "orders": [
+                        {
+                            "order_id": order.order_id,
+                            "ticker": order.ticker,
+                            "side": order.side.value,
+                            "order_type": order.order_type.value,
+                            "quantity": order.quantity,
+                            "filled_quantity": order.filled_quantity,
+                            "avg_fill_price": order.avg_fill_price,
+                            "status": order.status.value,
+                            "notes": order.notes,
+                        }
+                        for order in orders
+                    ],
+                    "reliable": True,
+                    "error": "",
+                },
+            )
             self._write_audit(
                 "get_active_orders",
                 {"ticker": ticker},
@@ -705,6 +788,10 @@ class LongBridgeBroker(BrokerBase):
             return orders
         except Exception as exc:
             logger.error("Get active orders failed: %s", exc)
+            self._active_orders_retry_not_before[symbol] = now + self._cache_retry_backoff_seconds
+            if _is_rate_limit_error(exc) and self._can_reuse_active_orders_cache(symbol, now):
+                logger.warning("Get active orders rate limited; reusing cached active-orders snapshot for %s", symbol)
+                return list(self._active_orders_cache.get(symbol) or [])
             self._write_audit(
                 "get_active_orders",
                 {"ticker": ticker},

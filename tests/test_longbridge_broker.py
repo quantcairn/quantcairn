@@ -355,6 +355,61 @@ def test_get_active_orders_accepts_unhashable_status_objects(monkeypatch=None):
     assert broker._trade_ctx.submit_kwargs["symbol"] == "AAPL.US"
 
 
+def test_get_active_orders_reuses_cached_snapshot_after_rate_limit(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit(".", 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    from src.broker import longbridge_broker as module
+
+    class FakeTradeContext:
+        def __init__(self, config):
+            self.config = config
+            self.calls = 0
+
+        def today_orders(self, symbol):
+            self.calls += 1
+            if self.calls == 1:
+                return []
+            raise RuntimeError("api request is limited, please slow down request frequency")
+
+    fake_lb = SimpleNamespace(
+        Config=SimpleNamespace(from_apikey=lambda *args, **kwargs: SimpleNamespace()),
+        TradeContext=FakeTradeContext,
+        QuoteContext=lambda config: SimpleNamespace(),
+        OrderSide=SimpleNamespace(Buy="Buy", Sell="Sell"),
+        OrderType=SimpleNamespace(MO="MO", LO="LO"),
+        TimeInForceType=SimpleNamespace(Day="Day"),
+        OpenApiException=RuntimeError,
+        OrderStatus=SimpleNamespace(
+            New="New",
+            PartialFilled="PartialFilled",
+            PendingCancel="PendingCancel",
+            WaitToNew="WaitToNew",
+            NotReported="NotReported",
+            ProtectedNotReported="ProtectedNotReported",
+            VarietiesNotReported="VarietiesNotReported",
+        ),
+    )
+
+    monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+
+    broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+    assert broker.connect() is True
+
+    first = broker.get_active_orders("PLTR")
+    second = broker.get_active_orders("PLTR")
+
+    assert first == []
+    assert second == []
+    assert broker._trade_ctx.calls <= 1
+
+
 def test_longbridge_broker_account_balance_handles_list_response(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:

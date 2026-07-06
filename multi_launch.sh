@@ -110,8 +110,11 @@ start_combined_dashboard() {
         local plist="$PROJECT_DIR/launchd/${COMBINED_JOB}.plist"
         if [ -f "$plist" ]; then
             launchctl enable gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
-            launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
-            launchctl kickstart -k gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+            if launchctl print gui/"$UID_NUM"/"$COMBINED_JOB" >/dev/null 2>&1; then
+                launchctl kickstart gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+            else
+                launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
+            fi
             COMBINED_PID="launchd"
         fi
     fi
@@ -244,8 +247,11 @@ EOF
             plist="$PROJECT_DIR/launchd/${job}.plist"
             if [ -f "$plist" ]; then
                 launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
-                launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
-                launchctl kickstart -k gui/"$UID_NUM"/"$job" 2>/dev/null || true
+                if launchctl print gui/"$UID_NUM"/"$job" >/dev/null 2>&1; then
+                    launchctl kickstart gui/"$UID_NUM"/"$job" 2>/dev/null || true
+                else
+                    launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
+                fi
                 port="$(port_for_top "TOP${job##*.top}")"
                 wait_for_port "$port" "$launchd_startup_timeout" || {
                     echo "⚠️ $job failed to bind to :$port via launchd"
