@@ -35,6 +35,61 @@ def _selection_date() -> str:
     return _et_now().date().isoformat()
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _provider_metadata(output: dict, live_positions: list[dict] | None) -> tuple[list[str], list[str], bool]:
+    settings = dict(output.get("settings") or {})
+    quality_report = dict(output.get("quality_filter_report") or {})
+    data_mode = str(settings.get("data_mode") or "").strip().lower()
+    fallback_used = bool(settings.get("fallback_used")) or bool(
+        quality_report.get("timed_out")
+    )
+
+    providers_used: list[str] = ["selector_core", "yfinance"]
+    providers_disabled: list[str] = []
+
+    if os.environ.get("AI_SELECTOR_DIRECT_HISTORY", "1") != "0":
+        providers_used.append("yahoo_chart")
+    if data_mode in {"live", "mixed"}:
+        providers_used.append("market_data_live")
+    if data_mode in {"fallback", "mixed"} or fallback_used:
+        providers_used.append("market_data_fallback")
+
+    has_longbridge_creds = all(
+        [
+            os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY"),
+            os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET"),
+            os.environ.get("LONGBRIDGE_ACCESS_TOKEN"),
+        ]
+    )
+    if has_longbridge_creds:
+        providers_used.append("longbridge")
+        if live_positions is not None:
+            providers_used.append("longbridge_account")
+    else:
+        providers_disabled.extend(["longbridge", "longbridge_account"])
+
+    openbb_enabled = _truthy_env("SOXS_OPENBB_ENABLED")
+    if openbb_enabled:
+        providers_used.append("openbb")
+    else:
+        providers_disabled.append("openbb")
+
+    fmp_enabled = _truthy_env("SOXS_FMP_ENABLED") and bool(os.environ.get("FMP_API_KEY", "").strip())
+    if fmp_enabled:
+        providers_used.append("fmp")
+    else:
+        providers_disabled.append("fmp")
+
+    providers_used = list(dict.fromkeys(providers_used))
+    providers_disabled = [
+        name for name in dict.fromkeys(providers_disabled) if name not in providers_used
+    ]
+    return providers_used, providers_disabled, fmp_enabled
+
+
 def _write_reports(summary: dict) -> tuple[Path, Path]:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     latest_json = REPORTS_DIR / "ai_selection_latest.json"
@@ -248,13 +303,14 @@ def main():
 
     # Send notifications: webhook (env AI_SELECTOR_WEBHOOK) and macOS notification
     webhook = os.environ.get('AI_SELECTOR_WEBHOOK')
+    providers_used, providers_disabled, fmp_enabled = _provider_metadata(out, live_positions)
     summary = {
         'timestamp': timestamp,
         'generated_at': timestamp,
         'selection_date': _selection_date(),
-        'providers_used': ["selector_core", "yfinance"],
-        'providers_disabled': ["fmp"],
-        'fmp_enabled': False,
+        'providers_used': providers_used,
+        'providers_disabled': providers_disabled,
+        'fmp_enabled': fmp_enabled,
         'top10': out.get('top10', []),
         'top5': selected,
         'top3': out.get('top3', []),

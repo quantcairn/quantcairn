@@ -161,6 +161,11 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     assert written_states[0]["selected_symbols"] == ["NVDA", "MSFT"]
     assert written_reports
     assert written_reports[0]["top3"][0]["ticker"] == "NVDA"
+    assert "selector_core" in written_reports[0]["providers_used"]
+    assert "yfinance" in written_reports[0]["providers_used"]
+    assert "openbb" in written_reports[0]["providers_used"]
+    assert "fmp" in written_reports[0]["providers_disabled"]
+    assert written_reports[0]["fmp_enabled"] is False
     assert spawned_refinement
 
 

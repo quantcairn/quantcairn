@@ -18,9 +18,11 @@ Configuration:
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Ensure the project root is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -31,6 +33,10 @@ from src.broker.paper_broker import PaperBroker
 from src.engine.trading_engine import TradingEngine
 from src.engine.position_sizing import determine_buy_quantity
 from src.dashboard.server import start_dashboard
+from src.ai_selector.selection_state import verify_live_startup_selection
+
+
+TOP_CONFIG_RE = re.compile(r"TOP[1-5]\.yaml$", re.IGNORECASE)
 
 
 def setup_logging(level=logging.INFO):
@@ -47,6 +53,21 @@ def setup_logging(level=logging.INFO):
     logging.getLogger("yfinance").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+
+def verify_live_top_selection_guard(config_path: str, mode: str) -> None:
+    if str(mode).strip().lower() != "live":
+        return
+    normalized = os.path.abspath(config_path)
+    if not TOP_CONFIG_RE.search(normalized):
+        return
+    required_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    ok, reason, _state = verify_live_startup_selection(required_et_date=required_date)
+    if ok:
+        return
+    print(f"\n❌ Live TOP startup blocked: {reason}")
+    print(f"   Required ET selection date: {required_date}\n")
+    sys.exit(1)
 
 
 def main():
@@ -152,6 +173,8 @@ Environment variables:
         print("   Ensure you have tested in paper mode first!")
         print("⚠️ " * 20 + "\n")
         time.sleep(2)
+
+    verify_live_top_selection_guard(config_path, config.mode)
 
     # Create engine
     engine = TradingEngine(config, ignore_trading_hours=args.anytime)

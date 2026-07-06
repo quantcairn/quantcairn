@@ -34,6 +34,18 @@ def current_top_config_symbols(limit: int = 5) -> list[str]:
     return symbols
 
 
+def has_live_top_configs(limit: int = 5) -> bool:
+    for index in range(1, limit + 1):
+        path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
+        try:
+            config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            config = {}
+        if str(config.get("mode") or "").strip().lower() == "live":
+            return True
+    return False
+
+
 def load_selection_state() -> dict[str, Any] | None:
     path = selection_state_path()
     if not path.exists():
@@ -82,3 +94,9 @@ def verify_selection_state(required_et_date: str | None = None) -> tuple[bool, s
         return False, "top_config_symbols_mismatch", state
 
     return True, "ok", state
+
+
+def verify_live_startup_selection(required_et_date: str | None = None) -> tuple[bool, str, dict[str, Any] | None]:
+    if not has_live_top_configs():
+        return True, "no_live_top_configs", load_selection_state()
+    return verify_selection_state(required_et_date=required_et_date)

@@ -36,6 +36,22 @@ print(f"Trading day verified in ET: {now_et.date().isoformat()}")
 PY
 }
 
+verify_same_day_selection_if_live() {
+    "$VENV_PYTHON" - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from src.ai_selector.selection_state import verify_live_startup_selection
+
+required_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+ok, reason, state = verify_live_startup_selection(required_et_date=required_date)
+if not ok:
+    print(f"Live startup blocked: {reason}")
+    raise SystemExit(1)
+print(f"Selection freshness verified for live startup: {required_date} ({reason})")
+PY
+}
+
 port_for_top() {
     local top_name="$1"
     printf '%s' $((8090 + ${top_name:3}))
@@ -245,6 +261,11 @@ start_all() {
 
     if ! "$VENV_PYTHON" "$ORPHAN_MONITOR_SCRIPT" --verify-only >> "$LOG_DIR/combined.log" 2>&1; then
         echo "❌ Broker position verification failed; aborting live startup"
+        return 1
+    fi
+
+    if ! verify_same_day_selection_if_live >> "$LOG_DIR/combined.log" 2>&1; then
+        echo "❌ Same-day AI selection missing or stale; live startup aborted"
         return 1
     fi
 

@@ -68,6 +68,11 @@ def test_trading_engine_uses_fresh_selection_state_cache():
                     from datetime import datetime
                     return datetime(2026, 7, 6, 10, 0, 0)
 
+                @classmethod
+                def utcnow(cls):
+                    from datetime import datetime
+                    return datetime(2026, 7, 6, 14, 0, 0)
+
             monkeypatch.setattr(engine_module, "datetime", FakeDateTime)
             engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
             engine._initialize_ai_selector()
@@ -115,6 +120,11 @@ def test_trading_engine_stale_selection_state_falls_back_without_ai_run():
             def now(cls, tz=None):
                 from datetime import datetime
                 return datetime(2026, 7, 6, 10, 0, 0)
+
+            @classmethod
+            def utcnow(cls):
+                from datetime import datetime
+                return datetime(2026, 7, 6, 14, 0, 0)
 
         monkeypatch.setattr(engine_module, "datetime", FakeDateTime)
         engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
