@@ -309,11 +309,9 @@ def _ai_runtime_status() -> dict:
     missing = []
     if not _env("OPENAI_API_KEY"):
         missing.append("OPENAI_API_KEY")
-    if not _env("FMP_API_KEY"):
-        missing.append("FMP_API_KEY")
-
     tradingagents_ready = bool(_env("SOXS_TRADINGAGENTS_PATH"))
     finrobot_ready = bool(_env("SOXS_FINROBOT_PATH"))
+    fmp_enabled = bool(_env("FMP_API_KEY"))
 
     if not missing and tradingagents_ready and finrobot_ready:
         return {
@@ -328,6 +326,8 @@ def _ai_runtime_status() -> dict:
             detail += f"，缺少 {' / '.join(missing)}，当前会自动降级回退。"
         else:
             detail += "，当前可走真实分析。"
+        if not fmp_enabled:
+            detail += " FMP 已禁用，不影响运行。"
         return {
             "level": "yellow",
             "label": "部分降级",

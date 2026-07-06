@@ -128,7 +128,7 @@ class OpenBBProvider:
             "balance_sheet_score": 50.0,
             "cash_flow_score": 50.0,
             "risk_score": 50.0,
-            "confidence": 0.0,
+            "confidence": 0.5,
             "reason": f"Fallback OpenBB result for {ticker}: {reason}",
             "source": "openbb_mock",
             "fallback": True,

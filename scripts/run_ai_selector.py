@@ -31,6 +31,10 @@ def _et_now() -> datetime:
     return datetime.now(ZoneInfo("America/New_York"))
 
 
+def _selection_date() -> str:
+    return _et_now().date().isoformat()
+
+
 def _write_reports(summary: dict) -> tuple[Path, Path]:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     latest_json = REPORTS_DIR / "ai_selection_latest.json"
@@ -54,6 +58,7 @@ def _merge_live_position_flags(items: list[dict], positions: list[dict]) -> list
         if live_pos:
             item["existing_position"] = True
             item["live_quantity"] = int(live_pos.get("quantity") or 0)
+            item["protected_position"] = True
             if ticker == "SOXS":
                 item["reduce_only"] = True
         merged.append(item)
@@ -165,6 +170,7 @@ def _pin_live_positions(selected: list[dict], positions: list[dict], limit: int 
             item["ai_selected"] = True
             item["reduce_only"] = bool(item.get("reduce_only", False))
         item["existing_position"] = True
+        item["protected_position"] = True
         if ticker == "SOXS":
             item["reduce_only"] = True
         item["pinned_live_position"] = True
@@ -224,7 +230,9 @@ def main():
         sys.exit(1)
     if selected:
         from src.ai_selector.config_writer import write_top_configs
-
+        for item in selected:
+            item["selection_date"] = _selection_date()
+            item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
         write_top_configs(selected)
         out["top5"] = selected
         out["top3"] = selected[:3]
@@ -242,9 +250,29 @@ def main():
     webhook = os.environ.get('AI_SELECTOR_WEBHOOK')
     summary = {
         'timestamp': timestamp,
+        'generated_at': timestamp,
+        'selection_date': _selection_date(),
+        'providers_used': ["selector_core", "yfinance"],
+        'providers_disabled': ["fmp"],
+        'fmp_enabled': False,
         'top10': out.get('top10', []),
         'top5': selected,
         'top3': out.get('top3', []),
+        'protected_positions': [
+            {
+                "ticker": str(item.get("ticker") or "").upper(),
+                "protected_position": True,
+                "reduce_only": bool(item.get("reduce_only", False)),
+            }
+            for item in selected
+            if item.get("protected_position") or item.get("existing_position")
+        ],
+        'fallback_used': any(
+            bool(item.get("existing_position"))
+            or bool(item.get("fallback_history_incomplete"))
+            or str(item.get("selection_penalty_reason") or "").startswith("quality_filter_backfill")
+            for item in selected
+        ),
         'report': out.get('report', []),
         'settings': out.get('settings', {}),
         'quality_filter_report': out.get('quality_filter_report', {}),

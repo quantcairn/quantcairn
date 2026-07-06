@@ -337,14 +337,13 @@ class FinRobotProvider:
         return _clamp_score(score, 59.0)
 
     def _mock_result(self, ticker: str, *, reason: str) -> dict[str, Any]:
-        seed = _ticker_seed(ticker)
         return {
             "ticker": ticker,
-            "fundamental_score": 56.0 + (seed % 18),
-            "valuation_score": 54.0 + ((seed // 3) % 18),
-            "earnings_score": 55.0 + ((seed // 5) % 18),
-            "risk_score": 60.0 + ((seed // 7) % 16),
-            "confidence": 0.45,
+            "fundamental_score": 50.0,
+            "valuation_score": 50.0,
+            "earnings_score": 50.0,
+            "risk_score": 50.0,
+            "confidence": 0.5,
             "reason": f"Fallback FinRobot mock for {ticker}: {reason}",
             "source": "finrobot_mock",
             "fallback": True,

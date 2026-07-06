@@ -307,7 +307,8 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "后台精筛：background_fast_preliminary / fast_preliminary" in html
     assert "AI 运行状态：" in html
     assert "部分降级" in html
-    assert "缺少 OPENAI_API_KEY / FMP_API_KEY" in html
+    assert "缺少 OPENAI_API_KEY" in html
+    assert "FMP 已禁用，不影响运行。" in html
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html

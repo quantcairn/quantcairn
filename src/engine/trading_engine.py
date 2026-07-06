@@ -725,14 +725,14 @@ class TradingEngine:
         if cached_selection is not None:
             top3, top10 = cached_selection
         else:
-            try:
-                selector = AISelector(config=runtime)
-                top3 = selector.get_signals()
-                top10 = selector.get_top10()
-            except Exception as exc:
-                logger.exception("AI selector failed, fallback to original config: %s", exc)
-                self._ai_selection.fallback_reason = "ai_selector_exception"
-                return
+            logger.warning("AI selection stale, fallback to configured tickers")
+            self._ai_selection.fallback_reason = "ai_selection_stale"
+            self._write_runtime_audit(
+                "ai_selector_stale_fallback",
+                ai_selector_enabled=runtime.enabled,
+                fallback_reason="ai_selection_stale",
+            )
+            return
         if not top3:
             logger.warning("AI selector returned no signals, fallback to original config")
             self._ai_selection.fallback_reason = "empty_ai_signals"
@@ -804,6 +804,9 @@ class TradingEngine:
         except Exception:
             return None
         if not isinstance(payload, dict):
+            return None
+        selection_date = str(payload.get("selection_date") or "").strip()
+        if selection_date and selection_date != required_day:
             return None
         top3 = payload.get("top3") if isinstance(payload.get("top3"), list) else []
         top10 = payload.get("top10") if isinstance(payload.get("top10"), list) else []

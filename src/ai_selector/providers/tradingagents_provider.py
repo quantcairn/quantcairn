@@ -226,14 +226,13 @@ print(json.dumps(decision, ensure_ascii=False, default=str))
         return _clamp_score(score, 58.0)
 
     def _mock_result(self, ticker: str, *, reason: str) -> dict[str, Any]:
-        seed = _ticker_seed(ticker)
         return {
             "ticker": ticker,
-            "technical_score": 55.0 + (seed % 21),
-            "news_score": 52.0 + ((seed // 3) % 19),
-            "sentiment_score": 50.0 + ((seed // 5) % 18),
-            "risk_score": 58.0 + ((seed // 7) % 16),
-            "confidence": 0.45,
+            "technical_score": 50.0,
+            "news_score": 50.0,
+            "sentiment_score": 50.0,
+            "risk_score": 50.0,
+            "confidence": 0.5,
             "reason": f"Fallback TradingAgents mock for {ticker}: {reason}",
             "source": "tradingagents_mock",
             "fallback": True,

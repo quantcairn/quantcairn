@@ -7,6 +7,8 @@ from pathlib import Path
 
 AI_SELECTOR_ENABLED = False
 OPENBB_ENABLED = False
+FMP_API_KEY = os.getenv("FMP_API_KEY", "").strip()
+FMP_ENABLED = bool(FMP_API_KEY)
 TOP_N = 3
 UNIVERSE = [
     "NVDA",
@@ -42,6 +44,8 @@ class AISelectorRuntimeConfig:
     finrobot_config_file: str
     finrobot_output_dir: str
     openbb_enabled: bool = OPENBB_ENABLED
+    fmp_enabled: bool = FMP_ENABLED
+    fmp_api_key: str = FMP_API_KEY
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -81,4 +85,8 @@ def load_runtime_config() -> AISelectorRuntimeConfig:
         finrobot_config_file=os.environ.get("SOXS_FINROBOT_CONFIG", "").strip(),
         finrobot_output_dir=os.environ.get("SOXS_FINROBOT_OUTPUT_DIR", "").strip(),
         openbb_enabled=_bool_env("SOXS_OPENBB_ENABLED", OPENBB_ENABLED),
+        fmp_enabled=_bool_env("SOXS_FMP_ENABLED", FMP_ENABLED) and bool(
+            os.environ.get("FMP_API_KEY", FMP_API_KEY).strip()
+        ),
+        fmp_api_key=os.environ.get("FMP_API_KEY", FMP_API_KEY).strip(),
     )

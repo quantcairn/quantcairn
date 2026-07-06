@@ -29,6 +29,7 @@ class AISelector:
         self.finrobot_provider = finrobot_provider or FinRobotProvider(self.config)
         self.openbb_provider = openbb_provider or OpenBBProvider(self.config)
         self.last_top10: list[dict] = []
+        self.last_run_metadata: dict[str, object] = {}
 
     def get_signals(self) -> list:
         if not self.config.enabled:
@@ -43,6 +44,17 @@ class AISelector:
             return []
 
         try:
+            providers_used = ["tradingagents", "finrobot"]
+            providers_disabled: list[str] = []
+            if self.config.openbb_enabled:
+                providers_used.append("openbb")
+            else:
+                providers_disabled.append("openbb")
+            if self.config.fmp_enabled:
+                providers_used.append("fmp")
+            else:
+                providers_disabled.append("fmp")
+                logger.warning("FMP disabled: missing FMP_API_KEY or SOXS_FMP_ENABLED=0")
             ta_result = self.tradingagents_provider.analyze(universe)
             fr_result = self.finrobot_provider.analyze(universe)
             ob_result = self.openbb_provider.analyze(universe) if self.config.openbb_enabled else {}
@@ -50,9 +62,21 @@ class AISelector:
         except Exception as exc:
             logger.exception("AI selector failed, fallback to original config: %s", exc)
             self.last_top10 = []
+            self.last_run_metadata = {
+                "providers_used": [],
+                "providers_disabled": ["tradingagents", "finrobot", "openbb", "fmp"],
+                "fmp_enabled": False,
+                "fallback_used": True,
+            }
             return []
 
         self.last_top10 = ranked[:10]
+        self.last_run_metadata = {
+            "providers_used": providers_used,
+            "providers_disabled": providers_disabled,
+            "fmp_enabled": bool(self.config.fmp_enabled),
+            "fallback_used": any(bool(item.get("fallback")) for item in [*ta_result.values(), *fr_result.values(), *ob_result.values()]),
+        }
         self._write_report(self.last_top10)
         top_n = min(max(1, self.config.top_n), len(self.last_top10))
         return self.last_top10[:top_n]
@@ -61,6 +85,11 @@ class AISelector:
         top3 = ranked[: min(3, len(ranked))]
         payload = {
             "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "selection_date": datetime.utcnow().date().isoformat(),
+            "providers_used": list(self.last_run_metadata.get("providers_used") or []),
+            "providers_disabled": list(self.last_run_metadata.get("providers_disabled") or []),
+            "fmp_enabled": bool(self.last_run_metadata.get("fmp_enabled", False)),
+            "fallback_used": bool(self.last_run_metadata.get("fallback_used", False)),
             "top10": ranked,
             "top3": top3,
             "universe": list(self.config.universe),

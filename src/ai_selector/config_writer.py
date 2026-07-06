@@ -1,6 +1,8 @@
 import yaml
 import os
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.config.runtime_values import has_longbridge_runtime_credentials
 
@@ -60,6 +62,13 @@ def _global_reduce_only_enabled() -> bool:
     except Exception:
         return False
 
+
+def _selection_date() -> str:
+    try:
+        return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        return datetime.utcnow().date().isoformat()
+
 def write_top_configs(top_items):
     default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
@@ -76,10 +85,24 @@ def write_top_configs(top_items):
         mode = _load_existing_mode(i, default_mode)
         live_enabled = mode == "live"
         reduce_only = bool(item.get("reduce_only", False) or global_reduce_only)
+        protected_position = bool(item.get("protected_position") or item.get("existing_position"))
 
         cfg = {
             "ticker": item["ticker"],
             "mode": mode,
+            "selection": {
+                "source": "ai_selector",
+                "selection_date": str(item.get("selection_date") or _selection_date()),
+                "score": float(item.get("score") or 0.0),
+                "confidence": float(item.get("confidence") or 0.0),
+                "protected_position": protected_position,
+                "reduce_only": reduce_only,
+                "reason": str(
+                    item.get("reason")
+                    or item.get("selection_penalty_reason")
+                    or "ai_selector"
+                ),
+            },
             "range": {
                 "mode": "auto",
                 "support_price": None,
