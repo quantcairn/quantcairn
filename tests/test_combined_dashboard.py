@@ -584,6 +584,46 @@ def test_combined_dashboard_reruns_ai_selector_from_settings_form(monkeypatch):
     assert rerun["called"] is True
 
 
+def test_combined_dashboard_shows_startup_guard_status(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "live",
+        "reduce_only": True,
+        "new_entries_allowed": False,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": False,
+        "level": "red",
+        "label": "配置不一致",
+        "detail": "TOP1-5 配置和最近一次选股结果不一致，交易启动会被拦下。",
+        "state_date": "2026-07-05",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: True)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "启动校验阻止 · 配置不一致" in html
+    assert "TOP1-5 配置和最近一次选股结果不一致，交易启动会被拦下。" in html
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:
@@ -599,6 +639,7 @@ def run_test_direct():
         test_combined_dashboard_buy_trigger_shows_pause_when_new_entries_disabled(monkeypatch)
         test_combined_dashboard_updates_ai_selector_settings(monkeypatch)
         test_combined_dashboard_reruns_ai_selector_from_settings_form(monkeypatch)
+        test_combined_dashboard_shows_startup_guard_status(monkeypatch)
     finally:
         monkeypatch.restore()
 

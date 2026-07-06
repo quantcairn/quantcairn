@@ -7,7 +7,7 @@ from flask import Flask, jsonify, redirect, render_template_string, request
 import yaml
 
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
-from src.ai_selector.selection_state import load_selection_state, verify_selection_state
+from src.ai_selector.selection_state import has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log
@@ -379,6 +379,27 @@ def _selection_sync_status() -> dict:
         "label": label,
         "detail": detail,
         "state_date": state_date,
+    }
+
+
+def _startup_guard_status(selection_sync: dict) -> dict:
+    live_top_active = has_live_top_configs()
+    if not live_top_active:
+        return {
+            "level": "warn",
+            "label": "启动校验待命",
+            "detail": "当前没有 live TOP 配置，今天的启动校验不会触发。",
+        }
+    if bool((selection_sync or {}).get("ok")):
+        return {
+            "level": "live",
+            "label": "启动校验通过",
+            "detail": str((selection_sync or {}).get("detail") or "当天美东选股状态已通过。"),
+        }
+    return {
+        "level": "warn" if str((selection_sync or {}).get("level")) != "red" else "",
+        "label": f"启动校验阻止 · {str((selection_sync or {}).get('label') or '未通过')}",
+        "detail": str((selection_sync or {}).get("detail") or "当天美东选股状态未通过。"),
     }
 
 
@@ -847,6 +868,19 @@ HTML = """<!DOCTYPE html>
         margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(251,113,133,.12);
         color:#fecdd3;border:1px solid rgba(251,113,133,.24);font-size:13px;font-weight:700
     }
+    .guard-banner{
+        margin-top:-4px;padding:12px 14px;border-radius:14px;font-size:13px;font-weight:700;
+        border:1px solid rgba(255,255,255,.08)
+    }
+    .guard-banner.live{
+        background:rgba(52,211,153,.12);color:#b8f5d0;border-color:rgba(52,211,153,.22)
+    }
+    .guard-banner.warn{
+        background:rgba(251,191,36,.12);color:#fde68a;border-color:rgba(251,191,36,.22)
+    }
+    .guard-banner.blocked{
+        background:rgba(251,113,133,.12);color:#fecdd3;border-color:rgba(251,113,133,.24)
+    }
     .ticker-audit-list{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px}
     .ticker-audit-item{
         padding:12px 13px;border-radius:14px;background:rgba(255,255,255,.03);
@@ -926,6 +960,9 @@ HTML = """<!DOCTYPE html>
         <div class="status-row">
             <span class="pill live">实时监控</span>
             <span class="pill">更新于 {{ update_time }}</span>
+            <span class="pill {{ startup_guard.level }}">
+                {{ startup_guard.label }}
+            </span>
             <span class="pill {% if live_account and live_account.mode == 'live' %}live{% else %}warn{% endif %}">
                 {% if live_account and live_account.mode == 'live' %}实盘账户{% elif live_account and live_account.account_error %}实盘账户异常{% else %}模拟盘 / 离线{% endif %}
             </span>
@@ -943,6 +980,9 @@ HTML = """<!DOCTYPE html>
             <span class="pill warn">未决订单告警 · {{ trade_audit.broker_unresolved_count }} 笔</span>
             {% endif %}
         </div>
+    </div>
+    <div class="guard-banner {% if startup_guard.level == 'live' %}live{% elif startup_guard.level == 'warn' %}warn{% else %}blocked{% endif %}">
+        {{ startup_guard.detail }}
     </div>
     {% if trade_audit.unresolved_alert %}
     <div class="warning-banner">
@@ -1390,6 +1430,7 @@ def index():
         ai_selection = {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
+    startup_guard = _startup_guard_status(selection_sync)
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
     audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
@@ -1605,6 +1646,7 @@ def index():
         ai_selection=ai_selection,
         ai_runtime=ai_runtime,
         selection_sync=selection_sync,
+        startup_guard=startup_guard,
         runtime_settings={
             "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),
             "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 200.0)) or 200.0),
