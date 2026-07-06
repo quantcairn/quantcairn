@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the combined TOP5 dashboard as a foreground process."""
+"""Run the combined Top3 dashboard as a foreground process."""
 import os
 import sys
 

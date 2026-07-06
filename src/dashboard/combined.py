@@ -221,11 +221,9 @@ def _load_ai_selection_report():
         return {
             "timestamp": None,
             "report": [],
-            "top5": [],
             "top3": [],
             "top10": [],
             "settings": {},
-            "refined_top5": [],
             "refined_top3": [],
             "refined_top10": [],
             "refined_report": [],
@@ -238,11 +236,9 @@ def _load_ai_selection_report():
             return {
                 "timestamp": None,
                 "report": [],
-                "top5": [],
                 "top3": [],
                 "top10": [],
                 "settings": {},
-                "refined_top5": [],
                 "refined_top3": [],
                 "refined_top10": [],
                 "refined_report": [],
@@ -253,11 +249,9 @@ def _load_ai_selection_report():
         return {
             "timestamp": data.get("timestamp"),
             "report": rows,
-            "top5": data.get("top5") if isinstance(data.get("top5"), list) else [],
             "top3": data.get("top3") if isinstance(data.get("top3"), list) else [],
             "top10": data.get("top10") if isinstance(data.get("top10"), list) else [],
             "settings": data.get("settings") if isinstance(data.get("settings"), dict) else {},
-            "refined_top5": data.get("refined_top5") if isinstance(data.get("refined_top5"), list) else [],
             "refined_top3": data.get("refined_top3") if isinstance(data.get("refined_top3"), list) else [],
             "refined_top10": data.get("refined_top10") if isinstance(data.get("refined_top10"), list) else [],
             "refined_report": data.get("refined_report") if isinstance(data.get("refined_report"), list) else [],
@@ -268,11 +262,9 @@ def _load_ai_selection_report():
         return {
             "timestamp": None,
             "report": [],
-            "top5": [],
             "top3": [],
             "top10": [],
             "settings": {},
-            "refined_top5": [],
             "refined_top3": [],
             "refined_top10": [],
             "refined_report": [],
@@ -1127,8 +1119,8 @@ HTML = """<!DOCTYPE html>
                             <span class="selection-tag live">启用中</span>
                             <div class="selection-copy">
                                 <span class="symbols">
-                                    {% if ai_selection.top5 %}
-                                        {{ ai_selection.top5 | map(attribute='ticker') | join(' / ') }}
+                                    {% if ai_selection.top3 %}
+                                        {{ ai_selection.top3 | map(attribute='ticker') | join(' / ') }}
                                     {% else %}
                                         暂无
                                     {% endif %}
@@ -1140,8 +1132,8 @@ HTML = """<!DOCTYPE html>
                             <span class="selection-tag">精筛参考</span>
                             <div class="selection-copy">
                                 <span class="symbols">
-                                    {% if ai_selection.refined_top5 %}
-                                        {{ ai_selection.refined_top5 | map(attribute='ticker') | join(' / ') }}
+                                    {% if ai_selection.refined_top3 %}
+                                        {{ ai_selection.refined_top3 | map(attribute='ticker') | join(' / ') }}
                                     {% else %}
                                         暂无
                                     {% endif %}
@@ -1246,7 +1238,7 @@ HTML = """<!DOCTYPE html>
             <div class="cards-section-head">
                 <div>
                     <h2>全部标的</h2>
-                <p>第二屏重点看每只票的区间位置、当前信号、持仓和盈亏，距离近的会自动高亮。</p>
+                    <p>第二屏重点看每只票的区间位置、当前信号、持仓和盈亏，距离近的会自动高亮。</p>
                 </div>
             </div>
         <div class="cards">
@@ -1286,7 +1278,8 @@ HTML = """<!DOCTYPE html>
                 </div>
 
                 <div class="range-block">
-                    <div class="row"><span class="label">区间</span><span class="val">${{ "%.2f"|format(card.support) }} - ${{ "%.2f"|format(card.resistance) }} ({{ "%.1f"|format(card.spread_pct) }}%)</span></div>
+                    <div class="row"><span class="label">运行区间</span><span class="val">${{ "%.2f"|format(card.support) }} - ${{ "%.2f"|format(card.resistance) }} ({{ "%.1f"|format(card.spread_pct) }}%)</span></div>
+                    <div class="row" style="margin-top:6px"><span class="label">AI参考区间</span><span class="val">{% if card.ai_range_low is not none and card.ai_range_high is not none %}${{ "%.2f"|format(card.ai_range_low) }} - ${{ "%.2f"|format(card.ai_range_high) }}{% else %}{{ card.ai_suggested_range }}{% endif %}</span></div>
                     <div class="range-bar">
                         <div class="range-fill" style="width:{{ card.pos_pct }}%;background:{% if card.pos_pct > 70 %}#fb7185{% elif card.pos_pct < 30 %}#34d399{% else %}#fbbf24{% endif %}"></div>
                     </div>
@@ -1307,6 +1300,7 @@ HTML = """<!DOCTYPE html>
                     <div class="quote-item"><span class="label">成交</span><span class="val">{{ card.trades }}</span></div>
                     <div class="quote-item"><span class="label">盈亏</span><span class="val {{ 'green' if card.pnl >= 0 else 'red' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
                     <div class="quote-item"><span class="label">区间源</span><span class="val {{ 'muted' if not card.range_ready else '' }}">{{ card.range_source }}</span></div>
+                    <div class="quote-item"><span class="label">AI区间</span><span class="val">{{ card.ai_suggested_range }}</span></div>
                 </div>
             </div>
     {% endfor %}
@@ -1422,6 +1416,32 @@ def _signal_cn(signal: str) -> str:
     return mapping.get(normalized, normalized or "暂无")
 
 
+def _ai_range_lookup(ai_selection: dict | None) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    if not isinstance(ai_selection, dict):
+        return lookup
+    for item in ai_selection.get("top3") or []:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        try:
+            low = float(item.get("range_low")) if item.get("range_low") is not None else None
+        except (TypeError, ValueError):
+            low = None
+        try:
+            high = float(item.get("range_high")) if item.get("range_high") is not None else None
+        except (TypeError, ValueError):
+            high = None
+        lookup[ticker] = {
+            "range_low": low,
+            "range_high": high,
+            "suggested_range": str(item.get("suggested_range") or "").strip(),
+        }
+    return lookup
+
+
 @app.route("/")
 def index():
     cards = []
@@ -1435,7 +1455,8 @@ def index():
     account_positions = _position_lookup(live_account)
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
-        ai_selection = {"timestamp": None, "report": [], "top5": [], "top3": [], "top10": [], "settings": {}}
+        ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
+    ai_ranges = _ai_range_lookup(ai_selection)
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
     startup_guard = _startup_guard_status(selection_sync)
@@ -1484,6 +1505,7 @@ def index():
             account_pnl = float((account_pos or {}).get("unrealized_pnl", 0.0) or 0.0)
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
             hold_source = "真实账户" if account_pos else "引擎状态"
+            ai_range = ai_ranges.get(selected_ticker, {})
 
             card = {
                 "name": f"{t['name']} · {defaults['ticker']}" if t["name"].startswith("TOP") else t["name"],
@@ -1506,6 +1528,9 @@ def index():
                 "signal": d.get("last_signal", "N/A"),
                 "signal_cn": _signal_cn(d.get("last_signal", "N/A")),
                 "signal_reason": d.get("last_signal_reason", "暂无"),
+                "ai_range_low": ai_range.get("range_low"),
+                "ai_range_high": ai_range.get("range_high"),
+                "ai_suggested_range": ai_range.get("suggested_range") or "暂无",
                 "initial_capital": d.get("initial_capital", 0),
                 "cash": d.get("cash", 0),
                 "shares": account_shares if account_pos else int(d.get("position_shares", 0) or 0),
@@ -1533,6 +1558,7 @@ def index():
             account_pnl = float((account_pos or {}).get("unrealized_pnl", 0.0) or 0.0)
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
             account_price = float((account_pos or {}).get("current_price", 0.0) or 0.0)
+            ai_range = ai_ranges.get(selected_ticker, {})
             cards.append({
                 "name": defaults["ticker"], "desc": t["desc"],
                 "online": False,
@@ -1550,6 +1576,9 @@ def index():
                 "signal": "OFFLINE",
                 "signal_cn": _signal_cn("OFFLINE"),
                 "signal_reason": "引擎离线，仓位仍按真实账户显示" if account_pos else "暂无",
+                "ai_range_low": ai_range.get("range_low"),
+                "ai_range_high": ai_range.get("range_high"),
+                "ai_suggested_range": ai_range.get("suggested_range") or "暂无",
                 "shares": account_shares,
                 "initial_capital": initial_capital, "cash": initial_capital,
                 "pnl": account_pnl,

@@ -270,6 +270,7 @@ class LongBridgeBroker(BrokerBase):
         }
         temp_path = path.with_suffix(path.suffix + ".tmp")
         with _SHARED_SNAPSHOT_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
             temp_path.write_text(json.dumps(wrapped, ensure_ascii=False, default=str), encoding="utf-8")
             temp_path.replace(path)
 
