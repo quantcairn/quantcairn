@@ -65,6 +65,24 @@ kill_listener_on_port() {
     fi
 }
 
+wait_until_port_free() {
+    local target_port="$1"
+    local attempts="${2:-50}"
+    local sleep_seconds="${3:-0.2}"
+    if ! command -v lsof >/dev/null 2>&1; then
+        return 0
+    fi
+    local i
+    for ((i=0; i<attempts; i++)); do
+        if ! lsof -tiTCP:"$target_port" -sTCP:LISTEN >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep "$sleep_seconds"
+    done
+    echo "port $target_port still busy after waiting" >&2
+    return 1
+}
+
 run_engine() {
     if [ "$ENGINE_MODE" = "live" ]; then
         exec "$VENV_PYTHON" run.py --config "$cfg" --live --dashboard --port "$port"
@@ -83,4 +101,5 @@ if [ "$REDIRECT_STDIO" = "1" ]; then
 fi
 
 kill_listener_on_port "$port"
+wait_until_port_free "$port"
 run_engine

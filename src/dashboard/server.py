@@ -7,12 +7,15 @@ Run: python -m src.dashboard.server
 import json
 import logging
 import os
+import socket
+import time
 from datetime import datetime
 from threading import Thread
 from typing import Optional
 
 from flask import Flask, jsonify, render_template_string
 from src.reports import daily_report as daily_report_module
+from werkzeug.serving import make_server
 
 logger = logging.getLogger(__name__)
 
@@ -321,14 +324,35 @@ def _empty_data() -> dict:
     }
 
 
+def _wait_until_port_ready(host: str, port: int, timeout_seconds: float = 3.0) -> bool:
+    deadline = time.time() + max(timeout_seconds, 0.1)
+    probe_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((probe_host, port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
 def start_dashboard(engine, host: str = "0.0.0.0", port: int = 8080) -> Thread:
     """Start the dashboard server in a background thread."""
     set_engine(engine)
 
+    try:
+        server = make_server(host, port, app, threaded=False)
+    except OSError as exc:
+        logger.error(f"Dashboard failed to bind http://localhost:{port}: {exc}")
+        raise
+
     # Run single-threaded to limit concurrent thread/socket creation which
     # may exhaust file descriptors in long-running environments.
-    thread = Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=False), daemon=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    logger.info(f"📊 Dashboard running at http://localhost:{port}")
+    if _wait_until_port_ready(host, port):
+        logger.info(f"📊 Dashboard running at http://localhost:{port}")
+    else:
+        logger.warning(f"Dashboard startup timed out before port {port} became ready")
     return thread

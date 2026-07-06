@@ -147,12 +147,10 @@ stop_top() {
         pkill -f "run.py --config .*configs/${top_name}.yaml" 2>/dev/null || true
         pkill -f "run.py --config ${PROJECT_DIR}/configs/${top_name}.yaml" 2>/dev/null || true
     done
-    if [ "$USE_LAUNCHD_TOPS" = "1" ]; then
-        for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
-            launchctl disable gui/"$UID_NUM"/"$job" 2>/dev/null || true
-            launchctl bootout gui/"$UID_NUM"/"$job" 2>/dev/null || true
-        done
-    fi
+    for job in com.soxs.top1 com.soxs.top2 com.soxs.top3 com.soxs.top4 com.soxs.top5; do
+        launchctl disable gui/"$UID_NUM"/"$job" 2>/dev/null || true
+        launchctl bootout gui/"$UID_NUM"/"$job" 2>/dev/null || true
+    done
     for top_name in "${TOP_ENGINES[@]}"; do
         kill_listener_on_port "$(port_for_top "$top_name")"
     done
@@ -197,15 +195,28 @@ EOF
                 if [ "$ENGINE_MODE" = "live" ]; then
                     cli_mode="--live"
                     : > "$LOG_DIR/${log_name}.log"
-                    nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
+                    if command -v setsid >/dev/null 2>&1; then
+                        setsid "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
+                    else
+                        nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
+                    fi
                     disown $! 2>/dev/null || true
                 else
                     : > "$LOG_DIR/${log_name}.log"
-                    SOXS_SYNTHETIC_MARKET=1 \
-                    SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
-                    SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
-                    SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
-                    nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 &
+                    if command -v setsid >/dev/null 2>&1; then
+                        env \
+                        SOXS_SYNTHETIC_MARKET=1 \
+                        SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
+                        SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
+                        SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
+                        setsid "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
+                    else
+                        SOXS_SYNTHETIC_MARKET=1 \
+                        SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
+                        SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
+                        SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
+                        nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
+                    fi
                     disown $! 2>/dev/null || true
                 fi
                 TOP_PIDS="$TOP_PIDS $!"
@@ -240,16 +251,11 @@ EOF
             echo "🚀 TOP engines managed by launchd"
             return 0
         fi
-        echo "↩️ Launchd startup incomplete; keeping any already-started TOP jobs running"
-        echo "   Set SOXS_ALLOW_MANUAL_TOP_FALLBACK=1 to force manual fallback."
-        if [ "${SOXS_ALLOW_MANUAL_TOP_FALLBACK:-0}" = "1" ]; then
-            echo "↩️ Falling back to manual TOP engine startup"
-            stop_top
-            sleep 1
-            start_top_manual
-            return $?
-        fi
-        return 1
+        echo "↩️ Launchd startup incomplete; falling back to manual TOP engine startup"
+        stop_top
+        sleep 1
+        start_top_manual
+        return $?
     fi
 
     start_top_manual
