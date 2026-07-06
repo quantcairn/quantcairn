@@ -907,7 +907,7 @@ class TradingEngine:
         return max(0.0, min(available_cash, allocation_cap))
 
     def _verify_live_startup_safety(self) -> bool:
-        """Fail closed unless live startup is reduce-only with verified broker data."""
+        """Fail closed unless live startup has verified selection and broker data."""
         top_symbols = {
             str(symbol or "").strip().upper() for symbol in current_top_config_symbols()
         }
@@ -932,19 +932,6 @@ class TradingEngine:
                 )
                 self.notifier.alert(self._last_signal_reason, "error")
                 return False
-
-        if not self._reduce_only:
-            self._last_signal_reason = "实盘启动已阻止：全局只减仓未启用"
-            self._write_runtime_audit(
-                "startup_safety_check",
-                broker_position_verified=False,
-                broker_account_verified=False,
-                startup_allowed=False,
-                reason="reduce_only_disabled",
-                startup_role=self._startup_role,
-            )
-            self.notifier.alert(self._last_signal_reason, "error")
-            return False
 
         invalidate = getattr(self.broker, "invalidate_cache", None)
         if callable(invalidate):

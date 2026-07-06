@@ -42,6 +42,8 @@ class AISelector:
             logger.warning("AI selector enabled but universe is empty")
             self.last_top10 = []
             return []
+        analysis_limit = max(1, int(getattr(self.config, "analysis_universe_limit", 1) or 1))
+        analyzed_universe = universe[:analysis_limit]
 
         try:
             providers_used = ["tradingagents", "finrobot"]
@@ -55,9 +57,9 @@ class AISelector:
             else:
                 providers_disabled.append("fmp")
                 logger.warning("FMP disabled: missing FMP_API_KEY or SOXS_FMP_ENABLED=0")
-            ta_result = self.tradingagents_provider.analyze(universe)
-            fr_result = self.finrobot_provider.analyze(universe)
-            ob_result = self.openbb_provider.analyze(universe) if self.config.openbb_enabled else {}
+            ta_result = self.tradingagents_provider.analyze(analyzed_universe)
+            fr_result = self.finrobot_provider.analyze(analyzed_universe)
+            ob_result = self.openbb_provider.analyze(analyzed_universe) if self.config.openbb_enabled else {}
             ranked = combine_scores(ta_result, fr_result, ob_result)
         except Exception as exc:
             logger.exception("AI selector failed, fallback to original config: %s", exc)
@@ -76,6 +78,8 @@ class AISelector:
             "providers_disabled": providers_disabled,
             "fmp_enabled": bool(self.config.fmp_enabled),
             "fallback_used": any(bool(item.get("fallback")) for item in [*ta_result.values(), *fr_result.values(), *ob_result.values()]),
+            "analysis_universe": analyzed_universe,
+            "analysis_universe_limit": analysis_limit,
         }
         self._write_report(self.last_top10)
         top_n = min(max(1, self.config.top_n), len(self.last_top10))
@@ -90,6 +94,8 @@ class AISelector:
             "providers_disabled": list(self.last_run_metadata.get("providers_disabled") or []),
             "fmp_enabled": bool(self.last_run_metadata.get("fmp_enabled", False)),
             "fallback_used": bool(self.last_run_metadata.get("fallback_used", False)),
+            "analysis_universe": list(self.last_run_metadata.get("analysis_universe") or []),
+            "analysis_universe_limit": int(self.last_run_metadata.get("analysis_universe_limit") or self.config.analysis_universe_limit),
             "top10": ranked,
             "top3": top3,
             "universe": list(self.config.universe),

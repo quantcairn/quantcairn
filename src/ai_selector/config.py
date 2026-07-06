@@ -10,6 +10,7 @@ OPENBB_ENABLED = False
 FMP_API_KEY = os.getenv("FMP_API_KEY", "").strip()
 FMP_ENABLED = bool(FMP_API_KEY)
 TOP_N = 3
+ANALYSIS_UNIVERSE_LIMIT = 4
 UNIVERSE = [
     "NVDA",
     "MSFT",
@@ -34,6 +35,7 @@ TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 class AISelectorRuntimeConfig:
     enabled: bool
     top_n: int
+    analysis_universe_limit: int
     universe: list[str]
     top10_path: Path
     tradingagents_path: str
@@ -75,6 +77,10 @@ def load_runtime_config() -> AISelectorRuntimeConfig:
     return AISelectorRuntimeConfig(
         enabled=_bool_env("SOXS_AI_SELECTOR_ENABLED", AI_SELECTOR_ENABLED),
         top_n=_int_env("SOXS_AI_SELECTOR_TOP_N", TOP_N),
+        analysis_universe_limit=_int_env(
+            "SOXS_AI_SELECTOR_ANALYSIS_UNIVERSE_LIMIT",
+            ANALYSIS_UNIVERSE_LIMIT,
+        ),
         universe=_list_env("SOXS_AI_SELECTOR_UNIVERSE", UNIVERSE),
         top10_path=LATEST_TOP10_PATH,
         tradingagents_path=os.environ.get("SOXS_TRADINGAGENTS_PATH", "").strip(),

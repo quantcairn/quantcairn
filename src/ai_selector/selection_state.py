@@ -88,7 +88,17 @@ def verify_selection_state(required_et_date: str | None = None) -> tuple[bool, s
     if required_et_date and state_date != required_et_date:
         return False, f"selection_state_date_mismatch:{state_date or 'missing'}", state
 
-    expected = [str(item or "").strip().upper() for item in state.get("selected_symbols") or [] if str(item or "").strip()]
+    expected_top_configs = [
+        str(item or "").strip().upper()
+        for item in state.get("top_config_symbols") or []
+        if str(item or "").strip()
+    ]
+    expected_selected = [
+        str(item or "").strip().upper()
+        for item in state.get("selected_symbols") or []
+        if str(item or "").strip()
+    ]
+    expected = expected_top_configs or expected_selected
     actual = current_top_config_symbols(limit=max(5, len(expected)))
     if expected != actual:
         return False, "top_config_symbols_mismatch", state

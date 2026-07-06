@@ -393,6 +393,10 @@ class AIStrategySelector:
             value = 8.0
         return max(1.0, value)
 
+    def _default_reduce_only(self) -> bool:
+        raw = str(os.environ.get("SOXS_SELECTOR_REDUCE_ONLY_DEFAULT", "0") or "0").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
     def _live_data_requested(self) -> bool:
         return os.environ.get("AI_SELECTOR_LIVE_DATA", "1") != "0"
 
@@ -409,14 +413,23 @@ class AIStrategySelector:
                 os.environ["AI_SELECTOR_LIVE_DATA"] = previous
             self.scorer = Scorer()
 
-    def run_selection(self, write_configs: bool = True):
+    def run_selection(self, write_configs: bool = True, symbols_override: List[str] | None = None):
         selection_started_at = datetime.now().timestamp()
         # 1. build universe
-        source = os.environ.get("AI_SELECTOR_UNIVERSE", "sample")
-        if source == "sample":
-            symbols = self.universe._load_local_snapshot()
+        if symbols_override:
+            symbols = []
+            seen = set()
+            for raw in symbols_override:
+                symbol = _normalize_ticker(raw)
+                if symbol and symbol not in seen:
+                    symbols.append(symbol)
+                    seen.add(symbol)
         else:
-            symbols = self.universe.build_universe(source=source)
+            source = os.environ.get("AI_SELECTOR_UNIVERSE", "sample")
+            if source == "sample":
+                symbols = self.universe._load_local_snapshot()
+            else:
+                symbols = self.universe.build_universe(source=source)
 
         symbols = symbols[:self.max_symbols]
 
@@ -445,8 +458,9 @@ class AIStrategySelector:
         scored = sorted(scored, key=lambda item: item.get("score", 0.0), reverse=True)
         preliminary_pool = [dict(item) for item in scored[: max(self.selection_size, self._filter_candidate_limit_from_env())]]
         preliminary_topk = self._select_diversified_top_k(preliminary_pool, self.selection_size)
+        default_reduce_only = self._default_reduce_only()
         for item in preliminary_topk:
-            item["reduce_only"] = True
+            item["reduce_only"] = default_reduce_only
             item["selection_penalty_reason"] = item.get("selection_penalty_reason") or "fast_start_preliminary"
             item["fast_start_preliminary"] = True
 
@@ -497,7 +511,7 @@ class AIStrategySelector:
                 if not ticker or ticker in selected_tickers:
                     continue
                 candidate = dict(item)
-                candidate["reduce_only"] = True
+                candidate["reduce_only"] = default_reduce_only
                 candidate["quality_backfill"] = True
                 candidate["selection_penalty_reason"] = "quality_filter_backfill"
                 topk.append(candidate)

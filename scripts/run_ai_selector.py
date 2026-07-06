@@ -7,6 +7,7 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.ai_selector.integration import AISelector
 from src.ai_selector.selector import AIStrategySelector
 from datetime import datetime
 import os
@@ -39,7 +40,15 @@ def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _provider_metadata(output: dict, live_positions: list[dict] | None) -> tuple[list[str], list[str], bool]:
+def _normalize_ticker(value: str) -> str:
+    return str(value or "").strip().upper().split(".")[0]
+
+
+def _provider_metadata(
+    output: dict,
+    live_positions: list[dict] | None,
+    ai_meta: dict | None = None,
+) -> tuple[list[str], list[str], bool]:
     settings = dict(output.get("settings") or {})
     quality_report = dict(output.get("quality_filter_report") or {})
     data_mode = str(settings.get("data_mode") or "").strip().lower()
@@ -49,6 +58,12 @@ def _provider_metadata(output: dict, live_positions: list[dict] | None) -> tuple
 
     providers_used: list[str] = ["selector_core", "yfinance"]
     providers_disabled: list[str] = []
+
+    if ai_meta:
+        providers_used.extend(list(ai_meta.get("providers_used") or []))
+        providers_disabled.extend(list(ai_meta.get("providers_disabled") or []))
+        if ai_meta.get("fallback_used"):
+            fallback_used = True
 
     if os.environ.get("AI_SELECTOR_DIRECT_HISTORY", "1") != "0":
         providers_used.append("yahoo_chart")
@@ -88,6 +103,59 @@ def _provider_metadata(output: dict, live_positions: list[dict] | None) -> tuple
         name for name in dict.fromkeys(providers_disabled) if name not in providers_used
     ]
     return providers_used, providers_disabled, fmp_enabled
+
+
+def _run_integrated_ai_selector() -> dict:
+    selector = AISelector()
+    signals = selector.get_signals()
+    top10 = selector.get_top10()
+    metadata = dict(selector.last_run_metadata or {})
+    preferred_symbols = [
+        _normalize_ticker(item.get("ticker"))
+        for item in top10
+        if _normalize_ticker(item.get("ticker"))
+    ]
+    signal_map = {
+        _normalize_ticker(item.get("ticker")): dict(item)
+        for item in top10
+        if _normalize_ticker(item.get("ticker"))
+    }
+    return {
+        "enabled": bool(selector.config.enabled),
+        "top3": list(signals or []),
+        "top10": list(top10 or []),
+        "preferred_symbols": preferred_symbols,
+        "signal_map": signal_map,
+        "providers_used": list(metadata.get("providers_used") or []),
+        "providers_disabled": list(metadata.get("providers_disabled") or []),
+        "fmp_enabled": bool(metadata.get("fmp_enabled", False)),
+        "fallback_used": bool(metadata.get("fallback_used", False)),
+    }
+
+
+def _annotate_with_ai_signals(rows: list[dict], signal_map: dict[str, dict]) -> list[dict]:
+    annotated = []
+    for raw in rows or []:
+        item = dict(raw)
+        ticker = _normalize_ticker(item.get("ticker"))
+        ai_signal = dict(signal_map.get(ticker) or {})
+        if ai_signal:
+            item["ai_score"] = float(ai_signal.get("score") or 0.0)
+            item["confidence"] = float(ai_signal.get("confidence") or item.get("confidence") or 0.0)
+            item["reason"] = str(ai_signal.get("reason") or item.get("reason") or "")
+            item["source"] = str(ai_signal.get("source") or item.get("source") or "ai_selector")
+        annotated.append(item)
+    return annotated
+
+
+def _prioritize_ai_rank(rows: list[dict], signal_map: dict[str, dict]) -> list[dict]:
+    def _sort_key(item: dict):
+        ticker = _normalize_ticker(item.get("ticker"))
+        ai_score = float((signal_map.get(ticker) or {}).get("score") or -1.0)
+        base_score = float(item.get("score") or 0.0)
+        return (-ai_score, -base_score, ticker)
+
+    return sorted((dict(item) for item in rows or []), key=_sort_key)
 
 
 def _write_reports(summary: dict) -> tuple[Path, Path]:
@@ -259,10 +327,21 @@ def main():
         print("Live position verification failed; refusing to run selection or replace TOP configs.")
         sys.exit(1)
 
+    integrated_ai = _run_integrated_ai_selector()
+    preferred_symbols = integrated_ai.get("preferred_symbols") or None
     sel = AIStrategySelector()
-    out = sel.run_selection(write_configs=False)
-    out["top10"] = _merge_live_position_flags(list(out.get("top10") or []), live_positions or [])
+    out = sel.run_selection(write_configs=False, symbols_override=preferred_symbols)
     selected = out.get('top5') or out.get('top3') or []
+    if not selected and preferred_symbols:
+        integrated_ai["fallback_used"] = True
+        out = sel.run_selection(write_configs=False)
+        selected = out.get('top5') or out.get('top3') or []
+
+    out["top10"] = _merge_live_position_flags(list(out.get("top10") or []), live_positions or [])
+    out["top10"] = _annotate_with_ai_signals(list(out.get("top10") or []), integrated_ai.get("signal_map") or {})
+    selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
+    if integrated_ai.get("preferred_symbols"):
+        selected = _prioritize_ai_rank(selected, integrated_ai.get("signal_map") or {})
     selected = _pin_live_positions(
         selected,
         live_positions or [],
@@ -303,7 +382,7 @@ def main():
 
     # Send notifications: webhook (env AI_SELECTOR_WEBHOOK) and macOS notification
     webhook = os.environ.get('AI_SELECTOR_WEBHOOK')
-    providers_used, providers_disabled, fmp_enabled = _provider_metadata(out, live_positions)
+    providers_used, providers_disabled, fmp_enabled = _provider_metadata(out, live_positions, integrated_ai)
     summary = {
         'timestamp': timestamp,
         'generated_at': timestamp,
@@ -323,7 +402,7 @@ def main():
             for item in selected
             if item.get("protected_position") or item.get("existing_position")
         ],
-        'fallback_used': any(
+        'fallback_used': bool(integrated_ai.get("fallback_used")) or any(
             bool(item.get("existing_position"))
             or bool(item.get("fallback_history_incomplete"))
             or str(item.get("selection_penalty_reason") or "").startswith("quality_filter_backfill")

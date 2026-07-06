@@ -1,13 +1,15 @@
-ticker: AMZN
+ticker: GOOGL
 mode: live
 selection:
   source: ai_selector
   selection_date: '2026-07-06'
-  score: 83.05
-  confidence: 0.0
+  score: 81.22
+  confidence: 0.58
   protected_position: false
   reduce_only: true
-  reason: diversified
+  reason: 'Fallback TradingAgents mock for GOOGL: tradingagents_budget_exhausted |
+    FinRobot research artifacts parsed | Growth 50.0, profitability 50.0, balance
+    sheet 50.0, cash flow 50.0, valuation 50.0'
 range:
   mode: auto
   support_price: null
@@ -23,7 +25,7 @@ range:
   min_range_width_pct: 0.8
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 2
+  size_per_trade: 3
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0

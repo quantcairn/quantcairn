@@ -57,6 +57,11 @@ port_for_top() {
     printf '%s' $((8090 + ${top_name:3}))
 }
 
+launchd_job_for_top() {
+    local top_name="$1"
+    printf 'com.soxs.top%s' "${top_name:3}"
+}
+
 kill_listener_on_port() {
     local port="$1"
     if command -v lsof >/dev/null 2>&1; then
@@ -363,6 +368,10 @@ case "$1" in
                 trades=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['trades_today'])" 2>/dev/null)
                 halted=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print('⛔' if d['halted'] else '✅')" 2>/dev/null)
                 echo "  $ticker: \$$price | $signal | PnL=\$$pnl | $trades trades | $halted"
+            elif lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+                echo "  $ticker: 端口 $port 已监听 | 状态接口暂未返回 | ✅"
+            elif command -v launchctl >/dev/null 2>&1 && launchctl print gui/"$UID_NUM"/"$(launchd_job_for_top "$ticker")" >/dev/null 2>&1; then
+                echo "  $ticker: launchd 已运行 | 等待端口 $port | ⏳"
             else
                 echo "  $ticker: ❌ not running"
             fi

@@ -242,10 +242,10 @@ class LongBridgeBroker(BrokerBase):
     def _shared_cache_ttl_seconds(self) -> float:
         raw_value = os.environ.get("LONGBRIDGE_SHARED_CACHE_TTL_SECONDS", "").strip()
         try:
-            ttl = float(raw_value) if raw_value else 45.0
+            ttl = float(raw_value) if raw_value else 180.0
         except ValueError:
-            ttl = 45.0
-        return max(5.0, min(ttl, 300.0))
+            ttl = 180.0
+        return max(30.0, min(ttl, 900.0))
 
     def _load_shared_snapshot(self, path: Path) -> dict | None:
         if not path.exists():
