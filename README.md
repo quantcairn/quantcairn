@@ -199,9 +199,11 @@ soxs-range-arbitrage/
 - `launchd` 与 `cron` 的启动/停止任务二选一，不要同时启用
 - 如果同时启用，会造成重复启动，日志里会反复出现 `AI Top3 trading started`
 - 无论使用 `launchd` 还是 `cron`，都应调用 `auto_trade.sh start|stop`
-- 不要再直接用 `multi_launch.sh start|stop` 做定时启停，因为它会绕过“当天选股配置校验”
+- 不要再直接用 `multi_launch.sh start|stop` 做定时启停；虽然现在也会校验“当天选股状态”，但标准入口仍应保持为 `auto_trade.sh` / `tradectl.sh`
 - `launchd/com.soxs.arbitrage*.plist` 现在默认使用稳定的后台常驻路径，不再强制 TOP1-5 走 `launchd` 子服务
-- `auto_trade.sh start` 和 `multi_launch.sh start` 现在都会先检查是否为美股交易日；像 `2026-07-03` 这类休市日会直接跳过启动
+- `auto_trade.sh start`、`tradectl.sh up`、`multi_launch.sh start`、`multi_launch.sh restart-all` 现在都会先检查是否为美股交易日；像 `2026-07-03` 这类休市日会直接跳过启动
+- 以上 live TOP 启动入口现在都会检查当天美东 `selection_state`；状态缺失、日期过期或 `TOP1~TOP5` 与状态不一致时会直接拒绝启动
+- 即使直接运行 `run.py --config configs/TOP1.yaml --live`，现在也会触发同样的当天选股校验
 
 示例如下：
 
@@ -232,6 +234,11 @@ cd /Users/chenwei/soxs-range-arbitrage
 ./tradectl.sh reload-launchd
 ./tradectl.sh down
 ```
+
+代码层安全说明：
+
+- 如果代码里直接实例化 `TradingEngine(..., mode=\"live\")`，且对应标的是当前 `TOP1~TOP5` live 配置之一，系统也会在引擎内部再次校验当天美东选股状态
+- `orphan_monitor` 使用独立 `startup_role`，不会被这道校验误伤，从而继续负责真实孤儿持仓的只减仓保护
 
 ## AI 选股日报
 

@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from src.ai_selector.config import AISelectorRuntimeConfig
-from src.config.loader import AppConfig
+from src.config.loader import AppConfig, PositionConfig
 from src.engine import trading_engine as engine_module
 from src.engine.trading_engine import TradingEngine
 
@@ -132,5 +132,55 @@ def test_trading_engine_stale_selection_state_falls_back_without_ai_run():
 
         assert engine._ai_selection.active is False
         assert engine._ai_selection.fallback_reason == "ai_selection_stale"
+    finally:
+        monkeypatch.restore()
+
+
+def test_live_top_engine_blocks_when_selection_state_invalid():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        monkeypatch.setattr(engine_module, "has_live_top_configs", lambda: True)
+        monkeypatch.setattr(engine_module, "current_top_config_symbols", lambda: ["SOFI"])
+        monkeypatch.setattr(
+            engine_module,
+            "verify_live_startup_selection",
+            lambda required_et_date=None: (False, "selection_state_date_mismatch:2026-07-05", None),
+        )
+        engine = TradingEngine(
+            AppConfig(
+                ticker="SOFI",
+                mode="live",
+                position=PositionConfig(reduce_only=True),
+            ),
+            ignore_trading_hours=True,
+        )
+
+        assert engine._verify_live_startup_safety() is False
+        assert "当天选股状态无效" in engine._last_signal_reason
+    finally:
+        monkeypatch.restore()
+
+
+def test_orphan_monitor_bypasses_live_top_selection_guard():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        monkeypatch.setattr(engine_module, "has_live_top_configs", lambda: True)
+        monkeypatch.setattr(engine_module, "current_top_config_symbols", lambda: ["SOFI"])
+        monkeypatch.setattr(
+            engine_module,
+            "verify_live_startup_selection",
+            lambda required_et_date=None: (False, "selection_state_date_mismatch:2026-07-05", None),
+        )
+        engine = TradingEngine(
+            AppConfig(
+                ticker="SOFI",
+                mode="live",
+                position=PositionConfig(reduce_only=True),
+            ),
+            ignore_trading_hours=True,
+            startup_role="orphan_monitor",
+        )
+
+        assert engine._verify_live_startup_safety() is True
     finally:
         monkeypatch.restore()

@@ -29,7 +29,12 @@ from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
 from ..ai_selector.config import load_runtime_config as load_ai_selector_runtime_config
 from ..ai_selector.integration import AISelector
-from ..ai_selector.selection_state import load_selection_state
+from ..ai_selector.selection_state import (
+    current_top_config_symbols,
+    has_live_top_configs,
+    load_selection_state,
+    verify_live_startup_selection,
+)
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -133,11 +138,17 @@ class TradingEngine:
     risk management, and order execution.
     """
 
-    def __init__(self, config: AppConfig, ignore_trading_hours: bool = False):
+    def __init__(
+        self,
+        config: AppConfig,
+        ignore_trading_hours: bool = False,
+        startup_role: str = "standard",
+    ):
         self.config = config
         self.ticker = config.ticker
         self.mode = config.mode
         self._ignore_trading_hours = ignore_trading_hours
+        self._startup_role = str(startup_role or "standard").strip().lower()
 
         # Initialize components
         self.fetcher = PriceFetcher(
@@ -897,6 +908,31 @@ class TradingEngine:
 
     def _verify_live_startup_safety(self) -> bool:
         """Fail closed unless live startup is reduce-only with verified broker data."""
+        top_symbols = {
+            str(symbol or "").strip().upper() for symbol in current_top_config_symbols()
+        }
+        if (
+            self._startup_role != "orphan_monitor"
+            and has_live_top_configs()
+            and self.ticker.upper() in top_symbols
+        ):
+            required_date = datetime.now(pytz.timezone("America/New_York")).date().isoformat()
+            ok, reason, _state = verify_live_startup_selection(required_et_date=required_date)
+            if not ok:
+                self._last_signal_reason = f"实盘启动已阻止：当天选股状态无效（{reason}）"
+                self._write_runtime_audit(
+                    "startup_safety_check",
+                    broker_position_verified=False,
+                    broker_account_verified=False,
+                    startup_allowed=False,
+                    reason="selection_state_invalid",
+                    selection_state_reason=reason,
+                    required_et_date=required_date,
+                    startup_role=self._startup_role,
+                )
+                self.notifier.alert(self._last_signal_reason, "error")
+                return False
+
         if not self._reduce_only:
             self._last_signal_reason = "实盘启动已阻止：全局只减仓未启用"
             self._write_runtime_audit(
@@ -905,6 +941,7 @@ class TradingEngine:
                 broker_account_verified=False,
                 startup_allowed=False,
                 reason="reduce_only_disabled",
+                startup_role=self._startup_role,
             )
             self.notifier.alert(self._last_signal_reason, "error")
             return False
@@ -924,6 +961,7 @@ class TradingEngine:
                 broker_account_verified=False,
                 startup_allowed=False,
                 reason="broker_position_verification_failed",
+                startup_role=self._startup_role,
             )
             self.notifier.alert(self._last_signal_reason, "error")
             return False
@@ -940,6 +978,7 @@ class TradingEngine:
                 broker_account_verified=False,
                 startup_allowed=False,
                 reason="broker_account_verification_failed",
+                startup_role=self._startup_role,
             )
             self.notifier.alert(self._last_signal_reason, "error")
             return False
@@ -958,6 +997,7 @@ class TradingEngine:
                 if int(getattr(pos, "quantity", 0) or 0) > 0
             ],
             equity=float(getattr(account, "equity", 0.0) or 0.0),
+            startup_role=self._startup_role,
         )
         return True
 

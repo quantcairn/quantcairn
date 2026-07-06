@@ -251,7 +251,11 @@ class OrphanPositionMonitor:
                 mode="live",
                 position=PositionConfig(reduce_only=True),
             )
-            engine = TradingEngine(config, ignore_trading_hours=False)
+            engine = TradingEngine(
+                config,
+                ignore_trading_hours=False,
+                startup_role="orphan_monitor",
+            )
             engine.broker = self.broker
             self._engines[ticker] = engine
         return self._engines[ticker]
