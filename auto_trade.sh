@@ -80,7 +80,11 @@ PY
             exit 1
         fi
 
-        "$MULTI_LAUNCH" start >> "$LOG_FILE" 2>&1
+        if ! "$MULTI_LAUNCH" start >> "$LOG_FILE" 2>&1; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Multi-launch startup failed; trading start aborted" \
+                | tee -a "$LOG_FILE"
+            exit 1
+        fi
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🚀 AI Top3 trading started" | tee -a "$LOG_FILE"
         ;;
 
