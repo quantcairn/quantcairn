@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick operational health check for the five-engine trading system.
+# Quick operational health check for the Top3 trading system.
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 LOG_DIR="$PROJECT_DIR/logs"
@@ -109,17 +109,11 @@ if market_is_open; then
     check_fd 8092 "TOP2"
     check_port 8093 "TOP3"
     check_fd 8093 "TOP3"
-    check_port 8094 "TOP4"
-    check_fd 8094 "TOP4"
-    check_port 8095 "TOP5"
-    check_fd 8095 "TOP5"
 else
-    echo "OK   US market closed; TOP1-TOP5 may remain online for snapshot-only sync"
+    echo "OK   US market closed; TOP1-TOP3 may remain online for snapshot-only sync"
     check_port 8091 "TOP1"
     check_port 8092 "TOP2"
     check_port 8093 "TOP3"
-    check_port 8094 "TOP4"
-    check_port 8095 "TOP5"
 fi
 check_port 8090 "combined"
 check_fd 8090 "combined"
@@ -130,10 +124,8 @@ if market_is_open; then
     check_api 8091 "TOP1"
     check_api 8092 "TOP2"
     check_api 8093 "TOP3"
-    check_api 8094 "TOP4"
-    check_api 8095 "TOP5"
 else
-    for port in 8091 8092 8093 8094 8095; do
+    for port in 8091 8092 8093; do
         body=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/api/status" 2>/dev/null)
         if [ -n "$body" ]; then
             python3 -c "import json,sys; d=json.load(sys.stdin); print('OK   After-hours API %s: reason=%s' % ('$port', d.get('last_signal_reason') or ''))" <<< "$body" 2>/dev/null \
@@ -148,6 +140,4 @@ echo "== logs =="
 check_log_risks "$LOG_DIR/top1.log" "TOP1"
 check_log_risks "$LOG_DIR/top2.log" "TOP2"
 check_log_risks "$LOG_DIR/top3.log" "TOP3"
-check_log_risks "$LOG_DIR/top4.log" "TOP4"
-check_log_risks "$LOG_DIR/top5.log" "TOP5"
 check_log_risks "$LOG_DIR/combined.log" "combined"
