@@ -155,6 +155,7 @@ stop_top() {
 
 start_top() {
     startup_delay="${SOXS_ENGINE_STARTUP_DELAY_SECONDS:-6}"
+    launchd_startup_timeout="${SOXS_LAUNCHD_ENGINE_STARTUP_TIMEOUT_SECONDS:-20}"
     start_top_manual() {
         TOP_PIDS=""
         for TOP in "${TOP_ENGINES[@]}"; do
@@ -223,7 +224,7 @@ EOF
                 launchctl bootstrap gui/"$UID_NUM" "$plist" 2>/dev/null || true
                 launchctl kickstart -k gui/"$UID_NUM"/"$job" 2>/dev/null || true
                 port="$(port_for_top "TOP${job##*.top}")"
-                wait_for_port "$port" "$startup_delay" || {
+                wait_for_port "$port" "$launchd_startup_timeout" || {
                     echo "⚠️ $job failed to bind to :$port via launchd"
                     launchd_failed=1
                     break
@@ -234,11 +235,16 @@ EOF
             echo "🚀 TOP engines managed by launchd"
             return 0
         fi
-        echo "↩️ Falling back to manual TOP engine startup"
-        stop_top
-        sleep 1
-        start_top_manual
-        return $?
+        echo "↩️ Launchd startup incomplete; keeping any already-started TOP jobs running"
+        echo "   Set SOXS_ALLOW_MANUAL_TOP_FALLBACK=1 to force manual fallback."
+        if [ "${SOXS_ALLOW_MANUAL_TOP_FALLBACK:-0}" = "1" ]; then
+            echo "↩️ Falling back to manual TOP engine startup"
+            stop_top
+            sleep 1
+            start_top_manual
+            return $?
+        fi
+        return 1
     fi
 
     start_top_manual

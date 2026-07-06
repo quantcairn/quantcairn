@@ -12,7 +12,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ..engine.trading_engine import TradingEngine, append_runtime_audit
+from ..engine.trading_engine import append_runtime_audit
+from ..utils.market_calendar import is_us_market_trading_day
 from ..config.runtime_values import get_runtime_env
 from .trade_audit import load_trade_records
 
@@ -64,9 +65,7 @@ def _parse_report_date(path: Path) -> date | None:
 
 
 def is_trading_day(trade_day: date) -> bool:
-    if trade_day.weekday() >= 5:
-        return False
-    return trade_day not in TradingEngine._market_holidays(trade_day.year)
+    return is_us_market_trading_day(trade_day)
 
 
 def latest_trading_day(reference_day: date | None = None) -> date:

@@ -1,5 +1,13 @@
 ticker: AMD
 mode: live
+selection:
+  source: ai_selector
+  selection_date: '2026-07-06'
+  score: 74.06
+  confidence: 0.0
+  protected_position: false
+  reduce_only: true
+  reason: same sector
 range:
   mode: auto
   support_price: null

@@ -23,7 +23,7 @@ if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
 from src.config.local_env import load_local_ai_env
-from src.engine.trading_engine import TradingEngine
+from src.utils.market_calendar import is_us_market_trading_day
 
 VENV_PY = os.path.join(PROJECT_DIR, '.venv', 'bin', 'python')
 SELECTOR = os.path.join(PROJECT_DIR, 'scripts', 'run_ai_selector.py')
@@ -34,10 +34,7 @@ LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
 
 
 def is_trading_day(now_et: datetime) -> bool:
-    return not (
-        now_et.weekday() >= 5
-        or now_et.date() in TradingEngine._market_holidays(now_et.year)
-    )
+    return is_us_market_trading_day(now_et.date())
 
 
 def is_market_time(now_et: datetime) -> bool:
