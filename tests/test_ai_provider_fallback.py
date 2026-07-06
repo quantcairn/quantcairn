@@ -65,6 +65,29 @@ def test_tradingagents_provider_timeout_falls_back_fast():
         monkeypatch.restore()
 
 
+def test_tradingagents_provider_timeout_short_circuits_remaining_symbols():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        provider = TradingAgentsProvider()
+        monkeypatch.setattr(provider, "_is_available", lambda: True)
+        monkeypatch.setattr(
+            provider,
+            "_analyze_with_tradingagents",
+            lambda ticker: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(cmd="tradingagents", timeout=7)
+            ),
+        )
+
+        result = provider.analyze(["NVDA", "MSFT"])
+
+        assert result["NVDA"]["fallback"] is True
+        assert "tradingagents_timeout" in result["NVDA"]["reason"]
+        assert result["MSFT"]["fallback"] is True
+        assert "tradingagents_timeout_budget_exhausted" in result["MSFT"]["reason"]
+    finally:
+        monkeypatch.restore()
+
+
 def test_tradingagents_provider_total_budget_skips_remaining_symbols():
     monkeypatch = SimpleMonkeyPatch()
     try:

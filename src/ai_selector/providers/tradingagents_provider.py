@@ -35,7 +35,14 @@ class TradingAgentsProvider:
     def analyze(self, tickers: list) -> dict:
         results: dict[str, dict[str, Any]] = {}
         started_at = time.monotonic()
-        for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
+        normalized_tickers = [
+            str(item or "").strip().upper() for item in tickers if str(item or "").strip()
+        ]
+        remaining_fallback_reason: str | None = None
+        for ticker in normalized_tickers:
+            if remaining_fallback_reason is not None:
+                results[ticker] = self._mock_result(ticker, reason=remaining_fallback_reason)
+                continue
             if (time.monotonic() - started_at) >= self._total_budget_seconds():
                 results[ticker] = self._mock_result(ticker, reason="tradingagents_budget_exhausted")
                 continue
@@ -47,9 +54,15 @@ class TradingAgentsProvider:
             except subprocess.TimeoutExpired as exc:
                 logger.warning("TradingAgents analyze timeout for %s: %s", ticker, exc)
                 results[ticker] = self._mock_result(ticker, reason="tradingagents_timeout")
+                remaining_fallback_reason = "tradingagents_timeout_budget_exhausted"
             except Exception as exc:
                 logger.warning("TradingAgents analyze fallback for %s: %s", ticker, exc)
-                results[ticker] = self._mock_result(ticker, reason="tradingagents_error")
+                message = str(exc).strip() or "tradingagents_error"
+                if message == "tradingagents_missing_openai_api_key":
+                    results[ticker] = self._mock_result(ticker, reason=message)
+                    remaining_fallback_reason = "tradingagents_missing_openai_api_key"
+                else:
+                    results[ticker] = self._mock_result(ticker, reason="tradingagents_error")
         return results
 
     def _is_available(self) -> bool:
@@ -69,20 +82,20 @@ class TradingAgentsProvider:
         return bool(str(os.environ.get("OPENAI_API_KEY", "")).strip())
 
     def _timeout_seconds(self) -> int:
-        raw_value = str(os.environ.get("SOXS_TRADINGAGENTS_TIMEOUT_SECONDS", "45") or "45").strip()
+        raw_value = str(os.environ.get("SOXS_TRADINGAGENTS_TIMEOUT_SECONDS", "12") or "12").strip()
         try:
             timeout = int(raw_value)
         except (TypeError, ValueError):
-            timeout = 45
-        return max(5, min(timeout, 300))
+            timeout = 12
+        return max(5, min(timeout, 120))
 
     def _total_budget_seconds(self) -> int:
-        raw_value = str(os.environ.get("SOXS_TRADINGAGENTS_TOTAL_BUDGET_SECONDS", "20") or "20").strip()
+        raw_value = str(os.environ.get("SOXS_TRADINGAGENTS_TOTAL_BUDGET_SECONDS", "18") or "18").strip()
         try:
             budget = int(raw_value)
         except (TypeError, ValueError):
-            budget = 20
-        return max(self._timeout_seconds(), min(budget, 300))
+            budget = 18
+        return max(self._timeout_seconds(), min(budget, 180))
 
     def _run_with_installed_package(self, ticker: str) -> Any:
         from tradingagents.default_config import DEFAULT_CONFIG

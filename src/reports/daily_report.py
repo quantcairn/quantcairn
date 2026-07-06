@@ -87,7 +87,7 @@ def should_generate_daily_report(now_et: datetime | None = None, reports_dir: Pa
     trade_day = now_et.date()
     if not is_trading_day(trade_day):
         return False
-    if not (now_et.hour == 16 and now_et.minute == 5):
+    if (now_et.hour, now_et.minute) < (16, 5):
         return False
     return not _report_path(trade_day, reports_dir).exists()
 
@@ -492,6 +492,8 @@ def latest_daily_report_response(
     current_now_et = now_et or _ny_now()
     expected_day = latest_trading_day(current_now_et.date())
     expected_path = _report_path(expected_day, root)
+    generation_warning: str | None = None
+    generated_payload: dict[str, Any] | None = None
 
     if (
         is_trading_day(expected_day)
@@ -502,13 +504,30 @@ def latest_daily_report_response(
         )
     ):
         try:
-            generate_daily_report(
+            generated_payload = generate_daily_report(
                 trade_day=expected_day,
                 reports_dir=root,
                 now_et=current_now_et,
             )
         except Exception as exc:
             logger.warning("On-demand daily report generation skipped: %s", exc)
+            generation_warning = f"daily_report_generation_failed:{exc}"
+
+    if generated_payload is not None:
+        generated_payload = dict(generated_payload)
+        generated_payload["status"] = "ok"
+        generated_payload["report_path"] = str(expected_path)
+        generated_payload["is_latest_trading_day_report"] = True
+        generated_payload["report_date"] = expected_day.isoformat()
+        generated_payload["expected_trading_day"] = expected_day.isoformat()
+        generated_payload["report_freshness"] = "current_trading_day"
+        warnings = generated_payload.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        if generation_warning:
+            warnings.append(generation_warning)
+        generated_payload["warnings"] = list(dict.fromkeys(warnings))
+        return generated_payload, 200
 
     if not root.exists():
         return {"status": "no_report_available", "reports_dir": str(root)}, 404
@@ -545,6 +564,8 @@ def latest_daily_report_response(
             f"latest available daily report is for {report_day.isoformat() if report_day else 'unknown'}; "
             f"expected trading day is {expected_day.isoformat()}"
         )
+    if generation_warning:
+        warnings.append(generation_warning)
     payload["warnings"] = list(dict.fromkeys(warnings))
     return payload, 200
 

@@ -372,11 +372,12 @@ def test_daily_report_endpoint_generates_missing_latest_report_on_demand():
         monkeypatch.restore()
 
 
-def test_scheduler_only_triggers_at_1605_et_on_trading_days():
+def test_scheduler_triggers_at_or_after_1605_et_on_trading_days():
     with tempfile.TemporaryDirectory() as tmp:
         reports_dir = Path(tmp) / "reports"
         reports_dir.mkdir()
         assert daily_report.should_generate_daily_report(datetime(2026, 7, 2, 16, 5), reports_dir) is True
+        assert daily_report.should_generate_daily_report(datetime(2026, 7, 2, 17, 5), reports_dir) is True
         assert daily_report.should_generate_daily_report(datetime(2026, 7, 2, 16, 4), reports_dir) is False
         assert daily_report.should_generate_daily_report(datetime(2026, 7, 4, 16, 5), reports_dir) is False
         assert daily_report.should_generate_daily_report(datetime(2026, 7, 5, 16, 5), reports_dir) is False
@@ -393,7 +394,7 @@ def run_test_direct():
     test_daily_report_endpoint_returns_latest_report_json()
     test_daily_report_endpoint_handles_no_report_available()
     test_daily_report_endpoint_generates_missing_latest_report_on_demand()
-    test_scheduler_only_triggers_at_1605_et_on_trading_days()
+    test_scheduler_triggers_at_or_after_1605_et_on_trading_days()
 
 
 if __name__ == "__main__":
