@@ -355,6 +355,7 @@ def _selection_sync_status() -> dict:
             "level": level,
             "label": label,
             "detail": detail,
+            "required_date": required_date,
             "state_date": state_date,
         }
     if reason == "selection_state_missing":
@@ -378,6 +379,7 @@ def _selection_sync_status() -> dict:
         "level": level,
         "label": label,
         "detail": detail,
+        "required_date": required_date,
         "state_date": state_date,
     }
 
@@ -389,17 +391,23 @@ def _startup_guard_status(selection_sync: dict) -> dict:
             "level": "warn",
             "label": "启动校验待命",
             "detail": "当前没有 live TOP 配置，今天的启动校验不会触发。",
+            "required_date": str((selection_sync or {}).get("required_date") or _current_et_date()),
+            "state_date": str((selection_sync or {}).get("state_date") or "") or None,
         }
     if bool((selection_sync or {}).get("ok")):
         return {
             "level": "live",
             "label": "启动校验通过",
             "detail": str((selection_sync or {}).get("detail") or "当天美东选股状态已通过。"),
+            "required_date": str((selection_sync or {}).get("required_date") or _current_et_date()),
+            "state_date": str((selection_sync or {}).get("state_date") or "") or None,
         }
     return {
         "level": "warn" if str((selection_sync or {}).get("level")) != "red" else "",
         "label": f"启动校验阻止 · {str((selection_sync or {}).get('label') or '未通过')}",
         "detail": str((selection_sync or {}).get("detail") or "当天美东选股状态未通过。"),
+        "required_date": str((selection_sync or {}).get("required_date") or _current_et_date()),
+        "state_date": str((selection_sync or {}).get("state_date") or "") or None,
     }
 
 
@@ -983,6 +991,8 @@ HTML = """<!DOCTYPE html>
     </div>
     <div class="guard-banner {% if startup_guard.level == 'live' %}live{% elif startup_guard.level == 'warn' %}warn{% else %}blocked{% endif %}">
         {{ startup_guard.detail }}
+        · 要求美东日期 {{ startup_guard.required_date }}
+        {% if startup_guard.state_date %} · 当前状态日期 {{ startup_guard.state_date }}{% endif %}
     </div>
     {% if trade_audit.unresolved_alert %}
     <div class="warning-banner">

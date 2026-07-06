@@ -228,6 +228,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
         "level": "green",
         "label": "已对齐",
         "detail": "当天配置已对齐（美东 2026-06-30）",
+        "required_date": "2026-06-30",
         "state_date": "2026-06-30",
     })
     monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
@@ -297,6 +298,8 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "选股配置校验" in html
     assert "已对齐" in html
     assert "当天配置已对齐（美东 2026-06-30）" in html
+    assert "要求美东日期 2026-06-30" in html
+    assert "当前状态日期 2026-06-30" in html
     assert "启用中" in html
     assert "SOFI / NVDA" in html
     assert "精筛参考" in html
@@ -613,6 +616,7 @@ def test_combined_dashboard_shows_startup_guard_status(monkeypatch):
         "level": "red",
         "label": "配置不一致",
         "detail": "TOP1-5 配置和最近一次选股结果不一致，交易启动会被拦下。",
+        "required_date": "2026-07-06",
         "state_date": "2026-07-05",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: True)
@@ -622,6 +626,8 @@ def test_combined_dashboard_shows_startup_guard_status(monkeypatch):
 
     assert "启动校验阻止 · 配置不一致" in html
     assert "TOP1-5 配置和最近一次选股结果不一致，交易启动会被拦下。" in html
+    assert "要求美东日期 2026-07-06" in html
+    assert "当前状态日期 2026-07-05" in html
 
 
 def run_test_direct():
