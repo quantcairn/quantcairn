@@ -174,10 +174,10 @@ def _parse_config(raw: dict) -> AppConfig:
         or bool(trading_flags.get("reduce_only_all", False))
     )
     config.position = PositionConfig(
-        size_per_trade=int(os.environ.get("SOXS_SIZE", p.get("size_per_trade", 0))),
-        max_position=int(os.environ.get("SOXS_MAX_POS", p.get("max_position", 300))),
+        size_per_trade=int(os.environ.get("SOXS_SIZE", p.get("size_per_trade") or 0)),
+        max_position=int(os.environ.get("SOXS_MAX_POS", p.get("max_position") or 300)),
         cool_down_seconds=p.get("cool_down_seconds", 30),
-        initial_capital=float(os.environ.get("SOXS_CAPITAL", p.get("initial_capital", 10000))),
+        initial_capital=float(os.environ.get("SOXS_CAPITAL", p.get("initial_capital") or 10000)),
         reduce_only=reduce_only,
     )
 
@@ -239,7 +239,7 @@ def _parse_config(raw: dict) -> AppConfig:
         or lb.get("app_secret", "")
         or private_lb.get("app_secret", "")
     )
-    environment = os.environ.get("LONGBRIDGE_ENV", lb.get("environment") or private_lb.get("environment", "prod"))
+    environment = os.environ.get("LONGBRIDGE_ENV", lb.get("environment") or private_lb.get("environment") or "prod")
     http_url = os.environ.get("LONGBRIDGE_HTTP_URL", lb.get("http_url") or private_lb.get("http_url"))
     quote_ws_url = os.environ.get("LONGBRIDGE_QUOTE_WS_URL", lb.get("quote_ws_url") or private_lb.get("quote_ws_url"))
     trade_ws_url = os.environ.get("LONGBRIDGE_TRADE_WS_URL", lb.get("trade_ws_url") or private_lb.get("trade_ws_url"))

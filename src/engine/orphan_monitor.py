@@ -258,24 +258,31 @@ class OrphanPositionMonitor:
         self._running = True
 
         while self._running:
-            engines = [self._engine_for_symbol(symbol) for symbol in orphans.keys()]
-            if engines and not engines[0]._is_trading_hours():
-                time.sleep(30)
+            try:
+                engines = [self._engine_for_symbol(symbol) for symbol in orphans.keys()]
+                if engines and not engines[0]._is_trading_hours():
+                    time.sleep(30)
+                    positions = self.verify_broker_positions()
+                    orphans = self.scan_orphans(positions)
+                    self._log_orphan_change(orphans)
+                    continue
+
                 positions = self.verify_broker_positions()
+                if positions is None:
+                    time.sleep(15)
+                    continue
+
                 orphans = self.scan_orphans(positions)
                 self._log_orphan_change(orphans)
-                continue
-
-            positions = self.verify_broker_positions()
-            if positions is None:
-                time.sleep(15)
-                continue
-
-            orphans = self.scan_orphans(positions)
-            self._log_orphan_change(orphans)
-            for symbol, pos in list(orphans.items()):
-                self._evaluate_symbol(symbol, pos)
-            time.sleep(self.poll_interval_seconds)
+                for symbol, pos in list(orphans.items()):
+                    try:
+                        self._evaluate_symbol(symbol, pos)
+                    except Exception as exc:
+                        logger.exception("Orphan monitor _evaluate_symbol(%s) crashed: %s", symbol, exc)
+                time.sleep(self.poll_interval_seconds)
+            except Exception as exc:
+                logger.exception("Orphan monitor run loop crashed: %s", exc)
+                time.sleep(30)
         return 0
 
     def stop(self) -> None:

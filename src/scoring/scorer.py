@@ -842,6 +842,12 @@ class Scorer:
         hist_support = float(recent_low.quantile(0.12))
         hist_resistance = float(recent_high.quantile(0.88))
 
+        # Guard: NaN propagation would produce misleading support/resistance
+        import math
+        if math.isnan(hist_support) or math.isnan(hist_resistance):
+            hist_support = max(0.01, last_close * 0.95)
+            hist_resistance = last_close * 1.05
+
         if "Volume" in df.columns and df["Volume"].notna().any():
             volume = df["Volume"].astype(float).tail(60)
             valid = pd.DataFrame({"close": recent, "volume": volume}).dropna()

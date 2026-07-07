@@ -70,6 +70,9 @@ def _selection_date() -> str:
         return datetime.utcnow().date().isoformat()
 
 def write_top_configs(top_items):
+    if not top_items:
+        logger.warning("write_top_configs called with empty list — refusing to delete existing configs")
+        return
     default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
     for i, item in enumerate(top_items, start=1):

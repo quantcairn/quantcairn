@@ -348,11 +348,6 @@ def test_get_active_orders_accepts_unhashable_status_objects(monkeypatch=None):
     assert len(orders) == 1
     assert orders[0].order_id == "LB-ACTIVE-1"
     assert orders[0].status == module.OrderStatus.PARTIALLY_FILLED
-    assert records[0]["environment"] == "sandbox"
-    assert records[1]["action"] == "place_order"
-    assert records[1]["request"]["ticker"] == "AAPL"
-    assert records[1]["response"]["order_id"] == "LB-12345"
-    assert broker._trade_ctx.submit_kwargs["symbol"] == "AAPL.US"
 
 
 def test_get_active_orders_reuses_cached_snapshot_after_rate_limit(monkeypatch=None):

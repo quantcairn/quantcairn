@@ -132,8 +132,10 @@ class Notifier:
     def _macos_notify(self, title: str, body: str) -> None:
         """Send macOS native notification via osascript."""
         try:
+            safe_body = body.replace('"', '\\"')
+            safe_title = title.replace('"', '\\"')
             script = f'''
-            display notification "{body}" with title "{title}" sound name "Glass"
+            display notification "{safe_body}" with title "{safe_title}" sound name "Glass"
             '''
             subprocess.run(
                 ["osascript", "-e", script],

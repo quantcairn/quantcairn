@@ -68,6 +68,15 @@ class PaperBroker(BrokerBase):
         """Place a simulated order with realistic fill prices."""
         order_id = f"paper-{uuid.uuid4().hex[:8]}"
 
+        # Guard: require at least one valid price to avoid free trades
+        if current_bid <= 0 and current_ask <= 0:
+            return Order(
+                order_id=order_id, ticker=ticker, side=side,
+                order_type=order_type, quantity=quantity,
+                status=OrderStatus.REJECTED,
+                notes="Missing bid/ask prices",
+            )
+
         # Determine fill price
         slippage = 0.0005  # 0.05% slippage
         if order_type == OrderType.MARKET:

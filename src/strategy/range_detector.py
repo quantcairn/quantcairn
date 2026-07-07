@@ -222,8 +222,8 @@ class RangeDetector:
         bucket_centers = [price_min + (i + 0.5) * bucket_size for i in range(BUCKETS)]
 
         for (mid, vol) in vp:
-            idx = int((mid - price_min) / bucket_size)
-            if 0 <= idx < BUCKETS:
+            idx = min(BUCKETS - 1, int((mid - price_min) / bucket_size))
+            if idx >= 0:
                 buckets[idx] += vol
 
         total_vol = sum(buckets)
@@ -645,7 +645,7 @@ class RangeDetector:
                 spread_pct = (spread_dollars / support * 100) if support > 0 else 0.0
                 min_profit = self._effective_min_profit_per_trade(support)
                 est_profit = (resistance - current_price) / current_price * 100  # % return
-                commission_pct = 0.0012  # ~0.12% round-trip commission on 2 trades
+                commission_pct = 0.12  # ~0.12% round-trip commission on 2 trades
 
                 if spread_dollars < min_profit or spread_pct < self.min_range_width_pct:
                     return Signal(

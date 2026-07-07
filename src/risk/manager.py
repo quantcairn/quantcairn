@@ -69,6 +69,7 @@ class RiskManager:
         self._daily_pnl: dict[str, float] = {}  # date_iso → cumulative P&L
         self._daily_peak_equity: dict[str, float] = {}  # date_iso → peak equity
         self._current_equity: float = 0.0
+        self._all_time_peak_equity: float = 0.0
         self._last_trade_time: Optional[datetime] = None
         self._halted: bool = False
         self._halt_reason: str = ""
@@ -131,16 +132,13 @@ class RiskManager:
                     "cool_down",
                 )
 
-        # 4. Daily loss limit
+        # 4. Daily loss limit — halt is permanent until next trading day
         today = self._trading_date()
         daily_pnl = self._daily_pnl.get(today, 0)
         if daily_pnl <= -self.daily_loss_limit:
-            self._halt_trading(
-                f"Daily loss limit reached: ${daily_pnl:.2f} (limit: ${self.daily_loss_limit})"
-            )
             return RiskCheckResult(
                 False,
-                f"Daily loss limit: ${-daily_pnl:.2f} lost today (limit: ${self.daily_loss_limit})",
+                f"Daily loss limit: ${-daily_pnl:.2f} lost today (limit: ${self.daily_loss_limit}) — halted until next day",
                 "daily_loss_limit",
             )
 
@@ -156,9 +154,9 @@ class RiskManager:
                 "consecutive_losses",
             )
 
-        # 6. Drawdown check
+        # 6. Drawdown check — from all-time peak, not just today
         if self._current_equity > 0:
-            peak = self._daily_peak_equity.get(today, self._current_equity)
+            peak = max(self._all_time_peak_equity, self._daily_peak_equity.get(today, self._current_equity))
             drawdown = (peak - self._current_equity) / peak * 100
             if drawdown > self.max_drawdown_pct:
                 self._halt_trading(
@@ -299,8 +297,14 @@ class RiskManager:
             self._current_equity = current_equity
             today = self._trading_date()
             self._daily_peak_equity[today] = current_equity
+            self._all_time_peak_equity = current_equity
         else:
             self._current_equity = current_equity
+            if current_equity > self._all_time_peak_equity:
+                self._all_time_peak_equity = current_equity
+            today = self._trading_date()
+            if current_equity > self._daily_peak_equity.get(today, 0):
+                self._daily_peak_equity[today] = current_equity
         self._save_state()
 
     def _load_state(self) -> None:

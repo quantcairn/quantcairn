@@ -83,7 +83,7 @@ class AISelector:
             "providers_disabled": providers_disabled,
             "fmp_enabled": bool(self.config.fmp_enabled),
             "provider_fallback_used": provider_fallback_used,
-            "fallback_used": False,
+            "fallback_used": provider_fallback_used,
             "analysis_universe": analyzed_universe,
             "analysis_universe_limit": analysis_limit,
         }

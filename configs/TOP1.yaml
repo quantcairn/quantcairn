@@ -2,8 +2,8 @@ ticker: SOXS
 mode: live
 selection:
   source: ai_selector
-  selection_date: '2026-07-06'
-  score: 69.67
+  selection_date: '2026-07-07'
+  score: 82.58
   confidence: 0.58
   protected_position: false
   reduce_only: false
@@ -25,7 +25,7 @@ range:
   min_range_width_pct: 0.6
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 120
+  size_per_trade: 119
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0

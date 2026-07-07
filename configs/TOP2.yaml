@@ -2,8 +2,8 @@ ticker: LABD
 mode: live
 selection:
   source: ai_selector
-  selection_date: '2026-07-06'
-  score: 67.72
+  selection_date: '2026-07-07'
+  score: 80.72
   confidence: 0.58
   protected_position: false
   reduce_only: false

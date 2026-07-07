@@ -330,156 +330,165 @@ class TradingEngine:
 
         self._print_header()
 
+        self._loop_error_count = 0
         try:
             while self._running:
-                loop_start = time.time()
-
-                # 1. Check trading hours
-                if not self._is_trading_hours():
-                    self._refresh_broker_snapshots(outside_trading_hours=True)
-                    self._sleep_with_status(30, "Outside trading hours")
+                try:
+                    self._run_one_loop()
+                except Exception as exc:
+                    self._loop_error_count += 1
+                    logger.exception("Unhandled exception in main loop (#%d): %s", self._loop_error_count, exc)
+                    self._last_signal_reason = f"循环异常 ({exc})，{self._loop_error_count}/5"
+                    if self._loop_error_count >= 5:
+                        logger.critical("Too many consecutive loop errors — shutting down engine")
+                        self.notifier.alert(f"引擎异常关闭：连续 {self._loop_error_count} 次循环错误", "error")
+                        break
+                    self._sleep_with_status(10, "循环异常保护，10秒后重试")
                     continue
-
-                # 2. Fetch price
-                quote = self.fetcher.get_quote()
-                if quote is None or quote.price <= 0:
-                    self._sleep_with_status(5, "Waiting for valid price data")
-                    continue
-
-                current_price = quote.price
-
-                # 3. Feed price + volume to strategy
-                self.strategy.feed_price(current_price)
-                if quote.high_1m is not None and quote.low_1m is not None:
-                    self.strategy.feed_volume_bar(
-                        high=quote.high_1m,
-                        low=quote.low_1m,
-                        close=current_price,
-                        volume=quote.volume,
-                    )
-
-                # 4. Auto-refresh range if needed
-                if self.config.range.mode == "auto" and self.strategy.needs_auto_refresh():
-                    # Pass recent OHLCV and let volume profile do its work
-                    candles = self.fetcher.get_ohlcv(period="1d", interval="5m")
-                    if candles:
-                        # Seed volume bars from recent history to ensure rich data
-                        for c in candles[-self.strategy.auto_lookback:]:
-                            self.strategy.feed_volume_bar(
-                                high=c.high, low=c.low,
-                                close=c.close, volume=c.volume,
-                            )
-                    self.strategy.update_auto_range()
-
-                # 5. Get current position
-                pos = self.broker.get_position_for_ticker(self.ticker)
-                positions_reliable = getattr(
-                    self.broker, "is_positions_snapshot_reliable", lambda: True
-                )()
-                if self.mode == "live" and not positions_reliable:
-                    self._last_signal_reason = "券商持仓状态无法确认，已暂停本轮交易"
-                    logger.error("%s: %s", self.ticker, self._last_signal_reason)
-                    self._sleep_with_status(15, self._last_signal_reason)
-                    continue
-                observed_shares = pos.quantity if pos else 0
-                self._position_shares = self._apply_position_sync_fence(observed_shares)
-                has_position = self._position_shares > 0
-
-                # 6. Sync equity for risk calculations
-                acct = self.broker.get_account()
-                self._latest_position = pos
-                self._latest_account = acct
-                self._latest_snapshot_at = datetime.now()
-                self.risk.update_equity(acct.equity)
-
-                if pos:
-                    self._position_shares = self._apply_position_sync_fence(pos.quantity)
-                    if self._position_shares > 0 and pos.avg_entry_price > 0:
-                        self._entry_price = pos.avg_entry_price
-                elif not self._pending_order and not self._position_sync_fence:
-                    self._position_shares = 0
-                    self._entry_price = None
-
-                # 6b. Update broker price (for P&L calc)
-                if isinstance(self.broker, PaperBroker):
-                    self.broker.update_price(self.ticker, current_price)
-
-                # 6c. Reconcile pending live orders before evaluating new signals.
-                self._reconcile_pending_order()
-                has_position = self._position_shares > 0
-
-                # 6d. Dynamic exit checks run independently from the range signal.
-                if self._should_run_exit_check(loop_start):
-                    self._last_exit_check_at = loop_start
-                    self._run_dynamic_exit_check(current_price, quote.bid)
-                    has_position = self._position_shares > 0
-
-                # 7. Evaluate strategy
-                signal = self.strategy.evaluate(current_price, has_position)
-                self._last_signal_type = signal.type
-                self._last_signal_reason = signal.reason
-
-                # 8. Act on signal — skip non-critical signals during halt
-                is_halted = self.risk._halted
-
-                if self._pending_order:
-                    self._last_signal_reason = (
-                        f"等待订单成交：{self._pending_order['side']} {self._pending_order['order_id'][:12]}"
-                    )
-                elif self._position_sync_fence:
-                    # Do not place any order while the broker still reports a
-                    # pre-fill position snapshot.
-                    pass
-                elif signal.type == SignalType.BUY and not has_position:
-                    if self._reduce_only:
-                        self._last_signal_reason = "仅减仓模式：今晚不新开仓"
-                    elif not self._ai_entry_allowed():
-                        self._last_signal_reason = self._blocked_ai_reason()
-                    elif not is_halted:
-                        self._handle_buy_signal(signal, current_price, quote.ask)
-
-                elif signal.type == SignalType.SELL and has_position:
-                    # A risk halt blocks new exposure, not position reduction.
-                    self._handle_sell_signal(signal, current_price, quote.bid)
-
-                elif signal.type == SignalType.STOP_LOSS and has_position:
-                    self._handle_stop_loss(signal, current_price, quote.bid)  # Stop loss always fires
-
-                # 9. Risk: check stop loss (always fires, even during halt)
-                if has_position and self._entry_price and not self._pending_order:
-                    rs = self.strategy.get_range_state()
-                    sl_check = self.risk.check_stop_loss(
-                        current_price, self._entry_price, rs.support
-                    )
-                    if not sl_check.allowed:
-                        self._handle_stop_loss(signal, current_price, quote.bid)
-
-                # 10. Heartbeat display (always show, with halt indicator)
-                rs = self.strategy.get_range_state()
-                self.notifier.heartbeat(
-                    self.ticker, current_price, rs,
-                    trend_info=self.strategy.get_trend_info(),
-                    halted=is_halted,
-                )
-
-                # 11. Show signal in console — suppress non-critical signals during halt
-                if signal.type not in (SignalType.HOLD, SignalType.TREND_BLOCK):
-                    if is_halted:
-                        pass  # Don't spam BUY/SELL when halted
-                    else:
-                        self.notifier.signal(
-                            self.ticker, signal.type.value, signal.price, signal.reason
-                        )
-
-                # 12. Sleep until next poll
-                elapsed = time.time() - loop_start
-                sleep_time = max(0, self.config.data.poll_interval_seconds - elapsed)
-                time.sleep(sleep_time)
 
         except KeyboardInterrupt:
             logger.info("\nShutdown requested...")
         finally:
             self._shutdown()
+
+    def _run_one_loop(self) -> None:
+        """Execute one iteration of the main trading loop."""
+        loop_start = time.time()
+
+        # 1. Check trading hours
+        if not self._is_trading_hours():
+            self._refresh_broker_snapshots(outside_trading_hours=True)
+            self._sleep_with_status(30, "Outside trading hours")
+            return
+
+        # 2. Fetch price
+        quote = self.fetcher.get_quote()
+        if quote is None or quote.price <= 0:
+            self._sleep_with_status(5, "Waiting for valid price data")
+            return
+
+        current_price = quote.price
+
+        # 3. Feed price + volume to strategy
+        self.strategy.feed_price(current_price)
+        if quote.high_1m is not None and quote.low_1m is not None:
+            self.strategy.feed_volume_bar(
+                high=quote.high_1m,
+                low=quote.low_1m,
+                close=current_price,
+                volume=quote.volume,
+            )
+
+        # 4. Auto-refresh range if needed
+        if self.config.range.mode == "auto" and self.strategy.needs_auto_refresh():
+            candles = self.fetcher.get_ohlcv(period="1d", interval="5m")
+            if candles:
+                for c in candles[-self.strategy.auto_lookback:]:
+                    self.strategy.feed_volume_bar(
+                        high=c.high, low=c.low,
+                        close=c.close, volume=c.volume,
+                    )
+            self.strategy.update_auto_range()
+
+        # 5. Get current position
+        pos = self.broker.get_position_for_ticker(self.ticker)
+        positions_reliable = getattr(
+            self.broker, "is_positions_snapshot_reliable", lambda: True
+        )()
+        if self.mode == "live" and not positions_reliable:
+            self._last_signal_reason = "券商持仓状态无法确认，已暂停本轮交易"
+            logger.error("%s: %s", self.ticker, self._last_signal_reason)
+            self._sleep_with_status(15, self._last_signal_reason)
+            return
+        observed_shares = pos.quantity if pos else 0
+        self._position_shares = self._apply_position_sync_fence(observed_shares)
+        has_position = self._position_shares > 0
+
+        # 6. Sync equity for risk calculations
+        acct = self.broker.get_account()
+        self._latest_position = pos
+        self._latest_account = acct
+        self._latest_snapshot_at = datetime.now()
+        self.risk.update_equity(acct.equity)
+
+        if pos:
+            self._position_shares = self._apply_position_sync_fence(pos.quantity)
+            if self._position_shares > 0 and pos.avg_entry_price > 0:
+                self._entry_price = pos.avg_entry_price
+        elif not self._pending_order and not self._position_sync_fence:
+            self._position_shares = 0
+            self._entry_price = None
+
+        # 6b. Update broker price (for P&L calc)
+        if isinstance(self.broker, PaperBroker):
+            self.broker.update_price(self.ticker, current_price)
+
+        # 6c. Reconcile pending live orders before evaluating new signals.
+        self._reconcile_pending_order()
+        has_position = self._position_shares > 0
+
+        # 6d. Dynamic exit checks run independently from the range signal.
+        if self._should_run_exit_check(loop_start):
+            self._last_exit_check_at = loop_start
+            self._run_dynamic_exit_check(current_price, quote.bid)
+            has_position = self._position_shares > 0
+
+        # 7. Evaluate strategy
+        signal = self.strategy.evaluate(current_price, has_position)
+        self._last_signal_type = signal.type
+        self._last_signal_reason = signal.reason
+
+        # 8. Act on signal — skip non-critical signals during halt
+        is_halted = self.risk._halted
+
+        if self._pending_order:
+            self._last_signal_reason = (
+                f"等待订单成交：{self._pending_order['side']} {self._pending_order['order_id'][:12]}"
+            )
+        elif self._position_sync_fence:
+            pass
+        elif signal.type == SignalType.BUY and not has_position:
+            if self._reduce_only:
+                self._last_signal_reason = "仅减仓模式：今晚不新开仓"
+            elif not self._ai_entry_allowed():
+                self._last_signal_reason = self._blocked_ai_reason()
+            elif not is_halted:
+                self._handle_buy_signal(signal, current_price, quote.ask)
+
+        elif signal.type == SignalType.SELL and has_position:
+            self._handle_sell_signal(signal, current_price, quote.bid)
+
+        elif signal.type == SignalType.STOP_LOSS and has_position:
+            self._handle_stop_loss(signal, current_price, quote.bid)
+
+        # 9. Risk: check stop loss (always fires, even during halt)
+        if has_position and self._entry_price and not self._pending_order:
+            rs = self.strategy.get_range_state()
+            sl_check = self.risk.check_stop_loss(
+                current_price, self._entry_price, rs.support
+            )
+            if not sl_check.allowed:
+                self._handle_stop_loss(signal, current_price, quote.bid)
+
+        # 10. Heartbeat display (always show, with halt indicator)
+        rs = self.strategy.get_range_state()
+        self.notifier.heartbeat(
+            self.ticker, current_price, rs,
+            trend_info=self.strategy.get_trend_info(),
+            halted=is_halted,
+        )
+
+        # 11. Show signal in console
+        if signal.type not in (SignalType.HOLD, SignalType.TREND_BLOCK):
+            if not is_halted:
+                self.notifier.signal(
+                    self.ticker, signal.type.value, signal.price, signal.reason
+                )
+
+        # 12. Sleep until next poll
+        elapsed = time.time() - loop_start
+        sleep_time = max(0, self.config.data.poll_interval_seconds - elapsed)
+        time.sleep(sleep_time)
 
     def _refresh_broker_snapshots(self, outside_trading_hours: bool = False) -> None:
         """Refresh cached position/account snapshots without evaluating signals."""
@@ -577,6 +586,11 @@ class TradingEngine:
                 current_ask=ask,
             )
 
+            if order is None:
+                self._last_signal_reason = "下单失败：券商返回空结果"
+                self.notifier.alert(self._last_signal_reason, "error")
+                return
+
             if order.status == OrderStatus.PENDING:
                 self._remember_pending_order(
                     order=order,
@@ -587,9 +601,15 @@ class TradingEngine:
                     self.ticker, "BUY", order.quantity, order.order_id
                 )
 
+            if order.status == OrderStatus.REJECTED:
+                self._last_signal_reason = f"买单被拒绝：{order.notes or 'Insufficient cash or other reason'}"
+                self.notifier.alert(self._last_signal_reason, "warning")
+
+            # --- update state ---
             if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
                 self._entry_price = order.avg_fill_price
-                self._position_shares += order.filled_quantity
+                if self._entry_price is not None:
+                    self._position_shares += order.filled_quantity
                 self.strategy.record_entry(order.avg_fill_price)  # Quick stop tracking
                 self.notifier.trade(
                     self.ticker, "BUY", order.filled_quantity, order.avg_fill_price
@@ -615,6 +635,12 @@ class TradingEngine:
                 current_bid=bid,
                 current_ask=current_price,
             )
+
+            if order is None:
+                self._last_signal_reason = "卖出下单失败：券商返回空结果"
+                self.notifier.alert(self._last_signal_reason, "error")
+                self._release_sell_lock("order_failed_none")
+                return
 
             if order.status == OrderStatus.PENDING:
                 self._remember_pending_order(
@@ -679,6 +705,12 @@ class TradingEngine:
                 current_bid=bid,
                 current_ask=current_price,
             )
+
+            if order is None:
+                self._last_signal_reason = "止损卖出下单失败：券商返回空结果"
+                self.notifier.alert(self._last_signal_reason, "error")
+                self._release_sell_lock("order_failed_none")
+                return
 
             if order.status == OrderStatus.PENDING:
                 self._remember_pending_order(
@@ -1238,7 +1270,9 @@ class TradingEngine:
         if len(active_orders) == 1:
             order = active_orders[0]
             if order.side == OrderSide.SELL:
-                self._acquire_sell_lock("recovered_active_sell")
+                if not self._acquire_sell_lock("recovered_active_sell"):
+                    logger.critical("Cannot acquire sell lock for recovered sell order on %s — aborting startup", self.ticker)
+                    return False
             else:
                 self._release_sell_lock("active_order_is_buy")
             self._remember_pending_order(
@@ -1269,6 +1303,39 @@ class TradingEngine:
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
+            # Check if stale: read the lock, verify PID alive, check mtime
+            try:
+                stale_data = json.loads(path.read_text(encoding="utf-8"))
+                stale_pid = int(stale_data.get("pid", 0) or 0)
+                stale_mtime = path.stat().st_mtime
+                now = time.time()
+                pid_alive = False
+                if stale_pid > 0:
+                    try:
+                        os.kill(stale_pid, 0)
+                        pid_alive = True
+                    except OSError:
+                        pid_alive = False
+                # Stale if PID dead OR lock older than 6 hours AND PID doesn't match us
+                if (not pid_alive) or (now - stale_mtime > 21600):
+                    logger.warning(
+                        "Removing stale sell lock for %s (pid=%s, age=%.0fs, alive=%s)",
+                        self.ticker, stale_pid, now - stale_mtime, pid_alive,
+                    )
+                    path.unlink(missing_ok=True)
+                    try:
+                        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    except FileExistsError:
+                        pass
+                    else:
+                        try:
+                            os.write(descriptor, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                        finally:
+                            os.close(descriptor)
+                        self._write_runtime_audit("sell_lock_acquired_after_stale_cleanup", lock_path=str(path), reason=reason)
+                        return True
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
             self._write_runtime_audit(
                 "sell_lock_blocked",
                 lock_path=str(path),
@@ -1419,7 +1486,11 @@ class TradingEngine:
         if not pending or not pending.get("order_id"):
             return
 
-        order = self.broker.get_order(pending["order_id"])
+        try:
+            order = self.broker.get_order(pending["order_id"])
+        except Exception as exc:
+            logger.warning("Failed to reconcile pending order %s: %s", pending.get("order_id", "?"), exc)
+            return
         if order is None:
             return
 
