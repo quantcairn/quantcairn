@@ -262,10 +262,9 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
                 "sector": "Semiconductors",
             }
         ],
-        "top5": [{"ticker": "SOFI"}, {"ticker": "NVDA"}],
-        "top3": [],
+        "top3": [{"ticker": "SOFI"}, {"ticker": "NVDA"}, {"ticker": "AAPL"}],
         "top10": [],
-        "refined_top5": [{"ticker": "SOFI"}, {"ticker": "NVDA"}, {"ticker": "AAPL"}],
+        "protected_positions": [],
         "refinement_status": "background_fast_preliminary",
         "refinement_selection_stage": "fast_preliminary",
     })
@@ -301,11 +300,10 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "要求美东日期 2026-06-30" in html
     assert "当前状态日期 2026-06-30" in html
     assert "启用中" in html
-    assert "SOFI / NVDA" in html
-    assert "精筛参考" in html
     assert "SOFI / NVDA / AAPL" in html
-    assert "已写入当前配置，并通过启动校验。" in html
-    assert "仅供对比，不覆盖当前 reduce-only 配置。" in html
+    assert "保护持仓" in html
+    assert "这里显示新的 TOP3 工具" in html
+    assert "但不挤占新选股 TOP3" in html
     assert "前台阶段：fast_preliminary" in html
     assert "后台精筛：background_fast_preliminary / fast_preliminary" in html
     assert "AI 运行状态：" in html
@@ -315,8 +313,6 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html
-    assert "TOP4" in html
-    assert "TOP5" in html
 
 
 def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):

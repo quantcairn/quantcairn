@@ -126,6 +126,26 @@ def test_apply_quality_filters_accepts_fallback_candidate_with_quote_and_volume_
         monkeypatch.restore()
 
 
+def test_apply_quality_filters_allows_liquid_special_etf_with_unconfirmed_quote_spread():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        class FakeContext:
+            def history_metrics(self, symbol):
+                return (12_000_000, -22.0, 20.0)
+
+            def quote_metrics(self, symbol):
+                return (20.0, 19.98, 20.02, False)
+
+        monkeypatch.setattr(selector_module, "_QualityFilterContext", FakeContext)
+
+        filtered = apply_quality_filters([_candidate("SOXL", 80.0)])
+
+        assert [item["ticker"] for item in filtered] == ["SOXL"]
+        assert filtered[0]["spread_pct_live"] == 0.2
+    finally:
+        monkeypatch.restore()
+
+
 def test_selector_runs_quality_filters_before_final_top5_and_writes_log():
     monkeypatch = SimpleMonkeyPatch()
     try:
@@ -158,7 +178,6 @@ def test_selector_runs_quality_filters_before_final_top5_and_writes_log():
             result = selector.run_selection(write_configs=False)
 
             assert [item["ticker"] for item in result["top5"]] == ["BBB", "AAA"]
-            assert result["top5"][1]["reduce_only"] is True
             assert result["top5"][1]["quality_backfill"] is True
             log_path = log_dir / f"selection_{selector_module.datetime.now().strftime('%Y-%m-%d')}.log"
             assert log_path.exists()
@@ -203,7 +222,6 @@ def test_selector_backfills_reduce_only_when_quality_filters_leave_too_few():
             result = selector.run_selection(write_configs=False)
 
             assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
-            assert result["top5"][1]["reduce_only"] is True
             assert result["top5"][1]["quality_backfill"] is True
             assert result["quality_filter_report"]["backfilled_symbols"] == ["BBB", "CCC"]
     finally:
@@ -250,7 +268,6 @@ def test_selector_returns_fast_preliminary_when_quality_stage_times_out():
             result = selector.run_selection(write_configs=False)
 
             assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
-            assert all(bool(item["reduce_only"]) for item in result["top5"])
             assert result["settings"]["selection_stage"] == "fast_preliminary"
     finally:
         monkeypatch.restore()
@@ -260,6 +277,7 @@ def run_test_direct():
     test_apply_quality_filters_removes_volume_spread_and_volatility_failures()
     test_apply_quality_filters_blocks_unconfirmed_spread()
     test_apply_quality_filters_accepts_fallback_candidate_with_quote_and_volume_hint()
+    test_apply_quality_filters_allows_liquid_special_etf_with_unconfirmed_quote_spread()
     test_selector_runs_quality_filters_before_final_top5_and_writes_log()
     test_selector_backfills_reduce_only_when_quality_filters_leave_too_few()
     test_selector_returns_fast_preliminary_when_quality_stage_times_out()

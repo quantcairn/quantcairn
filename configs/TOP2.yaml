@@ -1,15 +1,15 @@
-ticker: AAPL
+ticker: LABD
 mode: live
 selection:
   source: ai_selector
   selection_date: '2026-07-06'
-  score: 83.39
+  score: 67.72
   confidence: 0.58
   protected_position: false
   reduce_only: false
-  reason: 'Fallback TradingAgents mock for AAPL: tradingagents_timeout | FinRobot
-    research artifacts parsed | Growth 50.0, profitability 50.0, balance sheet 50.0,
-    cash flow 50.0, valuation 50.0'
+  reason: 'Fallback TradingAgents mock for LABD: tradingagents_timeout_budget_exhausted
+    | FinRobot research artifacts parsed | Growth 50.0, profitability 50.0, balance
+    sheet 50.0, cash flow 50.0, valuation 50.0'
 range:
   mode: auto
   support_price: null
@@ -21,11 +21,11 @@ range:
     ma_period: 20
     min_trend_strength: 0.3
   tolerance_pct: 1.0
-  min_profit_per_trade: 0.9
+  min_profit_per_trade: 0.5
   min_range_width_pct: 0.6
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 2
+  size_per_trade: 33
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0

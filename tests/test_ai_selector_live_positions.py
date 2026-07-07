@@ -1,4 +1,4 @@
-from scripts.run_ai_selector import _pin_live_positions
+from scripts.run_ai_selector import _pin_live_positions, _split_selected_and_protected_positions
 
 
 def _pick(ticker: str, score: float) -> dict:
@@ -42,3 +42,18 @@ def test_option_like_positions_do_not_consume_top_slots():
     result = _pin_live_positions(selected, positions, limit=5)
 
     assert [item["ticker"] for item in result] == ["SOFI"]
+
+
+def test_live_equity_positions_can_be_monitored_without_consuming_top_slots():
+    selected = [_pick(symbol, 100 - idx) for idx, symbol in enumerate(
+        ["NVDA", "SOXL", "SOXS", "LABU"]
+    )]
+    positions = [
+        {"ticker": "NVDA", "quantity": 4, "current_price": 196.5},
+    ]
+
+    tradable, protected = _split_selected_and_protected_positions(selected, positions, limit=3)
+
+    assert [item["ticker"] for item in tradable] == ["SOXL", "SOXS", "LABU"]
+    assert [item["ticker"] for item in protected] == ["NVDA"]
+    assert protected[0]["protected_position"] is True

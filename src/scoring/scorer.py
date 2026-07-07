@@ -25,8 +25,8 @@ class Scorer:
     - and have a repeatable tendency to rotate through the same price area.
     """
 
-    MIN_PRICE = 10.0
-    MAX_PRICE = 200.0
+    MIN_PRICE = 4.0
+    MAX_PRICE = 30.0
     MIN_AVG_VOLUME = 1_000_000
     MIN_MARKET_CAP = 1_000_000_000
     MIN_HISTORY_ROWS = 60
@@ -38,7 +38,7 @@ class Scorer:
     EVENT_NEWS_SCORE = 80.0
     DEFAULT_MARKET_TIMEOUT = 2.0
     DEFAULT_SCORE_WORKERS = 8
-    DEFAULT_MIN_SPREAD_DOLLARS = 1.0
+    DEFAULT_MIN_SPREAD_PCT = 3.0
 
     FALLBACK_PROFILES = {
         "NVDA": {"score": 74.0, "range_low": 118.0, "range_high": 154.0, "volume": 220_000_000},
@@ -60,6 +60,22 @@ class Scorer:
         "SOFI": {"score": 64.0, "range_low": 15.2, "range_high": 19.8, "volume": 22_000_000},
         "NIO": {"score": 59.0, "range_low": 4.5, "range_high": 5.6, "volume": 9_000_000},
         "SMR": {"score": 63.0, "range_low": 8.5, "range_high": 11.2, "volume": 10_000_000},
+        "SOXL": {"score": 71.0, "range_low": 18.2, "range_high": 24.8, "volume": 42_000_000},
+        "SOXS": {"score": 69.0, "range_low": 4.0, "range_high": 5.4, "volume": 36_000_000},
+        "LABU": {"score": 67.0, "range_low": 13.8, "range_high": 18.9, "volume": 16_000_000},
+        "LABD": {"score": 67.0, "range_low": 14.1, "range_high": 19.4, "volume": 11_000_000},
+        "TQQQ": {"score": 70.0, "range_low": 21.4, "range_high": 28.7, "volume": 58_000_000},
+        "SQQQ": {"score": 68.0, "range_low": 7.8, "range_high": 10.7, "volume": 95_000_000},
+        "TNA": {"score": 66.0, "range_low": 18.0, "range_high": 24.6, "volume": 9_000_000},
+        "TZA": {"score": 66.0, "range_low": 11.8, "range_high": 16.2, "volume": 14_000_000},
+        "FAS": {"score": 65.0, "range_low": 21.2, "range_high": 28.1, "volume": 18_000_000},
+        "FAZ": {"score": 65.0, "range_low": 10.4, "range_high": 14.7, "volume": 14_000_000},
+        "GUSH": {"score": 67.0, "range_low": 18.7, "range_high": 25.3, "volume": 13_000_000},
+        "DRIP": {"score": 67.0, "range_low": 11.6, "range_high": 16.1, "volume": 8_000_000},
+        "YINN": {"score": 64.0, "range_low": 16.2, "range_high": 22.4, "volume": 15_000_000},
+        "YANG": {"score": 64.0, "range_low": 9.8, "range_high": 13.9, "volume": 9_000_000},
+        "NAIL": {"score": 65.0, "range_low": 18.4, "range_high": 25.1, "volume": 6_000_000},
+        "DPST": {"score": 65.0, "range_low": 17.6, "range_high": 24.2, "volume": 5_000_000},
     }
 
     FALLBACK_RANGE_PCT = {
@@ -82,6 +98,22 @@ class Scorer:
         "SOFI": 0.06,
         "NIO": 0.08,
         "SMR": 0.08,
+        "SOXL": 0.09,
+        "SOXS": 0.1,
+        "LABU": 0.1,
+        "LABD": 0.1,
+        "TQQQ": 0.09,
+        "SQQQ": 0.1,
+        "TNA": 0.1,
+        "TZA": 0.1,
+        "FAS": 0.09,
+        "FAZ": 0.1,
+        "GUSH": 0.1,
+        "DRIP": 0.1,
+        "YINN": 0.1,
+        "YANG": 0.1,
+        "NAIL": 0.1,
+        "DPST": 0.1,
     }
 
     FALLBACK_SECTOR = {
@@ -104,6 +136,22 @@ class Scorer:
         "SOFI": "Financial Services",
         "NIO": "Consumer Discretionary",
         "SMR": "Energy",
+        "SOXL": "Leveraged Semiconductor ETF",
+        "SOXS": "Inverse Semiconductor ETF",
+        "LABU": "Leveraged Biotechnology ETF",
+        "LABD": "Inverse Biotechnology ETF",
+        "TQQQ": "Leveraged Nasdaq ETF",
+        "SQQQ": "Inverse Nasdaq ETF",
+        "TNA": "Leveraged Small Cap ETF",
+        "TZA": "Inverse Small Cap ETF",
+        "FAS": "Leveraged Financial ETF",
+        "FAZ": "Inverse Financial ETF",
+        "GUSH": "Leveraged Energy ETF",
+        "DRIP": "Inverse Energy ETF",
+        "YINN": "Leveraged China ETF",
+        "YANG": "Inverse China ETF",
+        "NAIL": "Leveraged Homebuilders ETF",
+        "DPST": "Leveraged Regional Banks ETF",
     }
 
     def __init__(self):
@@ -111,7 +159,7 @@ class Scorer:
         self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", get_float_setting("max_price", self.MAX_PRICE))
         self.market_timeout = self._env_float("AI_SELECTOR_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
         self.score_workers = max(1, self._env_int("AI_SELECTOR_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
-        self.min_spread_dollars = self._env_float("AI_SELECTOR_MIN_SPREAD_DOLLARS", self.DEFAULT_MIN_SPREAD_DOLLARS)
+        self.min_spread_pct = self._env_float("AI_SELECTOR_MIN_SPREAD_PCT", self.DEFAULT_MIN_SPREAD_PCT)
         self.allow_proxy_market = os.environ.get("AI_SELECTOR_ALLOW_PROXY_MARKET", "0") == "1"
 
     def _env_float(self, name: str, default: float) -> float:
@@ -246,7 +294,8 @@ class Scorer:
         if os.environ.get("AI_SELECTOR_LIVE_DATA", "1") == "0":
             return pd.DataFrame()
 
-        if os.environ.get("AI_SELECTOR_USE_YFINANCE", "0") == "1":
+        prefer_yfinance = os.environ.get("AI_SELECTOR_USE_YFINANCE", "0") == "1"
+        if prefer_yfinance:
             try:
                 df = yf.download(symbol, period="260d", interval="1d", progress=False)
                 if df is not None and not df.empty:
@@ -256,9 +305,21 @@ class Scorer:
             except Exception:
                 pass
         try:
-            return self._fetch_chart_daily(symbol)
+            df = self._fetch_chart_daily(symbol)
+            if df is not None and not df.empty:
+                return df
         except Exception:
-            return pd.DataFrame()
+            pass
+        if not prefer_yfinance:
+            try:
+                df = yf.download(symbol, period="260d", interval="1d", progress=False)
+                if df is not None and not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    return self._standardize_history(df)
+            except Exception:
+                pass
+        return pd.DataFrame()
 
     def _standardize_history(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -494,7 +555,7 @@ class Scorer:
         )
 
         support, resistance, support_meta, resistance_meta = self._estimate_range(df, atr)
-        if (resistance - support) < self.min_spread_dollars:
+        if ((resistance - support) / support * 100.0) < self.min_spread_pct:
             return None
         price_mid = (support + resistance) / 2.0 if resistance > support else last_close
 
@@ -553,7 +614,7 @@ class Scorer:
         price_mid = (support + resistance) / 2.0
         if price_mid < self.min_price or price_mid > self.max_price:
             return None
-        if (resistance - support) < self.min_spread_dollars:
+        if ((resistance - support) / support * 100.0) < self.min_spread_pct:
             return None
         band_pct = ((resistance - support) / price_mid * 100.0) if price_mid else 0.0
         news_score = self._news_score(list(news_items))

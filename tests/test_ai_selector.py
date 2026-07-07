@@ -243,6 +243,7 @@ def test_engine_reuses_cached_daily_ai_selection():
                     {"ticker": "NVDA", "score": 80.0, "reason": "cached_nvda", "confidence": 0.8},
                     {"ticker": "AAPL", "score": 78.0, "reason": "cached_aapl", "confidence": 0.78},
                 ],
+                {},
             ),
         )
 

@@ -10,18 +10,17 @@ OPENBB_ENABLED = False
 FMP_API_KEY = os.getenv("FMP_API_KEY", "").strip()
 FMP_ENABLED = bool(FMP_API_KEY)
 TOP_N = 3
-ANALYSIS_UNIVERSE_LIMIT = 4
+ANALYSIS_UNIVERSE_LIMIT = 9
 UNIVERSE = [
-    "NVDA",
-    "MSFT",
-    "AAPL",
-    "PLTR",
-    "AMD",
-    "TSLA",
-    "META",
-    "GOOGL",
-    "AMZN",
-    "AVGO",
+    "SOXS",
+    "LABD",
+    "DRIP",
+    "YINN",
+    "SOFI",
+    "SMR",
+    "NIO",
+    "QBTS",
+    "WULF",
 ]
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"

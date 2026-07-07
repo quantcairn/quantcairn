@@ -20,7 +20,7 @@ class Universe:
     """
 
     def __init__(self):
-        self.min_price = 5.0
+        self.min_price = 4.0
         self.min_avg_volume = 1_000_000
         self.min_market_cap = 1_000_000_000
 

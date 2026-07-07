@@ -161,7 +161,7 @@ def _is_test_audit_record(record: dict[str, Any]) -> bool:
     if not isinstance(record, dict):
         return False
     phase = str(record.get("phase") or "").strip().lower()
-    if phase not in {"risk_exit_trigger", "orphan_stop_loss"}:
+    if phase not in {"risk_exit_trigger", "orphan_stop_loss", "orphan_risk_exit"}:
         return False
     order = record.get("order") if isinstance(record.get("order"), dict) else {}
     order_id = str(record.get("order_id") or order.get("order_id") or "").strip()

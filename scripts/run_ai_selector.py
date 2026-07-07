@@ -23,6 +23,7 @@ from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector.selector import write_selection_filter_log
 from src.ai_selector.selection_state import write_selection_state
 from src.ai_selector.config import load_runtime_config
+from src.data.fetcher import PriceFetcher
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -131,6 +132,7 @@ def _run_integrated_ai_selector() -> dict:
         "providers_used": list(metadata.get("providers_used") or []),
         "providers_disabled": list(metadata.get("providers_disabled") or []),
         "fmp_enabled": bool(metadata.get("fmp_enabled", False)),
+        "provider_fallback_used": bool(metadata.get("provider_fallback_used", False)),
         "fallback_used": bool(metadata.get("fallback_used", False)),
     }
 
@@ -150,13 +152,103 @@ def _annotate_with_ai_signals(rows: list[dict], signal_map: dict[str, dict]) -> 
     return annotated
 
 
+def _merged_selection_symbols(preferred_symbols: list[str] | None) -> list[str] | None:
+    preferred = [
+        _normalize_ticker(item)
+        for item in (preferred_symbols or [])
+        if _normalize_ticker(item)
+    ]
+    runtime_universe = [
+        _normalize_ticker(item)
+        for item in (load_runtime_config().universe or [])
+        if _normalize_ticker(item)
+    ]
+    merged: list[str] = []
+    seen: set[str] = set()
+    for bucket in (preferred, runtime_universe):
+        for symbol in bucket:
+            if symbol in seen:
+                continue
+            merged.append(symbol)
+            seen.add(symbol)
+    return merged or None
+
+
+def _live_candidate_price(ticker: str) -> float | None:
+    symbol = _normalize_ticker(ticker)
+    if not symbol:
+        return None
+    try:
+        fetcher = PriceFetcher(symbol, poll_interval=0)
+        quote = fetcher.get_quote()
+        price = float(getattr(quote, "price", 0.0) or 0.0) if quote is not None else 0.0
+        if price > 0:
+            return price
+        candles = fetcher.get_ohlcv(period="5d", interval="1d")
+        closes = [float(getattr(c, "close", 0.0) or 0.0) for c in candles or [] if float(getattr(c, "close", 0.0) or 0.0) > 0]
+        if closes:
+            return closes[-1]
+    except Exception:
+        return None
+    return None
+
+
+def _candidate_price(item: dict) -> float | None:
+    live_price = _live_candidate_price(str(item.get("ticker") or ""))
+    if live_price and live_price > 0:
+        return live_price
+    for value in (
+        item.get("current_price"),
+        item.get("price_midpoint_hint"),
+        ((item.get("metrics") or {}).get("last_close") if isinstance(item.get("metrics"), dict) else None),
+    ):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            return number
+    try:
+        low = float(item.get("range_low") or 0.0)
+        high = float(item.get("range_high") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if low > 0 and high > low:
+        return (low + high) / 2.0
+    return None
+
+
+def _enforce_price_band(
+    candidates: list[dict],
+    *,
+    min_price: float,
+    max_price: float,
+) -> tuple[list[dict], list[str]]:
+    filtered: list[dict] = []
+    removed: list[str] = []
+    for raw in candidates or []:
+        item = dict(raw)
+        ticker = _normalize_ticker(item.get("ticker"))
+        price = _candidate_price(item)
+        if price is None or price < min_price or price > max_price:
+            if ticker:
+                removed.append(ticker)
+            continue
+        item["current_price"] = round(price, 4)
+        filtered.append(item)
+    return filtered, removed
+
+
 def _build_report_top10(
     selector_top10: list[dict],
     selected: list[dict],
     signal_map: dict[str, dict],
     live_positions: list[dict] | None,
 ) -> list[dict]:
-    candidates = list(selector_top10 or [])
+    candidates = []
+    for source_rows in (selector_top10 or [], selected or []):
+        for item in source_rows:
+            candidates.append(dict(item))
     if not candidates:
         candidates = list(selected or [])
     candidates = _merge_live_position_flags(candidates, live_positions or [])
@@ -246,7 +338,7 @@ def _spawn_background_refinement(expected_timestamp: str) -> None:
     env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
     env.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
     env.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
-    env.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "1")
+    env.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "0")
     env.setdefault("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "2")
     env.setdefault("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "20")
     env.setdefault("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "30")
@@ -340,11 +432,74 @@ def _pin_live_positions(selected: list[dict], positions: list[dict], limit: int 
     ]
     return (pinned + remaining)[:limit]
 
+
+def _split_selected_and_protected_positions(
+    candidates: list[dict],
+    positions: list[dict],
+    limit: int = TOP_COUNT,
+) -> tuple[list[dict], list[dict]]:
+    protected_map: dict[str, dict] = {}
+    for position in positions or []:
+        ticker = str(position.get("ticker") or "").strip().upper()
+        if not ticker or not EQUITY_SYMBOL_RE.fullmatch(ticker):
+            continue
+        current_price = float(position.get("current_price") or 0.0)
+        if current_price <= 0:
+            continue
+        protected_map[ticker] = {
+            "ticker": ticker,
+            "score": 0.0,
+            "range_low": current_price * 0.95,
+            "range_high": current_price * 1.05,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": int(position.get("quantity") or 1),
+            "selection_penalty_reason": "live position protection",
+            "existing_position": True,
+            "protected_position": True,
+            "reduce_only": ticker == "SOXS",
+            "pinned_live_position": True,
+        }
+
+    tradable: list[dict] = []
+    seen_tradable: set[str] = set()
+    for raw in candidates or []:
+        item = dict(raw)
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if not ticker or ticker in seen_tradable:
+            continue
+        if ticker in protected_map:
+            protected = dict(protected_map[ticker])
+            protected.update(
+                {
+                    "score": float(item.get("score") or protected.get("score") or 0.0),
+                    "confidence": float(item.get("confidence") or protected.get("confidence") or 0.0),
+                    "reason": str(
+                        item.get("reason")
+                        or item.get("selection_penalty_reason")
+                        or protected.get("selection_penalty_reason")
+                        or "live position protection"
+                    ),
+                    "source": str(item.get("source") or protected.get("source") or "ai_selector"),
+                    "ai_selected": True,
+                }
+            )
+            protected["reduce_only"] = True if ticker == "SOXS" else bool(protected.get("reduce_only", False))
+            protected_map[ticker] = protected
+            continue
+        tradable.append(item)
+        seen_tradable.add(ticker)
+        if len(tradable) >= limit:
+            break
+
+    protected_positions = list(protected_map.values())
+    protected_positions.sort(key=lambda item: (item.get("ticker") or ""))
+    return tradable[:limit], protected_positions
+
 def main():
     load_local_ai_env()
     runtime_settings = load_runtime_settings()
-    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(runtime_settings.get("min_price", 10.0)))
-    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(runtime_settings.get("max_price", 200.0)))
+    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(runtime_settings.get("min_price", 4.0)))
+    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(runtime_settings.get("max_price", 30.0)))
     os.environ.setdefault(
         "AI_SELECTOR_AUTO_REFRESH_MINUTES",
         str(runtime_settings.get("auto_refresh_minutes", 5)),
@@ -353,7 +508,7 @@ def main():
     os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
     os.environ.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
     os.environ.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
-    os.environ.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "1")
+    os.environ.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "0")
     os.environ.setdefault("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3")
     live_positions = _live_equity_positions()
     if live_positions is None and _has_live_top_configs():
@@ -362,39 +517,49 @@ def main():
 
     integrated_ai = _run_integrated_ai_selector()
     preferred_symbols = integrated_ai.get("preferred_symbols") or None
+    selection_symbols = _merged_selection_symbols(preferred_symbols)
     sel = AIStrategySelector()
-    out = sel.run_selection(write_configs=False, symbols_override=preferred_symbols)
-    selected = out.get('top3') or out.get('top5') or []
-    if not selected and preferred_symbols:
+    out = sel.run_selection(write_configs=False, symbols_override=selection_symbols)
+    selected = out.get('top5') or out.get('top3') or []
+    if not selected and selection_symbols:
         integrated_ai["fallback_used"] = True
         out = sel.run_selection(write_configs=False)
-        selected = out.get('top3') or out.get('top5') or []
+        selected = out.get('top5') or out.get('top3') or []
 
-    selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})[:TOP_COUNT]
+    selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
+    report_top10 = _build_report_top10(
+        list(out.get("top10") or []),
+        list(selected),
+        integrated_ai.get("signal_map") or {},
+        live_positions or [],
+    )
+    candidate_pool = _annotate_with_ai_signals(list(report_top10 or []), integrated_ai.get("signal_map") or {})
     if integrated_ai.get("preferred_symbols"):
-        selected = _prioritize_ai_rank(selected, integrated_ai.get("signal_map") or {})
-    selected = _pin_live_positions(
-        selected,
+        candidate_pool = _prioritize_ai_rank(candidate_pool, integrated_ai.get("signal_map") or {})
+    selected, protected_positions = _split_selected_and_protected_positions(
+        candidate_pool,
         live_positions or [],
         limit=min(sel.selection_size, TOP_COUNT),
     )
+    min_price = float(runtime_settings.get("min_price", 4.0) or 4.0)
+    max_price = float(runtime_settings.get("max_price", 30.0) or 30.0)
+    selected, out_of_band_symbols = _enforce_price_band(
+        selected,
+        min_price=min_price,
+        max_price=max_price,
+    )
     preserved_positions = [
         str(item.get("ticker") or "").upper()
-        for item in selected
-        if item.get("existing_position")
+        for item in protected_positions
     ]
     quality_report = dict(out.get("quality_filter_report") or {})
     quality_report["final_selected_symbols"] = [
         str(item.get("ticker") or "").upper() for item in selected
     ]
     quality_report["existing_real_positions_preserved"] = preserved_positions
+    quality_report["removed_out_of_price_band"] = out_of_band_symbols
     out["quality_filter_report"] = quality_report
-    out["top10"] = _build_report_top10(
-        list(out.get("top10") or []),
-        list(selected),
-        integrated_ai.get("signal_map") or {},
-        live_positions or [],
-    )
+    out["top10"] = list(report_top10)
     write_selection_filter_log(quality_report)
     if not selected:
         print("AI selection produced no tradable symbols; aborting without updating TOP configs.")
@@ -428,21 +593,27 @@ def main():
         'providers_used': providers_used,
         'providers_disabled': providers_disabled,
         'fmp_enabled': fmp_enabled,
+        'provider_fallback_used': bool(integrated_ai.get("provider_fallback_used", False)),
         'top10': out.get('top10', []),
         'top5': list(selected),
         'top3': list(out.get('top3', [])),
         'protected_positions': [
             {
                 "ticker": str(item.get("ticker") or "").upper(),
+                "range_low": item.get("range_low"),
+                "range_high": item.get("range_high"),
+                "current_price": item.get("current_price"),
+                "score": item.get("score"),
+                "confidence": item.get("confidence"),
+                "reason": item.get("reason"),
+                "source": item.get("source"),
                 "protected_position": True,
                 "reduce_only": bool(item.get("reduce_only", False)),
             }
-            for item in selected
-            if item.get("protected_position") or item.get("existing_position")
+            for item in protected_positions
         ],
         'fallback_used': bool(integrated_ai.get("fallback_used")) or any(
-            bool(item.get("existing_position"))
-            or bool(item.get("fallback_history_incomplete"))
+            bool(item.get("fallback_history_incomplete"))
             or str(item.get("selection_penalty_reason") or "").startswith("quality_filter_backfill")
             for item in selected
         ),

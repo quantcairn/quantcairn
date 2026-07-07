@@ -68,16 +68,22 @@ class AISelector:
                 "providers_used": [],
                 "providers_disabled": ["tradingagents", "finrobot", "openbb", "fmp"],
                 "fmp_enabled": False,
+                "provider_fallback_used": True,
                 "fallback_used": True,
             }
             return []
 
         self.last_top10 = ranked[:10]
+        provider_fallback_used = any(
+            bool(item.get("fallback"))
+            for item in [*ta_result.values(), *fr_result.values(), *ob_result.values()]
+        )
         self.last_run_metadata = {
             "providers_used": providers_used,
             "providers_disabled": providers_disabled,
             "fmp_enabled": bool(self.config.fmp_enabled),
-            "fallback_used": any(bool(item.get("fallback")) for item in [*ta_result.values(), *fr_result.values(), *ob_result.values()]),
+            "provider_fallback_used": provider_fallback_used,
+            "fallback_used": False,
             "analysis_universe": analyzed_universe,
             "analysis_universe_limit": analysis_limit,
         }

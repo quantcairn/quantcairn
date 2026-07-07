@@ -1,5 +1,6 @@
 import tempfile
 from pathlib import Path
+import json
 
 from src.broker.base import AccountInfo, Order, OrderSide, OrderStatus, OrderType, Position
 from src.engine.orphan_monitor import OrphanPositionMonitor
@@ -144,6 +145,47 @@ def test_orphan_monitor_does_not_take_profit():
     assert broker.orders == []
 
 
+def test_orphan_monitor_uses_report_range_take_profit():
+    import src.engine.orphan_monitor as module
+
+    report_dir = Path(tempfile.mkdtemp(prefix="soxs-orphan-report-"))
+    reports = report_dir / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    report_path = reports / "ai_selection_latest.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "selection_date": "2026-07-07",
+                "protected_positions": [
+                    {
+                        "ticker": "NVDA",
+                        "range_low": 190.0,
+                        "range_high": 200.0,
+                        "protected_position": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = module.AI_SELECTION_REPORT
+    module.AI_SELECTION_REPORT = report_path
+    try:
+        broker = FakeBroker()
+        monitor = OrphanPositionMonitor(broker=broker)
+        pos = _position("NVDA", 2, 195.0, 200.0)
+        engine = monitor._engine_for_symbol("NVDA")
+        _use_test_state(engine, "report-take-profit")
+
+        monitor._evaluate_symbol("NVDA", pos)
+    finally:
+        module.AI_SELECTION_REPORT = original
+
+    assert len(broker.orders) == 1
+    assert broker.orders[0]["side"] == OrderSide.SELL
+    assert broker.orders[0]["notes"] == "orphan_range:take_profit"
+
+
 def test_broker_position_verification_failure_skips_symbol():
     broker = FakeBroker(positions=[_position("PLTR", 2, 100.0, 92.0)], reliable=False)
     monitor = OrphanPositionMonitor(broker=broker)
@@ -252,6 +294,7 @@ def run_test_direct():
     test_orphan_soxs_stop_loss_triggers()
     test_orphan_monitor_never_submits_buy()
     test_orphan_monitor_does_not_take_profit()
+    test_orphan_monitor_uses_report_range_take_profit()
     test_broker_position_verification_failure_skips_symbol()
     test_startup_safety_requires_reliable_account_snapshot()
     test_startup_safety_accepts_verified_positions_and_account()

@@ -25,6 +25,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 TOP_CONFIGS = [PROJECT_DIR / "configs" / f"TOP{idx}.yaml" for idx in range(1, 6)]
 TOP_PORTS = [8091, 8092, 8093, 8094, 8095]
+AI_SELECTION_REPORT = PROJECT_DIR / "reports" / "ai_selection_latest.json"
 
 
 def _normalize_ticker(value: str) -> str:
@@ -59,6 +60,43 @@ def _load_configured_assignments() -> dict[int, str]:
 
 def _is_equity_position(position: Position) -> bool:
     return bool(EQUITY_SYMBOL_RE.fullmatch(_normalize_ticker(getattr(position, "ticker", ""))))
+
+
+def _load_report_exit_range(symbol: str) -> dict | None:
+    if not AI_SELECTION_REPORT.exists():
+        return None
+    try:
+        payload = json.loads(AI_SELECTION_REPORT.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    ticker = _normalize_ticker(symbol)
+    buckets: list[tuple[str, list[dict]]] = []
+    for key in ("protected_positions", "top3", "top5", "top10"):
+        items = payload.get(key)
+        if isinstance(items, list):
+            buckets.append((key, [item for item in items if isinstance(item, dict)]))
+
+    for source_key, items in buckets:
+        for item in items:
+            if _normalize_ticker(item.get("ticker")) != ticker:
+                continue
+            try:
+                support = float(item.get("range_low"))
+                resistance = float(item.get("range_high"))
+            except (TypeError, ValueError):
+                return None
+            if support <= 0 or resistance <= support:
+                return None
+            return {
+                "support": round(support, 4),
+                "resistance": round(resistance, 4),
+                "source": source_key,
+                "selection_date": str(payload.get("selection_date") or "").strip() or None,
+            }
+    return None
 
 
 class OrphanPositionMonitor:
@@ -276,26 +314,54 @@ class OrphanPositionMonitor:
         if confirmed <= 0:
             return
 
-        decision = check_exit_conditions(
-            ticker,
-            current_price,
-            avg_cost,
-            confirmed,
-            is_inverse_etf=is_inverse_etf_symbol(ticker),
-            mode="orphan",
-        )
+        report_range = _load_report_exit_range(ticker)
+        if report_range:
+            support = float(report_range["support"])
+            resistance = float(report_range["resistance"])
+            decision = {
+                "should_exit": False,
+                "reason": None,
+                "trigger_price": None,
+                "avg_cost": avg_cost,
+                "position_qty": confirmed,
+                "symbol": ticker,
+                "mode": "orphan_range",
+                "range_source": report_range.get("source"),
+                "support": support,
+                "resistance": resistance,
+            }
+            if current_price <= support:
+                decision["should_exit"] = True
+                decision["reason"] = "stop_loss"
+                decision["trigger_price"] = support
+            elif current_price >= resistance:
+                decision["should_exit"] = True
+                decision["reason"] = "take_profit"
+                decision["trigger_price"] = resistance
+        else:
+            decision = check_exit_conditions(
+                ticker,
+                current_price,
+                avg_cost,
+                confirmed,
+                is_inverse_etf=is_inverse_etf_symbol(ticker),
+                mode="orphan",
+            )
         if not decision["should_exit"]:
             return
         if engine._has_active_sell_protection():
             append_runtime_audit(
                 {
-                    "phase": "orphan_stop_loss",
+                    "phase": "orphan_risk_exit",
                     "symbol": ticker,
                     "ticker": ticker,
                     "avg_cost": avg_cost,
                     "current_price": current_price,
                     "quantity": confirmed,
-                    "mode": "orphan",
+                    "mode": decision.get("mode") or "orphan",
+                    "reason": decision.get("reason"),
+                    "trigger_price": decision.get("trigger_price"),
+                    "range_source": decision.get("range_source"),
                     "skipped": True,
                     "skip_reason": "sell_protection_active",
                 }
@@ -308,12 +374,12 @@ class OrphanPositionMonitor:
             quantity=confirmed,
             current_price=current_price,
             execution_price=current_price,
-            reason="stop_loss",
-            mode="orphan",
+            reason=str(decision["reason"] or "stop_loss"),
+            mode=str(decision.get("mode") or "orphan"),
             avg_cost=avg_cost,
             broker_position_verified=True,
             trigger_price=decision["trigger_price"],
-            audit_phase="orphan_stop_loss",
+            audit_phase="orphan_risk_exit",
         )
 
 

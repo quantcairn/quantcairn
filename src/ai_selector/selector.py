@@ -17,6 +17,10 @@ from src.data.fetcher import PriceFetcher
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = PROJECT_DIR / "logs"
 INVERSE_REDUCE_ONLY = {"SOXS"}
+LIQUID_SPECIAL_ETFS = {
+    "SOXL", "SOXS", "LABU", "LABD", "TQQQ", "SQQQ",
+    "TNA", "TZA", "FAS", "FAZ", "GUSH", "DRIP", "YINN", "YANG", "NAIL", "DPST",
+}
 
 
 def _selection_log_path(now: datetime | None = None) -> Path:
@@ -229,11 +233,22 @@ def _apply_quality_filters_with_report(
                 and ask >= bid > 0
             ):
                 spread_pct = ((ask - bid) / current_price) * 100.0
+            if (
+                spread_pct is None
+                and symbol in LIQUID_SPECIAL_ETFS
+                and current_price
+                and bid
+                and ask
+                and current_price > 0
+                and ask >= bid > 0
+            ):
+                spread_pct = ((ask - bid) / current_price) * 100.0
             liquidity_score = (
                 float(avg_volume_10) * float(current_price)
                 if avg_volume_10 is not None and current_price is not None
                 else None
             )
+            volatility_limit = 35.0 if symbol in LIQUID_SPECIAL_ETFS else 15.0
 
             removed = False
             reason = "passed"
@@ -249,14 +264,17 @@ def _apply_quality_filters_with_report(
                 reason = "volume_filter"
                 removed_volume += 1
             elif not bid_ask_confirmed or spread_pct is None:
-                removed = True
-                reason = "spread_unavailable"
-                removed_missing += 1
+                if symbol in LIQUID_SPECIAL_ETFS and spread_pct is not None:
+                    reason = "special_etf_quote_override"
+                else:
+                    removed = True
+                    reason = "spread_unavailable"
+                    removed_missing += 1
             elif spread_pct >= 0.5:
                 removed = True
                 reason = "spread_filter"
                 removed_spread += 1
-            elif abs(float(three_day_change_pct)) > 15.0:
+            elif abs(float(three_day_change_pct)) > volatility_limit:
                 removed = True
                 reason = "volatility_filter"
                 removed_volatility += 1
@@ -370,11 +388,11 @@ class AIStrategySelector:
         return max(1, value)
 
     def _filter_candidate_limit_from_env(self) -> int:
-        raw = os.environ.get("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "5")
+        raw = os.environ.get("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "12")
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            value = 5
+            value = 12
         return max(self.selection_size, value)
 
     def _total_budget_seconds_from_env(self) -> float:

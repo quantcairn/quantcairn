@@ -926,7 +926,7 @@ HTML = """<!DOCTYPE html>
     <div class="topbar">
         <div class="brand">
             <h1>AI区间交易总览</h1>
-            <p>TOP1 到 TOP3 三路联动监控，每 5 秒自动刷新。</p>
+            <p>TOP1 到 TOP3 三路联动监控，当前为 4-30 美元低价杠杆 / 反向工具池模式，每 5 秒自动刷新。</p>
             <div class="headline-stats">
                 <div class="headline-stat">
                     <span class="label">今日总收益</span>
@@ -1056,7 +1056,7 @@ HTML = """<!DOCTYPE html>
                 <div class="overview-panel compact">
                     <div class="panel-head">
                         <h2>AI 区间选股</h2>
-                        <span class="hint">最新选股与参数</span>
+                        <span class="hint">低价工具池 + 杠杆 / 反向 ETF，真实持仓单独保护</span>
                     </div>
                     <div class="section-meta">
                         {% if ai_selection and ai_selection.timestamp %}
@@ -1068,6 +1068,9 @@ HTML = """<!DOCTYPE html>
                                 · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
                                 · 启动阶段：{{ ai_selection.settings.selection_stage or 'unknown' }}
                                 {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
+                            {% endif %}
+                            {% if ai_selection.protected_positions %}
+                                · 保护持仓：{{ ai_selection.protected_positions | map(attribute='ticker') | join(' / ') }}
                             {% endif %}
                             {% if ai_selection.refinement_status %}
                                 · 后台精筛：{{ ai_selection.refinement_status }}
@@ -1125,20 +1128,20 @@ HTML = """<!DOCTYPE html>
                                         暂无
                                     {% endif %}
                                 </span>
-                                <span class="note">已写入当前配置，并通过启动校验。</span>
+                                <span class="note">这里显示新的 TOP3 工具；真实持仓只做保护监控，不占这里的名额。</span>
                             </div>
                         </div>
                         <div class="selection-brief-item">
-                            <span class="selection-tag">精筛参考</span>
+                            <span class="selection-tag">保护持仓</span>
                             <div class="selection-copy">
                                 <span class="symbols">
-                                    {% if ai_selection.refined_top3 %}
-                                        {{ ai_selection.refined_top3 | map(attribute='ticker') | join(' / ') }}
+                                    {% if ai_selection.protected_positions %}
+                                        {{ ai_selection.protected_positions | map(attribute='ticker') | join(' / ') }}
                                     {% else %}
                                         暂无
                                     {% endif %}
                                 </span>
-                                <span class="note">仅供对比，不覆盖当前 reduce-only 配置。</span>
+                                <span class="note">这些是账户里已有的真实股票仓位，继续跟踪退出风险，但不挤占新选股 TOP3。</span>
                             </div>
                         </div>
                     </div>
@@ -1149,7 +1152,7 @@ HTML = """<!DOCTYPE html>
                         {% endif %}
                     </div>
                     <div class="selection-status">
-                        AI 运行状态：<span class="{{ ai_runtime.level }}">{{ ai_runtime.label }}</span> · {{ ai_runtime.detail }}
+                        AI 运行状态：<span class="{{ ai_runtime.level }}">{{ ai_runtime.label }}</span> · {{ ai_runtime.detail }} · 当前优先扫描低价高流动性杠杆 / 反向 ETF 与 4-30 美元股票。
                     </div>
                     {% else %}
                     <div class="selector-empty">先运行一次 `scripts/run_ai_selector.py`，这里就会显示最新的 AI 区间选股结果。</div>
@@ -1685,8 +1688,8 @@ def index():
         selection_sync=selection_sync,
         startup_guard=startup_guard,
         runtime_settings={
-            "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 10.0)) or 10.0),
-            "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 200.0)) or 200.0),
+            "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 4.0)) or 4.0),
+            "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 30.0)) or 30.0),
             "auto_refresh_minutes": int(runtime_settings.get("auto_refresh_minutes", ai_selection.get("settings", {}).get("auto_refresh_minutes", 5)) or 5),
         },
         active_symbols=active_symbols,
@@ -1712,8 +1715,8 @@ def _run_ai_selector_now() -> None:
     settings = load_runtime_settings()
     env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
     env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
-    env.setdefault("AI_SELECTOR_MIN_PRICE", str(settings.get("min_price", 10.0)))
-    env.setdefault("AI_SELECTOR_MAX_PRICE", str(settings.get("max_price", 200.0)))
+    env.setdefault("AI_SELECTOR_MIN_PRICE", str(settings.get("min_price", 4.0)))
+    env.setdefault("AI_SELECTOR_MAX_PRICE", str(settings.get("max_price", 30.0)))
     env.setdefault("AI_SELECTOR_AUTO_REFRESH_MINUTES", str(settings.get("auto_refresh_minutes", 5)))
     python_bin = PROJECT_DIR / ".venv" / "bin" / "python"
     if not python_bin.exists():
@@ -1737,11 +1740,11 @@ def update_ai_selector_settings():
     try:
         min_price = float(raw_min_price)
     except (TypeError, ValueError):
-        min_price = float(settings.get("min_price", 10.0) or 10.0)
+        min_price = float(settings.get("min_price", 4.0) or 4.0)
     try:
         max_price = float(raw_max_price)
     except (TypeError, ValueError):
-        max_price = float(settings.get("max_price", 200.0) or 200.0)
+        max_price = float(settings.get("max_price", 30.0) or 30.0)
     try:
         auto_refresh_minutes = int(raw_auto_refresh_minutes)
     except (TypeError, ValueError):
