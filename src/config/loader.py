@@ -58,6 +58,8 @@ class TradingHoursConfig:
 class DataConfig:
     provider: str = "yfinance"
     poll_interval_seconds: int = 15
+    signal_interval_seconds: int = 60   # min seconds between signal evaluations
+    order_cooldown_seconds: int = 300   # min seconds between orders (same ticker)
 
 
 @dataclass
@@ -106,6 +108,8 @@ class AppConfig:
     data: DataConfig = field(default_factory=DataConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
+    signal_interval_seconds: int = 60
+    order_cooldown_seconds: int = 300
 
 
 def load_config(config_path: str = None) -> AppConfig:
@@ -205,7 +209,12 @@ def _parse_config(raw: dict) -> AppConfig:
     config.data = DataConfig(
         provider=d.get("provider", "yfinance"),
         poll_interval_seconds=d.get("poll_interval_seconds", 15),
+        signal_interval_seconds=d.get("signal_interval_seconds", 60),
+        order_cooldown_seconds=d.get("order_cooldown_seconds", 300),
     )
+    # Also support top-level config key
+    config.signal_interval_seconds = int(raw.get("signal_interval_seconds", d.get("signal_interval_seconds", 60)))
+    config.order_cooldown_seconds = int(raw.get("order_cooldown_seconds", d.get("order_cooldown_seconds", 300)))
 
     # Trend filter
     tf = raw.get("range", {}).get("trend_filter", {})

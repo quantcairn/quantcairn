@@ -27,6 +27,8 @@ from ..broker.base import BrokerBase, OrderSide, OrderStatus, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
+from ..safety.live_guard import LiveGuard
+from ..reports.pretrade_report import PretradeReport
 from ..ai_selector.config import load_runtime_config as load_ai_selector_runtime_config
 from ..ai_selector.integration import AISelector
 from ..ai_selector.selection_state import (
@@ -248,6 +250,14 @@ class TradingEngine:
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
         self._ai_selection = AISelectionDecision()
 
+        # Signal & order cooldown
+        self._signal_last_time: float = 0.0
+        self._last_order_time: float = 0.0
+        self._live_guard_verdict: dict | None = None
+
+        # Wire RiskManager ticker
+        self.risk.set_ticker(self.ticker)
+
     def _seed_auto_range(self) -> None:
         """Seed auto range from recent OHLCV history so it's ready immediately."""
         if self.config.range.mode != "auto":
@@ -323,7 +333,31 @@ class TradingEngine:
             self.broker.disconnect()
             return
 
-        self._initialize_ai_selector()
+        # ---- LiveGuard pre-flight check (live only) ----
+        if self.mode == "live":
+            guard = LiveGuard()
+            context = {"mode": self.mode, "broker": self.broker, "ticker": self.ticker}
+            self._live_guard_verdict = guard.validate_live_start(context)
+            for err in self._live_guard_verdict.get("errors", []):
+                logger.error("LiveGuard error: %s", err)
+            for warn in self._live_guard_verdict.get("warnings", []):
+                logger.warning("LiveGuard warning: %s", warn)
+
+            # Generate pretrade report
+            report_ctx = dict(context)
+            report_ctx["live_guard_verdict"] = self._live_guard_verdict
+            report = PretradeReport.generate(report_ctx)
+            report.write()
+
+            if not self._live_guard_verdict.get("allowed_to_open_new_positions", False):
+                self._reduce_only = True
+                logger.info("LiveGuard: reduce-only mode enforced (new positions blocked)")
+            else:
+                logger.info("LiveGuard: all checks passed — new positions allowed")
+
+        # Do NOT re-run AI Selector at live engine startup — only read existing state.
+        if self.mode != "live":
+            self._initialize_ai_selector()
 
         # Seed auto range from historical data (so it's ready immediately)
         self._seed_auto_range()
@@ -433,7 +467,28 @@ class TradingEngine:
             self._run_dynamic_exit_check(current_price, quote.bid)
             has_position = self._position_shares > 0
 
-        # 7. Evaluate strategy
+        # 7. Evaluate strategy (with signal cooldown)
+        now_ts = time.time()
+        signal_interval = getattr(self.config, 'signal_interval_seconds', 60)
+        if now_ts - self._signal_last_time < signal_interval:
+            # Skip full signal evaluation; only do stop-loss + heartbeat
+            if has_position and self._entry_price and not self._pending_order:
+                rs = self.strategy.get_range_state()
+                sl_check = self.risk.check_stop_loss(current_price, self._entry_price, rs.support)
+                if not sl_check.allowed:
+                    self._handle_stop_loss(
+                        self.strategy.evaluate(current_price, has_position),
+                        current_price, quote.bid)
+            rs = self.strategy.get_range_state()
+            self.notifier.heartbeat(
+                self.ticker, current_price, rs,
+                trend_info=self.strategy.get_trend_info(),
+                halted=self.risk._halted,
+            )
+            elapsed = time.time() - loop_start
+            time.sleep(max(0, self.config.data.poll_interval_seconds - elapsed))
+            return
+        self._signal_last_time = now_ts
         signal = self.strategy.evaluate(current_price, has_position)
         self._last_signal_type = signal.type
         self._last_signal_reason = signal.reason

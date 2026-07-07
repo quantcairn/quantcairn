@@ -116,6 +116,11 @@ class RangeDetector:
         self._support_touch_count: int = 0     # times price bounced off support
         self._resistance_touch_count: int = 0  # times price hit resistance
 
+        # Enhanced trend protection
+        self._price_low_20d: Optional[float] = None  # lowest close in last 20 bars
+        self._daily_open_price: Optional[float] = None
+        self._daily_min_price: Optional[float] = None
+
         if self.mode == "manual" and self._manual_support is not None and self._manual_resistance is not None:
             self._support_confidence = 1.0
 
@@ -169,10 +174,22 @@ class RangeDetector:
     def feed_price(self, price: float) -> None:
         """Feed a new price point for auto-detection and trend tracking."""
         self._price_history.append(price)
-        max_len = max(self.auto_lookback * 2, self.trend_ma_period * 2)
+        max_len = max(self.auto_lookback * 2, self.trend_ma_period * 2, 100)
         if len(self._price_history) > max_len:
             self._price_history = self._price_history[-max_len:]
         self._update_trend()
+
+        # Track 20-day low
+        recent = self._price_history[-20:] if len(self._price_history) >= 20 else self._price_history
+        self._price_low_20d = min(recent)
+
+        # Track daily open / intraday low (reset outside trading hours)
+        now = datetime.now()
+        if self._daily_open_price is None:
+            self._daily_open_price = price
+            self._daily_min_price = price
+        else:
+            self._daily_min_price = min(self._daily_min_price or price, price)
 
     def feed_volume_bar(self, high: float, low: float, close: float, volume: int) -> None:
         """Feed a single OHLCV bar for volume-profile range detection."""
@@ -354,6 +371,12 @@ class RangeDetector:
 
         recent = self._price_history[-period:]
         self._trend_ma = sum(recent) / len(recent)
+
+        # Compute EMA50 approximation (SMA50 proxy for cross detection)
+        if len(self._price_history) >= 50:
+            self._ema50 = sum(self._price_history[-50:]) / 50.0
+        else:
+            self._ema50 = None
 
         # Determine direction: compare current price to MA
         current = self._price_history[-1]
@@ -575,11 +598,34 @@ class RangeDetector:
         # --- Trend filter ---
         trend_info = self.get_trend_info()
         trend_blocked = False
+        trend_reason = None
         pct_ma = trend_info["pct_from_ma"]
         trend_block_threshold = max(self.trend_min_strength, self.TREND_BLOCK_MIN_PCT_FROM_MA)
         if self.trend_enabled and self._trend_direction == "down" and not has_position:
             # Only block when the stock is clearly below its moving average.
             trend_blocked = pct_ma <= -trend_block_threshold
+            if trend_blocked:
+                trend_reason = f"downtrend (price {pct_ma:+.1f}% vs MA{self.trend_ma_period}=${self._trend_ma:.2f})"
+
+        # --- Enhanced trend/break protection (only for new Buys) ---
+        if not has_position:
+            # a) price < EMA20 < EMA50 → bearish stacking
+            if self._trend_ma is not None and getattr(self, '_ema50', None) is not None:
+                if current_price < self._trend_ma < self._ema50:
+                    trend_blocked = True
+                    trend_reason = f"bearish stack (price<MA{self.trend_ma_period}<MA50)"
+
+            # b) price broke below 20-day low
+            if self._price_low_20d is not None and current_price < self._price_low_20d:
+                trend_blocked = True
+                trend_reason = f"below_20d_low (${self._price_low_20d:.2f})"
+
+            # c) daily drop > 4%
+            if self._daily_open_price is not None and self._daily_open_price > 0:
+                daily_drop_pct = (current_price - self._daily_open_price) / self._daily_open_price * 100
+                if daily_drop_pct < -4.0:
+                    trend_blocked = True
+                    trend_reason = f"daily_drop_{daily_drop_pct:.1f}%"
 
         # --- Calculate distances ---
         dist_to_support = (current_price - support) / support * 100  # % above support
@@ -636,7 +682,7 @@ class RangeDetector:
                         price=current_price,
                         support=support,
                         resistance=resistance,
-                        reason=f"BUY blocked: downtrend (price {pct_ma:+.1f}% vs MA{self.trend_ma_period}=${self._trend_ma:.2f})",
+                        reason=f"BUY blocked: {trend_reason or 'trend filter'}"[:120],
                         confidence=0.0,
                     )
 

@@ -6,15 +6,19 @@ Rules (in priority order):
 2. Daily Loss Limit — cumulative P&L for the day
 3. Max Consecutive Losses — pause after N losing trades
 4. Position Size Limit — never exceed max_position
-5. Cool-down — minimum time between trades
+5. Instrument Profile — leveraged ETF per-symbol and group limits
+6. Cool-down — minimum time between trades
 """
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
+
+from ..risk.instrument_profile import get_profile, is_leveraged_etf
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +79,22 @@ class RiskManager:
         self._halt_reason: str = ""
         self._halt_until: Optional[datetime] = None
         self._last_state_save_at = 0.0
+
+        # Instrument profile tracking
+        self._ticker: str = ""
+        self._leveraged_exposure: float = 0.0  # set externally via set_ticker()
+
         self._load_state()
 
     # ---- Public API ----
+
+    def set_ticker(self, ticker: str) -> None:
+        """Set the ticker for instrument-profile lookups."""
+        self._ticker = str(ticker or "").strip().upper()
+
+    def set_leveraged_exposure(self, total_exposure_pct: float) -> None:
+        """Set the current leveraged ETF exposure as a % of equity."""
+        self._leveraged_exposure = max(0.0, float(total_exposure_pct or 0.0))
 
     def check_entry(
         self, price: float, shares: int, current_position: int
@@ -130,6 +147,29 @@ class RiskManager:
                     False,
                     f"Cool-down: {remaining:.0f}s remaining before next trade",
                     "cool_down",
+                )
+
+        # 3b. Instrument profile: leveraged ETF limits
+        if self._ticker and is_leveraged_etf(self._ticker):
+            profile = get_profile(self._ticker)
+            max_pos_pct = float(profile.get("max_position_pct", 0.15))
+            max_group = float(profile.get("max_total_group_exposure", 0.50))
+            cost = price * shares
+            equity = max(1.0, self._current_equity)
+            pos_pct = cost / equity * 100.0
+            limit_pct = max_pos_pct * 100.0
+            if self._current_equity > 0 and pos_pct > limit_pct:
+                return RiskCheckResult(
+                    False,
+                    f"Instrument profile: {self._ticker} position {pos_pct:.1f}% > {limit_pct:.1f}% limit",
+                    "instrument_profile_single",
+                )
+            if self._leveraged_exposure + pos_pct > max_group * 100.0:
+                return RiskCheckResult(
+                    False,
+                    f"Instrument profile: leveraged group exposure "
+                    f"{self._leveraged_exposure + pos_pct:.1f}% > {max_group * 100:.1f}% limit",
+                    "instrument_profile_group",
                 )
 
         # 4. Daily loss limit — halt is permanent until next trading day
