@@ -7,9 +7,12 @@ Features:
 - Commission calculation
 - Position tracking
 - Full P&L calculation
+- Trade history
 """
 import logging
+import random
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -21,6 +24,19 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class TradeRecord:
+    """Record of a single executed trade."""
+    ticker: str
+    side: OrderSide
+    quantity: int
+    price: float
+    slippage: float
+    commission: float
+    executed_at: str
+    notes: str = ""
+
+
 class PaperBroker(BrokerBase):
     """
     Simulated broker for paper trading.
@@ -28,18 +44,35 @@ class PaperBroker(BrokerBase):
     Simulates:
     - Market orders at ask (buy) / bid (sell) prices
     - Limit orders at specified price or better
-    - Commission: $0.005/share (typical for US stocks)
-    - Slippage: 0.05% on market orders
+    - Commission: $0.005/share (typical for US stocks) or per-trade model
+    - Slippage: configurable percentage on market orders
     """
 
-    def __init__(self, initial_cash: float = 10000.0, commission_per_share: float = 0.005):
+    def __init__(
+        self,
+        initial_cash: float = 10000.0,
+        commission_per_share: float = 0.005,
+        slippage_pct: float = 0.05,
+        commission_per_trade: float = 0.0,
+    ):
         self._initial_cash = initial_cash
         self._cash = initial_cash
         self._commission_per_share = commission_per_share
+        self._slippage_pct = slippage_pct  # max slippage as percentage (e.g. 0.05 = 0.05%)
+        self._commission_per_trade = commission_per_trade
         self._orders: dict[str, Order] = {}
         self._positions: dict[str, Position] = {}
         self._connected = False
         self._current_prices: dict[str, float] = {}
+
+        # --- New tracking fields ---
+        self._trade_history: list[TradeRecord] = []
+        self._realized_pnl: float = 0.0
+        self._total_commission: float = 0.0
+        self._wins: int = 0
+        self._losses: int = 0
+        self._total_win_amount: float = 0.0
+        self._total_loss_amount: float = 0.0
 
     # ---- BrokerBase Implementation ----
 
@@ -54,6 +87,45 @@ class PaperBroker(BrokerBase):
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def _compute_slippage(self) -> float:
+        """Return a random slippage multiplier in [0.0001, slippage_pct/100].
+
+        The min is clamped to 0.01% (0.0001) and the max to slippage_pct / 100
+        (but at least 0.01%).
+        """
+        min_slip = 0.01  # 0.01% in percentage units
+        max_slip = max(min_slip, self._slippage_pct)
+        return random.uniform(min_slip, max_slip) / 100.0
+
+    def _compute_commission(self, trade_value: float, quantity: int) -> float:
+        """Compute commission: per-trade model or per-share fallback."""
+        if self._commission_per_trade > 0:
+            return round(max(self._commission_per_trade, 0.001 * trade_value), 3)
+        return round(quantity * self._commission_per_share, 3)
+
+    def _record_trade(
+        self,
+        ticker: str,
+        side: OrderSide,
+        quantity: int,
+        price: float,
+        slippage: float,
+        commission: float,
+        notes: str = "",
+    ) -> None:
+        """Append a trade record to history."""
+        record = TradeRecord(
+            ticker=ticker,
+            side=side,
+            quantity=quantity,
+            price=round(price, 3),
+            slippage=round(slippage, 6),
+            commission=round(commission, 3),
+            executed_at=datetime.now().isoformat(),
+            notes=notes,
+        )
+        self._trade_history.append(record)
 
     def place_order(
         self,
@@ -77,8 +149,8 @@ class PaperBroker(BrokerBase):
                 notes="Missing bid/ask prices",
             )
 
-        # Determine fill price
-        slippage = 0.0005  # 0.05% slippage
+        # Determine fill price with configurable random slippage
+        slippage = self._compute_slippage()
         if order_type == OrderType.MARKET:
             if side == OrderSide.BUY:
                 fill_price = current_ask * (1 + slippage) if current_ask > 0 else current_bid * (1 + slippage)
@@ -88,12 +160,13 @@ class PaperBroker(BrokerBase):
             ref_price = current_bid if side == OrderSide.SELL else current_ask
             if limit_price is None:
                 fill_price = ref_price
+                slippage = 0.0  # no slippage on limit at reference
             elif side == OrderSide.BUY and limit_price >= ref_price:
-                fill_price = min(limit_price, ref_price * (1 + slippage))  # Fill at best available
+                fill_price = min(limit_price, ref_price * (1 + slippage))
             elif side == OrderSide.SELL and limit_price <= ref_price:
                 fill_price = max(limit_price, ref_price * (1 - slippage))
             else:
-                # Limit order not fillable → return pending
+                # Limit order not fillable -> return pending
                 order = Order(
                     order_id=order_id, ticker=ticker, side=side,
                     order_type=order_type, quantity=quantity,
@@ -102,9 +175,11 @@ class PaperBroker(BrokerBase):
                 self._orders[order_id] = order
                 return order
 
-        commission = quantity * self._commission_per_share
-
         trade_value = fill_price * quantity
+        commission = self._compute_commission(trade_value, quantity)
+
+        realized_pnl = 0.0
+
         if side == OrderSide.BUY:
             total_cost = trade_value + commission
             if total_cost > self._cash:
@@ -128,7 +203,20 @@ class PaperBroker(BrokerBase):
                 )
                 self._orders[order_id] = order
                 return order
+
+            # Realized P&L on this sell
+            realized_pnl = (fill_price - pos.avg_entry_price) * quantity - commission
+            self._realized_pnl += realized_pnl
+            if realized_pnl > 0:
+                self._wins += 1
+                self._total_win_amount += realized_pnl
+            else:
+                self._losses += 1
+                self._total_loss_amount += abs(realized_pnl)
+
             self._cash += (trade_value - commission)
+
+        self._total_commission += commission
 
         # Update position
         if ticker not in self._positions:
@@ -161,6 +249,17 @@ class PaperBroker(BrokerBase):
         # Store current price
         self._current_prices[ticker] = fill_price
 
+        # Record trade in history
+        self._record_trade(
+            ticker=ticker,
+            side=side,
+            quantity=quantity,
+            price=fill_price,
+            slippage=slippage,
+            commission=commission,
+            notes=f"order_type={order_type.value}",
+        )
+
         order = Order(
             order_id=order_id, ticker=ticker, side=side,
             order_type=order_type, quantity=quantity,
@@ -172,7 +271,8 @@ class PaperBroker(BrokerBase):
 
         logger.info(
             f"[PAPER] {side.value} {quantity} {ticker} @ ${fill_price:.2f} "
-            f"(commission: ${commission:.2f}, cash: ${self._cash:.2f})"
+            f"(commission: ${commission:.2f}, slippage: {slippage*100:.3f}%, "
+            f"cash: ${self._cash:.2f})"
         )
         return order
 
@@ -192,6 +292,10 @@ class PaperBroker(BrokerBase):
 
     def get_position_for_ticker(self, ticker: str) -> Optional[Position]:
         return self._positions.get(ticker)
+
+    def get_trade_history(self) -> list[TradeRecord]:
+        """Return the complete trade history."""
+        return list(self._trade_history)
 
     def seed_position(self, ticker: str, quantity: int, avg_price: float) -> Optional[Position]:
         """Seed an initial position (for simulation/testing).
@@ -230,11 +334,23 @@ class PaperBroker(BrokerBase):
 
     def get_account(self) -> AccountInfo:
         equity = self._cash + sum(p.market_value for p in self._positions.values())
+
+        total_trades = len(self._trade_history)
+        total_wins_losses = self._wins + self._losses
+        win_rate = round(self._wins / total_wins_losses, 4) if total_wins_losses > 0 else 0.0
+        avg_win = round(self._total_win_amount / self._wins, 3) if self._wins > 0 else 0.0
+        avg_loss = round(self._total_loss_amount / self._losses, 3) if self._losses > 0 else 0.0
+
         return AccountInfo(
             cash=round(self._cash, 2),
             equity=round(equity, 2),
             buying_power=round(self._cash * 2, 2),  # 2x margin
             positions=self.get_positions(),
+            total_trades=total_trades,
+            win_rate=win_rate,
+            avg_win=avg_win,
+            avg_loss=avg_loss,
+            total_commission=round(self._total_commission, 3),
         )
 
     def update_price(self, ticker: str, price: float) -> None:

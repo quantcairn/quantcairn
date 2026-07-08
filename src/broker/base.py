@@ -60,6 +60,11 @@ class AccountInfo:
     equity: float
     buying_power: float
     positions: list[Position]
+    total_trades: int = 0
+    win_rate: float = 0.0
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    total_commission: float = 0.0
 
 
 class BrokerBase(ABC):

@@ -5,6 +5,7 @@ Two modes:
 1. Manual: Uses user-defined support/resistance levels
 2. Auto: Automatically detects range using recent price action
 """
+import time
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -71,6 +72,7 @@ class RangeDetector:
         tolerance_pct: float = 0.3,
         auto_lookback: int = 50,
         auto_refresh_minutes: int = 15,
+        range_lock_minutes: int = 30,
         trend_ma_period: int = 20,
         trend_enabled: bool = True,
         trend_min_strength: float = 0.5,
@@ -78,6 +80,17 @@ class RangeDetector:
         min_range_width_pct: float = 0.8,
         quick_stop_pct: float = 3.0,
         post_entry_cooldown_seconds: int = 300,
+        # ── RSI Filter (rsi_period=0 → disabled) ──
+        rsi_period: int = 0,
+        rsi_oversold: float = 30.0,
+        rsi_overbought: float = 70.0,
+        # ── Volume Filter (volume_confirm_ratio=0 → disabled) ──
+        volume_confirm_ratio: float = 0.0,
+        # ── ATR Dynamic Stop Loss (atr_period=0 → disabled) ──
+        atr_period: int = 0,
+        atr_stop_multiplier: float = 1.5,
+        # ── Buy Confirmation (buy_confirm_bars=1 → existing single-bar behavior) ──
+        buy_confirm_bars: int = 1,
     ):
         self.ticker = ticker
         self.mode = mode
@@ -86,6 +99,7 @@ class RangeDetector:
         self.tolerance_pct = tolerance_pct
         self.auto_lookback = auto_lookback
         self.auto_refresh_minutes = auto_refresh_minutes
+        self.range_lock_minutes = range_lock_minutes
 
         self._auto_support: Optional[float] = None
         self._auto_resistance: Optional[float] = None
@@ -94,6 +108,9 @@ class RangeDetector:
 
         # Price history for auto-detection + trend calculation
         self._price_history: list[float] = []
+
+        # Timed price series for volatility detection
+        self._price_time_series: list[tuple[float, float]] = []
 
         # Volume-profile data: (price, volume) tuples for weighted S/R
         self._volume_profile: list[tuple[float, float]] = []  # (price_midpoint, volume)
@@ -111,6 +128,22 @@ class RangeDetector:
         self.min_range_width_pct = min_range_width_pct
         self.quick_stop_pct = quick_stop_pct
         self.post_entry_cooldown_seconds = post_entry_cooldown_seconds
+
+        # ── RSI Filter ──
+        self.rsi_period = rsi_period
+        self.rsi_oversold = rsi_oversold
+        self.rsi_overbought = rsi_overbought
+
+        # ── Volume Filter ──
+        self.volume_confirm_ratio = volume_confirm_ratio
+
+        # ── ATR Dynamic Stop Loss ──
+        self.atr_period = atr_period
+        self.atr_stop_multiplier = atr_stop_multiplier
+
+        # ── Buy Confirmation ──
+        self.buy_confirm_bars = buy_confirm_bars
+        self._consecutive_near_support: int = 0
         self._entry_price: Optional[float] = None  # Last entry for quick stop
         self._entry_time: Optional[datetime] = None  # When we entered
 
@@ -118,6 +151,9 @@ class RangeDetector:
         self._support_confidence: float = 0.0  # 0-1: how reliable is support?
         self._support_touch_count: int = 0     # times price bounced off support
         self._resistance_touch_count: int = 0  # times price hit resistance
+
+        # Volume history for volume filter (OHLCV volume, not price-bucketed)
+        self._volume_history: list[float] = []
 
         # Enhanced trend protection
         self._price_low_20d: Optional[float] = None  # lowest close in last 20 bars
@@ -177,9 +213,11 @@ class RangeDetector:
     def feed_price(self, price: float) -> None:
         """Feed a new price point for auto-detection and trend tracking."""
         self._price_history.append(price)
+        self._price_time_series.append((time.time(), float(price)))
         max_len = max(self.auto_lookback * 2, self.trend_ma_period * 2, 100)
         if len(self._price_history) > max_len:
             self._price_history = self._price_history[-max_len:]
+            self._price_time_series = self._price_time_series[-max_len:]
         self._update_trend()
 
         # Track 20-day low
@@ -194,6 +232,15 @@ class RangeDetector:
         else:
             self._daily_min_price = min(self._daily_min_price or price, price)
 
+        # Track consecutive bars near support (for buy confirmation)
+        support_price = self.support
+        if support_price is not None and support_price > 0:
+            dist_to_support = (price - support_price) / support_price * 100
+            if 0 <= dist_to_support <= self.tolerance_pct * 2:
+                self._consecutive_near_support += 1
+            else:
+                self._consecutive_near_support = 0
+
     def feed_volume_bar(self, high: float, low: float, close: float, volume: int) -> None:
         """Feed a single OHLCV bar for volume-profile range detection."""
         mid = (high + low) / 2
@@ -204,6 +251,11 @@ class RangeDetector:
             self._volume_profile = self._volume_profile[-max_bars:]
         if len(self._bar_extremes) > max_bars:
             self._bar_extremes = self._bar_extremes[-max_bars:]
+
+        # Track raw volume for volume filter
+        self._volume_history.append(float(volume or 0))
+        if len(self._volume_history) > max_bars:
+            self._volume_history = self._volume_history[-max_bars:]
 
     def _calc_volume_weighted_range(self) -> tuple[float, float, float, float]:
         """
@@ -392,6 +444,75 @@ class RangeDetector:
         else:
             self._trend_direction = "neutral"
 
+    def _calc_rsi(self) -> Optional[float]:
+        """
+        Calculate RSI (Relative Strength Index) from price history.
+
+        Uses Wilder's smoothing method: average gain / average loss over the period.
+        Returns None if insufficient data or RSI is disabled.
+        """
+        period = self.rsi_period
+        if period <= 0 or len(self._price_history) < period + 1:
+            return None
+
+        prices = self._price_history[-(period + 1):]
+        gains = []
+        losses = []
+        for i in range(1, len(prices)):
+            diff = prices[i] - prices[i - 1]
+            if diff > 0:
+                gains.append(diff)
+                losses.append(0.0)
+            else:
+                gains.append(0.0)
+                losses.append(abs(diff))
+
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+
+        if avg_loss == 0:
+            return 100.0
+
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    def _calc_atr(self) -> Optional[float]:
+        """
+        Calculate ATR (Average True Range) from bar extremes.
+
+        True Range = max(high-low, |high-prev_close|, |low-prev_close|).
+        Uses the high/low from _bar_extremes as a proxy.
+        Returns None if insufficient data or ATR is disabled.
+        """
+        period = self.atr_period
+        if period <= 0 or len(self._bar_extremes) < period + 1:
+            return None
+
+        bars = self._bar_extremes[-(period + 1):]
+        true_ranges = []
+        for i in range(1, len(bars)):
+            high, low = bars[i]
+            prev_high, prev_low = bars[i - 1]
+            # True Range = max(high-low, |high-prev_low|, |low-prev_high|)
+            tr = max(
+                high - low,
+                abs(high - prev_low),
+                abs(low - prev_high),
+            )
+            true_ranges.append(tr)
+
+        if not true_ranges:
+            return None
+
+        # SMA of true ranges (simple ATR)
+        return sum(true_ranges) / len(true_ranges)
+
+    def _calc_avg_volume(self) -> Optional[float]:
+        """Calculate average volume from volume history."""
+        if not self._volume_history:
+            return None
+        return sum(self._volume_history) / len(self._volume_history)
+
     @property
     def trend_ma(self) -> Optional[float]:
         """Current moving average value."""
@@ -423,6 +544,15 @@ class RangeDetector:
         changed hands — much more reliable than simple price extremes.
         Falls back to percentile method if no volume data available.
         """
+        # Volatility guard: skip refresh if price moved too fast recently
+        if self._is_high_volatility():
+            logger.warning(
+                "Volatility guard active: skipping range refresh for %s "
+                "(price moved >5%% in last 5 minutes)",
+                self.ticker,
+            )
+            return False
+
         # ── Option A: Volume Profile ──
         if self._volume_profile and len(self._volume_profile) >= 10:
             supp, res, supp_conf, res_conf = self._calc_volume_weighted_range()
@@ -560,12 +690,64 @@ class RangeDetector:
         self._entry_price = None
         self._entry_time = None
 
+    def _is_in_range_lock(self) -> bool:
+        """
+        Check if we're within the range lock period after market open.
+
+        NYSE opens at 9:30 AM ET. During the first N minutes, the range
+        is intentionally frozen to avoid reacting to volatile opening prints.
+        """
+        if self.range_lock_minutes <= 0:
+            return False
+        try:
+            import pytz
+            ny_tz = pytz.timezone("America/New_York")
+            now_ny = datetime.now(ny_tz)
+            market_open = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+            elapsed = (now_ny - market_open).total_seconds()
+            if 0 <= elapsed < self.range_lock_minutes * 60:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _is_high_volatility(self) -> bool:
+        """
+        Check if price moved more than 5%% in the last 5 minutes.
+
+        When volatility spikes, range boundaries are unreliable — skip
+        the refresh until price settles.
+        """
+        if len(self._price_time_series) < 2:
+            return False
+        now = time.time()
+        cutoff = now - 300  # 5 minutes
+        recent = [(ts, p) for ts, p in self._price_time_series if ts >= cutoff]
+        if len(recent) < 2:
+            return False
+        prices = [p for _, p in recent]
+        min_p = min(prices)
+        max_p = max(prices)
+        if min_p <= 0:
+            return False
+        change_pct = (max_p - min_p) / min_p * 100
+        return change_pct > 5.0
+
     def needs_auto_refresh(self) -> bool:
         """Check if auto range needs refreshing."""
         if self.mode != "auto":
             return False
         if self._last_auto_refresh is None:
             return True
+        # Range lock: don't refresh during lock period after market open
+        # (unless we've never had a range)
+        if self._last_auto_refresh is not None and self._is_in_range_lock():
+            logger.debug(
+                "Range refresh blocked for %s: within %.0fmin lock after market open",
+                self.ticker,
+                self.range_lock_minutes,
+            )
+            return False
         elapsed = (datetime.now() - self._last_auto_refresh).total_seconds()
         return elapsed >= (self.auto_refresh_minutes * 60)
 
@@ -669,6 +851,12 @@ class RangeDetector:
                     )
 
             if dist_to_resistance <= tol:
+                sell_confidence = min(1.0, 1.0 - dist_to_resistance / tol)
+                # RSI filter: boost sell confidence when overbought
+                if self.rsi_period > 0:
+                    rsi_value = self._calc_rsi()
+                    if rsi_value is not None and rsi_value > self.rsi_overbought:
+                        sell_confidence = min(1.0, sell_confidence * 1.5)
                 return Signal(
                     type=SignalType.SELL,
                     ticker=self.ticker,
@@ -677,10 +865,16 @@ class RangeDetector:
                     resistance=resistance,
                     reason=f"Price ${current_price:.2f} near resistance ${resistance:.2f} "
                            f"({dist_to_resistance:.1f}% below), holding position",
-                    confidence=min(1.0, 1.0 - dist_to_resistance / tol),
+                    confidence=sell_confidence,
                 )
-            # Check stop loss
-            if current_price < support * (1 - 0.02):  # Hard 2% below support
+            # Check stop loss (ATR-dynamic or static 2%)
+            atr_value = self._calc_atr()
+            if atr_value is not None:
+                atr_stop_dist = max(support * 0.015, self.atr_stop_multiplier * atr_value)
+                stop_level = support - atr_stop_dist
+            else:
+                stop_level = support * (1 - 0.02)
+            if current_price < stop_level:
                 return Signal(
                     type=SignalType.STOP_LOSS,
                     ticker=self.ticker,
@@ -750,6 +944,38 @@ class RangeDetector:
                         confidence=0.0,
                     )
 
+                # ── Buy Confirmation ──
+                # Require N consecutive bars near support before triggering BUY
+                if self.buy_confirm_bars > 1 and self._consecutive_near_support < self.buy_confirm_bars:
+                    return Signal(
+                        type=SignalType.HOLD,
+                        ticker=self.ticker,
+                        price=current_price,
+                        support=support,
+                        resistance=resistance,
+                        reason=f"Waiting for buy confirmation ({self._consecutive_near_support}/{self.buy_confirm_bars} bars near support)",
+                        confidence=0.0,
+                    )
+
+                # ── Calculate base confidence ──
+                signal_confidence = max(0.0, min(1.0, 1.0 - dist_to_support / tol))
+
+                # ── RSI Filter: boost confidence in oversold ──
+                if self.rsi_period > 0:
+                    rsi_value = self._calc_rsi()
+                    if rsi_value is not None:
+                        if rsi_value < self.rsi_oversold:
+                            signal_confidence = min(1.0, signal_confidence * 1.5)
+                        elif rsi_value > self.rsi_overbought:
+                            signal_confidence *= 0.5
+
+                # ── Volume Filter: reduce confidence if volume is too low ──
+                if self.volume_confirm_ratio > 0 and self._volume_history:
+                    avg_vol = self._calc_avg_volume()
+                    current_vol = self._volume_history[-1] if self._volume_history else 0
+                    if avg_vol and avg_vol > 0 and current_vol < avg_vol * self.volume_confirm_ratio:
+                        signal_confidence *= 0.5
+
                 return Signal(
                     type=SignalType.BUY,
                     ticker=self.ticker,
@@ -761,7 +987,7 @@ class RangeDetector:
                         f"{'near support' if dist_to_support <= tol else 'in lower range'} "
                         f"(pos {position_in_range:.0f}%), est return {est_profit:.1f}%"
                     ),
-                    confidence=max(0.0, min(1.0, 1.0 - dist_to_support / tol)),
+                    confidence=signal_confidence,
                 )
 
         # --- Default: HOLD ---

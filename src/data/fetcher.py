@@ -15,6 +15,11 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 
+class PriceDataError(Exception):
+    """Raised when price data cannot be obtained or is stale."""
+    pass
+
+
 def _positive_float(value, default: float = 0.0) -> float:
     """Return value as float only when it is positive and numeric."""
     try:
@@ -55,11 +60,13 @@ class OHLCV:
 class PriceFetcher:
     """Fetches real-time and historical price data for a ticker via yfinance."""
 
-    def __init__(self, ticker: str, poll_interval: int = 15):
+    def __init__(self, ticker: str, poll_interval: int = 15, max_data_age_seconds: int = 120):
         self.ticker = ticker
         self.poll_interval = poll_interval
+        self.max_data_age_seconds = max_data_age_seconds
         self._ticker_obj = yf.Ticker(ticker)
         self._last_fetch_time: float = 0
+        self._last_successful_fetch: float = 0.0
         self._cached_quote: Optional[Quote] = None
         self._synthetic_market = os.environ.get("SOXS_SYNTHETIC_MARKET", "").strip().lower() in {"1", "true", "yes", "on"}
         self._synthetic_start_price = _positive_float(os.environ.get("SOXS_SYNTHETIC_START_PRICE"), 100.0)
@@ -389,6 +396,30 @@ class PriceFetcher:
                 return self._synthetic_quote()
             if price <= 0 and self._cached_quote:
                 return self._cached_quote
+
+            # If all data sources failed and we have no fallback, raise
+            if price <= 0:
+                if self._last_successful_fetch == 0:
+                    raise PriceDataError(
+                        f"Failed to fetch price for {self.ticker}: "
+                        "no data from any source"
+                    )
+                age = time.time() - self._last_successful_fetch
+                if age > self.max_data_age_seconds:
+                    raise PriceDataError(
+                        f"Price data for {self.ticker} is stale "
+                        f"({age:.0f}s > {self.max_data_age_seconds}s max age)"
+                    )
+                # Data is unavailable but last_fetch is still fresh — return stale cache
+                if self._cached_quote:
+                    return self._cached_quote
+                raise PriceDataError(
+                    f"Failed to fetch price for {self.ticker}: "
+                    "all sources exhausted"
+                )
+
+            # Record successful fetch timestamp
+            self._last_successful_fetch = time.time()
 
             if prev_close <= 0:
                 prev_close = price

@@ -273,6 +273,66 @@ def _load_ai_selection_report():
         }
 
 
+def _enrich_ticker_descriptions(top3_list: list) -> list:
+    """Add human-readable description for each selected ticker."""
+    try:
+        from src.risk.instrument_profile import LEVERAGED_ETF_REGISTRY
+    except Exception:
+        LEVERAGED_ETF_REGISTRY = {}
+
+    descriptions = {
+        "SOXS": "3倍做空半导体ETF",
+        "SOXL": "3倍做多半导体ETF",
+        "LABD": "3倍做空生物科技ETF",
+        "LABU": "3倍做多生物科技ETF",
+        "DRIP": "3倍做空能源ETF",
+        "GUSH": "3倍做多能源ETF",
+        "YINN": "2倍做多中国ETF",
+        "YANG": "2倍做空中国ETF",
+        "TQQQ": "3倍做多纳斯达克ETF",
+        "SQQQ": "3倍做空纳斯达克ETF",
+        "SOFI": "金融科技公司",
+        "NVDA": "AI芯片龙头",
+        "PLTR": "大数据分析公司",
+        "AAPL": "消费电子龙头",
+        "TSLA": "电动汽车公司",
+        "AMZN": "电商云计算龙头",
+        "NIO": "电动汽车公司（中概）",
+        "SMR": "小型核反应堆公司",
+        "QBTS": "量子计算公司",
+        "WULF": "比特币矿商",
+        "SMCI": "AI服务器制造商",
+    }
+
+    enriched = []
+    for item in (top3_list or []):
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker", "")).strip().upper()
+        profile = LEVERAGED_ETF_REGISTRY.get(ticker, {})
+
+        is_etf = bool(profile)
+        leverage = profile.get("leverage", 1) if profile else 1
+        is_inverse = profile.get("inverse", False) if profile else False
+
+        if is_inverse:
+            direction = "\U0001f43b 做空"
+            direction_cn = "做空"
+        elif is_etf:
+            direction = "\U0001f402 做多"
+            direction_cn = "做多"
+        else:
+            direction = "\u2014"
+            direction_cn = "个股"
+
+        item["_type"] = "ETF" if is_etf else "股票"
+        item["_leverage"] = f"{leverage}x"
+        item["_direction"] = direction
+        item["_description"] = descriptions.get(ticker, profile.get("sector", ""))
+
+    return top3_list
+
+
 def _current_et_date() -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -962,7 +1022,7 @@ HTML = """<!DOCTYPE html>
                 {{ startup_guard.label }}
             </span>
             <span class="pill {% if live_account and live_account.mode == 'live' %}live{% else %}warn{% endif %}">
-                {% if live_account and live_account.mode == 'live' %}实盘账户{% elif live_account and live_account.account_error %}实盘账户异常{% else %}模拟盘 / 离线{% endif %}
+                {% if live_account and live_account.mode == 'live' %}实盘账户{% elif live_account and live_account.account_error %}实盘账户异常{% else %}虚拟盘{% endif %}
             </span>
             {% if live_account and live_account.data_stale %}
                 {% if live_account.account_error %}
@@ -1058,6 +1118,36 @@ HTML = """<!DOCTYPE html>
                         <h2>AI 区间选股</h2>
                         <span class="hint">低价工具池 + 杠杆 / 反向 ETF，真实持仓单独保护</span>
                     </div>
+                    <div style="margin:6px 0;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:6px;font-size:12px;line-height:1.6;color:var(--muted)">
+                        <div style="font-weight:600;color:var(--accent2);margin-bottom:6px">ℹ️ AI 选股说明</div>
+                        <table style="width:100%;border-collapse:collapse;font-size:12px">
+                            <tr style="border-bottom:1px solid rgba(255,255,255,.08)">
+                                <td style="padding:4px 8px;font-weight:600;white-space:nowrap;width:80px">每日流程</td>
+                                <td style="padding:4px 8px">
+                                    09:00 ET AI选股 → 多模型分析 → 评分排序 → 写入TOP配置 → 自动重启引擎<br>
+                                    09:25 ET auto_trade.sh启动引擎 → 09:30 ET 开盘交易 → 16:00 ET 收盘停机
+                                </td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,.08)">
+                                <td style="padding:4px 8px;font-weight:600;white-space:nowrap">评分维度</td>
+                                <td style="padding:4px 8px">
+                                    波动率100 · 成交量100 · 趋势拟合100 · 可重复性100 · 回撤安全100
+                                </td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,.08)">
+                                <td style="padding:4px 8px;font-weight:600;white-space:nowrap">数据源</td>
+                                <td style="padding:4px 8px">
+                                    TradingAgents (AI分析) · FinRobot (研报) · OpenBB (基本面) · yfinance (行情)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:4px 8px;font-weight:600;white-space:nowrap">运行环境</td>
+                                <td style="padding:4px 8px">
+                                    独立进程 (launchd) · 每60s轮询 · 09:00 ET ±90s触发 · 同一天仅执行一次
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
                     <div class="section-meta">
                         {% if ai_selection and ai_selection.timestamp %}
                             最新选股时间：{{ ai_selection.timestamp }}
@@ -1117,6 +1207,29 @@ HTML = """<!DOCTYPE html>
                         </div>
                         {% endfor %}
                     </div>
+                    {% if ai_selection and ai_selection.top3 %}
+                    <div style="margin-top:10px">
+                        <div style="font-weight:600;color:var(--accent2);margin-bottom:6px;font-size:13px">📋 标的说明</div>
+                        <div class="selector-table" style="max-height:none">
+                            <div class="selector-head">
+                                <span>标的</span>
+                                <span>类型</span>
+                                <span>杠杆</span>
+                                <span>方向</span>
+                                <span>说明</span>
+                            </div>
+                            {% for row in ai_selection.top3 %}
+                            <div class="selector-row">
+                                <span class="ticker">{{ row.ticker }}</span>
+                                <span class="num">{{ row._type }}</span>
+                                <span class="num">{{ row._leverage }}</span>
+                                <span class="num">{{ row._direction }}</span>
+                                <span>{{ row._description }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
                     <div class="selection-brief">
                         <div class="selection-brief-item">
                             <span class="selection-tag live">启用中</span>
@@ -1234,6 +1347,46 @@ HTML = """<!DOCTYPE html>
                     {% endif %}
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div class="overview-panel">
+        <div class="panel-head">
+            <h2>交易统计数据</h2>
+            <span class="hint">今日累计，三路引擎汇总</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:10px">
+            <div class="stat-box">
+                <span class="stat-label">今日交易</span>
+                <span class="stat-value">{{ trade_stats.trades_today }}</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">胜率</span>
+                <span class="stat-value {{ 'green' if trade_stats.win_rate >= 50 else 'yellow' if trade_stats.win_rate > 0 else 'muted' }}">{{ "%.1f"|format(trade_stats.win_rate) }}%</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">平均盈利</span>
+                <span class="stat-value green">${{ "%.2f"|format(trade_stats.avg_win) }}</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">平均亏损</span>
+                <span class="stat-value red">${{ "%.2f"|format(trade_stats.avg_loss) }}</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">今日总盈亏</span>
+                <span class="stat-value {{ 'green' if trade_stats.total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(trade_stats.total_pnl) }}</span>
+            </div>
+        </div>
+        <div class="panel-head" style="margin:4px 0 2px">
+            <h2>权益曲线</h2>
+            <span class="hint">每路引擎当前权益对比</span>
+        </div>
+        <div style="padding:6px 0">
+            {% if equity_curve_bars %}
+                {{ equity_curve_bars }}
+            {% else %}
+                <span class="hint">暂无权益数据</span>
+            {% endif %}
         </div>
     </div>
 
@@ -1459,6 +1612,7 @@ def index():
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
+    _enrich_ticker_descriptions(ai_selection.get("top3", []))
     ai_ranges = _ai_range_lookup(ai_selection)
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
@@ -1543,6 +1697,12 @@ def index():
                 "reduce_only": defaults.get("reduce_only", False),
                 "equity": d.get("equity", 0),
                 "trades": d.get("trades_today", 0),
+                "win_rate": float(d.get("win_rate", 0) or 0.0),
+                "wins": int(d.get("wins", 0) or 0),
+                "losses": int(d.get("losses", 0) or 0),
+                "best_trade": float(d.get("best_trade", 0) or 0.0),
+                "worst_trade": float(d.get("worst_trade", 0) or 0.0),
+                "avg_pnl": float(d.get("avg_pnl", 0) or 0.0),
                 "halted": d.get("halted", False),
                 "trade_in_progress": bool(d.get("trade_in_progress", False)),
             }
@@ -1587,7 +1747,10 @@ def index():
                 "pnl": account_pnl,
                 "pnl_pct": account_pnl_pct,
                 "hold_source": "真实账户" if account_pos else "离线",
-                "reduce_only": defaults.get("reduce_only", False), "equity": initial_capital, "trades": 0, "halted": False,
+                "reduce_only": defaults.get("reduce_only", False), "equity": initial_capital,
+                "trades": 0, "win_rate": 0, "wins": 0, "losses": 0,
+                "best_trade": 0, "worst_trade": 0, "avg_pnl": 0,
+                "halted": False,
                 "trade_in_progress": False,
             })
             total_capital += initial_capital
@@ -1705,8 +1868,102 @@ def index():
         total_capital=round(total_capital, 2) if total_capital is not None else None,
         total_equity=round(total_equity, 2) if total_equity is not None else None,
         total_trades=total_trades,
+        # ---- Aggregated trade statistics ----
+        trade_stats=_aggregate_trade_stats(cards),
+        equity_curve_bars=_build_equity_curve_bars(cards),
         update_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
+
+
+def _aggregate_trade_stats(cards: list[dict]) -> dict:
+    """Aggregate trade statistics across all engine cards."""
+    total_trades_today = sum(c.get("trades", 0) or 0 for c in cards if c.get("online"))
+    total_wins = sum(c.get("wins", 0) or 0 for c in cards if c.get("online"))
+    total_losses = sum(c.get("losses", 0) or 0 for c in cards if c.get("online"))
+    all_win_rates = [
+        c.get("win_rate", 0) or 0
+        for c in cards
+        if c.get("online") and (c.get("trades", 0) or 0) > 0
+    ]
+    avg_win_rate = round(
+        sum(all_win_rates) / len(all_win_rates), 1
+    ) if all_win_rates else 0.0
+
+    # Average win / loss amounts: use best_trade and worst_trade as proxies
+    # when detailed breakdown is unavailable
+    wins_amounts = [
+        c.get("best_trade", 0) or 0
+        for c in cards if c.get("online") and (c.get("wins", 0) or 0) > 0
+    ]
+    losses_amounts = [
+        abs(c.get("worst_trade", 0) or 0)
+        for c in cards if c.get("online") and (c.get("losses", 0) or 0) > 0
+    ]
+    days_pnl = [c.get("pnl", 0) or 0 for c in cards if c.get("online")]
+    total_pnl_today = round(sum(days_pnl), 2)
+
+    return {
+        "trades_today": total_trades_today,
+        "win_rate": avg_win_rate,
+        "avg_win": round(
+            sum(wins_amounts) / len(wins_amounts), 2
+        ) if wins_amounts else 0.0,
+        "avg_loss": round(
+            sum(losses_amounts) / len(losses_amounts), 2
+        ) if losses_amounts else 0.0,
+        "total_pnl": total_pnl_today,
+    }
+
+
+def _build_equity_curve_bars(cards: list[dict]) -> str:
+    """Build a simple HTML bar-chart snippet from engine equity values.
+
+    Returns an inline SVG bar chart for the equity curve.
+    """
+    equities = [
+        float(c.get("equity", 0) or 0)
+        for c in cards
+        if c.get("online") and (c.get("equity", 0) or 0) > 0
+    ]
+    if not equities:
+        return ""
+
+    max_eq = max(equities)
+    min_eq = min(equities)
+    range_eq = max(max_eq - min_eq, 1.0)
+
+    bar_w = 36
+    gap = 8
+    total_w = len(equities) * (bar_w + gap) - gap
+    svg_h = 80
+
+    bars: list[str] = []
+    labels: list[str] = []
+    for i, eq in enumerate(equities):
+        h = max(6.0, (eq - min_eq) / range_eq * (svg_h - 16))
+        x = i * (bar_w + gap) + 2
+        y = svg_h - 8 - h
+        color = "#34d399" if (i == 0 or eq >= (equities[i - 1] if i > 0 else eq)) else "#fb7185"
+        bars.append(
+            '<rect x="' + str(x) + '" y="' + f"{y:.1f}"
+            + '" width="' + str(bar_w - 4) + '" height="' + f"{h:.1f}"
+            + '" rx="3" fill="' + color + '" opacity="0.85"/>'
+        )
+        labels.append(
+            '<text x="' + str(x + (bar_w - 4) / 2) + '" y="' + str(svg_h + 10)
+            + '" text-anchor="middle" fill="#8c97ab" font-size="9">'
+            + 'TOP' + str(i + 1) + '</text>'
+        )
+
+    svg = (
+        '<svg width="' + str(total_w) + '" height="' + str(svg_h + 18)
+        + '" viewBox="0 0 ' + str(total_w) + ' ' + str(svg_h + 18)
+        + '" style="display:block;margin:6px 0 0">'
+        + "".join(bars)
+        + "".join(labels)
+        + "</svg>"
+    )
+    return svg
 
 
 def _run_ai_selector_now() -> None:

@@ -21,9 +21,11 @@ from typing import Optional
 import pytz
 
 from ..config.loader import AppConfig
-from ..data.fetcher import PriceFetcher
+from ..data.fetcher import PriceFetcher, PriceDataError
 from ..strategy.range_detector import RangeDetector, SignalType
 from ..risk.manager import RiskManager, TradeRecord
+from ..risk.instrument_profile import LEVERAGED_ETF_REGISTRY
+from ..risk.portfolio import PortfolioRisk
 from ..broker.base import BrokerBase, OrderSide, OrderStatus, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
@@ -147,6 +149,7 @@ class TradingEngine:
         config: AppConfig,
         ignore_trading_hours: bool = False,
         startup_role: str = "standard",
+        portfolio_risk: Optional[PortfolioRisk] = None,
     ):
         self.config = config
         self.ticker = config.ticker
@@ -259,8 +262,14 @@ class TradingEngine:
         self._last_order_time: float = 0.0
         self._live_guard_verdict: dict | None = None
 
+        # Consecutive data error tracking
+        self._consecutive_data_errors: int = 0
+
         # Wire RiskManager ticker
         self.risk.set_ticker(self.ticker)
+
+        # Portfolio-level risk (shared across engines, optional)
+        self.portfolio_risk: Optional[PortfolioRisk] = portfolio_risk
 
     def _seed_auto_range(self) -> None:
         """Seed auto range from recent OHLCV history so it's ready immediately."""
@@ -412,10 +421,40 @@ class TradingEngine:
             return
 
         # 2. Fetch price
-        quote = self.fetcher.get_quote()
+        try:
+            quote = self.fetcher.get_quote()
+        except PriceDataError as exc:
+            self._consecutive_data_errors += 1
+            logger.warning(
+                "PriceDataError (%d/10) for %s: %s",
+                self._consecutive_data_errors,
+                self.ticker,
+                exc,
+            )
+            if self._consecutive_data_errors > 10:
+                logger.critical(
+                    "Too many consecutive data errors (%d) — halting trading for %s",
+                    self._consecutive_data_errors,
+                    self.ticker,
+                )
+                self.notifier.alert(
+                    f"数据获取连续失败 {self._consecutive_data_errors} 次，已停止 {self.ticker} 交易",
+                    "error",
+                )
+                self._running = False
+                return
+            self._last_signal_reason = f"数据获取失败 ({self._consecutive_data_errors}/10): {exc}"
+            self._sleep_with_status(15, "Price data unavailable, retrying")
+            return
+
         if quote is None or quote.price <= 0:
+            # get_quote returned None — this shouldn't happen now that PriceDataError
+            # is raised above, but guard defensively
             self._sleep_with_status(5, "Waiting for valid price data")
             return
+
+        # Reset consecutive errors on successful fetch
+        self._consecutive_data_errors = 0
 
         current_price = quote.price
 
@@ -462,6 +501,16 @@ class TradingEngine:
         self._latest_account = acct
         self._latest_snapshot_at = datetime.now()
         self.risk.update_equity(acct.equity)
+
+        # 6a. Update portfolio-level risk position values
+        if self.portfolio_risk is not None:
+            if pos and pos.quantity > 0:
+                position_market_value = max(0.0, float(getattr(pos, "market_value", 0) or 0.0))
+                if position_market_value <= 0 and current_price > 0:
+                    position_market_value = pos.quantity * current_price
+                self.portfolio_risk.set_position_value(self.ticker, position_market_value)
+            else:
+                self.portfolio_risk.set_position_value(self.ticker, 0.0)
 
         if pos:
             self._position_shares = self._apply_position_sync_fence(pos.quantity)
@@ -651,6 +700,7 @@ class TradingEngine:
                 self.notifier.alert(self._last_signal_reason, "warning")
                 return
 
+            # ---- Per-engine risk check ----
             entry_check = self.risk.check_entry(
                 current_price, shares, self._position_shares
             )
@@ -659,6 +709,49 @@ class TradingEngine:
                 self._last_signal_reason = entry_check.reason
                 self.notifier.alert(entry_check.reason, "warning")
                 return
+
+            # ---- Portfolio-level risk check (correlation, exposure) ----
+            if self.portfolio_risk is not None:
+                correlation_factor = self.portfolio_risk.check_correlation_limit(
+                    self.ticker, self.ticker
+                )
+                if correlation_factor < 1.0:
+                    reduced_shares = int(shares * correlation_factor)
+                    if reduced_shares < 1:
+                        sector_hint = LEVERAGED_ETF_REGISTRY.get(
+                            self.ticker, {}
+                        ).get("sector", "")
+                        self._last_signal_reason = (
+                            f"组合相关性限制：同一{sector_hint}杠杆ETF限70%，"
+                            f"计算后无有效买入数量"
+                        )
+                        self.notifier.alert(self._last_signal_reason, "warning")
+                        return
+                    shares = reduced_shares
+                    logger.info(
+                        "PortfolioRisk: correlation limit reduced %s buy from %d → %d shares",
+                        self.ticker,
+                        int(shares / correlation_factor) if correlation_factor else shares,
+                        shares,
+                    )
+
+                total_exposure = self.portfolio_risk.get_total_exposure()
+                cost = shares * (ask if ask > 0 else current_price)
+                projected_exposure = total_exposure + cost
+                equity = max(1.0, float(getattr(acct, "equity", 0.0) or 0.0))
+                exposure_pct = (projected_exposure / equity * 100.0)
+                if exposure_pct > 500.0:
+                    self._last_signal_reason = (
+                        f"组合总敞口 ${projected_exposure:.2f} ({exposure_pct:.1f}%) 超过500%，"
+                        f"已阻止开仓"
+                    )
+                    self.notifier.alert(self._last_signal_reason, "warning")
+                    return
+
+            # ---- Update portfolio position value ----
+            if self.portfolio_risk is not None:
+                estimated_value = shares * (ask if ask > 0 else current_price)
+                self.portfolio_risk.set_position_value(self.ticker, estimated_value)
 
             # Place order
             order = self.broker.place_order(
