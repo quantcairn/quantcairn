@@ -353,10 +353,11 @@ case "$1" in
 
     restart-top)
         stop_top
-        # Wait for ports to fully release (TIME_WAIT handled by SO_REUSEADDR)
+        # Force manual mode — launchd KeepAlive interferes with fresh restarts
+        # after AI selector updates configs.
         sleep 3
-        start_top || exit 1
-        echo "🔄 TOP engines restarted"
+        USE_LAUNCHD_TOPS=0 start_top || exit 1
+        echo "🔄 TOP engines restarted with new configs"
         ;;
 
     restart-combined)
