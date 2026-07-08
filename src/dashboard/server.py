@@ -341,7 +341,15 @@ def start_dashboard(engine, host: str = "0.0.0.0", port: int = 8080) -> Thread:
     set_engine(engine)
 
     try:
-        server = make_server(host, port, app, threaded=False)
+        # Set SO_REUSEADDR so the port can be rebound immediately after restart
+        import socket as _socket
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        sock.settimeout(None)
+        sock.bind((host, port))
+        sock.listen(128)
+        server = make_server(host, port, app, threaded=False, fd=sock.fileno())
+        sock.detach()
     except OSError as exc:
         logger.error(f"Dashboard failed to bind http://localhost:{port}: {exc}")
         raise
@@ -351,7 +359,7 @@ def start_dashboard(engine, host: str = "0.0.0.0", port: int = 8080) -> Thread:
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    if _wait_until_port_ready(host, port):
+    if _wait_until_port_ready(host, port, timeout_seconds=8.0):
         logger.info(f"📊 Dashboard running at http://localhost:{port}")
     else:
         logger.warning(f"Dashboard startup timed out before port {port} became ready")

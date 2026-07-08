@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.config.loader import load_config, validate_config
+from src.config.local_env import load_local_ai_env
 from src.broker.base import OrderStatus, OrderSide, OrderType
 from src.broker.paper_broker import PaperBroker
 from src.engine.trading_engine import TradingEngine
@@ -71,6 +72,9 @@ def verify_live_top_selection_guard(config_path: str, mode: str) -> None:
 
 
 def main():
+    # Load local env vars (Telegram bot token, AI credentials, etc.)
+    load_local_ai_env()
+
     parser = argparse.ArgumentParser(
         description="🎯 SOXS Range Arbitrage Trading Engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,

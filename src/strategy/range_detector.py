@@ -77,6 +77,7 @@ class RangeDetector:
         min_profit_per_trade: float = 1.0,
         min_range_width_pct: float = 0.8,
         quick_stop_pct: float = 3.0,
+        post_entry_cooldown_seconds: int = 300,
     ):
         self.ticker = ticker
         self.mode = mode
@@ -109,7 +110,9 @@ class RangeDetector:
         self.min_profit_per_trade = min_profit_per_trade
         self.min_range_width_pct = min_range_width_pct
         self.quick_stop_pct = quick_stop_pct
+        self.post_entry_cooldown_seconds = post_entry_cooldown_seconds
         self._entry_price: Optional[float] = None  # Last entry for quick stop
+        self._entry_time: Optional[datetime] = None  # When we entered
 
         # Quality metrics
         self._support_confidence: float = 0.0  # 0-1: how reliable is support?
@@ -550,10 +553,12 @@ class RangeDetector:
     def record_entry(self, entry_price: float) -> None:
         """Record an entry price for quick stop tracking."""
         self._entry_price = entry_price
+        self._entry_time = datetime.now()
 
     def clear_entry(self) -> None:
         """Clear entry tracking after exit."""
         self._entry_price = None
+        self._entry_time = None
 
     def needs_auto_refresh(self) -> bool:
         """Check if auto range needs refreshing."""
@@ -648,6 +653,21 @@ class RangeDetector:
                 )
 
             # We hold a position → look to sell
+            # Post-entry cooldown: don't sell immediately after buying (STOP_LOSS still fires)
+            if self._entry_time is not None and self.post_entry_cooldown_seconds > 0:
+                elapsed = (datetime.now() - self._entry_time).total_seconds()
+                if elapsed < self.post_entry_cooldown_seconds:
+                    remaining = int(self.post_entry_cooldown_seconds - elapsed)
+                    return Signal(
+                        type=SignalType.HOLD,
+                        ticker=self.ticker,
+                        price=current_price,
+                        support=support,
+                        resistance=resistance,
+                        reason=f"Post-entry cooldown: {remaining}s remaining before sell ({self.post_entry_cooldown_seconds}s total)",
+                        confidence=0.0,
+                    )
+
             if dist_to_resistance <= tol:
                 return Signal(
                     type=SignalType.SELL,

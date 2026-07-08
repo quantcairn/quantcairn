@@ -10,6 +10,7 @@ Runs in paper or live mode.
 import json
 import logging
 import os
+import random
 import time
 import calendar
 from dataclasses import dataclass
@@ -173,6 +174,7 @@ class TradingEngine:
             min_profit_per_trade=config.range.min_profit_per_trade,
             min_range_width_pct=config.range.min_range_width_pct,
             quick_stop_pct=config.range.quick_stop_pct,
+            post_entry_cooldown_seconds=config.range.post_entry_cooldown_seconds,
         )
 
         self.risk = RiskManager(
@@ -209,6 +211,8 @@ class TradingEngine:
             macos_notification=config.notifications.macos_notification,
             webhook_url=config.notifications.webhook_url,
             trade_summary_interval=config.notifications.trade_summary_interval,
+            telegram_bot_token=config.notifications.telegram_bot_token,
+            telegram_chat_id=config.notifications.telegram_chat_id,
         )
 
         # State
@@ -364,6 +368,16 @@ class TradingEngine:
 
         self._print_header()
 
+        # Startup jitter: stagger initial polls to keep engines desynchronized
+        startup_delay = random.uniform(0, 15.0)
+        if startup_delay > 0.5:
+            logger.info("🕐 Startup jitter: sleeping %.1fs to desync from other engines", startup_delay)
+            self._running_for_sleep = self._running
+            for _ in range(int(startup_delay)):
+                if not self._running:
+                    break
+                time.sleep(1)
+
         self._loop_error_count = 0
         try:
             while self._running:
@@ -392,7 +406,9 @@ class TradingEngine:
         # 1. Check trading hours
         if not self._is_trading_hours():
             self._refresh_broker_snapshots(outside_trading_hours=True)
-            self._sleep_with_status(30, "Outside trading hours")
+            # Randomize after-hours sleep (45-75s) to desync multiple engines
+            after_hours_sleep = random.randint(45, 75)
+            self._sleep_with_status(after_hours_sleep, "Outside trading hours")
             return
 
         # 2. Fetch price
@@ -432,7 +448,9 @@ class TradingEngine:
         if self.mode == "live" and not positions_reliable:
             self._last_signal_reason = "券商持仓状态无法确认，已暂停本轮交易"
             logger.error("%s: %s", self.ticker, self._last_signal_reason)
-            self._sleep_with_status(15, self._last_signal_reason)
+            # Random sleep (15-25s) to desync retry timing across engines
+            retry_sleep = random.randint(15, 25)
+            self._sleep_with_status(retry_sleep, self._last_signal_reason)
             return
         observed_shares = pos.quantity if pos else 0
         self._position_shares = self._apply_position_sync_fence(observed_shares)
@@ -540,13 +558,21 @@ class TradingEngine:
                     self.ticker, signal.type.value, signal.price, signal.reason
                 )
 
-        # 12. Sleep until next poll
+        # 12. Sleep until next poll (with jitter to desynchronize multiple engines)
         elapsed = time.time() - loop_start
-        sleep_time = max(0, self.config.data.poll_interval_seconds - elapsed)
+        base_sleep = self.config.data.poll_interval_seconds - elapsed
+        # ±20% jitter per poll cycle
+        jitter = random.uniform(0.8, 1.2)
+        sleep_time = max(0, base_sleep * jitter)
         time.sleep(sleep_time)
 
     def _refresh_broker_snapshots(self, outside_trading_hours: bool = False) -> None:
         """Refresh cached position/account snapshots without evaluating signals."""
+        # After hours: poll less frequently to avoid API rate limits
+        if outside_trading_hours:
+            # Skip every other after-hours poll via random skip
+            if random.random() < 0.5:
+                return
         try:
             pos = self.broker.get_position_for_ticker(self.ticker)
             positions_reliable = getattr(
@@ -602,9 +628,10 @@ class TradingEngine:
             acct = self.broker.get_account()
             cash = float(getattr(acct, "cash", 0.0) or 0.0)
             buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
-            # Do not size live orders from margin buying power. The strategy's
-            # capital limit is the settled/available cash reported by the broker.
-            available_cash = max(0.0, cash)
+            # Use buying_power when available (margin accounts share one
+            # broker across multiple engines — cash can be near zero while
+            # buying_power still reflects real available funds).
+            available_cash = max(0.0, max(cash, buying_power))
             available_cash = self._cap_ai_available_cash(available_cash, acct)
             shares = determine_buy_quantity(
                 current_price=current_price,
@@ -653,7 +680,7 @@ class TradingEngine:
                     signal_type=signal.type.value,
                 )
                 self.notifier.order_submitted(
-                    self.ticker, "BUY", order.quantity, order.order_id
+                    self.ticker, "BUY", order.quantity, order.order_id, mode=self.mode
                 )
 
             if order.status == OrderStatus.REJECTED:
@@ -667,7 +694,7 @@ class TradingEngine:
                     self._position_shares += order.filled_quantity
                 self.strategy.record_entry(order.avg_fill_price)  # Quick stop tracking
                 self.notifier.trade(
-                    self.ticker, "BUY", order.filled_quantity, order.avg_fill_price
+                    self.ticker, "BUY", order.filled_quantity, order.avg_fill_price, mode=self.mode
                 )
                 self._last_signal_reason = (
                     f"已买入 {order.filled_quantity} 股 @ ${order.avg_fill_price:.2f}"
@@ -704,7 +731,7 @@ class TradingEngine:
                     signal_type=signal.type.value,
                 )
                 self.notifier.order_submitted(
-                    self.ticker, "SELL", order.quantity, order.order_id
+                    self.ticker, "SELL", order.quantity, order.order_id, mode=self.mode
                 )
 
             if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
@@ -712,7 +739,7 @@ class TradingEngine:
                     order.avg_fill_price, int(order.filled_quantity or 0)
                 )
                 self.notifier.trade(
-                    self.ticker, "SELL", order.filled_quantity, order.avg_fill_price, pnl
+                    self.ticker, "SELL", order.filled_quantity, order.avg_fill_price, pnl, mode=self.mode
                 )
 
                 # Record the trade
@@ -774,7 +801,7 @@ class TradingEngine:
                     signal_type=signal.type.value,
                 )
                 self.notifier.order_submitted(
-                    self.ticker, "SELL", order.quantity, order.order_id
+                    self.ticker, "SELL", order.quantity, order.order_id, mode=self.mode
                 )
 
             if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
@@ -1227,7 +1254,7 @@ class TradingEngine:
                     signal_type=reason.upper(),
                 )
                 self.notifier.order_submitted(
-                    self.ticker, "SELL", order.quantity, order.order_id
+                    self.ticker, "SELL", order.quantity, order.order_id, mode=self.mode
                 )
 
             if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
@@ -1592,7 +1619,7 @@ class TradingEngine:
             self.strategy.record_entry(fill_price)
         self._position_shares = max(self._position_shares, int(order.filled_quantity or 0))
         self.notifier.trade(
-            self.ticker, "BUY", filled_quantity, fill_price or 0.0
+            self.ticker, "BUY", filled_quantity, fill_price or 0.0, mode=self.mode
         )
         self._last_signal_reason = (
             f"买单已成交 {filled_quantity} 股 @ ${fill_price:.2f}"
@@ -1606,7 +1633,7 @@ class TradingEngine:
         pnl = ((fill_price - entry_price) * filled_quantity) if entry_price > 0 and fill_price > 0 else None
 
         self.notifier.trade(
-            self.ticker, "SELL", filled_quantity, fill_price or 0.0, pnl
+            self.ticker, "SELL", filled_quantity, fill_price or 0.0, pnl, mode=self.mode
         )
 
         if entry_price > 0 and fill_price > 0:

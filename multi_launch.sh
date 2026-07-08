@@ -76,8 +76,13 @@ kill_listener_on_port() {
         pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"
         if [ -n "$pids" ]; then
             kill $pids 2>/dev/null || true
-            sleep 1
-            kill -9 $pids 2>/dev/null || true
+            sleep 2
+            # Force kill remaining stubborn processes
+            pids="$(lsof -tiTCP:"$port" 2>/dev/null | tr '\n' ' ')"
+            if [ -n "$pids" ]; then
+                kill -9 $pids 2>/dev/null || true
+                sleep 1
+            fi
         fi
     fi
 }
@@ -156,6 +161,13 @@ stop_top() {
     for top_name in "${TOP_ENGINES[@]}"; do
         pkill -f "run.py --config .*configs/${top_name}.yaml" 2>/dev/null || true
         pkill -f "run.py --config ${PROJECT_DIR}/configs/${top_name}.yaml" 2>/dev/null || true
+    done
+    # Also kill any remaining run.py processes by port pattern
+    for port in 8091 8092 8093; do
+        pids="$(lsof -tiTCP:"$port" 2>/dev/null | tr '\n' ' ')"
+        if [ -n "$pids" ]; then
+            kill $pids 2>/dev/null || true
+        fi
     done
     for job in $(launchd_top_jobs); do
         launchctl disable gui/"$UID_NUM"/"$job" 2>/dev/null || true
@@ -341,8 +353,9 @@ case "$1" in
 
     restart-top)
         stop_top
-        sleep 1
-        start_top >/dev/null || exit 1
+        # Wait for ports to fully release (TIME_WAIT handled by SO_REUSEADDR)
+        sleep 3
+        start_top || exit 1
         echo "🔄 TOP engines restarted"
         ;;
 

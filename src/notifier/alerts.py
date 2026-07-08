@@ -1,15 +1,29 @@
 """
-Notification system: sends alerts via console, macOS notifications, and webhooks.
+Notification system: sends alerts via console, macOS notifications, webhooks, and Telegram.
 """
 import json
 import logging
+import os
 import subprocess
+import time
 from datetime import datetime
 from typing import Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# Rate limiting for Telegram: max 1 msg/sec
+_telegram_last_send = 0.0
+
+
+def _telegram_rate_limit():
+    """Ensure at least 1 second between Telegram messages."""
+    global _telegram_last_send
+    elapsed = time.time() - _telegram_last_send
+    if elapsed < 1.0:
+        time.sleep(1.0 - elapsed)
+    _telegram_last_send = time.time()
 
 
 class Notifier:
@@ -21,11 +35,16 @@ class Notifier:
         macos_notification: bool = True,
         webhook_url: Optional[str] = None,
         trade_summary_interval: int = 5,
+        telegram_bot_token: str = "",
+        telegram_chat_id: str = "",
     ):
         self.console_enabled = console
         self.macos_enabled = macos_notification
         self.webhook_url = webhook_url
         self.trade_summary_interval = trade_summary_interval
+        self._telegram_bot_token = telegram_bot_token or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN", "")
+        self._telegram_chat_id = telegram_chat_id or os.environ.get("SOXS_TELEGRAM_CHAT_ID", "")
+        self._telegram_enabled = bool(self._telegram_bot_token and self._telegram_chat_id)
 
         self._trade_count_since_summary = 0
         self._last_trades: list[str] = []
@@ -39,20 +58,29 @@ class Notifier:
 
         self._send(title, body, "signal", macos=False)
 
-    def order_submitted(self, ticker: str, side: str, quantity: int, order_id: str = "") -> None:
+    def order_submitted(self, ticker: str, side: str, quantity: int, order_id: str = "", mode: str = "paper") -> None:
         """Notify when a live order has been accepted by the broker."""
         suffix = f" | {order_id[:12]}" if order_id else ""
-        title = f"🟦 {side} 提交 {quantity} {ticker}"
-        body = f"submitted{suffix}"
-        self._send(title, body, "trade", macos=True)
+        prefix = "实盘" if mode == "live" else "模拟"
+        side_cn = "买入" if side.upper() == "BUY" else "卖出"
+        title = f"🟦 {prefix}{side_cn} {quantity}股 {ticker}"
+        body = f"已提交{suffix}"
+        self._send(title, body, "trade", macos=(mode == "live"))
 
-    def trade(self, ticker: str, side: str, quantity: int, price: float, pnl: Optional[float] = None) -> None:
-        """Notify about an executed trade."""
-        pnl_str = f" | P&L: ${pnl:+.2f}" if pnl is not None else ""
-        title = f"💱 {side} {quantity} {ticker}"
-        body = f"@ ${price:.2f}{pnl_str}"
+    def trade(self, ticker: str, side: str, quantity: int, price: float, pnl: Optional[float] = None, mode: str = "paper") -> None:
+        """Notify about an executed trade — detailed for live, summary for paper."""
+        is_live = mode == "live"
+        prefix = "实盘" if is_live else "模拟"
+        side_cn = "买入" if side.upper() == "BUY" else "卖出"
+        emoji = "🟢" if side.upper() == "BUY" else "🔴"
+        trade_value = price * quantity
+        sign = "+" if side.upper() == "BUY" else "-"
 
-        self._send(title, body, "trade", macos=True)
+        pnl_str = f" | 盈亏 ${pnl:+.2f}" if pnl is not None else ""
+        title = f"{emoji} {prefix}{side_cn} {ticker} {quantity}股"
+        body = f"{sign}${trade_value:,.2f} @ ${price:.2f}{pnl_str}"
+
+        self._send(title, body, "trade", macos=is_live)
 
         # Track for summary
         self._trade_count_since_summary += 1
@@ -113,6 +141,10 @@ class Notifier:
         if self.webhook_url:
             self._webhook_send(title, body, category)
 
+        # Telegram
+        if self._telegram_enabled:
+            self._telegram_send(title, body)
+
     def _console_out(self, timestamp: str, title: str, body: str, category: str) -> None:
         """Rich console output with colors."""
         colors = {
@@ -169,6 +201,45 @@ class Notifier:
             )
         except Exception:
             pass  # Non-critical
+
+    def _telegram_send(self, title: str, body: str) -> None:
+        """Send notification via Telegram Bot API using HTML formatting."""
+        try:
+            _telegram_rate_limit()
+            # Escape HTML special chars to avoid formatting errors
+            safe_title = (title or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            safe_body = (body or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            text = f"<b>{safe_title}</b>\n{safe_body}"
+            resp = requests.post(
+                f"https://api.telegram.org/bot{self._telegram_bot_token}/sendMessage",
+                json={
+                    "chat_id": self._telegram_chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+                timeout=8,
+            )
+            if not resp.ok:
+                logger.warning("Telegram send failed: %s %s", resp.status_code, resp.text[:200])
+                # Retry with plain text
+                try:
+                    _telegram_rate_limit()
+                    resp2 = requests.post(
+                        f"https://api.telegram.org/bot{self._telegram_bot_token}/sendMessage",
+                        json={
+                            "chat_id": self._telegram_chat_id,
+                            "text": f"{title}\n{body}",
+                            "disable_web_page_preview": True,
+                        },
+                        timeout=8,
+                    )
+                    if not resp2.ok:
+                        logger.warning("Telegram plain retry also failed: %s %s", resp2.status_code, resp2.text[:200])
+                except Exception as e2:
+                    logger.warning("Telegram plain retry error: %s", e2)
+        except Exception as e:
+            logger.warning("Telegram send error: %s", e)
 
     @staticmethod
     def _make_bar(pct: float, width: int = 20) -> str:

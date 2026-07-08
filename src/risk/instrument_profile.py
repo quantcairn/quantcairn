@@ -20,7 +20,7 @@ LEVERAGED_ETF_REGISTRY: dict[str, dict[str, Any]] = {
     "SOXS": {"leverage": 3, "inverse": True,  "sector": "semiconductor"},
     # ---- 3x Biotechnology ----
     "LABU": {"leverage": 3, "inverse": False, "sector": "biotechnology"},
-    "LABD": {"leverage": 3, "inverse": True,  "sector": "biotechnology"},
+    "LABD": {"leverage": 3, "inverse": True,  "sector": "biotechnology", "max_position_pct": 0.30},
     # ---- 3x Nasdaq ----
     "TQQQ": {"leverage": 3, "inverse": False, "sector": "nasdaq"},
     "SQQQ": {"leverage": 3, "inverse": True,  "sector": "nasdaq"},
@@ -34,7 +34,7 @@ LEVERAGED_ETF_REGISTRY: dict[str, dict[str, Any]] = {
     "GUSH": {"leverage": 3, "inverse": False, "sector": "energy"},
     "DRIP": {"leverage": 3, "inverse": True,  "sector": "energy"},
     # ---- 2x China ----
-    "YINN": {"leverage": 2, "inverse": False, "sector": "china"},
+    "YINN": {"leverage": 2, "inverse": False, "sector": "china", "max_position_pct": 0.80},
     "YANG": {"leverage": 2, "inverse": True,  "sector": "china"},
     # ---- 3x Homebuilders ----
     "NAIL": {"leverage": 3, "inverse": False, "sector": "homebuilders"},
@@ -107,7 +107,10 @@ def get_profile(ticker: str) -> dict[str, Any]:
     # Use a lower max-position cap for higher-leverage names.
     lev = float(meta.get("leverage", 3) or 3)
     profile["leverage_factor"] = lev
-    if lev >= 3:
+    # Per-symbol override takes precedence over leverage-based default
+    if "max_position_pct" in meta:
+        profile["max_position_pct"] = float(meta["max_position_pct"])
+    elif lev >= 3:
         profile["max_position_pct"] = 0.15
     elif lev >= 2:
         profile["max_position_pct"] = 0.20

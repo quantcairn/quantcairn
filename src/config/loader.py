@@ -26,6 +26,7 @@ class RangeConfig:
     min_profit_per_trade: float = 1.0
     min_range_width_pct: float = 0.8
     quick_stop_pct: float = 3.0
+    post_entry_cooldown_seconds: int = 300
 
 
 @dataclass
@@ -75,6 +76,8 @@ class NotificationConfig:
     macos_notification: bool = True
     webhook_url: Optional[str] = None
     trade_summary_interval: int = 5
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
 
 @dataclass
@@ -168,6 +171,7 @@ def _parse_config(raw: dict) -> AppConfig:
         min_profit_per_trade=r.get("min_profit_per_trade", 1.0),
         min_range_width_pct=r.get("min_range_width_pct", 0.8),
         quick_stop_pct=r.get("quick_stop_pct", 3.0),
+        post_entry_cooldown_seconds=r.get("post_entry_cooldown_seconds", 300),
     )
 
     # Position
@@ -226,11 +230,20 @@ def _parse_config(raw: dict) -> AppConfig:
 
     # Notifications
     n = raw.get("notifications", {})
+    # Notifications: env overrides config file values
     config.notifications = NotificationConfig(
         console=n.get("console", True),
         macos_notification=n.get("macos_notification", True),
         webhook_url=n.get("webhook_url"),
         trade_summary_interval=n.get("trade_summary_interval", 5),
+        telegram_bot_token=(
+            os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
+            or n.get("telegram_bot_token", "")
+        ),
+        telegram_chat_id=(
+            os.environ.get("SOXS_TELEGRAM_CHAT_ID")
+            or n.get("telegram_chat_id", "")
+        ),
     )
 
     # Broker

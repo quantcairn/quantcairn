@@ -93,7 +93,7 @@ class LiveGuard:
     # -- 2. Trading day --
 
     def _check_trading_day(self) -> None:
-        today = date.today()
+        today = _et_today()
         if today.weekday() >= 5:
             self._warn(f"Weekend ({today.strftime('%A')}) — market closed")
         us_holidays = _us_market_holidays(today.year)
@@ -119,7 +119,7 @@ class LiveGuard:
     def _check_top_configs_exist(self) -> None:
         top_dir = PROJECT_DIR / "configs"
         found_any = False
-        today_str = date.today().isoformat()
+        today_str = _et_today().isoformat()
         for idx in range(1, 6):
             path = top_dir / f"TOP{idx}.yaml"
             if not path.exists():
@@ -151,7 +151,7 @@ class LiveGuard:
         except Exception:
             self._error("ai_selection_latest.json is corrupt or unreadable")
             return
-        today_str = date.today().isoformat()
+        today_str = _et_today().isoformat()
         sel_date = str(data.get("selection_date") or "").strip()
         if sel_date != today_str:
             self._error(f"AI selection_date={sel_date}, expected {today_str}")
@@ -168,7 +168,7 @@ class LiveGuard:
         except Exception:
             self._error("ai_selection_state.json is corrupt")
             return
-        today_str = date.today().isoformat()
+        today_str = _et_today().isoformat()
         state_date = str(state.get("et_date") or "").strip()
         if state_date != today_str:
             self._error(f"selection_state et_date={state_date}, expected {today_str}")
@@ -333,6 +333,15 @@ def _us_market_holidays(year: int) -> set[date]:
     if nny.year == year:
         holidays.add(nny)
     return holidays
+
+
+def _et_today() -> date:
+    """Return today's date in US Eastern Time, falling back to local."""
+    try:
+        import pytz
+        return datetime.now(pytz.timezone("America/New_York")).date()
+    except Exception:
+        return date.today()
 
 
 def _easter(year: int) -> date:

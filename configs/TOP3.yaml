@@ -1,15 +1,13 @@
-ticker: DRIP
+ticker: YINN
 mode: live
 selection:
   source: ai_selector
-  selection_date: '2026-07-07'
-  score: 80.22
-  confidence: 0.58
+  selection_date: '2026-07-08'
+  score: 64.0
+  confidence: 0.5
   protected_position: false
   reduce_only: false
-  reason: 'Fallback TradingAgents mock for DRIP: tradingagents_timeout_budget_exhausted
-    | FinRobot research artifacts parsed | Growth 50.0, profitability 50.0, balance
-    sheet 50.0, cash flow 50.0, valuation 50.0'
+  reason: 'manual override: replaced DRIP with YINN'
 range:
   mode: auto
   support_price: null
@@ -21,14 +19,15 @@ range:
     ma_period: 20
     min_trend_strength: 0.3
   tolerance_pct: 1.0
-  min_profit_per_trade: 0.42
-  min_range_width_pct: 0.6
+  min_profit_per_trade: 0.3
+  min_range_width_pct: 3.0
   quick_stop_pct: 3.0
+  post_entry_cooldown_seconds: 300
 position:
-  size_per_trade: 40
+  size_per_trade: 5
   max_position: 9999
   cool_down_seconds: 30
-  initial_capital: 700.0
+  initial_capital: 1608.0
   reduce_only: false
 risk:
   stop_loss_pct: 1.5
@@ -49,6 +48,8 @@ notifications:
   macos_notification: true
   webhook_url: null
   trade_summary_interval: 3
+  telegram_bot_token: ""
+  telegram_chat_id: ""
 broker:
   longbridge:
     app_key: ''

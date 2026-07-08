@@ -1772,5 +1772,15 @@ def daily_report():
 
 def start_combined(port=8090):
     """Start combined dashboard as a foreground Flask server."""
+    import socket
+    from werkzeug.serving import make_server
     daily_report_module.ensure_daily_report_scheduler()
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
+    # Set SO_REUSEADDR so the port can be rebound immediately after restart
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.settimeout(None)
+    sock.bind(("0.0.0.0", port))
+    sock.listen(128)
+    server = make_server("0.0.0.0", port, app, threaded=True, fd=sock.fileno())
+    sock.detach()
+    server.serve_forever()

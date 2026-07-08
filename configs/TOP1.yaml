@@ -2,7 +2,7 @@ ticker: SOXS
 mode: live
 selection:
   source: ai_selector
-  selection_date: '2026-07-07'
+  selection_date: '2026-07-08'
   score: 82.58
   confidence: 0.58
   protected_position: false
@@ -22,8 +22,9 @@ range:
     min_trend_strength: 0.3
   tolerance_pct: 1.0
   min_profit_per_trade: 0.3
-  min_range_width_pct: 0.6
+  min_range_width_pct: 3.0
   quick_stop_pct: 3.0
+  post_entry_cooldown_seconds: 300
 position:
   size_per_trade: 119
   max_position: 9999
@@ -49,6 +50,8 @@ notifications:
   macos_notification: true
   webhook_url: null
   trade_summary_interval: 3
+  telegram_bot_token: ""
+  telegram_chat_id: ""
 broker:
   longbridge:
     app_key: ''

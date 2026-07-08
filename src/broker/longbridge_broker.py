@@ -8,9 +8,11 @@ It supports:
 - audit logging to ``logs/trades-YYYYMMDD.jsonl``
 """
 import dataclasses
+import fcntl
 import json
 import logging
 import os
+import random
 import tempfile
 import time
 from datetime import datetime
@@ -34,6 +36,45 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 _SHARED_SNAPSHOT_LOCK = Lock()
+_BROKER_API_LOCK_DIR: Path | None = None
+_BROKER_API_LOCK_FILE: Path | None = None
+_BROKER_API_LOCK_FD: int | None = None
+
+def _acquire_broker_api_lock(lock_dir: Path, timeout_seconds: float = 15.0) -> bool:
+    """Acquire an inter-process advisory lock on the broker API.
+    Returns True if lock acquired. The fd is stored globally; call
+    _release_broker_api_lock() to unlock."""
+    global _BROKER_API_LOCK_DIR, _BROKER_API_LOCK_FILE, _BROKER_API_LOCK_FD
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "longbridge_api.lock"
+    _BROKER_API_LOCK_DIR = lock_dir
+    _BROKER_API_LOCK_FILE = lock_path
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.write(fd, str(os.getpid()).encode())
+            os.fsync(fd)
+            _BROKER_API_LOCK_FD = fd
+            return True
+        except (BlockingIOError, OSError):
+            time.sleep(random.uniform(0.3, 1.0))
+            continue
+    logger.warning("Timed out waiting for broker API lock after %.1fs", timeout_seconds)
+    return False
+
+
+def _release_broker_api_lock() -> None:
+    """Release the inter-process broker API lock by closing the fd."""
+    global _BROKER_API_LOCK_FD
+    fd = _BROKER_API_LOCK_FD
+    _BROKER_API_LOCK_FD = None
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 
@@ -274,11 +315,20 @@ class LongBridgeBroker(BrokerBase):
             "fetched_at": time.time(),
             "payload": payload,
         }
-        temp_path = path.with_suffix(path.suffix + ".tmp")
+        # Unique temp file per process to avoid cross-engine race conditions
+        suffix = f".tmp.{os.getpid()}.{random.randint(10000, 99999)}"
+        temp_path = path.with_suffix(path.suffix + suffix)
         with _SHARED_SNAPSHOT_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
             temp_path.write_text(json.dumps(wrapped, ensure_ascii=False, default=str), encoding="utf-8")
             temp_path.replace(path)
+            # Clean up any stale tmp files from other processes
+            for f in path.parent.glob(path.name + ".tmp.*"):
+                if f.name != temp_path.name:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
 
     def _position_to_payload(self, position: Position) -> dict:
         return {
@@ -802,6 +852,47 @@ class LongBridgeBroker(BrokerBase):
             # None distinguishes an API failure from a confirmed empty result.
             return None
 
+    def _try_lock_or_recheck_shared(self, now: float) -> str | None:
+        """Try to acquire the broker API lock. If another engine holds it,
+        re-check the shared cache after a brief delay and return the outcome.
+        Returns None if the caller should return the cached value, or the lock
+        outcome ('acquired' or 'deferred') if the caller should continue."""
+        lock_dir = self._shared_snapshot_dir
+        if _acquire_broker_api_lock(lock_dir, timeout_seconds=8.0):
+            # Lock acquired — check shared cache one more time (another engine
+            # may have refreshed it while we waited).
+            shared = self._load_shared_snapshot(self._shared_positions_path)
+            if shared is not None:
+                payload = shared.get("payload") or {}
+                if isinstance(payload, dict):
+                    positions = self._positions_from_payload(payload.get("positions") or [])
+                    if positions:
+                        self._positions_cache = positions
+                        self._positions_snapshot_reliable = bool(payload.get("reliable", True))
+                        self._last_positions_error = str(payload.get("error") or "")
+                        self._positions_cache_fetched_at = float(shared.get("fetched_at") or now)
+                        self._positions_retry_not_before = now
+                        _release_broker_api_lock()
+                        return None  # tell caller to return cached
+            return "acquired"
+        # Could not acquire lock — wait and use shared cache
+        shared = self._load_shared_snapshot(self._shared_positions_path)
+        if shared is not None:
+            payload = shared.get("payload") or {}
+            if isinstance(payload, dict):
+                positions = self._positions_from_payload(payload.get("positions") or [])
+                if positions:
+                    self._positions_cache = positions
+                    self._positions_snapshot_reliable = bool(payload.get("reliable", True))
+                    self._last_positions_error = str(payload.get("error") or "")
+                    self._positions_cache_fetched_at = float(shared.get("fetched_at") or now)
+                    self._positions_retry_not_before = now
+                    return None  # tell caller to return cached
+        # Fall through with stale cache
+        self._positions_snapshot_reliable = False
+        self._last_positions_error = "API lock timeout; using stale cache"
+        return None
+
     def get_positions(self) -> list[Position]:
         request = {}
         now = time.time()
@@ -828,6 +919,11 @@ class LongBridgeBroker(BrokerBase):
             self._positions_snapshot_reliable = False
             self._last_positions_error = "Not connected"
             self._write_audit("get_positions", request, {"positions": []}, ok=False, error="Not connected")
+            return list(self._positions_cache)
+
+        # Inter-process lock: only one engine hits the broker at a time
+        lock_result = self._try_lock_or_recheck_shared(now)
+        if lock_result is None:
             return list(self._positions_cache)
         try:
             resp: lb.StockPositionsResponse = self._trade_ctx.stock_positions()
@@ -911,6 +1007,8 @@ class LongBridgeBroker(BrokerBase):
                 )
             self._write_audit("get_positions", request, {"error": str(e)}, ok=False, error=str(e))
             return list(self._positions_cache)
+        finally:
+            _release_broker_api_lock()
 
     def get_position_for_ticker(self, ticker: str) -> Optional[Position]:
         target = _normalize_base_symbol(ticker)
