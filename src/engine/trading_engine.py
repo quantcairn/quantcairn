@@ -523,6 +523,8 @@ class TradingEngine:
         elif signal.type == SignalType.BUY and not has_position:
             if self._reduce_only:
                 self._last_signal_reason = "仅减仓模式：今晚不新开仓"
+            elif self._latest_account and self._latest_account.buying_power < 10.0:
+                self._last_signal_reason = f"购买力不足 (${self._latest_account.buying_power:.2f} < $10)，暂停买入新仓"
             elif not self._ai_entry_allowed():
                 self._last_signal_reason = self._blocked_ai_reason()
             elif not is_halted:
