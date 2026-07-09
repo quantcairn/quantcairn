@@ -4,7 +4,15 @@
 
 PROJECT_DIR="${SOXS_PROJECT_DIR:-/Users/chenwei/soxs-range-arbitrage}"
 LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
-VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
+PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+        PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+    else
+        PYTHON_BIN="$(command -v python3)"
+    fi
+fi
+VENV_PYTHON="$PYTHON_BIN"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-1}"
@@ -21,6 +29,8 @@ if [ -f "$LOCAL_AI_ENV" ]; then
     . "$LOCAL_AI_ENV"
     set +a
 fi
+
+echo "Using Python: $PYTHON_BIN"
 
 is_trading_day_now() {
     "$VENV_PYTHON" - <<'PY'
@@ -620,11 +630,11 @@ case "$1" in
 
             status=$(curl -s "http://localhost:$port/api/status" 2>/dev/null)
             if [ -n "$status" ]; then
-                price=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(f\"\${d['price']:.2f}\")" 2>/dev/null)
-                signal=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['last_signal'])" 2>/dev/null)
-                pnl=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(f\"\${d['daily_pnl']:+.2f}\")" 2>/dev/null)
-                trades=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['trades_today'])" 2>/dev/null)
-                halted=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print('⛔' if d['halted'] else '✅')" 2>/dev/null)
+                price=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print(f\"\${d['price']:.2f}\")" 2>/dev/null)
+                signal=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print(d['last_signal'])" 2>/dev/null)
+                pnl=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print(f\"\${d['daily_pnl']:+.2f}\")" 2>/dev/null)
+                trades=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print(d['trades_today'])" 2>/dev/null)
+                halted=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print('⛔' if d['halted'] else '✅')" 2>/dev/null)
                 echo "  $ticker: \$$price | $signal | PnL=\$$pnl | $trades trades | $halted"
             elif lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
                 echo "  $ticker: 端口 $port 已监听 | 状态接口暂未返回 | ✅"
@@ -647,9 +657,9 @@ case "$1" in
             port="$(port_for_top "$ticker")"
             status=$(curl -s "http://localhost:$port/api/status" 2>/dev/null)
             if [ -n "$status" ]; then
-                pnl=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['daily_pnl'])" 2>/dev/null)
-                trades=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['trades_today'])" 2>/dev/null)
-                equity=$(echo "$status" | python3 -c "import sys,json;d=json.load(sys.stdin);print(f\"\${d['equity']:.2f}\")" 2>/dev/null)
+                pnl=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print(d['daily_pnl'])" 2>/dev/null)
+                trades=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print(d['trades_today'])" 2>/dev/null)
+                equity=$(echo "$status" | "$PYTHON_BIN" -c "import sys,json;d=json.load(sys.stdin);print(f\"\${d['equity']:.2f}\")" 2>/dev/null)
                 echo "║  $ticker  PnL=\$$(printf '%+8.2f' $pnl)  Trades=$trades  Equity=\$$equity"
                 total_pnl=$(echo "$total_pnl + $pnl" | bc -l 2>/dev/null || echo "0")
             fi

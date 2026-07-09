@@ -2,12 +2,22 @@
 set -euo pipefail
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+        PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+    else
+        PYTHON_BIN="$(command -v python3)"
+    fi
+fi
 MULTI_LAUNCH="$PROJECT_DIR/multi_launch.sh"
 AUTO_TRADE="$PROJECT_DIR/auto_trade.sh"
 RELOAD_LAUNCHD="$PROJECT_DIR/reload_launchd.sh"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
 
 cd "$PROJECT_DIR" || exit 1
+
+echo "Using Python: $PYTHON_BIN"
 
 show_help() {
     cat <<'EOF'

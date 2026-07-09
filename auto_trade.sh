@@ -5,6 +5,14 @@
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
+PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+        PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+    else
+        PYTHON_BIN="$(command -v python3)"
+    fi
+fi
 LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/trading.log"
@@ -18,8 +26,10 @@ if [ -f "$LOCAL_AI_ENV" ]; then
     set +a
 fi
 
+echo "Using Python: $PYTHON_BIN"
+
 is_trading_day_now() {
-    "$PROJECT_DIR/.venv/bin/python" - <<'PY'
+    "$PYTHON_BIN" - <<'PY'
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -54,14 +64,14 @@ case "$1" in
         # Refresh configs only after live holdings are verified. A failed
         # selector must prevent old TOP configs from entering live trading.
         if ! FORCE_AI_RUN=1 AI_SELECTOR_RESTART_TOP=0 \
-            "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/scripts/ai_selector_wrapper.py" \
+            "$PYTHON_BIN" "$PROJECT_DIR/scripts/ai_selector_wrapper.py" \
             >> "$LOG_FILE" 2>&1; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] AI selection failed; trading start aborted" \
                 | tee -a "$LOG_FILE"
             exit 1
         fi
 
-        if ! "$PROJECT_DIR/.venv/bin/python" - <<'PY' >> "$LOG_FILE" 2>&1
+        if ! "$PYTHON_BIN" - <<'PY' >> "$LOG_FILE" 2>&1
 from datetime import datetime
 from zoneinfo import ZoneInfo
 

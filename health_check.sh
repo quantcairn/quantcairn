@@ -2,11 +2,21 @@
 # Quick operational health check for the Top3 trading system.
 
 PROJECT_DIR="${SOXS_PROJECT_DIR:-/Users/chenwei/soxs-range-arbitrage}"
+PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+        PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+    else
+        PYTHON_BIN="$(command -v python3)"
+    fi
+fi
 LOG_DIR="$PROJECT_DIR/logs"
 cd "$PROJECT_DIR" || exit 1
 
+echo "Using Python: $PYTHON_BIN"
+
 market_is_open() {
-    "$PROJECT_DIR/.venv/bin/python" - <<'PY'
+    "$PYTHON_BIN" - <<'PY'
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from src.config.loader import AppConfig
@@ -76,7 +86,7 @@ check_api() {
     local body
     body=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/api/status" 2>/dev/null)
     if [ -n "$body" ]; then
-        python3 -c "import json,sys; d=json.load(sys.stdin); print('OK   API %s: price=$%.2f signal=%s halted=%s' % ('$name', d.get('price') or 0, d.get('last_signal'), d.get('halted')))" <<< "$body" 2>/dev/null \
+        "$PYTHON_BIN" -c "import json,sys; d=json.load(sys.stdin); print('OK   API %s: price=$%.2f signal=%s halted=%s' % ('$name', d.get('price') or 0, d.get('last_signal'), d.get('halted')))" <<< "$body" 2>/dev/null \
             || echo "WARN API $name returned invalid JSON"
     else
         echo "WARN API not responding: $name"
@@ -154,7 +164,7 @@ else
     for port in 8091 8092 8093; do
         body=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/api/status" 2>/dev/null)
         if [ -n "$body" ]; then
-            python3 -c "import json,sys; d=json.load(sys.stdin); print('OK   After-hours API %s: reason=%s' % ('$port', d.get('last_signal_reason') or ''))" <<< "$body" 2>/dev/null \
+            "$PYTHON_BIN" -c "import json,sys; d=json.load(sys.stdin); print('OK   After-hours API %s: reason=%s' % ('$port', d.get('last_signal_reason') or ''))" <<< "$body" 2>/dev/null \
                 || echo "WARN after-hours API invalid JSON: $port"
         fi
     done

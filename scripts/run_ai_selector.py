@@ -5,7 +5,21 @@ Usage: scripts/run_ai_selector.py
 """
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
+VENV_PREFIX = os.path.join(PROJECT_ROOT, ".venv")
+if (
+    os.path.exists(VENV_PYTHON)
+    and os.path.realpath(sys.prefix) != os.path.realpath(VENV_PREFIX)
+    and os.environ.get("SOXS_SKIP_VENV_REEXEC") != "1"
+):
+    env = os.environ.copy()
+    env["SOXS_SKIP_VENV_REEXEC"] = "1"
+    os.execve(VENV_PYTHON, [VENV_PYTHON, __file__, *sys.argv[1:]], env)
+
+print(f"Using Python: {sys.executable}")
+sys.path.insert(0, PROJECT_ROOT)
 
 from src.ai_selector.integration import AISelector
 from src.ai_selector.composition_filter import CompositionFilter

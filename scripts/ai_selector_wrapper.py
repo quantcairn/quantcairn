@@ -19,13 +19,24 @@ except Exception:
 
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+VENV_PY = os.path.join(PROJECT_DIR, '.venv', 'bin', 'python')
+VENV_PREFIX = os.path.join(PROJECT_DIR, '.venv')
+if (
+    os.path.exists(VENV_PY)
+    and os.path.realpath(sys.prefix) != os.path.realpath(VENV_PREFIX)
+    and os.environ.get("SOXS_SKIP_VENV_REEXEC") != "1"
+):
+    env = os.environ.copy()
+    env["SOXS_SKIP_VENV_REEXEC"] = "1"
+    os.execve(VENV_PY, [VENV_PY, __file__, *sys.argv[1:]], env)
+
+print(f"Using Python: {sys.executable}")
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
 from src.config.local_env import load_local_ai_env
 from src.utils.market_calendar import is_us_market_trading_day
 
-VENV_PY = os.path.join(PROJECT_DIR, '.venv', 'bin', 'python')
 SELECTOR = os.path.join(PROJECT_DIR, 'scripts', 'run_ai_selector.py')
 OUT_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.out.log')
 ERR_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.err.log')

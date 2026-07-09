@@ -3,7 +3,15 @@ set -euo pipefail
 
 PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
 LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
-VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
+PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+        PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+    else
+        PYTHON_BIN="$(command -v python3)"
+    fi
+fi
+VENV_PYTHON="$PYTHON_BIN"
 
 cfg="${1:?config path required}"
 port="${2:?port required}"
@@ -16,6 +24,8 @@ if [ -f "$LOCAL_AI_ENV" ]; then
     . "$LOCAL_AI_ENV"
     set +a
 fi
+
+echo "Using Python: $PYTHON_BIN"
 
 read ENGINE_MODE SYNTH_START SYNTH_AMP <<EOF
 $( "$VENV_PYTHON" - "$cfg" <<'PY'
