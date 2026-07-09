@@ -81,6 +81,7 @@ def combine_scores(tradingagents_result, finrobot_result, openbb_result=None) ->
             {
                 "ticker": ticker,
                 "score": round(final_score, 2),
+                "ai_score": round(final_score, 2),
                 "confidence": round(max(0.0, min(1.0, confidence)), 2),
                 "reason": " | ".join([item for item in reasons if item]) or "No reason provided",
                 "source": "+".join([item for item in sources if item]) or "unknown",

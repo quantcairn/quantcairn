@@ -48,6 +48,14 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
             "range_high": 154.0,
             "risk": {"stop_loss_pct": 1.5},
             "size": 5,
+            "ai_score": 91.5,
+            "range_score": 88.0,
+            "final_score": 90.1,
+            "confidence": 0.77,
+            "trade_filter_passed": True,
+            "reject_reason": "",
+            "fallback_used": False,
+            "reason": "protected live position",
         },
         {
             "ticker": "TSLA",
@@ -87,6 +95,15 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
     assert updated["range"]["support_price"] is None
     assert updated["range"]["resistance_price"] is None
     assert updated["position"]["initial_capital"] == 700.0
+    assert updated["selection"]["score"] == 90.1
+    assert updated["selection"]["ai_score"] == 91.5
+    assert updated["selection"]["range_score"] == 88.0
+    assert updated["selection"]["final_score"] == 90.1
+    assert updated["selection"]["confidence"] == 0.77
+    assert updated["selection"]["trade_filter_passed"] is True
+    assert updated["selection"]["reject_reason"] == ""
+    assert updated["selection"]["fallback_used"] is False
+    assert updated["selection"]["reason"] == "protected live position"
     updated5 = yaml.safe_load((configs_dir / "TOP5.yaml").read_text(encoding="utf-8"))
     assert updated5["ticker"] == "AMZN"
 
@@ -158,8 +175,8 @@ def test_config_writer_scales_min_profit_for_lower_priced_stocks(tmp_path, monke
 
     low_price = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
     high_price = yaml.safe_load((configs_dir / "TOP2.yaml").read_text(encoding="utf-8"))
-    assert low_price["range"]["min_profit_per_trade"] == 0.72
-    assert high_price["range"]["min_profit_per_trade"] == 1.0
+    assert low_price["range"]["min_profit_per_trade"] == 0.54
+    assert high_price["range"]["min_profit_per_trade"] == 0.9
 
 
 def test_config_writer_honors_global_reduce_only_flag(tmp_path, monkeypatch):

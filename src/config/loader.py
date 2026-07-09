@@ -101,6 +101,16 @@ class BrokerConfig:
 
 
 @dataclass
+class PortfolioConfig:
+    enabled: bool = False
+    max_positions: int = 3
+    max_total_exposure: float = 1.0
+    max_total_risk: float = 0.05
+    leveraged_etf_max_single_position: float = 0.15
+    leveraged_etf_max_group_exposure: float = 0.50
+
+
+@dataclass
 class AppConfig:
     ticker: str = "SOXS"
     mode: Literal["paper", "live", "backtest"] = "paper"
@@ -112,6 +122,7 @@ class AppConfig:
     data: DataConfig = field(default_factory=DataConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
+    portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     signal_interval_seconds: int = 60
     order_cooldown_seconds: int = 300
 
@@ -284,6 +295,21 @@ def _parse_config(raw: dict) -> AppConfig:
             trade_ws_url=trade_ws_url,
             log_path=os.environ.get("LONGBRIDGE_LOG_PATH", lb.get("log_path") or private_lb.get("log_path")),
         )
+    )
+
+    # Portfolio risk guard (disabled by default to preserve existing behavior)
+    portfolio_raw = raw.get("portfolio", {}) or {}
+    config.portfolio = PortfolioConfig(
+        enabled=bool(portfolio_raw.get("enabled", False)),
+        max_positions=int(portfolio_raw.get("max_positions", 3)),
+        max_total_exposure=float(portfolio_raw.get("max_total_exposure", 1.0)),
+        max_total_risk=float(portfolio_raw.get("max_total_risk", 0.05)),
+        leveraged_etf_max_single_position=float(
+            portfolio_raw.get("leveraged_etf_max_single_position", 0.15)
+        ),
+        leveraged_etf_max_group_exposure=float(
+            portfolio_raw.get("leveraged_etf_max_group_exposure", 0.50)
+        ),
     )
 
     return config

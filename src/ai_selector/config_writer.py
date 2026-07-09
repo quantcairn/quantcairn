@@ -1,3 +1,4 @@
+import logging
 import yaml
 import os
 import json
@@ -5,9 +6,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.config.runtime_values import has_longbridge_runtime_credentials
+from src.portfolio.risk_allocator import RiskAllocator
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
+logger = logging.getLogger(__name__)
 
 
 def _auto_refresh_minutes() -> int:
@@ -69,12 +72,25 @@ def _selection_date() -> str:
     except Exception:
         return datetime.utcnow().date().isoformat()
 
+
+def _coalesce_float(*values: object, default: float = 0.0) -> float:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return float(default)
+
 def write_top_configs(top_items):
     if not top_items:
         logger.warning("write_top_configs called with empty list — refusing to delete existing configs")
         return
     default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
+    allocator = RiskAllocator()
+    allocations = allocator.allocate_positions(list(top_items), TOP_INITIAL_CAPITAL)
     for i, item in enumerate(top_items, start=1):
         support = float(item["range_low"])
         resistance = float(item["range_high"])
@@ -89,6 +105,12 @@ def write_top_configs(top_items):
         live_enabled = mode == "live"
         reduce_only = bool(item.get("reduce_only", False) or global_reduce_only)
         protected_position = bool(item.get("protected_position") or item.get("existing_position"))
+        ai_score = _coalesce_float(item.get("ai_score"), item.get("score"), default=0.0)
+        range_score = _coalesce_float(item.get("range_score"), default=0.0)
+        final_score = _coalesce_float(item.get("final_score"), item.get("score"), ai_score, default=0.0)
+        trade_filter_passed = bool(item.get("trade_filter_passed", True))
+        fallback_used = bool(item.get("fallback_used", False))
+        allocation = dict(allocations.get(str(item.get("ticker") or "").upper()) or {})
 
         cfg = {
             "ticker": item["ticker"],
@@ -96,8 +118,14 @@ def write_top_configs(top_items):
             "selection": {
                 "source": "ai_selector",
                 "selection_date": str(item.get("selection_date") or _selection_date()),
-                "score": float(item.get("score") or 0.0),
+                "score": final_score,
+                "ai_score": ai_score,
+                "range_score": range_score,
+                "final_score": final_score,
                 "confidence": float(item.get("confidence") or 0.0),
+                "trade_filter_passed": trade_filter_passed,
+                "reject_reason": str(item.get("reject_reason") or ""),
+                "fallback_used": fallback_used,
                 "protected_position": protected_position,
                 "reduce_only": reduce_only,
                 "reason": str(
@@ -105,6 +133,14 @@ def write_top_configs(top_items):
                     or item.get("selection_penalty_reason")
                     or "ai_selector"
                 ),
+            },
+            "allocation": {
+                "target_capital": float(allocation.get("capital") or 0.0),
+                "target_shares": int(allocation.get("shares") or 0),
+                "weight": float(allocation.get("weight") or 0.0),
+                "atr_pct": float(allocation.get("atr_pct") or 0.05),
+                "risk_pct": float(allocation.get("risk_pct") or 0.0),
+                "reason": str(allocation.get("reason") or "no_allocation"),
             },
             "range": {
                 "mode": "auto",

@@ -26,6 +26,7 @@ from ..strategy.range_detector import RangeDetector, SignalType
 from ..risk.manager import RiskManager, TradeRecord
 from ..risk.instrument_profile import LEVERAGED_ETF_REGISTRY
 from ..risk.portfolio import PortfolioRisk
+from ..portfolio import PortfolioManager
 from ..broker.base import BrokerBase, OrderSide, OrderStatus, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
@@ -280,6 +281,18 @@ class TradingEngine:
 
         # Portfolio-level risk (shared across engines, optional)
         self.portfolio_risk: Optional[PortfolioRisk] = portfolio_risk
+        portfolio_cfg = getattr(config, "portfolio", None)
+        self.portfolio_manager = PortfolioManager(
+            max_positions=int(getattr(portfolio_cfg, "max_positions", 3) or 3),
+            max_total_exposure=float(getattr(portfolio_cfg, "max_total_exposure", 1.0) or 1.0),
+            max_total_risk=float(getattr(portfolio_cfg, "max_total_risk", 0.05) or 0.05),
+            leveraged_etf_max_single_position=float(
+                getattr(portfolio_cfg, "leveraged_etf_max_single_position", 0.15) or 0.15
+            ),
+            leveraged_etf_max_group_exposure=float(
+                getattr(portfolio_cfg, "leveraged_etf_max_group_exposure", 0.50) or 0.50
+            ),
+        )
 
     def _seed_auto_range(self) -> None:
         """Seed auto range from recent OHLCV history so it's ready immediately."""
@@ -701,7 +714,26 @@ class TradingEngine:
             return
         self._trade_in_progress = True
         try:
-            acct = self.broker.get_account()
+            try:
+                acct = self.broker.get_account()
+            except Exception as exc:
+                self._last_signal_reason = "组合风控启用但无法读取账户/持仓，禁止新买入"
+                logger.warning("Failed to read broker account for %s buy path: %s", self.ticker, exc)
+                self.notifier.alert(self._last_signal_reason, "warning")
+                self._write_runtime_audit(
+                    "portfolio_risk_blocked",
+                    ticker=self.ticker,
+                    quantity=0,
+                    price=current_price,
+                    reason="portfolio_state_unavailable",
+                    current_exposure=None,
+                    projected_exposure=None,
+                    current_leveraged_etf_exposure=None,
+                    projected_leveraged_etf_exposure=None,
+                    warning="account_unavailable",
+                    portfolio_enabled=self._portfolio_guard_enabled(),
+                )
+                return
             cash = float(getattr(acct, "cash", 0.0) or 0.0)
             buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
             # Use buying_power when available (margin accounts share one
@@ -753,6 +785,61 @@ class TradingEngine:
                 self._last_signal_reason = entry_check.reason
                 self.notifier.alert(entry_check.reason, "warning")
                 return
+
+            # ---- Optional portfolio-level guard before broker submission ----
+            if self._portfolio_guard_enabled():
+                portfolio_state, portfolio_warning = self._build_portfolio_state()
+                if portfolio_state is None:
+                    reason = "portfolio_state_unavailable"
+                    self._last_signal_reason = (
+                        "组合风控启用但无法读取账户/持仓，禁止新买入"
+                    )
+                    self.notifier.alert(self._last_signal_reason, "warning")
+                    self._write_runtime_audit(
+                        "portfolio_risk_blocked",
+                        ticker=self.ticker,
+                        quantity=shares,
+                        price=ask if ask > 0 else current_price,
+                        reason=reason,
+                        current_exposure=None,
+                        projected_exposure=None,
+                        current_leveraged_etf_exposure=None,
+                        projected_leveraged_etf_exposure=None,
+                        warning=portfolio_warning or "portfolio_state_unavailable",
+                        portfolio_enabled=True,
+                    )
+                    return
+
+                proposed_order = {
+                    "ticker": self.ticker,
+                    "side": "BUY",
+                    "quantity": shares,
+                    "price": ask if ask > 0 else current_price,
+                    "target_capital": shares * (ask if ask > 0 else current_price),
+                    "reduce_only": False,
+                    "regime": getattr(signal, "regime", None) or "UNKNOWN",
+                }
+                portfolio_check = self.portfolio_manager.check_portfolio_risk(
+                    proposed_order,
+                    portfolio_state,
+                )
+                if not bool(portfolio_check.get("allowed", False)):
+                    reason = str(portfolio_check.get("reason") or "portfolio_blocked")
+                    self._last_signal_reason = f"组合风控阻止买入：{reason}"
+                    self.notifier.alert(self._last_signal_reason, "warning")
+                    self._write_runtime_audit(
+                        "portfolio_risk_blocked",
+                        ticker=self.ticker,
+                        quantity=shares,
+                        price=ask if ask > 0 else current_price,
+                        reason=reason,
+                        current_exposure=portfolio_check.get("current_exposure"),
+                        projected_exposure=portfolio_check.get("projected_exposure"),
+                        current_leveraged_etf_exposure=portfolio_check.get("current_leveraged_etf_exposure"),
+                        projected_leveraged_etf_exposure=portfolio_check.get("projected_leveraged_etf_exposure"),
+                        portfolio_enabled=True,
+                    )
+                    return
 
             # ---- Portfolio-level risk check (correlation, exposure) ----
             if self.portfolio_risk is not None:
@@ -857,6 +944,69 @@ class TradingEngine:
                 )
         finally:
             self._trade_in_progress = False
+
+    def _portfolio_guard_enabled(self) -> bool:
+        portfolio_cfg = getattr(self.config, "portfolio", None)
+        return bool(getattr(portfolio_cfg, "enabled", False))
+
+    def _build_portfolio_state(self) -> tuple[Optional[dict], Optional[str]]:
+        """Build the portfolio snapshot used by PortfolioManager.
+
+        Returns (state, warning). When state is None the caller should fail closed
+        for BUY orders but continue to allow SELL / reduce_only paths.
+        """
+        try:
+            account = None
+            positions = None
+            try:
+                account = self.broker.get_account()
+            except Exception as exc:
+                logger.warning("Failed to read account for portfolio guard on %s: %s", self.ticker, exc)
+                account = self._latest_account
+                if account is None:
+                    return None, "account_unavailable"
+
+            try:
+                positions = getattr(account, "positions", None)
+                if positions is None:
+                    positions = self.broker.get_positions()
+            except Exception as exc:
+                logger.warning("Failed to read positions for portfolio guard on %s: %s", self.ticker, exc)
+                positions = getattr(account, "positions", None)
+                if positions is None and self._latest_position is not None:
+                    positions = [self._latest_position]
+                if positions is None:
+                    return None, "positions_unavailable"
+
+            portfolio_positions: dict[str, dict[str, float]] = {}
+            for pos in positions or []:
+                ticker = str(getattr(pos, "ticker", "") or "").strip().upper().split(".")[0]
+                if not ticker:
+                    continue
+                quantity = float(getattr(pos, "quantity", 0) or 0)
+                market_value = float(getattr(pos, "market_value", 0.0) or 0.0)
+                if market_value <= 0.0 and quantity > 0:
+                    current_price = float(getattr(pos, "current_price", 0.0) or 0.0)
+                    avg_price = float(getattr(pos, "avg_entry_price", 0.0) or 0.0)
+                    market_value = quantity * max(current_price, avg_price)
+                portfolio_positions[ticker] = {
+                    "market_value": float(max(0.0, market_value)),
+                    "quantity": float(max(0.0, quantity)),
+                }
+
+            cash = float(getattr(account, "cash", 0.0) or 0.0)
+            equity = float(getattr(account, "equity", 0.0) or 0.0)
+            return (
+                {
+                    "account_equity": equity,
+                    "cash": cash,
+                    "positions": portfolio_positions,
+                },
+                None,
+            )
+        except Exception as exc:
+            logger.exception("Failed to build portfolio state for %s: %s", self.ticker, exc)
+            return None, "portfolio_state_unavailable"
 
     def _handle_sell_signal(self, signal, current_price: float, bid: float) -> None:
         """Handle a SELL signal (take profit at resistance)."""
