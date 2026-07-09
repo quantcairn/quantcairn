@@ -284,19 +284,125 @@ def _truncate_reason(value: object, limit: int = 72) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _first_non_empty(*values: object, default: object = "") -> object:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            continue
+        return value
+    return default
+
+
+def _selection_report_top_items(selection_report: dict) -> list[dict]:
+    report = dict(selection_report or {})
+    items = list(report.get("top3") or report.get("top5") or [])
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _merge_top_item_with_report(top_item: dict, selection_report: dict, rank: int) -> dict:
+    merged = dict(top_item or {})
+    report_items = _selection_report_top_items(selection_report)
+    report_item = None
+    ticker = str(merged.get("ticker") or "").strip().upper()
+    if ticker:
+        for item in report_items:
+            if str(item.get("ticker") or "").strip().upper() == ticker:
+                report_item = item
+                break
+    if report_item is None and 0 <= rank - 1 < len(report_items):
+        report_item = report_items[rank - 1]
+
+    if not report_item:
+        return merged
+
+    merged.setdefault("ticker", report_item.get("ticker"))
+    for key in (
+        "ai_score",
+        "range_score",
+        "final_score",
+        "score",
+        "confidence",
+        "reason",
+        "source",
+        "leveraged_etf",
+        "trade_filter_passed",
+        "fallback_used",
+        "current_price",
+        "size",
+        "selection_penalty_reason",
+        "reject_reason",
+        "composition_filter_passed",
+        "composition_reject_reason",
+        "final_rank",
+    ):
+        value = _first_non_empty(merged.get(key), report_item.get(key), default=None)
+        if value is not None:
+            merged[key] = value
+
+    merged_selection = dict(merged.get("selection") or {})
+    report_selection = dict(report_item.get("selection") or {})
+    for key in (
+        "selection_date",
+        "ai_score",
+        "range_score",
+        "final_score",
+        "score",
+        "confidence",
+        "reason",
+        "source",
+        "leveraged_etf",
+        "trade_filter_passed",
+        "fallback_used",
+        "reject_reason",
+        "composition_filter_passed",
+        "composition_reject_reason",
+        "final_rank",
+    ):
+        value = _first_non_empty(merged_selection.get(key), report_selection.get(key), merged.get(key), report_item.get(key), default=None)
+        if value is not None:
+            merged_selection[key] = value
+    if merged_selection:
+        merged["selection"] = merged_selection
+
+    merged_allocation = dict(merged.get("allocation") or {})
+    report_allocation = dict(report_item.get("allocation") or {})
+    for key in ("target_capital", "target_shares", "weight", "atr_pct", "risk_pct", "reason"):
+        value = _first_non_empty(merged_allocation.get(key), report_allocation.get(key), default=None)
+        if value is not None:
+            merged_allocation[key] = value
+    if merged_allocation:
+        merged["allocation"] = merged_allocation
+
+    return merged
+
+
 def _ticker_line(top_config: dict, rank: int) -> str:
     selection = dict(top_config.get("selection") or {})
     allocation = dict(top_config.get("allocation") or {})
     ticker = str(top_config.get("ticker") or f"TOP{rank}")
-    final_score = selection.get("final_score", selection.get("score", "-"))
-    ai_score = selection.get("ai_score", "-")
-    range_score = selection.get("range_score", "-")
-    leveraged = bool(selection.get("leveraged_etf"))
-    filter_passed = bool(selection.get("trade_filter_passed", False))
-    fallback_used = bool(selection.get("fallback_used", False))
-    reason = _truncate_reason(selection.get("reason") or top_config.get("reason") or "")
-    target_capital = float(allocation.get("target_capital") or 0.0)
-    target_shares = int(allocation.get("target_shares") or 0)
+    final_score = _first_non_empty(selection.get("final_score"), selection.get("score"), top_config.get("final_score"), top_config.get("score"), default="-")
+    ai_score = _first_non_empty(selection.get("ai_score"), top_config.get("ai_score"), default="-")
+    range_score = _first_non_empty(selection.get("range_score"), top_config.get("range_score"), default="-")
+    leveraged = bool(_first_non_empty(selection.get("leveraged_etf"), top_config.get("leveraged_etf"), default=False))
+    filter_passed = bool(_first_non_empty(selection.get("trade_filter_passed"), top_config.get("trade_filter_passed"), default=False))
+    fallback_used = bool(_first_non_empty(selection.get("fallback_used"), top_config.get("fallback_used"), default=False))
+    reason = _truncate_reason(
+        _first_non_empty(
+            selection.get("reason"),
+            top_config.get("reason"),
+            top_config.get("selection_penalty_reason"),
+            top_config.get("fallback_reason"),
+            default="",
+        )
+    )
+    current_price = float(_first_non_empty(top_config.get("current_price"), top_config.get("price"), top_config.get("price_midpoint_hint"), default=0.0) or 0.0)
+    target_shares = int(_first_non_empty(allocation.get("target_shares"), top_config.get("target_shares"), top_config.get("size_per_trade"), top_config.get("size"), default=0) or 0)
+    target_capital = float(_first_non_empty(allocation.get("target_capital"), top_config.get("target_capital"), default=0.0) or 0.0)
+    if target_capital <= 0 and current_price > 0 and target_shares > 0:
+        target_capital = current_price * target_shares
     filter_text = "通过" if filter_passed else "未通过"
     kind = "杠杆/反向ETF" if leveraged else "普通标的"
     fallback_text = "是" if fallback_used else "否"
@@ -314,7 +420,11 @@ def _ticker_line(top_config: dict, rank: int) -> str:
 def _build_ai_selection_message(selection_report: dict, top_configs: list | None = None) -> tuple[str, str]:
     report = dict(selection_report or {})
     date_str = str(report.get("selection_date") or report.get("date") or datetime.now().date().isoformat())
-    top_items = list(top_configs or report.get("top3") or report.get("top5") or [])
+    raw_top_items = list(top_configs or report.get("top3") or report.get("top5") or [])
+    top_items = [
+        _merge_top_item_with_report(dict(item or {}), report, rank)
+        for rank, item in enumerate(raw_top_items, start=1)
+    ]
     target_top_n = int(report.get("target_top_n") or 3)
     selection_count = int(report.get("selection_count") or len(top_items))
     fallback_used = bool(report.get("fallback_used", False))

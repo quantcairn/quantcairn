@@ -877,7 +877,8 @@ def main():
         report_path=str(latest_report_path),
     )
 
-    _notify_selection_result(summary, selected)
+    final_top_configs = _load_final_top_configs(TOP_COUNT)
+    _notify_selection_result(summary, final_top_configs or selected)
 
     restart_code = _restart_top_engines()
     if restart_code != 0:
@@ -907,6 +908,23 @@ def _notify_selection_result(summary: dict, selected: list[dict]) -> None:
         notify_ai_selection_result(summary, top_configs=list(selected))
     except Exception as exc:
         print(f"AI selection notification warning: {exc}")
+
+
+def _load_final_top_configs(limit: int = TOP_COUNT) -> list[dict]:
+    import yaml
+
+    configs: list[dict] = []
+    for index in range(1, limit + 1):
+        path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
+        if not path.exists():
+            continue
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            configs.append(data)
+    return configs
 
 if __name__ == '__main__':
     main()
