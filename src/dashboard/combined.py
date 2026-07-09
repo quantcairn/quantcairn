@@ -1,5 +1,6 @@
 """Combined dashboard aggregating the selected TOP3 trading engines."""
-import json, os, subprocess, threading, urllib.request
+import atexit
+import json, os, signal, subprocess, threading, urllib.request
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,8 @@ app = Flask(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
 TRADING_FLAGS_PATH = STATE_DIR / "trading_flags.json"
+RUNTIME_DIR = Path(os.environ.get("SOXS_RUNTIME_DIR", "").strip() or (PROJECT_DIR / "runtime"))
+COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
 
 TICKERS = [
     {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
@@ -33,10 +36,203 @@ _STATUS_CACHE: dict[int, dict] = {}
 _STATUS_FAILURES: dict[int, int] = {}
 _STATUS_OFFLINE_THRESHOLD = 3
 _UNRESOLVED_ALERT_SECONDS = float(os.getenv("SOXS_UNRESOLVED_ALERT_SECONDS", "120"))
+_COMBINED_PORT = 8090
 
 
 def _env(name: str, default: str = "") -> str:
     return get_runtime_env(name, default)
+
+
+def _combined_pid_file_path() -> Path:
+    return COMBINED_PID_FILE
+
+
+def _read_pid_file() -> int | None:
+    path = _combined_pid_file_path()
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        pid = int(raw)
+        return pid if pid > 0 else None
+    except Exception:
+        return None
+
+
+def _write_pid_file(pid: int) -> None:
+    path = _combined_pid_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(int(pid)), encoding="utf-8")
+
+
+def _remove_pid_file() -> None:
+    try:
+        _combined_pid_file_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _process_command(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return (result.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _is_project_combined_command(command: str) -> bool:
+    text = (command or "").strip()
+    if not text:
+        return False
+    markers = (
+        "scripts/start_combined.py",
+        "src.dashboard.combined",
+        "start_combined(8090)",
+        "start_combined.py",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _port_listeners(port: int) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["lsof", "-tiTCP:%s" % port, "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pids: list[int] = []
+        for token in (result.stdout or "").split():
+            try:
+                pids.append(int(token))
+            except ValueError:
+                continue
+        return pids
+    except Exception:
+        return []
+
+
+def _wait_for_port_free(port: int, timeout: float = 3.0) -> bool:
+    deadline = time.time() + max(0.0, timeout)
+    while time.time() < deadline:
+        if not _port_listeners(port):
+            return True
+        time.sleep(0.2)
+    return not _port_listeners(port)
+
+
+def _stop_project_combined_process(pid: int, *, force: bool = False) -> bool:
+    if pid <= 0 or not _pid_alive(pid):
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    if _wait_for_pid_exit(pid, timeout=2.0):
+        return True
+    if force:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            return False
+        return _wait_for_pid_exit(pid, timeout=1.5)
+    return False
+
+
+def _wait_for_pid_exit(pid: int, timeout: float = 2.0) -> bool:
+    deadline = time.time() + max(0.0, timeout)
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return not _pid_alive(pid)
+
+
+def _cleanup_orphan_pid_file() -> tuple[bool, int | None, str]:
+    """
+    Returns (cleaned_previous_process, pid, reason).
+    """
+    pid = _read_pid_file()
+    if pid is None:
+        _remove_pid_file()
+        return False, None, "no_pid_file"
+    if not _pid_alive(pid):
+        _remove_pid_file()
+        return True, pid, "stale_pid_removed"
+    command = _process_command(pid)
+    if _is_project_combined_command(command):
+        return False, pid, "existing_project_process"
+    return False, pid, "non_project_process"
+
+
+def _ensure_single_instance(port: int) -> tuple[bool, dict]:
+    """
+    Ensure the combined dashboard is not started twice.
+
+    Returns (allowed_to_start, metadata).
+    """
+    metadata: dict = {
+        "port": port,
+        "pid": os.getpid(),
+        "pid_file": str(_combined_pid_file_path()),
+        "previous_process_was_cleaned": False,
+        "start_success": False,
+        "reason": "",
+    }
+
+    cleaned_previous_process, pid_from_file, pid_reason = _cleanup_orphan_pid_file()
+    metadata["previous_process_was_cleaned"] = cleaned_previous_process
+    metadata["existing_pid_file_pid"] = pid_from_file
+    metadata["existing_pid_file_reason"] = pid_reason
+
+    listeners = _port_listeners(port)
+    if listeners:
+        same_project_pids = []
+        foreign_pids = []
+        for pid in listeners:
+            command = _process_command(pid)
+            if _is_project_combined_command(command):
+                same_project_pids.append(pid)
+            else:
+                foreign_pids.append(pid)
+        metadata["port_listeners"] = listeners
+        metadata["same_project_pids"] = same_project_pids
+        metadata["foreign_pids"] = foreign_pids
+        if foreign_pids:
+            metadata["reason"] = "port_occupied_by_non_project_process"
+            return False, metadata
+        if same_project_pids:
+            # If another project instance already runs, do not duplicate.
+            if os.getpid() not in same_project_pids:
+                metadata["reason"] = "project_combined_already_running"
+                return False, metadata
+
+    if pid_from_file and _pid_alive(pid_from_file):
+        command = _process_command(pid_from_file)
+        if _is_project_combined_command(command) and pid_from_file != os.getpid():
+            metadata["reason"] = "project_pid_file_still_active"
+            return False, metadata
+
+    _write_pid_file(os.getpid())
+    atexit.register(_remove_pid_file)
+    metadata["start_success"] = True
+    metadata["reason"] = "start_allowed"
+    return True, metadata
+
+
+def _shutdown_single_instance():
+    _remove_pid_file()
 
 
 def _has_live_account_env() -> bool:
@@ -2130,12 +2326,60 @@ def start_combined(port=8090):
     import socket
     from werkzeug.serving import make_server
     daily_report_module.ensure_daily_report_scheduler()
+    allowed, metadata = _ensure_single_instance(port)
+    print(
+        "Combined dashboard startup:",
+        f"port={metadata.get('port')}",
+        f"pid={metadata.get('pid')}",
+        f"pid_file={metadata.get('pid_file')}",
+        f"previous_process_was_cleaned={metadata.get('previous_process_was_cleaned')}",
+        f"reason={metadata.get('reason')}",
+        flush=True,
+    )
+    if not allowed:
+        if metadata.get("reason") == "port_occupied_by_non_project_process":
+            print("Port 8090 occupied by non-project process", flush=True)
+        elif metadata.get("reason") == "project_combined_already_running":
+            print("Combined dashboard already running; skipping duplicate start", flush=True)
+        elif metadata.get("reason") == "project_pid_file_still_active":
+            print("Combined dashboard pid file points to active project process; skipping duplicate start", flush=True)
+        raise SystemExit(0 if metadata.get("reason") != "port_occupied_by_non_project_process" else 1)
+
+    def _cleanup_on_exit(_signum, _frame):
+        _shutdown_single_instance()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _cleanup_on_exit)
+    signal.signal(signal.SIGINT, _cleanup_on_exit)
+    print(
+        f"Combined dashboard starting on port: {port}",
+        f"pid={os.getpid()}",
+        f"pid_file={_combined_pid_file_path()}",
+        flush=True,
+    )
+
     # Set SO_REUSEADDR so the port can be rebound immediately after restart
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(None)
-    sock.bind(("0.0.0.0", port))
-    sock.listen(128)
-    server = make_server("0.0.0.0", port, app, threaded=True, fd=sock.fileno())
-    sock.detach()
-    server.serve_forever()
+    try:
+        sock.bind(("0.0.0.0", port))
+        sock.listen(128)
+        server = make_server("0.0.0.0", port, app, threaded=True, fd=sock.fileno())
+        sock.detach()
+        print(
+            f"Combined dashboard started successfully on port {port}",
+            f"pid={os.getpid()}",
+            f"pid_file={_combined_pid_file_path()}",
+            flush=True,
+        )
+        server.serve_forever()
+    except OSError as exc:
+        print(
+            f"Combined dashboard failed to start: port={port} pid={os.getpid()} pid_file={_combined_pid_file_path()} reason={exc}",
+            flush=True,
+        )
+        _shutdown_single_instance()
+        raise
+    finally:
+        _shutdown_single_instance()

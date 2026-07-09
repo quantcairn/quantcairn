@@ -14,6 +14,7 @@ trading-*.log
 /reports/
 src/ai_selector/reports/*.json
 state/
+runtime/
 config.local.yaml
 
 .DS_Store

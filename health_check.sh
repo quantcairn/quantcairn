@@ -77,6 +77,18 @@ check_combined() {
     fi
 }
 
+check_combined_process_count() {
+    local count
+    count=$(pgrep -af 'scripts/start_combined.py|src.dashboard.combined|start_combined\(8090\)' 2>/dev/null | grep -v 'health_check.sh' | wc -l | tr -d ' ')
+    if [ "${count:-0}" -gt 1 ] 2>/dev/null; then
+        echo "WARN combined process count > 1: $count"
+    elif [ "${count:-0}" -eq 1 ] 2>/dev/null; then
+        echo "OK   combined process count: $count"
+    else
+        echo "WARN combined process count: 0"
+    fi
+}
+
 check_log_risks() {
     local file="$1"
     local name="$2"
@@ -117,6 +129,7 @@ else
 fi
 check_port 8090 "combined"
 check_fd 8090 "combined"
+check_combined_process_count
 
 echo
 echo "== APIs =="
@@ -134,6 +147,15 @@ else
     done
 fi
 check_combined
+if ! lsof -nP -iTCP:8090 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "WARN 8090 not listening; recent combined errors:"
+    if [ -f "$LOG_DIR/combined.err.log" ]; then
+        tail -n 20 "$LOG_DIR/combined.err.log" | sed 's/^/     /'
+    fi
+    if [ -f "$LOG_DIR/combined.log" ]; then
+        tail -n 20 "$LOG_DIR/combined.log" | sed 's/^/     /'
+    fi
+fi
 
 echo
 echo "== logs =="

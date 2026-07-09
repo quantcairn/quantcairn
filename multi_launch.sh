@@ -12,6 +12,7 @@ UID_NUM="$(id -u)"
 TOP_ENGINES=(TOP1 TOP2 TOP3)
 ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
 COMBINED_JOB="com.soxs.combined"
+COMBINED_PID_FILE="$PROJECT_DIR/runtime/combined.pid"
 
 cd "$PROJECT_DIR" || exit 1
 
@@ -94,6 +95,124 @@ kill_dashboard_ports() {
     done
 }
 
+wait_until_port_free() {
+    local port="$1"
+    local timeout="${2:-15}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+combined_command_for_pid() {
+    local pid="$1"
+    ps -p "$pid" -o command= 2>/dev/null | tr -d '\n'
+}
+
+is_project_combined_command() {
+    local cmd="$1"
+    case "$cmd" in
+        *"scripts/start_combined.py"*|*"src.dashboard.combined"*|*"start_combined(8090)"*|*"start_combined.py"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+combined_pid_file_pid() {
+    if [ -f "$COMBINED_PID_FILE" ]; then
+        cat "$COMBINED_PID_FILE" 2>/dev/null | tr -d '[:space:]'
+    fi
+}
+
+combined_pid_alive() {
+    local pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+remove_combined_pid_file() {
+    rm -f "$COMBINED_PID_FILE" 2>/dev/null || true
+}
+
+stop_combined_process() {
+    local pid="$1"
+    if [ -z "$pid" ]; then
+        return 0
+    fi
+    if ! combined_pid_alive "$pid"; then
+        return 0
+    fi
+    kill "$pid" 2>/dev/null || true
+    sleep 2
+    if combined_pid_alive "$pid"; then
+        kill -9 "$pid" 2>/dev/null || true
+        sleep 1
+    fi
+    return 0
+}
+
+stop_combined() {
+    local cleaned=0
+    local pid_from_file
+    pid_from_file="$(combined_pid_file_pid)"
+    if [ -n "$pid_from_file" ]; then
+        local cmd
+        cmd="$(combined_command_for_pid "$pid_from_file")"
+        if is_project_combined_command "$cmd"; then
+            stop_combined_process "$pid_from_file"
+            cleaned=1
+        fi
+    fi
+
+    if command -v launchctl >/dev/null 2>&1; then
+        launchctl bootout gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+        launchctl disable gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+    fi
+
+    local listeners
+    listeners="$(lsof -tiTCP:8090 -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
+    if [ -n "$listeners" ]; then
+        local pid
+        for pid in $listeners; do
+            local cmd
+            cmd="$(combined_command_for_pid "$pid")"
+            if is_project_combined_command "$cmd"; then
+                stop_combined_process "$pid"
+                cleaned=1
+            fi
+        done
+    fi
+
+    remove_combined_pid_file
+    if [ "$cleaned" = "1" ]; then
+        echo "🧹 Combined dashboard stopped"
+    fi
+}
+
+combined_port_is_project_owned() {
+    local listeners
+    listeners="$(lsof -tiTCP:8090 -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
+    if [ -z "$listeners" ]; then
+        return 1
+    fi
+    local pid
+    for pid in $listeners; do
+        local cmd
+        cmd="$(combined_command_for_pid "$pid")"
+        if ! is_project_combined_command "$cmd"; then
+            return 2
+        fi
+    done
+    return 0
+}
+
 wait_for_port() {
     local port="$1"
     local timeout="${2:-15}"
@@ -111,6 +230,36 @@ wait_for_port() {
 start_combined_dashboard() {
     : > "$LOG_DIR/combined.log"
     COMBINED_PID=""
+    local pid_from_file
+    pid_from_file="$(combined_pid_file_pid)"
+    if [ -n "$pid_from_file" ]; then
+        local cmd
+        cmd="$(combined_command_for_pid "$pid_from_file")"
+        if combined_pid_alive "$pid_from_file" && is_project_combined_command "$cmd"; then
+            echo "✅ Combined dashboard already running (PID $pid_from_file, pid_file=$COMBINED_PID_FILE)"
+            COMBINED_PID="$pid_from_file"
+            return 0
+        fi
+        remove_combined_pid_file
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        local port_state
+        combined_port_is_project_owned
+        port_state=$?
+        if [ "$port_state" = "2" ]; then
+            echo "❌ Port 8090 occupied by non-project process"
+            lsof -nP -iTCP:8090 -sTCP:LISTEN 2>/dev/null || true
+            tail -n 40 "$LOG_DIR/combined.log" 2>/dev/null || true
+            return 1
+        elif [ "$port_state" = "0" ]; then
+            stop_combined
+            wait_until_port_free 8090 5 || {
+                echo "❌ Port 8090 still busy after stopping existing combined"
+                tail -n 40 "$LOG_DIR/combined.log" 2>/dev/null || true
+                return 1
+            }
+        fi
+    fi
     if command -v launchctl >/dev/null 2>&1; then
         local plist="$PROJECT_DIR/launchd/${COMBINED_JOB}.plist"
         if [ -f "$plist" ]; then
@@ -152,8 +301,7 @@ stop_existing() {
     pkill -f "scripts/start_orphan_monitor.py" 2>/dev/null
     pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
     pkill -f "start_combined(8090)" 2>/dev/null
-    launchctl bootout gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
-    launchctl disable gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
+    stop_combined
     kill_dashboard_ports
 }
 
@@ -352,22 +500,23 @@ case "$1" in
         ;;
 
     restart-top)
+        stop_combined
         stop_top
-        # Force manual mode — launchd KeepAlive interferes with fresh restarts
-        # after AI selector updates configs.
+        # Give launchd/child processes time to fully release ports before restart.
         sleep 3
+        wait_until_port_free 8090 10 || true
+        wait_until_port_free 8091 10 || true
+        wait_until_port_free 8092 10 || true
+        wait_until_port_free 8093 10 || true
         USE_LAUNCHD_TOPS=0 start_top || exit 1
+        start_combined_dashboard || exit 1
+        bash "$PROJECT_DIR/health_check.sh" || true
         echo "🔄 TOP engines restarted with new configs"
         ;;
 
     restart-combined)
-        pkill -f "scripts/start_combined.py" 2>/dev/null
-        pkill -f "from src.dashboard.combined import start_combined" 2>/dev/null
-        pkill -f "start_combined(8090)" 2>/dev/null
-        launchctl bootout gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
-        launchctl disable gui/"$UID_NUM"/"$COMBINED_JOB" 2>/dev/null || true
-        kill_listener_on_port 8090
-        sleep 1
+        stop_combined
+        wait_until_port_free 8090 10 || true
         if start_combined_dashboard; then
             if [ -n "${COMBINED_PID:-}" ]; then
                 echo "🔄 Combined dashboard restarted (PID $COMBINED_PID)"
