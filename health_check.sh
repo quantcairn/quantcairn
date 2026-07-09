@@ -1,7 +1,9 @@
 #!/bin/bash
 # Quick operational health check for the Top3 trading system.
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="${SOXS_PROJECT_DIR:-/Users/chenwei/soxs-range-arbitrage}"
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
 if [ -z "$PYTHON_BIN" ]; then
     if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
@@ -51,7 +53,14 @@ check_top_slot() {
     local port="$2"
     local cfg="$PROJECT_DIR/configs/${top_name}.yaml"
     if [ ! -f "$cfg" ]; then
-        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        local pid cmd
+        pid=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fp 2>/dev/null | tr -d 'p' | head -n 1)
+        if [[ -n "$pid" ]]; then
+            cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+        else
+            cmd=""
+        fi
+        if [[ -n "$pid" && "$cmd" == *"$PROJECT_DIR"* ]]; then
             echo "WARN $top_name: config missing but port $port is still listening"
         else
             echo "OK   $top_name: disabled / config missing"

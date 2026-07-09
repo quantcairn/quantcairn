@@ -7,11 +7,14 @@ import os
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import requests
+import yaml
 
 logger = logging.getLogger(__name__)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 # Rate limiting for Telegram: max 1 msg/sec
 _telegram_last_send = 0.0
@@ -56,7 +59,7 @@ class Notifier:
         title = f"📊 {ticker} — {signal_type}"
         body = f"${price:.2f} | {reason}"
 
-        self._send(title, body, "signal", macos=False)
+        self._send(title, body, "signal", macos=False, remote=False)
 
     def order_submitted(self, ticker: str, side: str, quantity: int, order_id: str = "", mode: str = "paper") -> None:
         """Notify when a live order has been accepted by the broker."""
@@ -65,12 +68,11 @@ class Notifier:
         side_cn = "买入" if side.upper() == "BUY" else "卖出"
         title = f"🟦 {prefix}{side_cn} {quantity}股 {ticker}"
         body = f"已提交{suffix}"
-        self._send(title, body, "trade", macos=(mode == "live"))
+        self._send(title, body, "trade", macos=False, remote=False)
 
     def trade(self, ticker: str, side: str, quantity: int, price: float, pnl: Optional[float] = None, mode: str = "paper") -> None:
-        """Notify about an executed trade — detailed for live, summary for paper."""
-        is_live = mode == "live"
-        prefix = "实盘" if is_live else "模拟"
+        """Notify about an executed trade."""
+        prefix = "实盘" if mode == "live" else "模拟"
         side_cn = "买入" if side.upper() == "BUY" else "卖出"
         emoji = "🟢" if side.upper() == "BUY" else "🔴"
         trade_value = price * quantity
@@ -80,7 +82,10 @@ class Notifier:
         title = f"{emoji} {prefix}{side_cn} {ticker} {quantity}股"
         body = f"{sign}${trade_value:,.2f} @ ${price:.2f}{pnl_str}"
 
-        self._send(title, body, "trade", macos=is_live)
+        # External notifications are intentionally limited to filled trades
+        # so the desktop / Telegram channels stay quiet during scans, signals,
+        # rejects, and submitted-but-unfilled orders.
+        self._send(title, body, "trade", macos=True, remote=True)
 
         # Track for summary
         self._trade_count_since_summary += 1
@@ -90,7 +95,7 @@ class Notifier:
         """General alert (errors, warnings, halts)."""
         emoji = {"info": "ℹ️", "warning": "⚠️", "error": "🚨", "halt": "🛑"}
         title = f"{emoji.get(level, 'ℹ️')} Trading Alert"
-        self._send(title, message, level, macos=False)
+        self._send(title, message, level, macos=False, remote=False)
 
     def summary(self, stats: dict) -> None:
         """Send a trading summary."""
@@ -101,7 +106,7 @@ class Notifier:
             f"P&L: ${stats.get('total_pnl', 0):+.2f} | "
             f"Today: ${stats.get('daily_pnl_today', 0):+.2f}"
         )
-        self._send(title, body, "summary", macos=False)
+        self._send(title, body, "summary", macos=False, remote=False)
 
     def heartbeat(self, ticker: str, price: float, range_state, trend_info: dict = None, halted: bool = False) -> None:
         """Lightweight periodic status (not a full notification)."""
@@ -125,7 +130,14 @@ class Notifier:
 
     # ---- Internal ----
 
-    def _send(self, title: str, body: str, category: str, macos: bool = False) -> None:
+    def _send(
+        self,
+        title: str,
+        body: str,
+        category: str,
+        macos: bool = False,
+        remote: bool = False,
+    ) -> None:
         """Send notification through all enabled channels."""
         timestamp = datetime.now().strftime("%H:%M:%S")
 
@@ -138,11 +150,11 @@ class Notifier:
             self._macos_notify(title, body)
 
         # Webhook (Discord/Slack/WeCom)
-        if self.webhook_url:
+        if self.webhook_url and remote:
             self._webhook_send(title, body, category)
 
         # Telegram
-        if self._telegram_enabled:
+        if self._telegram_enabled and remote:
             self._telegram_send(title, body)
 
     def _console_out(self, timestamp: str, title: str, body: str, category: str) -> None:
@@ -247,3 +259,126 @@ class Notifier:
         filled = max(0, min(width, int(pct / 100 * width)))
         empty = width - filled
         return "█" * filled + "░" * empty
+
+
+def _load_notification_config() -> dict:
+    notifications: dict = {}
+    for path in (
+        PROJECT_DIR / "config.yaml",
+        PROJECT_DIR / "config.local.yaml",
+    ):
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        section = payload.get("notifications")
+        if isinstance(section, dict):
+            notifications.update(section)
+    return notifications
+
+
+def _truncate_reason(value: object, limit: int = 72) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _ticker_line(top_config: dict, rank: int) -> str:
+    selection = dict(top_config.get("selection") or {})
+    allocation = dict(top_config.get("allocation") or {})
+    ticker = str(top_config.get("ticker") or f"TOP{rank}")
+    final_score = selection.get("final_score", selection.get("score", "-"))
+    ai_score = selection.get("ai_score", "-")
+    range_score = selection.get("range_score", "-")
+    leveraged = bool(selection.get("leveraged_etf"))
+    filter_passed = bool(selection.get("trade_filter_passed", False))
+    fallback_used = bool(selection.get("fallback_used", False))
+    reason = _truncate_reason(selection.get("reason") or top_config.get("reason") or "")
+    target_capital = float(allocation.get("target_capital") or 0.0)
+    target_shares = int(allocation.get("target_shares") or 0)
+    filter_text = "通过" if filter_passed else "未通过"
+    kind = "杠杆/反向ETF" if leveraged else "普通标的"
+    fallback_text = "是" if fallback_used else "否"
+    return (
+        f"TOP{rank}：{ticker}\n"
+        f"分数：final {final_score} / AI {ai_score} / Range {range_score}\n"
+        f"类型：{kind}\n"
+        f"仓位：${target_capital:.0f} / {target_shares}股\n"
+        f"过滤：{filter_text}\n"
+        f"fallback：{fallback_text}\n"
+        f"理由：{reason or '无'}"
+    )
+
+
+def _build_ai_selection_message(selection_report: dict, top_configs: list | None = None) -> tuple[str, str]:
+    report = dict(selection_report or {})
+    date_str = str(report.get("selection_date") or report.get("date") or datetime.now().date().isoformat())
+    top_items = list(top_configs or report.get("top3") or report.get("top5") or [])
+    target_top_n = int(report.get("target_top_n") or 3)
+    selection_count = int(report.get("selection_count") or len(top_items))
+    fallback_used = bool(report.get("fallback_used", False))
+    providers_used = ", ".join(report.get("providers_used") or []) or "无"
+    providers_disabled = ", ".join(report.get("providers_disabled") or []) or "无"
+    warnings = list(report.get("warnings") or [])
+    quality_report = dict(report.get("quality_filter_report") or {})
+    warnings.extend(quality_report.get("warnings") or [])
+    warnings.extend((report.get("composition_filter") or {}).get("warnings") or [])
+    warnings = [str(item) for item in warnings if str(item).strip()]
+    status = "成功" if top_items else "失败"
+    fallback_text = "true" if fallback_used else "false"
+    lines = [
+        f"日期：{date_str}",
+        f"状态：{status}",
+        f"TOP数量：{selection_count}/{target_top_n}",
+        f"fallback：{fallback_text}",
+        "",
+    ]
+
+    for rank in range(1, target_top_n + 1):
+        if rank <= len(top_items):
+            lines.append(_ticker_line(dict(top_items[rank - 1] or {}), rank))
+        else:
+            reason = "top_n_not_filled" if selection_count < target_top_n else "未生成"
+            lines.append(f"TOP{rank}：未生成 / disabled\n原因：{reason}")
+        lines.append("")
+
+    lines.extend(
+        [
+            f"Provider：使用：{providers_used}",
+            f"禁用：{providers_disabled}",
+        ]
+    )
+    if warnings:
+        lines.append("警告：")
+        lines.extend([f"- {item}" for item in warnings[:6]])
+    if fallback_used:
+        lines.append("注意：本次包含 fallback/mock 数据，仅建议 paper 验证，不建议直接 live。")
+    return "【AI 选股完成】", "\n".join(lines).strip()
+
+
+def notify_ai_selection_result(selection_report: dict, top_configs: list | None = None) -> None:
+    notification_cfg = _load_notification_config()
+    webhook_url = os.environ.get("AI_SELECTOR_WEBHOOK") or notification_cfg.get("webhook_url")
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        webhook_url=webhook_url,
+        trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
+        telegram_bot_token=(
+            os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
+            or notification_cfg.get("telegram_bot_token", "")
+        ),
+        telegram_chat_id=(
+            os.environ.get("SOXS_TELEGRAM_CHAT_ID")
+            or notification_cfg.get("telegram_chat_id", "")
+        ),
+    )
+    title, body = _build_ai_selection_message(selection_report, top_configs)
+    if not notifier._telegram_enabled and not notifier.webhook_url:
+        logger.info("AI selection notification skipped: Telegram/Webhook not configured")
+        return
+    try:
+        notifier._send(title, body, "summary", macos=False, remote=True)
+    except Exception as exc:
+        logger.warning("AI selection notification failed: %s", exc)

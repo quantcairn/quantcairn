@@ -29,8 +29,6 @@ from src.ai_selector.trade_filter import TradeEligibilityFilter
 from datetime import datetime
 import os
 import json
-import requests
-import subprocess
 import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -41,6 +39,7 @@ from src.ai_selector.selector import write_selection_filter_log
 from src.ai_selector.selection_state import write_selection_state
 from src.ai_selector.config import load_runtime_config
 from src.data.fetcher import PriceFetcher
+from src.notifier.alerts import notify_ai_selection_result
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -820,8 +819,6 @@ def main():
     for i, t in enumerate(selected, start=1):
         print(f"{i}. {t['ticker']} — {t['score']}")
 
-    # Send notifications: webhook (env AI_SELECTOR_WEBHOOK) and macOS notification
-    webhook = os.environ.get('AI_SELECTOR_WEBHOOK')
     providers_used, providers_disabled, fmp_enabled = _provider_metadata(out, live_positions, integrated_ai)
     summary = {
         'timestamp': timestamp,
@@ -880,6 +877,8 @@ def main():
         report_path=str(latest_report_path),
     )
 
+    _notify_selection_result(summary, selected)
+
     restart_code = _restart_top_engines()
     if restart_code != 0:
         print(f"TOP restart failed with exit code {restart_code}.")
@@ -887,25 +886,6 @@ def main():
 
     if str((summary.get("settings") or {}).get("selection_stage") or "") == "fast_preliminary":
         _spawn_background_refinement(timestamp)
-
-    if webhook:
-        try:
-            requests.post(webhook, json=summary, timeout=5)
-        except Exception:
-            print('Failed to send webhook notification')
-
-    # macOS notification is optional and must never block the selector.
-    if os.environ.get("AI_SELECTOR_MAC_NOTIFY", "0") == "1":
-        try:
-            top3tickers = ', '.join([t['ticker'] for t in selected])
-            msg = f"Top3: {top3tickers} (非成交提醒)"
-            subprocess.run(
-                ['osascript', '-e', f'display notification "{msg}" with title "AI 选股更新"'],
-                check=False,
-                timeout=2,
-            )
-        except Exception:
-            pass
 
 
 def _has_live_top_configs() -> bool:
@@ -920,6 +900,13 @@ def _has_live_top_configs() -> bool:
         if str(config.get("mode") or "").strip().lower() == "live":
             return True
     return False
+
+
+def _notify_selection_result(summary: dict, selected: list[dict]) -> None:
+    try:
+        notify_ai_selection_result(summary, top_configs=list(selected))
+    except Exception as exc:
+        print(f"AI selection notification warning: {exc}")
 
 if __name__ == '__main__':
     main()
