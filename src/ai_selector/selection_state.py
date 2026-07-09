@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 from src.ai_selector.config import load_runtime_config
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
+PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
 
 
 def _state_dir() -> Path:
@@ -98,8 +98,23 @@ def verify_selection_state(required_et_date: str | None = None) -> tuple[bool, s
     if not state:
         return False, "selection_state_missing", None
 
+    state = dict(state)
     state_date = str(state.get("et_date") or "").strip()
     if required_et_date and state_date != required_et_date:
+        state["required_et_date"] = required_et_date
+        state["selection_state_symbols"] = [
+            str(item or "").strip().upper()
+            for item in state.get("selected_symbols") or []
+            if str(item or "").strip()
+        ]
+        state["state_top_config_symbols"] = [
+            str(item or "").strip().upper()
+            for item in state.get("top_config_symbols") or []
+            if str(item or "").strip()
+        ]
+        state["current_top_config_symbols"] = current_top_config_symbols(
+            limit=max(configured_top_count(), len(state.get("selected_symbols") or []))
+        )
         return False, f"selection_state_date_mismatch:{state_date or 'missing'}", state
 
     expected_top_configs = [
@@ -112,8 +127,11 @@ def verify_selection_state(required_et_date: str | None = None) -> tuple[bool, s
         for item in state.get("selected_symbols") or []
         if str(item or "").strip()
     ]
-    expected = expected_top_configs or expected_selected
+    expected = expected_selected or expected_top_configs
     actual = current_top_config_symbols(limit=max(configured_top_count(), len(expected)))
+    state["selection_state_symbols"] = expected_selected
+    state["state_top_config_symbols"] = expected_top_configs
+    state["current_top_config_symbols"] = actual
     if expected != actual:
         return False, "top_config_symbols_mismatch", state
 

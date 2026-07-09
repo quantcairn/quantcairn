@@ -38,6 +38,33 @@ check_launchd() {
     fi
 }
 
+check_selection_sync() {
+    "$PYTHON_BIN" - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from src.ai_selector.selection_state import verify_selection_state
+
+required = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+ok, reason, state = verify_selection_state(required_et_date=required)
+state = state or {}
+selection_state_symbols = state.get("selection_state_symbols") or state.get("selected_symbols") or []
+current_top_config_symbols = state.get("current_top_config_symbols") or state.get("top_config_symbols") or []
+print("== selection sync ==")
+print("selection_state tickers: %s" % selection_state_symbols)
+print("current TOP config tickers: %s" % current_top_config_symbols)
+if ok:
+    print("OK   selection sync: aligned (%s)" % required)
+else:
+    mismatch_reason = reason
+    if reason == "top_config_symbols_mismatch":
+        mismatch_reason = "top_config_symbols_do_not_match_selection_state"
+    print("WARN selection sync mismatch: %s" % mismatch_reason)
+    if reason.startswith("selection_state_date_mismatch"):
+        print("WARN mismatch detail: selection_state date does not match required date %s" % required)
+    print("WARN suggestion: .venv/bin/python scripts/run_ai_selector.py && ./multi_launch.sh restart-top && bash health_check.sh")
+PY
+}
+
 check_port() {
     local port="$1"
     local name="$2"
@@ -146,6 +173,9 @@ echo "== launchd =="
 check_launchd "com.soxs.arbitrage"
 check_launchd "com.soxs.ai_selector"
 check_launchd "com.soxs.arbitrage.stop"
+
+echo
+check_selection_sync
 
 echo
 echo "== ports =="

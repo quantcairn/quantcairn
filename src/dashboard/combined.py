@@ -418,6 +418,67 @@ def _selected_stock_positions_count(live_account: dict | None, selected_tickers:
     return count
 
 
+def _normalize_symbol_list(values) -> list[str]:
+    symbols: list[str] = []
+    for item in values or []:
+        raw = str(item or "").strip().upper().split(".")[0]
+        if raw:
+            symbols.append(raw)
+    seen: set[str] = set()
+    result: list[str] = []
+    for symbol in symbols:
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        result.append(symbol)
+    return result
+
+
+def _load_orphan_monitor_symbols() -> list[str]:
+    try:
+        day = latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode()) or latest_trade_log_day(PROJECT_DIR / "logs")
+        if not day:
+            return []
+        records = load_trade_records(PROJECT_DIR / "logs", day=day)
+    except Exception:
+        return []
+
+    for record in reversed(records):
+        if not isinstance(record, dict):
+            continue
+        phase = str(record.get("phase") or "").strip()
+        if phase not in {"orphan_assignment_change", "orphan_position_scan"}:
+            continue
+        raw_symbols = record.get("symbols") or []
+        symbols: list[str] = []
+        if phase == "orphan_assignment_change":
+            if isinstance(raw_symbols, list):
+                symbols = _normalize_symbol_list(raw_symbols)
+        else:
+            if isinstance(raw_symbols, list):
+                for item in raw_symbols:
+                    if isinstance(item, dict):
+                        symbols.append(str(item.get("symbol") or item.get("ticker") or "").strip().upper().split(".")[0])
+        symbols = [symbol for symbol in symbols if symbol]
+        if symbols:
+            return _normalize_symbol_list(symbols)
+    return []
+
+
+def _dashboard_active_symbols(ai_selection: dict | None, selection_sync: dict | None, live_account: dict | None) -> list[str]:
+    symbols: list[str] = []
+    selection_state_symbols = _normalize_symbol_list((selection_sync or {}).get("selection_state_symbols") or [])
+    if selection_state_symbols:
+        symbols.extend(selection_state_symbols)
+    else:
+        symbols.extend(_normalize_symbol_list((selection_sync or {}).get("current_top_config_symbols") or []))
+    symbols.extend(_normalize_symbol_list(item.get("ticker") for item in (ai_selection or {}).get("top3") or [] if isinstance(item, dict)))
+    symbols.extend(_normalize_symbol_list(item.get("ticker") for item in (ai_selection or {}).get("protected_positions") or [] if isinstance(item, dict)))
+    symbols.extend(_normalize_symbol_list(item.get("ticker") for item in (live_account or {}).get("positions") or [] if isinstance(item, dict)))
+    symbols.extend(_load_orphan_monitor_symbols())
+    return _normalize_symbol_list(symbols)
+
+
 def _load_ai_selection_report():
     path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
     if not path.exists():
@@ -599,6 +660,29 @@ def _selection_sync_status() -> dict:
     ok, reason, state = verify_selection_state(required_et_date=required_date)
     state = state or load_selection_state() or {}
     state_date = str(state.get("et_date") or "").strip() or None
+    selection_state_symbols = [
+        str(item or "").strip().upper()
+        for item in (state.get("selection_state_symbols") or state.get("selected_symbols") or [])
+        if str(item or "").strip()
+    ]
+    current_top_config_symbols_list = [
+        str(item or "").strip().upper()
+        for item in (state.get("current_top_config_symbols") or current_top_config_symbols(limit=max(configured_top_count(), len(selection_state_symbols) or 1)))
+        if str(item or "").strip()
+    ]
+    state_top_config_symbols = [
+        str(item or "").strip().upper()
+        for item in (state.get("state_top_config_symbols") or state.get("top_config_symbols") or [])
+        if str(item or "").strip()
+    ]
+    mismatch_reason = ""
+    if reason == "top_config_symbols_mismatch":
+        mismatch_reason = "top_config_symbols_do_not_match_selection_state"
+    elif reason.startswith("selection_state_date_mismatch"):
+        mismatch_reason = "selection_state_date_mismatch"
+    elif reason == "selection_state_missing":
+        mismatch_reason = "selection_state_missing"
+    suggestion = "请重新运行 AI Selector 或重新写入 TOP 配置"
     label = "已对齐"
     level = "green"
     detail = f"当天配置已对齐（美东 {required_date}）"
@@ -610,6 +694,11 @@ def _selection_sync_status() -> dict:
             "detail": detail,
             "required_date": required_date,
             "state_date": state_date,
+            "selection_state_symbols": selection_state_symbols,
+            "current_top_config_symbols": current_top_config_symbols_list,
+            "state_top_config_symbols": state_top_config_symbols,
+            "mismatch_reason": "",
+            "suggestion": suggestion,
         }
     if reason == "selection_state_missing":
         label = "未校验"
@@ -618,15 +707,26 @@ def _selection_sync_status() -> dict:
     elif reason.startswith("selection_state_date_mismatch"):
         label = "不是今天"
         level = "yellow"
-        detail = f"当前记录日期是美东 {state_date or '未知'}，不是今天 {required_date}。"
+        detail = (
+            f"当前记录日期是美东 {state_date or '未知'}，不是今天 {required_date}。"
+            f" selection_state tickers: {selection_state_symbols or []} · current TOP config tickers: {current_top_config_symbols_list or []}。"
+        )
     elif reason == "top_config_symbols_mismatch":
         label = "配置不一致"
         level = "red"
-        detail = "TOP1-3 配置和最近一次选股结果不一致，交易启动会被拦下。"
+        detail = (
+            "TOP1-3 配置和最近一次选股结果不一致，交易启动会被拦下。"
+            f" selection_state tickers: {selection_state_symbols or []} · current TOP config tickers: {current_top_config_symbols_list or []}。"
+            f" mismatch reason: {mismatch_reason}。"
+            f" 建议操作：{suggestion}。"
+        )
     else:
         label = "校验失败"
         level = "red"
-        detail = f"选股配置校验失败：{reason}"
+        detail = (
+            f"选股配置校验失败：{reason}"
+            f" selection_state tickers: {selection_state_symbols or []} · current TOP config tickers: {current_top_config_symbols_list or []}。"
+        )
     return {
         "ok": False,
         "level": level,
@@ -634,6 +734,11 @@ def _selection_sync_status() -> dict:
         "detail": detail,
         "required_date": required_date,
         "state_date": state_date,
+        "selection_state_symbols": selection_state_symbols,
+        "current_top_config_symbols": current_top_config_symbols_list,
+        "state_top_config_symbols": state_top_config_symbols,
+        "mismatch_reason": mismatch_reason,
+        "suggestion": suggestion,
     }
 
 
@@ -1415,6 +1520,14 @@ HTML = """<!DOCTYPE html>
                         {% endif %}
                         <br>
                         选股配置校验：<span class="{{ selection_sync.level }}">{{ selection_sync.label }}</span> · {{ selection_sync.detail }}
+                        {% if not selection_sync.ok %}
+                        <div class="warning-banner" style="margin-top:10px;background:rgba(255,255,255,.03);color:#e5eefc;border-color:rgba(255,255,255,.08)">
+                            <div>selection_state tickers: {{ (selection_sync.selection_state_symbols or []) | safe }}</div>
+                            <div>current TOP config tickers: {{ (selection_sync.current_top_config_symbols or []) | safe }}</div>
+                            <div>mismatch reason: {{ (selection_sync.mismatch_reason or 'unknown') | safe }}</div>
+                            <div>建议操作：{{ (selection_sync.suggestion or '请重新运行 AI Selector 或重新写入 TOP 配置') | safe }}</div>
+                        </div>
+                        {% endif %}
                     </div>
                     <form class="settings-form" method="post" action="/ai-selector-settings">
                         <div class="settings-field">
@@ -1592,7 +1705,7 @@ HTML = """<!DOCTYPE html>
                 </div>
             </div>
         </div>
-        {% if order_states.blocked_tickers or order_states.failed_orders_today > 0 %}
+        {% if order_states.blocked_tickers or order_states.failed_orders_today > 0 or order_states.historical_ticker_details %}
         <div class="order-state-strip">
             {% if order_states.blocked_tickers %}
             <div class="order-state-section">
@@ -1615,6 +1728,25 @@ HTML = """<!DOCTYPE html>
                 {% for ticker in order_states.ticker_details %}
                 {% if ticker.last_failed %}
                 <span class="order-state-badge failed" title="{{ ticker.last_failed.reason }}">
+                    {{ ticker.ticker }}: {{ ticker.last_failed.reason[:60] }}{% if ticker.last_failed.reason|length > 60 %}…{% endif %}
+                    {% if ticker.failed_count > 1 %}· {{ ticker.failed_count }}次{% endif %}
+                    ({{ ticker.last_failed.timestamp[:16] | replace('T', ' ') }})
+                </span>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if order_states.historical_ticker_details %}
+            <div class="order-state-section" style="width:100%">
+                <span class="order-state-title">
+                    🕒 历史/非当前标的失败记录
+                    {% if order_states.historical_failed_orders_today > 0 %}
+                        · {{ order_states.historical_failed_orders_today }}个标的 / 原始拒单 {{ order_states.historical_failed_orders_total_today }}
+                    {% endif %}
+                </span>
+                {% for ticker in order_states.historical_ticker_details %}
+                {% if ticker.last_failed %}
+                <span class="order-state-badge" style="background:rgba(148,163,184,.12);color:#cbd5e1;border:1px solid rgba(148,163,184,.22)" title="{{ ticker.last_failed.reason }}">
                     {{ ticker.ticker }}: {{ ticker.last_failed.reason[:60] }}{% if ticker.last_failed.reason|length > 60 %}…{% endif %}
                     {% if ticker.failed_count > 1 %}· {{ ticker.failed_count }}次{% endif %}
                     ({{ ticker.last_failed.timestamp[:16] | replace('T', ' ') }})
@@ -2267,15 +2399,18 @@ def _ai_range_lookup(ai_selection: dict | None) -> dict[str, dict]:
     return lookup
 
 
-def _load_order_states() -> dict:
+def _load_order_states(active_symbols: set[str] | None = None) -> dict:
     """Read order-state files from disk for dashboard display."""
     result = {
         "blocked_tickers": [],
         "failed_orders_today": 0,
         "failed_orders_total_today": 0,
         "ticker_details": [],
+        "historical_ticker_details": [],
+        "historical_failed_orders_today": 0,
+        "historical_failed_orders_total_today": 0,
     }
-    configured_symbols = {str(symbol or "").strip().upper() for symbol in current_top_config_symbols(limit=5)}
+    active_symbols = {str(symbol or "").strip().upper() for symbol in (active_symbols or set()) if str(symbol or "").strip()}
     order_state_dir = STATE_DIR / "order_state"
     if not order_state_dir.is_dir():
         return result
@@ -2290,16 +2425,21 @@ def _load_order_states() -> dict:
                 continue
             if ticker_upper in _SYNTHETIC_TEST_TICKERS:
                 continue
-            if configured_symbols and ticker_upper not in configured_symbols and not data.get("blocked") and not data.get("failed_orders_today"):
+            if active_symbols and ticker_upper not in active_symbols and not data.get("blocked") and not data.get("failed_orders_today"):
                 continue
             detail = {
                 "ticker": ticker_upper,
                 "blocked": None,
                 "failed_count": len(data.get("failed_orders_today", [])),
                 "last_failed": None,
+                "current_active": ticker_upper in active_symbols if active_symbols else True,
             }
             failed_orders = data.get("failed_orders_today", [])
-            result["failed_orders_total_today"] += len(failed_orders)
+            is_active = detail["current_active"]
+            if is_active:
+                result["failed_orders_total_today"] += len(failed_orders)
+            else:
+                result["historical_failed_orders_total_today"] += len(failed_orders)
             if failed_orders:
                 last = failed_orders[-1]
                 detail["last_failed"] = {
@@ -2308,7 +2448,10 @@ def _load_order_states() -> dict:
                     "quantity": last.get("quantity", 0),
                     "buying_power": last.get("buying_power", 0.0),
                 }
-                result["failed_orders_today"] += 1
+                if is_active:
+                    result["failed_orders_today"] += 1
+                else:
+                    result["historical_failed_orders_today"] += 1
             blocked = data.get("blocked")
             if blocked:
                 blocked_until = blocked.get("blocked_until", "")
@@ -2323,13 +2466,23 @@ def _load_order_states() -> dict:
                             "remaining_min": remaining // 60,
                             "remaining_sec": remaining % 60,
                         }
-                        result["blocked_tickers"].append(detail)
+                        if is_active:
+                            result["blocked_tickers"].append(detail)
+                        else:
+                            result.setdefault("historical_blocked_tickers", []).append(detail)
                 except Exception:
                     pass
-            result["ticker_details"].append(detail)
+            if is_active:
+                result["ticker_details"].append(detail)
+            else:
+                result["historical_ticker_details"].append(detail)
         except Exception:
             pass
     result["ticker_details"].sort(
+        key=lambda item: str(((item.get("last_failed") or {}).get("timestamp") or "")),
+        reverse=True,
+    )
+    result["historical_ticker_details"].sort(
         key=lambda item: str(((item.get("last_failed") or {}).get("timestamp") or "")),
         reverse=True,
     )
@@ -2355,7 +2508,6 @@ def index():
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
     startup_guard = _startup_guard_status(selection_sync)
-    order_states = _load_order_states()
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
     audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
@@ -2375,6 +2527,14 @@ def index():
             and float(trade_audit.get("broker_unresolved_oldest_seconds", 0.0) or 0.0) >= _UNRESOLVED_ALERT_SECONDS
         ),
     }
+    dashboard_active_symbols = _dashboard_active_symbols(ai_selection, selection_sync, live_account)
+    try:
+        order_states = _load_order_states(active_symbols=set(dashboard_active_symbols))
+    except TypeError as exc:
+        if "unexpected keyword argument" in str(exc):
+            order_states = _load_order_states()
+        else:
+            raise
     audit_day_label = (
         (audit_day or datetime.now().strftime("%Y%m%d"))
         if audit_scope in {"today", "latest"}
