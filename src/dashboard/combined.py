@@ -538,6 +538,27 @@ def _load_ai_selection_report():
         }
 
 
+def _ai_selection_price_band(ai_selection: dict | None) -> dict[str, float | bool]:
+    settings = (ai_selection or {}).get("settings") if isinstance(ai_selection, dict) else {}
+    settings = settings if isinstance(settings, dict) else {}
+    has_explicit_band = any(
+        key in settings
+        for key in ("min_price", "max_price", "price_band")
+    )
+    band_source = settings
+    if isinstance(settings.get("price_band"), dict):
+        band_source = {
+            "min_price": settings["price_band"].get("min"),
+            "max_price": settings["price_band"].get("max"),
+        }
+    min_price, max_price = resolve_price_band(band_source)
+    return {
+        "min": float(min_price),
+        "max": float(max_price),
+        "defaulted": not has_explicit_band,
+    }
+
+
 def _enrich_ticker_descriptions(top3_list: list) -> list:
     """Add human-readable description for each selected ticker."""
     try:
@@ -1511,7 +1532,7 @@ HTML = """<!DOCTYPE html>
                         {% if ai_selection and ai_selection.timestamp %}
                             最新选股时间：{{ ai_selection.timestamp }}
                             {% if ai_selection.settings %}
-                                · 价格范围：${{ "%.2f"|format(ai_selection.settings.min_price or 0) }} - ${{ "%.2f"|format(ai_selection.settings.max_price or 0) }}
+                                · 价格范围：${{ "%.2f"|format(ai_selection_price_band.min or 0) }} - ${{ "%.2f"|format(ai_selection_price_band.max or 0) }}{% if ai_selection_price_band.defaulted %} (default){% endif %}
                                 · 自动刷新：{{ ai_selection.settings.auto_refresh_minutes or 0 }} 分钟
                                 · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
                                 · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
@@ -1566,11 +1587,11 @@ HTML = """<!DOCTYPE html>
                         </div>
                         {% for row in ai_selection.report[:3] %}
                         <div class="selector-row">
-                            <span class="num">{{ row.rank }}</span>
-                            <span class="ticker">{{ row.ticker }}</span>
-                            <span class="num">{{ "%.2f"|format(row.score) }}</span>
-                            <span class="num">{{ "%.2f"|format(row.volatility) }}</span>
-                            <span class="num">{{ row.suggested_range }}</span>
+                            <span class="num">{{ row.get('rank', loop.index) }}</span>
+                            <span class="ticker">{{ row.get('ticker', 'N/A') }}</span>
+                            <span class="num">{{ "%.2f"|format(row.get('score', 0) or 0) }}</span>
+                            <span class="num">{{ "%.2f"|format(row.get('volatility', row.get('volatility_score', 0)) or 0) }}</span>
+                            <span class="num">{{ row.get('suggested_range', row.get('range_display', '暂无')) }}</span>
                         </div>
                         {% endfor %}
                     </div>
@@ -2536,6 +2557,7 @@ def index():
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
     _enrich_ticker_descriptions(ai_selection.get("top3", []))
     ai_ranges = _ai_range_lookup(ai_selection)
+    ai_selection_price_band = _ai_selection_price_band(ai_selection)
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
@@ -2804,6 +2826,7 @@ def index():
         live_account=display_live_account or live_account,
         selected_positions_count=selected_positions_count,
         ai_selection=ai_selection,
+        ai_selection_price_band=ai_selection_price_band,
         ai_runtime=ai_runtime,
         selection_sync=selection_sync,
         startup_guard=startup_guard,

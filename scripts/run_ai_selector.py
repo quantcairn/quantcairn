@@ -430,6 +430,53 @@ def _enforce_price_band(
     return filtered, removed
 
 
+def _price_band_reject_item(item: dict, min_price: float, max_price: float) -> dict:
+    ticker = _normalize_ticker(item.get("ticker"))
+    price = _candidate_price(item)
+    reason = "price_missing" if price is None else "price_out_of_range"
+    rejected = {
+        "ticker": ticker,
+        "reason": reason,
+        "price": round(float(price), 4) if price is not None else None,
+        "min_price": float(min_price),
+        "max_price": float(max_price),
+        "allowed_range": f"${min_price:.2f}-${max_price:.2f}",
+        "source": str(item.get("source") or ""),
+    }
+    return rejected
+
+
+def _finalize_price_band(candidates: list[dict], min_price: float, max_price: float) -> tuple[list[dict], list[dict]]:
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    for raw in candidates or []:
+        item = dict(raw)
+        price = _candidate_price(item)
+        ticker = _normalize_ticker(item.get("ticker"))
+        if price is None or price < min_price or price > max_price:
+            if ticker:
+                rejected.append(_price_band_reject_item(item, min_price, max_price))
+            continue
+        item["current_price"] = round(price, 4)
+        accepted.append(item)
+    return accepted, rejected
+
+
+def _merge_rejected_rows(rows: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in rows or []:
+        ticker = str(item.get("ticker") or "").strip().upper()
+        reason = str(item.get("reason") or "").strip()
+        price = str(item.get("price") if item.get("price") is not None else "")
+        key = (ticker, reason, price)
+        if not ticker or key in seen:
+            continue
+        merged.append(dict(item))
+        seen.add(key)
+    return merged
+
+
 def _build_report_top10(
     selector_top10: list[dict],
     selected: list[dict],
@@ -723,12 +770,15 @@ def main():
 
     selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
     selected = _apply_range_scores(selected)
+    price_band_rejected_rows: list[dict] = []
     report_top10 = _apply_range_scores(_build_report_top10(
         list(out.get("top10") or []),
         list(selected),
         integrated_ai.get("signal_map") or {},
         live_positions or [],
     ))
+    report_top10, report_price_band_rejected = _finalize_price_band(report_top10, min_price, max_price)
+    price_band_rejected_rows.extend(report_price_band_rejected)
     candidate_pool = _annotate_with_ai_signals(list(report_top10 or []), integrated_ai.get("signal_map") or {})
     if integrated_ai.get("preferred_symbols"):
         candidate_pool = _prioritize_ai_rank(candidate_pool, integrated_ai.get("signal_map") or {})
@@ -738,19 +788,17 @@ def main():
         limit=min(sel.selection_size, TOP_COUNT),
     )
     selection_stage = str((out.get("settings") or {}).get("selection_stage") or "")
+    min_price, max_price = resolve_price_band(runtime_settings)
     fallback_pool_used = False
-    out_of_band_symbols: list[str] = []
     trade_filter_report: dict = {"rejected": [], "fallback_used": False}
     fallback_trade_report: dict = {"rejected": [], "fallback_used": False}
     composition_filter_report: dict = {"rejected": [], "warnings": []}
+
+    selected, initial_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
+    price_band_rejected_rows.extend(initial_price_band_rejected)
+    selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
+
     if selection_stage != "fast_preliminary":
-        min_price, max_price = resolve_price_band(runtime_settings)
-        selected, out_of_band_symbols = _enforce_price_band(
-            selected,
-            min_price=min_price,
-            max_price=max_price,
-        )
-        selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
         selected, trade_filter_report = _apply_trade_filter(selected)
         selected, composition_filter_report = _apply_composition_filter(selected, top_n=TOP_COUNT)
         allow_conservative_fallback = True
@@ -763,25 +811,10 @@ def main():
             fallback_candidates = _build_conservative_fallback_candidates(blocked_symbols)
             if fallback_candidates:
                 fallback_pool_used = True
-                fallback_trade_rejected_rows: list[dict] = []
                 fallback_price_band = f"${min_price:.2f}-${max_price:.2f}"
-                for item in fallback_candidates:
-                    ticker = str(item.get("ticker") or "").strip().upper()
-                    if not ticker:
-                        continue
-                    price = _candidate_price(item)
-                    if price is not None and (price < min_price or price > max_price):
-                        fallback_trade_rejected_rows.append(
-                            {
-                                "ticker": ticker,
-                                "reason": "price_out_of_range",
-                                "price": round(float(price), 4),
-                                "allowed_range": fallback_price_band,
-                            }
-                        )
                 fallback_candidates = _apply_range_scores(fallback_candidates)
                 fallback_candidates, fallback_trade_report = _apply_trade_filter(fallback_candidates)
-                fallback_trade_report["rejected"] = list(fallback_trade_report.get("rejected") or []) + fallback_trade_rejected_rows
+                fallback_trade_report["rejected"] = list(fallback_trade_report.get("rejected") or [])
                 fallback_candidates, fallback_composition_report = _apply_composition_filter(fallback_candidates, top_n=TOP_COUNT)
                 composition_filter_report.setdefault("rejected", [])
                 composition_filter_report.setdefault("warnings", [])
@@ -796,6 +829,33 @@ def main():
                     ticker = str(item.get("ticker") or "").strip().upper()
                     if not ticker or ticker in existing_tickers or len(selected) >= TOP_COUNT:
                         continue
+                    item_price = _candidate_price(item)
+                    if item_price is None or item_price < min_price or item_price > max_price:
+                        reason = "price_missing" if item_price is None else "price_out_of_range"
+                        fallback_trade_report.setdefault("rejected", []).append(
+                            {
+                                "ticker": ticker,
+                                "reason": reason,
+                                "price": round(float(item_price), 4) if item_price is not None else None,
+                                "min_price": float(min_price),
+                                "max_price": float(max_price),
+                                "allowed_range": fallback_price_band,
+                                "source": "conservative_fallback_pool",
+                            }
+                        )
+                        price_band_rejected_rows.append(
+                            {
+                                "ticker": ticker,
+                                "reason": reason,
+                                "price": round(float(item_price), 4) if item_price is not None else None,
+                                "min_price": float(min_price),
+                                "max_price": float(max_price),
+                                "allowed_range": fallback_price_band,
+                                "source": "conservative_fallback_pool",
+                            }
+                        )
+                        continue
+                    item["current_price"] = round(float(item_price), 4)
                     item["fallback_used"] = True
                     item["fallback_reason"] = "top_n_not_filled"
                     item["source"] = "conservative_fallback_pool"
@@ -819,6 +879,9 @@ def main():
             else:
                 composition_filter_report.setdefault("warnings", [])
                 composition_filter_report["warnings"].append(f"top_n_not_filled:{len(selected)}/{TOP_COUNT}")
+
+    selected, final_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
+    price_band_rejected_rows.extend(final_price_band_rejected)
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -828,7 +891,7 @@ def main():
         str(item.get("ticker") or "").upper() for item in selected
     ]
     quality_report["existing_real_positions_preserved"] = preserved_positions
-    quality_report["removed_out_of_price_band"] = out_of_band_symbols
+    quality_report["removed_out_of_price_band"] = _merge_rejected_rows(price_band_rejected_rows)
     quality_report["trade_filter_passed"] = [bool(item.get("trade_filter_passed", False)) for item in selected]
     quality_report["reject_reason"] = [str(item.get("reject_reason") or "") for item in selected]
     trade_filter_rejected = list(trade_filter_report.get("rejected") or [])
@@ -851,6 +914,10 @@ def main():
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     out["settings"] = dict(out.get("settings") or {})
+    out["settings"]["min_price"] = float(min_price)
+    out["settings"]["max_price"] = float(max_price)
+    out["settings"]["price_band"] = {"min": float(min_price), "max": float(max_price)}
+    out["settings"]["selection_stage"] = selection_stage
     out["settings"]["entry_proximity_enabled"] = bool(ENTRY_PROXIMITY_ENABLED)
     out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
     write_selection_filter_log(quality_report)

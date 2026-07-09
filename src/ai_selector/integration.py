@@ -14,6 +14,7 @@ from .providers.tradingagents_provider import TradingAgentsProvider
 from .range_score import RangeFitnessScorer
 from .trade_filter import TradeEligibilityFilter
 from .scoring import combine_scores
+from .settings import load_runtime_settings, resolve_price_band
 
 
 logger = logging.getLogger(__name__)
@@ -290,6 +291,12 @@ class AISelector:
             "fmp_enabled": bool(self.last_run_metadata.get("fmp_enabled", False)),
             "fallback_used": bool(self.last_run_metadata.get("fallback_used", False)),
             "settings": {
+                "min_price": float(resolve_price_band(load_runtime_settings())[0]),
+                "max_price": float(resolve_price_band(load_runtime_settings())[1]),
+                "price_band": {
+                    "min": float(resolve_price_band(load_runtime_settings())[0]),
+                    "max": float(resolve_price_band(load_runtime_settings())[1]),
+                },
                 "range_score_enabled": bool(self.last_run_metadata.get("range_score_enabled", True)),
                 "entry_proximity_enabled": bool(self.last_run_metadata.get("entry_proximity_enabled", True)),
                 "entry_proximity_weight": float(self.last_run_metadata.get("entry_proximity_weight", 0.0) or 0.0),
