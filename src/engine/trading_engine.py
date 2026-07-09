@@ -293,6 +293,17 @@ class TradingEngine:
                 getattr(portfolio_cfg, "leveraged_etf_max_group_exposure", 0.50) or 0.50
             ),
         )
+        logger.info(
+            "Portfolio guard enabled: %s | max_positions: %s | max_total_exposure: %s | "
+            "max_total_risk: %s | leveraged_etf_max_single_position: %s | "
+            "leveraged_etf_max_group_exposure: %s",
+            str(bool(getattr(portfolio_cfg, "enabled", False))).lower(),
+            getattr(portfolio_cfg, "max_positions", 3),
+            getattr(portfolio_cfg, "max_total_exposure", 1.0),
+            getattr(portfolio_cfg, "max_total_risk", 0.05),
+            getattr(portfolio_cfg, "leveraged_etf_max_single_position", 0.15),
+            getattr(portfolio_cfg, "leveraged_etf_max_group_exposure", 0.50),
+        )
 
     def _seed_auto_range(self) -> None:
         """Seed auto range from recent OHLCV history so it's ready immediately."""

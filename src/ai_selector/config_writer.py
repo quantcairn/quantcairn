@@ -83,12 +83,50 @@ def _coalesce_float(*values: object, default: float = 0.0) -> float:
             continue
     return float(default)
 
+
+def _default_portfolio_config() -> dict:
+    return {
+        "enabled": False,
+        "max_positions": 3,
+        "max_total_exposure": 1.0,
+        "max_total_risk": 0.05,
+        "leveraged_etf_max_single_position": 0.15,
+        "leveraged_etf_max_group_exposure": 0.50,
+    }
+
+
+def _load_yaml_file(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _load_portfolio_config() -> dict:
+    """
+    Load portfolio settings using the same priority expected by the project:
+    config.local.yaml -> config.yaml -> default values.
+    """
+    portfolio = _default_portfolio_config()
+    for path in (
+        os.path.join(BASE, "config.yaml"),
+        os.path.join(BASE, "config.local.yaml"),
+    ):
+        raw = _load_yaml_file(path)
+        section = raw.get("portfolio")
+        if isinstance(section, dict):
+            portfolio.update(section)
+    return portfolio
+
 def write_top_configs(top_items):
     if not top_items:
         logger.warning("write_top_configs called with empty list — refusing to delete existing configs")
         return
     default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
+    portfolio_cfg = _load_portfolio_config()
     allocator = RiskAllocator()
     allocations = allocator.allocate_positions(list(top_items), TOP_INITIAL_CAPITAL)
     for i, item in enumerate(top_items, start=1):
@@ -171,6 +209,18 @@ def write_top_configs(top_items):
                 "daily_loss_limit": 60.0,
                 "max_consecutive_losses": 3,
                 "max_drawdown_pct": 8.0,
+            },
+            "portfolio": {
+                "enabled": bool(portfolio_cfg.get("enabled", False)),
+                "max_positions": int(portfolio_cfg.get("max_positions", 3)),
+                "max_total_exposure": float(portfolio_cfg.get("max_total_exposure", 1.0)),
+                "max_total_risk": float(portfolio_cfg.get("max_total_risk", 0.05)),
+                "leveraged_etf_max_single_position": float(
+                    portfolio_cfg.get("leveraged_etf_max_single_position", 0.15)
+                ),
+                "leveraged_etf_max_group_exposure": float(
+                    portfolio_cfg.get("leveraged_etf_max_group_exposure", 0.50)
+                ),
             },
             "trading_hours": {
                 "timezone": "America/New_York",

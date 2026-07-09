@@ -203,6 +203,91 @@ def test_config_writer_honors_global_reduce_only_flag(tmp_path, monkeypatch):
     assert updated["position"]["reduce_only"] is True
 
 
+def test_config_writer_includes_portfolio_from_local_over_config(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    (repo_root / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "portfolio": {
+                    "enabled": False,
+                    "max_positions": 1,
+                    "max_total_exposure": 0.25,
+                    "max_total_risk": 0.01,
+                    "leveraged_etf_max_single_position": 0.05,
+                    "leveraged_etf_max_group_exposure": 0.10,
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (repo_root / "config.local.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "portfolio": {
+                    "enabled": True,
+                    "max_positions": 3,
+                    "max_total_exposure": 1.0,
+                    "max_total_risk": 0.05,
+                    "leveraged_etf_max_single_position": 0.15,
+                    "leveraged_etf_max_group_exposure": 0.50,
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    write_top_configs([
+        {
+            "ticker": "SOFI",
+            "range_low": 17.0,
+            "range_high": 19.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 10,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    assert updated["portfolio"]["enabled"] is True
+    assert updated["portfolio"]["max_positions"] == 3
+    assert updated["portfolio"]["max_total_exposure"] == 1.0
+    assert updated["portfolio"]["max_total_risk"] == 0.05
+    assert updated["portfolio"]["leveraged_etf_max_single_position"] == 0.15
+    assert updated["portfolio"]["leveraged_etf_max_group_exposure"] == 0.50
+    assert "selection" in updated
+    assert "allocation" in updated
+
+
+def test_config_writer_defaults_portfolio_when_missing(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    write_top_configs([
+        {
+            "ticker": "SOFI",
+            "range_low": 17.0,
+            "range_high": 19.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 10,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    assert updated["portfolio"]["enabled"] is False
+    assert updated["portfolio"]["max_positions"] == 3
+    assert updated["portfolio"]["max_total_exposure"] == 1.0
+    assert updated["portfolio"]["max_total_risk"] == 0.05
+    assert updated["portfolio"]["leveraged_etf_max_single_position"] == 0.15
+    assert updated["portfolio"]["leveraged_etf_max_group_exposure"] == 0.50
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:
