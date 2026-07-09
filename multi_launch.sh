@@ -109,6 +109,87 @@ wait_until_port_free() {
     return 1
 }
 
+spawn_top_process() {
+    local cfg="$1"
+    local port="$2"
+    local log_path="$3"
+    local cli_mode="$4"
+    local synth_start="${5:-}"
+    local synth_amp="${6:-}"
+
+    if [ "$cli_mode" = "--live" ]; then
+        "$VENV_PYTHON" - "$cfg" "$port" "$log_path" <<'PY'
+import os
+import pathlib
+import subprocess
+import sys
+
+cfg_path, port, log_path = sys.argv[1:4]
+project = pathlib.Path("/Users/chenwei/soxs-range-arbitrage")
+cmd = [
+    str(project / ".venv/bin/python"),
+    "run.py",
+    "--config",
+    cfg_path,
+    "--live",
+    "--dashboard",
+    "--port",
+    port,
+]
+with open(log_path, "ab", buffering=0) as log_handle:
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(project),
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        env=os.environ.copy(),
+        start_new_session=True,
+        close_fds=True,
+    )
+print(proc.pid)
+PY
+    else
+        env \
+        SOXS_SYNTHETIC_MARKET=1 \
+        SOXS_SYNTHETIC_START_PRICE="$synth_start" \
+        SOXS_SYNTHETIC_AMPLITUDE_PCT="$synth_amp" \
+        SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
+        "$VENV_PYTHON" - "$cfg" "$port" "$log_path" <<'PY'
+import os
+import pathlib
+import subprocess
+import sys
+
+cfg_path, port, log_path = sys.argv[1:4]
+project = pathlib.Path("/Users/chenwei/soxs-range-arbitrage")
+cmd = [
+    str(project / ".venv/bin/python"),
+    "run.py",
+    "--config",
+    cfg_path,
+    "--paper",
+    "--dashboard",
+    "--anytime",
+    "--port",
+    port,
+]
+with open(log_path, "ab", buffering=0) as log_handle:
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(project),
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        env=os.environ.copy(),
+        start_new_session=True,
+        close_fds=True,
+    )
+print(proc.pid)
+PY
+    fi
+}
+
 combined_command_for_pid() {
     local pid="$1"
     ps -p "$pid" -o command= 2>/dev/null | tr -d '\n'
@@ -364,33 +445,15 @@ EOF
                 cli_mode="--paper"
                 if [ "$ENGINE_MODE" = "live" ]; then
                     cli_mode="--live"
-                    : > "$LOG_DIR/${log_name}.log"
-                    if command -v setsid >/dev/null 2>&1; then
-                        setsid "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
-                    else
-                        nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
-                    fi
-                    disown $! 2>/dev/null || true
-                else
-                    : > "$LOG_DIR/${log_name}.log"
-                    if command -v setsid >/dev/null 2>&1; then
-                        env \
-                        SOXS_SYNTHETIC_MARKET=1 \
-                        SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
-                        SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
-                        SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
-                        setsid "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
-                    else
-                        SOXS_SYNTHETIC_MARKET=1 \
-                        SOXS_SYNTHETIC_START_PRICE="$SYNTH_START" \
-                        SOXS_SYNTHETIC_AMPLITUDE_PCT="$SYNTH_AMP" \
-                        SOXS_SYNTHETIC_PERIOD_SECONDS=120 \
-                        nohup "$VENV_PYTHON" run.py --config "$cfg" "$cli_mode" --dashboard --anytime --port $port >> "$LOG_DIR/${log_name}.log" 2>&1 < /dev/null &
-                    fi
-                    disown $! 2>/dev/null || true
                 fi
-                TOP_PIDS="$TOP_PIDS $!"
-                echo "🚀 $TOP on :$port (PID $!, mode=$ENGINE_MODE)"
+                : > "$LOG_DIR/${log_name}.log"
+                pid="$(spawn_top_process "$cfg" "$port" "$LOG_DIR/${log_name}.log" "$cli_mode" "$SYNTH_START" "$SYNTH_AMP")"
+                if [ -z "$pid" ]; then
+                    echo "❌ $TOP failed to spawn detached process"
+                    return 1
+                fi
+                TOP_PIDS="$TOP_PIDS $pid"
+                echo "🚀 $TOP on :$port (PID $pid, mode=$ENGINE_MODE)"
                 sleep "$startup_delay"
                 wait_for_port "$port" "$startup_delay" || {
                     echo "❌ $TOP failed to bind to :$port in manual fallback mode"
