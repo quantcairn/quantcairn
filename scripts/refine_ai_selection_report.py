@@ -13,7 +13,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from scripts import run_ai_selector as selector_runner
 from src.ai_selector.selector import AIStrategySelector
-from src.ai_selector.settings import load_runtime_settings
+from src.ai_selector.settings import load_runtime_settings, resolve_price_band
 
 
 def _latest_report_path() -> Path:
@@ -61,8 +61,9 @@ def main() -> None:
         return
 
     runtime_settings = load_runtime_settings()
-    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(runtime_settings.get("min_price", 4.0)))
-    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(runtime_settings.get("max_price", 30.0)))
+    min_price, max_price = resolve_price_band(runtime_settings)
+    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
+    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
     os.environ.setdefault(
         "AI_SELECTOR_AUTO_REFRESH_MINUTES",
         str(runtime_settings.get("auto_refresh_minutes", 5)),
