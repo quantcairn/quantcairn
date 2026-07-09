@@ -8,7 +8,7 @@ from flask import Flask, jsonify, redirect, render_template_string, request
 import yaml
 
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
-from src.ai_selector.selection_state import has_live_top_configs, load_selection_state, verify_selection_state
+from src.ai_selector.selection_state import current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log
@@ -37,6 +37,7 @@ _STATUS_FAILURES: dict[int, int] = {}
 _STATUS_OFFLINE_THRESHOLD = 3
 _UNRESOLVED_ALERT_SECONDS = float(os.getenv("SOXS_UNRESOLVED_ALERT_SECONDS", "120"))
 _COMBINED_PORT = 8090
+_SYNTHETIC_TEST_TICKERS = {"TEST", "MOCK", "FAKE"}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -1571,11 +1572,17 @@ HTML = """<!DOCTYPE html>
             {% endif %}
             {% if order_states.failed_orders_today > 0 %}
             <div class="order-state-section">
-                <span class="order-state-title">❌ 今日失败订单: {{ order_states.failed_orders_today }}</span>
+                <span class="order-state-title">
+                    ❌ 今日失败问题: {{ order_states.failed_orders_today }}
+                    {% if order_states.failed_orders_total_today > order_states.failed_orders_today %}
+                    <span style="font-weight:500;opacity:.78">· 原始拒单 {{ order_states.failed_orders_total_today }}</span>
+                    {% endif %}
+                </span>
                 {% for ticker in order_states.ticker_details %}
                 {% if ticker.last_failed %}
                 <span class="order-state-badge failed" title="{{ ticker.last_failed.reason }}">
                     {{ ticker.ticker }}: {{ ticker.last_failed.reason[:60] }}{% if ticker.last_failed.reason|length > 60 %}…{% endif %}
+                    {% if ticker.failed_count > 1 %}· {{ ticker.failed_count }}次{% endif %}
                     ({{ ticker.last_failed.timestamp[:16] | replace('T', ' ') }})
                 </span>
                 {% endif %}
@@ -1619,7 +1626,7 @@ HTML = """<!DOCTYPE html>
         </div>
         <div style="padding:6px 0">
             {% if equity_curve_bars %}
-                {{ equity_curve_bars }}
+                {{ equity_curve_bars|safe }}
             {% else %}
                 <span class="hint">暂无权益数据</span>
             {% endif %}
@@ -1836,12 +1843,13 @@ def _ai_range_lookup(ai_selection: dict | None) -> dict[str, dict]:
 
 def _load_order_states() -> dict:
     """Read order-state files from disk for dashboard display."""
-    import glob
     result = {
         "blocked_tickers": [],
         "failed_orders_today": 0,
+        "failed_orders_total_today": 0,
         "ticker_details": [],
     }
+    configured_symbols = {str(symbol or "").strip().upper() for symbol in current_top_config_symbols(limit=5)}
     order_state_dir = STATE_DIR / "order_state"
     if not order_state_dir.is_dir():
         return result
@@ -1851,14 +1859,21 @@ def _load_order_states() -> dict:
             if not isinstance(data, dict):
                 continue
             ticker = data.get("ticker", path.stem)
+            ticker_upper = str(ticker or "").strip().upper()
+            if data.get("runtime_scope") == "test":
+                continue
+            if ticker_upper in _SYNTHETIC_TEST_TICKERS:
+                continue
+            if configured_symbols and ticker_upper not in configured_symbols and not data.get("blocked") and not data.get("failed_orders_today"):
+                continue
             detail = {
-                "ticker": ticker,
+                "ticker": ticker_upper,
                 "blocked": None,
                 "failed_count": len(data.get("failed_orders_today", [])),
                 "last_failed": None,
             }
             failed_orders = data.get("failed_orders_today", [])
-            result["failed_orders_today"] += len(failed_orders)
+            result["failed_orders_total_today"] += len(failed_orders)
             if failed_orders:
                 last = failed_orders[-1]
                 detail["last_failed"] = {
@@ -1867,6 +1882,7 @@ def _load_order_states() -> dict:
                     "quantity": last.get("quantity", 0),
                     "buying_power": last.get("buying_power", 0.0),
                 }
+                result["failed_orders_today"] += 1
             blocked = data.get("blocked")
             if blocked:
                 blocked_until = blocked.get("blocked_until", "")
@@ -1887,6 +1903,10 @@ def _load_order_states() -> dict:
             result["ticker_details"].append(detail)
         except Exception:
             pass
+    result["ticker_details"].sort(
+        key=lambda item: str(((item.get("last_failed") or {}).get("timestamp") or "")),
+        reverse=True,
+    )
     return result
 
 

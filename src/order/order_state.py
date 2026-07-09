@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+SYNTHETIC_TEST_TICKERS = {"TEST", "MOCK", "FAKE"}
 
 # Default state directory — matches engine convention
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -100,10 +101,12 @@ class OrderStateManager:
         state_dir: Optional[Path] = None,
     ):
         self.ticker = ticker.upper()
-        self.mode = mode
+        self.mode = str(mode or "paper").strip().lower()
         self.cooldown_seconds = cooldown_seconds
         self._state_dir = Path(state_dir) if state_dir else DEFAULT_STATE_DIR
-        self._state_path = self._state_dir / "order_state" / f"{self.ticker}.json"
+        self.runtime_scope = self._detect_runtime_scope()
+        bucket_name = "order_state_test" if self.runtime_scope == "test" else "order_state"
+        self._state_path = self._state_dir / bucket_name / f"{self.ticker}.json"
 
         # Runtime state (not persisted — resets on restart)
         self._active_order_id: Optional[str] = None
@@ -117,6 +120,15 @@ class OrderStateManager:
         self._blocked: Optional[BlockedTicker] = None
 
         self._load()
+
+    def _detect_runtime_scope(self) -> str:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return "test"
+        if self.ticker in SYNTHETIC_TEST_TICKERS:
+            return "test"
+        if self.mode not in {"live", "paper", "backtest"}:
+            return "test"
+        return "runtime"
 
     # ---- Public API: Order lifecycle ----
 
@@ -300,6 +312,8 @@ class OrderStateManager:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "ticker": self.ticker,
+                "mode": self.mode,
+                "runtime_scope": self.runtime_scope,
                 "updated_at": datetime.now().isoformat(),
                 "blocked": None,
                 "failed_orders_today": [f.to_dict() for f in self._failed_orders_today],
