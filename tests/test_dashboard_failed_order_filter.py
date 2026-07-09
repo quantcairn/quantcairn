@@ -15,7 +15,15 @@ if VENV_SITE_PACKAGES is not None and str(VENV_SITE_PACKAGES) not in sys.path:
 from src.dashboard import combined as dashboard
 
 
-def _write_order_state(path: Path, *, ticker: str, reason: str, count: int = 1, runtime_scope: str | None = None) -> None:
+def _write_order_state(
+    path: Path,
+    *,
+    ticker: str,
+    reason: str,
+    count: int = 1,
+    runtime_scope: str | None = None,
+    blocked_until: str | None = None,
+) -> None:
     payload = {
         "ticker": ticker,
         "updated_at": "2026-07-09T11:10:23.786345",
@@ -33,6 +41,12 @@ def _write_order_state(path: Path, *, ticker: str, reason: str, count: int = 1, 
     }
     if runtime_scope:
         payload["runtime_scope"] = runtime_scope
+    if blocked_until:
+        payload["blocked"] = {
+            "blocked_until": blocked_until,
+            "reason": reason,
+            "buying_power_at_block": 329.72,
+        }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -74,3 +88,29 @@ def test_yinn_shows_when_it_is_a_real_position_or_active_symbol(monkeypatch):
         assert result["historical_failed_orders_today"] == 0
         assert [item["ticker"] for item in result["ticker_details"]] == ["YINN"]
         assert result["ticker_details"][0]["failed_count"] == 24
+
+
+def test_hold_signal_moves_old_failed_orders_to_history(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp)
+        order_state_dir = project_dir / "state" / "order_state"
+        order_state_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_order_state(
+            order_state_dir / "YINN.json",
+            ticker="YINN",
+            reason="The order amount exceeds the maximum buying power",
+            count=24,
+            blocked_until="2026-07-09T11:10:25",
+        )
+
+        monkeypatch.setattr(dashboard, "STATE_DIR", project_dir / "state")
+        result = dashboard._load_order_states(
+            active_symbols={"YINN", "SOFI"},
+            current_signals={"YINN": "HOLD", "SOFI": "BUY"},
+        )
+
+        assert result["failed_orders_today"] == 0
+        assert result["historical_failed_orders_today"] == 1
+        assert [item["ticker"] for item in result["historical_ticker_details"]] == ["YINN"]
+        assert result["historical_ticker_details"][0]["failed_count"] == 24

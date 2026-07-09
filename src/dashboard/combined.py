@@ -2409,7 +2409,10 @@ def _ai_range_lookup(ai_selection: dict | None) -> dict[str, dict]:
     return lookup
 
 
-def _load_order_states(active_symbols: set[str] | None = None) -> dict:
+def _load_order_states(
+    active_symbols: set[str] | None = None,
+    current_signals: dict[str, str] | None = None,
+) -> dict:
     """Read order-state files from disk for dashboard display."""
     result = {
         "blocked_tickers": [],
@@ -2421,6 +2424,11 @@ def _load_order_states(active_symbols: set[str] | None = None) -> dict:
         "historical_failed_orders_total_today": 0,
     }
     active_symbols = {str(symbol or "").strip().upper() for symbol in (active_symbols or set()) if str(symbol or "").strip()}
+    current_signals = {
+        str(symbol or "").strip().upper(): str(signal or "").strip().upper()
+        for symbol, signal in (current_signals or {}).items()
+        if str(symbol or "").strip()
+    }
     order_state_dir = STATE_DIR / "order_state"
     if not order_state_dir.is_dir():
         return result
@@ -2437,17 +2445,44 @@ def _load_order_states(active_symbols: set[str] | None = None) -> dict:
                 continue
             if active_symbols and ticker_upper not in active_symbols and not data.get("blocked") and not data.get("failed_orders_today"):
                 continue
+            current_signal = current_signals.get(ticker_upper, "") if current_signals else ""
+            blocked = data.get("blocked")
+            blocked_active = False
+            blocked_detail = None
+            if isinstance(blocked, dict):
+                blocked_until = str(blocked.get("blocked_until", "") or "").strip()
+                try:
+                    from datetime import datetime as dt
+
+                    bu = dt.fromisoformat(blocked_until) if blocked_until else None
+                    if bu and bu > dt.now():
+                        remaining = int((bu - dt.now()).total_seconds())
+                        blocked_active = True
+                        blocked_detail = {
+                            "until": blocked_until,
+                            "reason": blocked.get("reason", ""),
+                            "remaining_min": remaining // 60,
+                            "remaining_sec": remaining % 60,
+                        }
+                except Exception:
+                    blocked_active = bool(blocked)
             detail = {
                 "ticker": ticker_upper,
                 "blocked": None,
                 "failed_count": len(data.get("failed_orders_today", [])),
                 "last_failed": None,
                 "current_active": ticker_upper in active_symbols if active_symbols else True,
+                "current_signal": current_signal or None,
             }
             failed_orders = data.get("failed_orders_today", [])
             is_active = detail["current_active"]
+            is_current_buy_focus = bool(current_signals) and current_signal == "BUY"
+            keep_active_failures = is_current_buy_focus or blocked_active
             if is_active:
-                result["failed_orders_total_today"] += len(failed_orders)
+                if keep_active_failures or not current_signals:
+                    result["failed_orders_total_today"] += len(failed_orders)
+                else:
+                    result["historical_failed_orders_total_today"] += len(failed_orders)
             else:
                 result["historical_failed_orders_total_today"] += len(failed_orders)
             if failed_orders:
@@ -2458,31 +2493,17 @@ def _load_order_states(active_symbols: set[str] | None = None) -> dict:
                     "quantity": last.get("quantity", 0),
                     "buying_power": last.get("buying_power", 0.0),
                 }
-                if is_active:
+                if is_active and (keep_active_failures or not current_signals):
                     result["failed_orders_today"] += 1
                 else:
                     result["historical_failed_orders_today"] += 1
-            blocked = data.get("blocked")
-            if blocked:
-                blocked_until = blocked.get("blocked_until", "")
-                try:
-                    from datetime import datetime as dt
-                    bu = dt.fromisoformat(blocked_until) if blocked_until else None
-                    if bu and bu > dt.now():
-                        remaining = int((bu - dt.now()).total_seconds())
-                        detail["blocked"] = {
-                            "until": blocked_until,
-                            "reason": blocked.get("reason", ""),
-                            "remaining_min": remaining // 60,
-                            "remaining_sec": remaining % 60,
-                        }
-                        if is_active:
-                            result["blocked_tickers"].append(detail)
-                        else:
-                            result.setdefault("historical_blocked_tickers", []).append(detail)
-                except Exception:
-                    pass
-            if is_active:
+            if blocked_active and blocked_detail:
+                detail["blocked"] = blocked_detail
+                if is_active:
+                    result["blocked_tickers"].append(detail)
+                else:
+                    result.setdefault("historical_blocked_tickers", []).append(detail)
+            if is_active and (keep_active_failures or not current_signals):
                 result["ticker_details"].append(detail)
             else:
                 result["historical_ticker_details"].append(detail)
@@ -2544,9 +2565,21 @@ def index():
             and float(trade_audit.get("broker_unresolved_oldest_seconds", 0.0) or 0.0) >= _UNRESOLVED_ALERT_SECONDS
         ),
     }
+    dashboard_status_by_symbol: dict[str, dict | None] = {}
+    for item in TICKERS:
+        defaults = _load_config_defaults(item["config"])
+        symbol = str(defaults["ticker"]).strip().upper()
+        dashboard_status_by_symbol[symbol] = _fetch_status(item["port"])
     dashboard_active_symbols = _dashboard_active_symbols(ai_selection, selection_sync, live_account)
     try:
-        order_states = _load_order_states(active_symbols=set(dashboard_active_symbols))
+        order_states = _load_order_states(
+            active_symbols=set(dashboard_active_symbols),
+            current_signals={
+                symbol: str((payload or {}).get("last_signal") or (payload or {}).get("signal") or "").strip().upper()
+                for symbol, payload in dashboard_status_by_symbol.items()
+                if symbol
+            },
+        )
     except TypeError as exc:
         if "unexpected keyword argument" in str(exc):
             order_states = _load_order_states()
@@ -2560,9 +2593,9 @@ def index():
     selected_tickers: set[str] = set()
 
     for t in TICKERS:
-        d = _fetch_status(t["port"])
         defaults = _load_config_defaults(t["config"])
         selected_tickers.add(str(defaults["ticker"]).strip().upper())
+        d = dashboard_status_by_symbol.get(str(defaults["ticker"]).strip().upper()) or _fetch_status(t["port"])
 
         if d:
             supp = d.get("support", 0)
