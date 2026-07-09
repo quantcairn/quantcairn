@@ -626,6 +626,53 @@ def test_combined_dashboard_shows_startup_guard_status(monkeypatch):
     assert "当前状态日期 2026-07-05" in html
 
 
+
+def test_combined_dashboard_shows_paper_mode_without_live_top_warning(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {"mode": "paper", "positions": [], "equity": 1000.0, "cash": 1000.0, "buying_power": 1000.0})
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+        "selection_state_symbols": ["AAPL", "SOFI", "DRIP"],
+        "current_top_config_symbols": ["AAPL", "SOFI", "DRIP"],
+        "state_top_config_symbols": ["AAPL", "SOFI", "DRIP"],
+        "suggestion": "请重新运行 AI Selector 或重新写入 TOP 配置",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "虚拟盘运行中" in html
+    assert "当前是 paper 模式，未启用 live TOP 校验，虚拟盘会按当天 TOP 配置继续交易。" in html
+    assert "启动校验待命" not in html
+
+
 def run_test_direct():
     monkeypatch = SimpleMonkeyPatch()
     try:

@@ -1,5 +1,6 @@
 """Combined dashboard aggregating the selected TOP3 trading engines."""
 import atexit
+import inspect
 import json, os, signal, subprocess, threading, urllib.request
 import time
 from datetime import datetime
@@ -742,8 +743,17 @@ def _selection_sync_status() -> dict:
     }
 
 
-def _startup_guard_status(selection_sync: dict) -> dict:
+def _startup_guard_status(selection_sync: dict, execution_mode: str | None = None) -> dict:
     live_top_active = has_live_top_configs()
+    mode = str(execution_mode or "").strip().lower()
+    if not live_top_active and mode != "live":
+        return {
+            "level": "live",
+            "label": "虚拟盘运行中",
+            "detail": "当前是 paper 模式，未启用 live TOP 校验，虚拟盘会按当天 TOP 配置继续交易。",
+            "required_date": str((selection_sync or {}).get("required_date") or _current_et_date()),
+            "state_date": str((selection_sync or {}).get("state_date") or "") or None,
+        }
     if not live_top_active:
         return {
             "level": "warn",
@@ -2507,10 +2517,17 @@ def index():
     ai_ranges = _ai_range_lookup(ai_selection)
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
-    startup_guard = _startup_guard_status(selection_sync)
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
     audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
+    try:
+        guard_params = inspect.signature(_startup_guard_status).parameters
+        if len(guard_params) >= 2:
+            startup_guard = _startup_guard_status(selection_sync, trade_audit.get("execution_mode"))
+        else:
+            startup_guard = _startup_guard_status(selection_sync)
+    except (TypeError, ValueError):
+        startup_guard = _startup_guard_status(selection_sync)
     latest_line = _latest_trade_line(trade_audit)
     trade_audit = {
         "broker_unresolved_count": int(trade_audit.get("broker_unresolved_count", 0) or 0),
