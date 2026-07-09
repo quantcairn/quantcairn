@@ -695,6 +695,19 @@ HTML = """<!DOCTYPE html>
         display:flex;flex-direction:column;gap:14px
     }
     .account-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .order-state-strip{
+        display:flex;flex-wrap:wrap;gap:12px;padding:14px 18px;
+        background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-card);
+        margin-top:16px
+    }
+    .order-state-section{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+    .order-state-title{font-weight:700;font-size:13px;color:var(--muted);white-space:nowrap}
+    .order-state-badge{
+        display:inline-block;padding:4px 12px;border-radius:6px;font-size:12px;
+        font-weight:600;white-space:nowrap;max-width:420px;overflow:hidden;text-overflow:ellipsis
+    }
+    .order-state-badge.blocked{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}
+    .order-state-badge.failed{background:#fee2e2;color:#991b1b;border:1px solid #fecaca}
     .metric,.section,.card{
         background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-card);box-shadow:var(--shadow);backdrop-filter:blur(14px)
     }
@@ -1348,6 +1361,33 @@ HTML = """<!DOCTYPE html>
                 </div>
             </div>
         </div>
+        {% if order_states.blocked_tickers or order_states.failed_orders_today > 0 %}
+        <div class="order-state-strip">
+            {% if order_states.blocked_tickers %}
+            <div class="order-state-section">
+                <span class="order-state-title">🚫 买入暂停</span>
+                {% for ticker in order_states.blocked_tickers %}
+                <span class="order-state-badge blocked" title="{{ ticker.blocked.reason }}">
+                    {{ ticker.ticker }} — 冷却 {{ ticker.blocked.remaining_min }}分{{ ticker.blocked.remaining_sec }}秒
+                </span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if order_states.failed_orders_today > 0 %}
+            <div class="order-state-section">
+                <span class="order-state-title">❌ 今日失败订单: {{ order_states.failed_orders_today }}</span>
+                {% for ticker in order_states.ticker_details %}
+                {% if ticker.last_failed %}
+                <span class="order-state-badge failed" title="{{ ticker.last_failed.reason }}">
+                    {{ ticker.ticker }}: {{ ticker.last_failed.reason[:60] }}{% if ticker.last_failed.reason|length > 60 %}…{% endif %}
+                    ({{ ticker.last_failed.timestamp[:16] | replace('T', ' ') }})
+                </span>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 
     <div class="overview-panel">
@@ -1598,6 +1638,62 @@ def _ai_range_lookup(ai_selection: dict | None) -> dict[str, dict]:
     return lookup
 
 
+def _load_order_states() -> dict:
+    """Read order-state files from disk for dashboard display."""
+    import glob
+    result = {
+        "blocked_tickers": [],
+        "failed_orders_today": 0,
+        "ticker_details": [],
+    }
+    order_state_dir = STATE_DIR / "order_state"
+    if not order_state_dir.is_dir():
+        return result
+    for path in sorted(order_state_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            ticker = data.get("ticker", path.stem)
+            detail = {
+                "ticker": ticker,
+                "blocked": None,
+                "failed_count": len(data.get("failed_orders_today", [])),
+                "last_failed": None,
+            }
+            failed_orders = data.get("failed_orders_today", [])
+            result["failed_orders_today"] += len(failed_orders)
+            if failed_orders:
+                last = failed_orders[-1]
+                detail["last_failed"] = {
+                    "reason": last.get("reason", ""),
+                    "timestamp": last.get("timestamp", ""),
+                    "quantity": last.get("quantity", 0),
+                    "buying_power": last.get("buying_power", 0.0),
+                }
+            blocked = data.get("blocked")
+            if blocked:
+                blocked_until = blocked.get("blocked_until", "")
+                try:
+                    from datetime import datetime as dt
+                    bu = dt.fromisoformat(blocked_until) if blocked_until else None
+                    if bu and bu > dt.now():
+                        remaining = int((bu - dt.now()).total_seconds())
+                        detail["blocked"] = {
+                            "until": blocked_until,
+                            "reason": blocked.get("reason", ""),
+                            "remaining_min": remaining // 60,
+                            "remaining_sec": remaining % 60,
+                        }
+                        result["blocked_tickers"].append(detail)
+                except Exception:
+                    pass
+            result["ticker_details"].append(detail)
+        except Exception:
+            pass
+    return result
+
+
 @app.route("/")
 def index():
     cards = []
@@ -1617,6 +1713,7 @@ def index():
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
     startup_guard = _startup_guard_status(selection_sync)
+    order_states = _load_order_states()
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
     audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
@@ -1863,6 +1960,7 @@ def index():
         trade_audit=trade_audit,
         audit_scope=audit_scope,
         audit_day_label=audit_day_label,
+        order_states=order_states,
         total_pnl=round(total_pnl, 2),
         today_total_pnl=round(today_total_pnl, 2),
         total_capital=round(total_capital, 2) if total_capital is not None else None,

@@ -30,6 +30,7 @@ from ..broker.base import BrokerBase, OrderSide, OrderStatus, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
+from ..order.order_state import OrderStateManager
 from ..safety.live_guard import LiveGuard
 from ..reports.pretrade_report import PretradeReport
 from ..ai_selector.config import load_runtime_config as load_ai_selector_runtime_config
@@ -187,6 +188,7 @@ class TradingEngine:
             max_position=config.position.max_position,
             max_drawdown_pct=config.risk.max_drawdown_pct,
             cool_down_seconds=config.position.cool_down_seconds,
+            order_failure_cooldown_seconds=config.risk.order_failure_cooldown_seconds,
             state_path=STATE_DIR / "risk" / f"{self.ticker.upper()}.json",
         )
 
@@ -208,6 +210,14 @@ class TradingEngine:
         else:
             self.broker = PaperBroker(initial_cash=config.position.initial_capital)
             logger.info(f"Using Paper Trading broker (initial capital: ${config.position.initial_capital:,.2f})")
+
+        # Order state tracking: dedup, cooldown, buying-power block
+        self.order_state = OrderStateManager(
+            ticker=config.ticker,
+            mode=config.mode,
+            cooldown_seconds=config.risk.order_failure_cooldown_seconds,
+            state_dir=STATE_DIR,
+        )
 
         self.notifier = Notifier(
             console=config.notifications.console,
@@ -570,14 +580,23 @@ class TradingEngine:
         elif self._position_sync_fence:
             pass
         elif signal.type == SignalType.BUY and not has_position:
+            # ---- BUY pre-check chain (order: dedup → cooldown → position → buying-power) ----
             if self._reduce_only:
-                self._last_signal_reason = "仅减仓模式：今晚不新开仓"
-            elif self._latest_account and self._latest_account.buying_power < 100.0:
-                self._last_signal_reason = f"购买力不足 (${self._latest_account.buying_power:.2f} < $10)，暂停买入新仓"
+                self._last_signal_reason = "HOLD: 仅减仓模式，今晚不新开仓"
+            elif self.order_state.has_pending_order:
+                self._last_signal_reason = (
+                    f"HOLD: 已有待成交订单 {self.order_state.pending_order_id[:12]}"
+                )
+            elif self.order_state.is_blocked:
+                self._last_signal_reason = self.order_state.blocked_reason
+            elif has_position:
+                self._last_signal_reason = "HOLD: 已有持仓，跳过买入"
             elif not self._ai_entry_allowed():
                 self._last_signal_reason = self._blocked_ai_reason()
             elif not is_halted:
                 self._handle_buy_signal(signal, current_price, quote.ask)
+            else:
+                self._last_signal_reason = "HOLD: 交易暂停中"
 
         elif signal.type == SignalType.SELL and has_position:
             self._handle_sell_signal(signal, current_price, quote.bid)
@@ -650,6 +669,12 @@ class TradingEngine:
             self._latest_snapshot_at = datetime.now()
             self.risk.update_equity(acct.equity)
 
+            # Check if buying power changed — lift blocked state if so
+            if self.mode == "live" and hasattr(acct, "buying_power"):
+                self.order_state.maybe_clear_block_on_bp_change(
+                    float(getattr(acct, "buying_power", 0.0) or 0.0)
+                )
+
             if pos:
                 self._position_shares = self._apply_position_sync_fence(pos.quantity)
                 if self._position_shares > 0 and pos.avg_entry_price > 0:
@@ -698,6 +723,25 @@ class TradingEngine:
                     f"不足以买入 ${max(current_price, ask):.2f} 的标的"
                 )
                 self.notifier.alert(self._last_signal_reason, "warning")
+                return
+
+            # ---- Pre-trade buying-power check ----
+            bp_ok, bp_reason = self.order_state.check_buying_power(
+                price=ask if ask > 0 else current_price,
+                quantity=shares,
+                available_cash=available_cash,
+            )
+            if not bp_ok:
+                self._last_signal_reason = bp_reason
+                self.notifier.alert(bp_reason, "warning")
+                # Record as rejected without even sending to broker
+                self.order_state.record_rejected(
+                    order_id="BP_CHECK",
+                    reason=bp_reason,
+                    quantity=shares,
+                    price=current_price,
+                    buying_power=buying_power,
+                )
                 return
 
             # ---- Per-engine risk check ----
@@ -766,9 +810,17 @@ class TradingEngine:
             if order is None:
                 self._last_signal_reason = "下单失败：券商返回空结果"
                 self.notifier.alert(self._last_signal_reason, "error")
+                self.order_state.record_rejected(
+                    order_id="NONE",
+                    reason="券商返回空结果",
+                    quantity=shares,
+                    price=current_price,
+                    buying_power=buying_power,
+                )
                 return
 
             if order.status == OrderStatus.PENDING:
+                self.order_state.record_submitted(order.order_id, "BUY")
                 self._remember_pending_order(
                     order=order,
                     side="BUY",
@@ -779,11 +831,20 @@ class TradingEngine:
                 )
 
             if order.status == OrderStatus.REJECTED:
-                self._last_signal_reason = f"买单被拒绝：{order.notes or 'Insufficient cash or other reason'}"
+                rejected_notes = order.notes or "券商拒绝"
+                self._last_signal_reason = f"买单被拒绝：{rejected_notes}"
                 self.notifier.alert(self._last_signal_reason, "warning")
+                self.order_state.record_rejected(
+                    order_id=getattr(order, "order_id", "") or "REJECTED",
+                    reason=rejected_notes,
+                    quantity=shares,
+                    price=current_price,
+                    buying_power=buying_power,
+                )
 
             # --- update state ---
             if order.status.value in ("FILLED", "PARTIALLY_FILLED"):
+                self.order_state.record_filled(order.order_id)
                 self._entry_price = order.avg_fill_price
                 if self._entry_price is not None:
                     self._position_shares += order.filled_quantity

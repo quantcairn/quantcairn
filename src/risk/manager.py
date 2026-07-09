@@ -57,6 +57,7 @@ class RiskManager:
         max_position: int = 300,
         max_drawdown_pct: float = 10.0,
         cool_down_seconds: int = 30,
+        order_failure_cooldown_seconds: int = 3600,
         state_path: Optional[Path] = None,
     ):
         self.stop_loss_pct = stop_loss_pct
@@ -65,6 +66,7 @@ class RiskManager:
         self.max_position = max_position
         self.max_drawdown_pct = max_drawdown_pct
         self.cool_down_seconds = cool_down_seconds
+        self.order_failure_cooldown_seconds = order_failure_cooldown_seconds
         self._state_path = Path(state_path) if state_path else None
 
         # State tracking

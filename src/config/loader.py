@@ -45,6 +45,7 @@ class RiskConfig:
     daily_loss_limit: float = 500.0
     max_consecutive_losses: int = 3
     max_drawdown_pct: float = 10.0
+    order_failure_cooldown_seconds: int = 3600
 
 
 @dataclass
@@ -197,6 +198,7 @@ def _parse_config(raw: dict) -> AppConfig:
         daily_loss_limit=rk.get("daily_loss_limit", 500.0),
         max_consecutive_losses=rk.get("max_consecutive_losses", 3),
         max_drawdown_pct=rk.get("max_drawdown_pct", 10.0),
+        order_failure_cooldown_seconds=rk.get("order_failure_cooldown_seconds", 3600),
     )
 
     # Trading hours

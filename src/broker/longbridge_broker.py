@@ -645,8 +645,13 @@ class LongBridgeBroker(BrokerBase):
                 notes=f"Live order {response['order_id'][:12]}...",
             )
         except lb.OpenApiException as e:
-            logger.error(f"Long Bridge order rejected: {e}")
-            self._write_audit("place_order", request, {"error": str(e)}, ok=False, error=str(e))
+            error_msg = str(e)
+            logger.error(f"Long Bridge order rejected: {error_msg}")
+            self._write_audit(
+                "place_order", request,
+                {"error": error_msg, "status": "REJECTED"},
+                ok=False, error=error_msg,
+            )
             return Order(
                 order_id="",
                 ticker=ticker,
@@ -654,11 +659,16 @@ class LongBridgeBroker(BrokerBase):
                 order_type=order_type,
                 quantity=quantity,
                 status=OrderStatus.REJECTED,
-                notes=f"API error: {e}",
+                notes=f"API rejection: {error_msg}",
             )
         except Exception as e:
-            logger.error(f"Long Bridge order error: {e}")
-            self._write_audit("place_order", request, {"error": str(e)}, ok=False, error=str(e))
+            error_msg = str(e)
+            logger.error(f"Long Bridge order error: {error_msg}")
+            self._write_audit(
+                "place_order", request,
+                {"error": error_msg, "status": "REJECTED"},
+                ok=False, error=error_msg,
+            )
             return Order(
                 order_id="",
                 ticker=ticker,
