@@ -5,7 +5,7 @@ import json, os, signal, subprocess, threading, urllib.request
 import time
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, jsonify, redirect, render_template_string, request
+from flask import Flask, jsonify, redirect, render_template_string, request, send_file
 import yaml
 import re
 from zoneinfo import ZoneInfo
@@ -15,6 +15,7 @@ from src.ai_selector.selection_state import current_top_config_symbols, has_live
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
+from src.research_report.site import build_research_site
 
 app = Flask(__name__)
 
@@ -998,6 +999,8 @@ HTML = """<!DOCTYPE html>
     }
     .pill.live{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22);color:#b8f5d0}
     .pill.warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.24);color:#fde68a}
+    a.pill{text-decoration:none}
+    .pill.research{background:rgba(59,130,246,.08);border-color:rgba(59,130,246,.24);color:#bfdbfe}
     .overview-layout{
         display:grid;grid-template-columns:1fr;gap:16px;
     }
@@ -1398,6 +1401,7 @@ HTML = """<!DOCTYPE html>
         <div class="status-row">
             <span class="pill live">实时监控</span>
             <span class="pill">更新于 {{ update_time }}</span>
+            <a class="pill research" href="{{ research_url }}" target="_blank" rel="noopener">只读研究简报</a>
             <span class="pill {{ startup_guard.level }}">
                 {{ startup_guard.label }}
             </span>
@@ -2843,6 +2847,7 @@ def index():
         trade_audit=trade_audit,
         audit_scope=audit_scope,
         audit_day_label=audit_day_label,
+        research_url="/research",
         order_states=order_states,
         total_pnl=round(total_pnl, 2),
         today_total_pnl=round(today_total_pnl, 2),
@@ -3007,6 +3012,15 @@ def update_ai_selector_settings():
 def daily_report():
     payload, status = daily_report_module.latest_daily_report_response()
     return jsonify(payload), status
+
+
+@app.route("/research")
+@app.route("/research/")
+def research_report_home():
+    index_path = build_research_site(project_dir=PROJECT_DIR)
+    if not index_path.exists():
+        return ("research report unavailable", 404)
+    return send_file(index_path)
 
 
 def start_combined(port=8090):
