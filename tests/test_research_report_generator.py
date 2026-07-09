@@ -264,26 +264,39 @@ def test_build_research_site_writes_index(tmp_path):
     reports_dir.mkdir(parents=True, exist_ok=True)
     site_dir = project_dir / "site" / "research"
     site_dir.mkdir(parents=True, exist_ok=True)
-    _write_text(
-        reports_dir / "daily-paper-report-2026-07-08.json",
-        json.dumps(
-            {
-                "date": "2026-07-08",
-                "generated_at": "2026-07-08T18:00:00-04:00",
-                "mode": "paper",
-                "top_cards": [{"ticker": "SOFI"}, {"ticker": "LABD"}],
-                "quality": {"entry_ready_count": 1, "observation_only_count": 1, "fallback_used": False},
-                "selection_sync": {"ok": True, "reason": "ok"},
-                "trade_activity": {"summary": {"execution_count": 2, "buy_count": 1, "sell_count": 1}},
-                "warnings": ["sample warning"],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-    )
+    for day, tops, fallback in [
+        ("2026-07-08", ["SOFI", "LABD"], False),
+        ("2026-07-09", ["F", "SOFI", "DRIP"], True),
+    ]:
+        _write_text(
+            reports_dir / f"daily-paper-report-{day}.json",
+            json.dumps(
+                {
+                    "date": day,
+                    "generated_at": f"{day}T18:00:00-04:00",
+                    "mode": "paper",
+                    "top_cards": [{"ticker": ticker, "entry_ready": ticker == tops[0]} for ticker in tops],
+                    "quality": {
+                        "entry_ready_count": 1,
+                        "observation_only_count": max(0, len(tops) - 1),
+                        "fallback_used": fallback,
+                        "provider_fallback_used": fallback,
+                        "price_band": {"min": 4.0, "max": 50.0},
+                    },
+                    "selection_sync": {"ok": True, "reason": "ok"},
+                    "trade_activity": {"summary": {"execution_count": 2, "buy_count": 1, "sell_count": 1}},
+                    "warnings": ["sample warning"] if fallback else [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
     index_path = build_research_site(project_dir=project_dir, reports_dir=reports_dir, site_dir=site_dir)
     text = index_path.read_text(encoding="utf-8")
     assert index_path.exists()
-    assert "研究报告首页" in text
+    assert "每日简报列表" in text
+    assert "近日报告" in text
+    assert "2026-07-09" in text
     assert "2026-07-08" in text
-    assert "SOFI, LABD" in text
+    assert "F / SOFI / DRIP" in text
+    assert "SOFI / LABD" in text
