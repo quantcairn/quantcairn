@@ -420,6 +420,22 @@ def _selected_stock_positions_count(live_account: dict | None, selected_tickers:
     return count
 
 
+def _paper_account_summary_from_cards(cards: list[dict]) -> dict[str, object]:
+    cash = round(sum(float(card.get("cash", 0.0) or 0.0) for card in cards), 2)
+    equity = round(sum(float(card.get("equity", 0.0) or 0.0) for card in cards), 2)
+    positions_count = sum(1 for card in cards if int(card.get("shares", 0) or 0) > 0)
+    return {
+        "cash": cash,
+        "equity": equity,
+        "buying_power": cash,
+        "positions_count": positions_count,
+        "positions": [],
+        "mode": "paper",
+        "data_stale": False,
+        "account_error": False,
+    }
+
+
 def _normalize_symbol_list(values) -> list[str]:
     symbols: list[str] = []
     for item in values or []:
@@ -997,9 +1013,9 @@ HTML = """<!DOCTYPE html>
         background:rgba(255,255,255,.04);border:1px solid var(--line);color:var(--text);
         font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase
     }
+    a.pill{text-decoration:none}
     .pill.live{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22);color:#b8f5d0}
     .pill.warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.24);color:#fde68a}
-    a.pill{text-decoration:none}
     .pill.research{background:rgba(59,130,246,.08);border-color:rgba(59,130,246,.24);color:#bfdbfe}
     .overview-layout{
         display:grid;grid-template-columns:1fr;gap:16px;
@@ -1449,24 +1465,24 @@ HTML = """<!DOCTYPE html>
                         <span class="hint">可用资金与真实仓位</span>
                     </div>
                     <div class="account-strip">
-                        <div class="account-summary">
-                            <div class="metric">
-                                <span class="metric-label">账户现金</span>
-                                <span class="metric-value">{% if live_account and live_account.cash is not none %}${{ "%.2f"|format(live_account.cash) }}{% else %}暂无{% endif %}</span>
+                            <div class="account-summary">
+                                <div class="metric">
+                                    <span class="metric-label">账户现金</span>
+                                    <span class="metric-value">{% if account_summary and account_summary.cash is not none %}${{ "%.2f"|format(account_summary.cash) }}{% else %}暂无{% endif %}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">账户权益</span>
+                                    <span class="metric-value">{% if account_summary and account_summary.equity is not none %}${{ "%.2f"|format(account_summary.equity) }}{% else %}暂无{% endif %}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">可买额度</span>
+                                    <span class="metric-value">{% if account_summary and account_summary.buying_power is not none %}${{ "%.2f"|format(account_summary.buying_power) }}{% else %}暂无{% endif %}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">精选持仓数量</span>
+                                    <span class="metric-value small">{% if account_summary %}{{ selected_positions_count }}{% else %}暂无{% endif %}</span>
+                                </div>
                             </div>
-                            <div class="metric">
-                                <span class="metric-label">账户权益</span>
-                                <span class="metric-value">{% if live_account and live_account.equity is not none %}${{ "%.2f"|format(live_account.equity) }}{% else %}暂无{% endif %}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">可买额度</span>
-                                <span class="metric-value">{% if live_account and live_account.buying_power is not none %}${{ "%.2f"|format(live_account.buying_power) }}{% else %}暂无{% endif %}</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">精选持仓数量</span>
-                                <span class="metric-value small">{% if live_account %}{{ selected_positions_count }}{% else %}暂无{% endif %}</span>
-                            </div>
-                        </div>
                         <div>
                             <div class="panel-head" style="margin:0 0 8px 0;">
                                 <h2>真实仓位</h2>
@@ -2325,6 +2341,14 @@ def _chart_snapshot_for_ticker(ticker: str, *, refresh: bool = True) -> dict[str
     }
 
 
+def _chart_trade_day() -> str | None:
+    today = datetime.now(_CHART_TZ).strftime("%Y%m%d")
+    today_path = PROJECT_DIR / "logs" / f"trades-{today}.jsonl"
+    if today_path.exists():
+        return today
+    return None
+
+
 _FILL_PRICE_PATTERN = re.compile(r"executed_price:\s*Some\(([^)]+)\)")
 _SIDE_PATTERN = re.compile(r"side:\s*(Buy|Sell)")
 _SYMBOL_PATTERN = re.compile(r"symbol:\s*\"([A-Za-z0-9.-]+)\"")
@@ -2338,12 +2362,13 @@ def _chart_trades_for_ticker(ticker: str) -> list[dict[str, object]]:
     normalized = _chart_ticker(ticker)
     if not normalized:
         return []
-    day = latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode()) or latest_trade_log_day(PROJECT_DIR / "logs")
+    day = _chart_trade_day()
     if not day:
         return []
     records = load_trade_records(PROJECT_DIR / "logs", day=day)
     trades: list[dict[str, object]] = []
     seen_order_ids: set[str] = set()
+    seen_trade_keys: set[tuple[object, ...]] = set()
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -2370,11 +2395,21 @@ def _chart_trades_for_ticker(ticker: str) -> list[dict[str, object]]:
         qty = int(qty_match.group(1)) if qty_match else 0
         if price is None:
             continue
+        trade_key = (
+            normalized,
+            str(side_match.group(1) if side_match else "").upper() or "FILLED",
+            round(price, 4),
+            qty,
+            _chart_display_time(time_match.group(1) if time_match else record.get("timestamp")),
+        )
+        if trade_key in seen_trade_keys:
+            continue
+        seen_trade_keys.add(trade_key)
         trades.append(
             {
-                "time": _chart_display_time(time_match.group(1) if time_match else record.get("timestamp")),
+                "time": trade_key[4],
                 "ticker": normalized,
-                "side": str(side_match.group(1) if side_match else "").upper() or "FILLED",
+                "side": trade_key[1],
                 "price": round(price, 4),
                 "qty": qty,
                 "status": "FILLED",
@@ -2739,8 +2774,13 @@ def index():
             total_capital += initial_capital
             total_equity += initial_capital
 
-    display_live_account = live_account
-    selected_positions_count = _selected_stock_positions_count(live_account, selected_tickers)
+    paper_account_summary = _paper_account_summary_from_cards(cards)
+    if live_account and live_account.get("mode") == "live":
+        account_summary = live_account
+        selected_positions_count = _selected_stock_positions_count(live_account, selected_tickers)
+    else:
+        account_summary = paper_account_summary
+        selected_positions_count = int(paper_account_summary.get("positions_count", 0) or 0)
 
     if live_account and live_account.get("mode") == "live":
         total_pnl = sum(float((pos or {}).get("unrealized_pnl", 0.0) or 0.0) for pos in (live_account.get("positions") or []))
@@ -2827,7 +2867,8 @@ def index():
         other_cards=other_cards,
         account_labels=account_labels,
         footer_buying_power=footer_buying_power,
-        live_account=display_live_account or live_account,
+        live_account=live_account,
+        account_summary=account_summary,
         selected_positions_count=selected_positions_count,
         ai_selection=ai_selection,
         ai_selection_price_band=ai_selection_price_band,

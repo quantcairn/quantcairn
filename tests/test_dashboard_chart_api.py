@@ -35,7 +35,13 @@ def _filled_order_record(order_id: str, ticker: str, side: str, price: float, qt
     }
 
 
-def _patch_chart_basics(monkeypatch, price_map: dict[int, dict | None], trades: list[dict], project_dir: Path | None = None):
+def _patch_chart_basics(
+    monkeypatch,
+    price_map: dict[int, dict | None],
+    trades: list[dict],
+    project_dir: Path | None = None,
+    trade_day: str = "20260709",
+):
     monkeypatch.setattr(dashboard, "_fetch_status", lambda port: price_map.get(port))
     monkeypatch.setattr(
         dashboard,
@@ -55,9 +61,8 @@ def _patch_chart_basics(monkeypatch, price_map: dict[int, dict | None], trades: 
     monkeypatch.setattr(dashboard, "_startup_guard_status", lambda selection_sync: {"level": "green", "label": "ok", "detail": "ok"})
     monkeypatch.setattr(dashboard, "_selected_stock_positions_count", lambda live_account, selected_tickers: 0)
     monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"broker_unresolved_count": 0, "broker_unresolved_oldest_seconds": 0.0, "latest_submitted_line": "", "latest_line": "", "execution_mode": "paper", "new_entries_allowed": True, "reduce_only": False, "unresolved_alert_threshold_seconds": 120, "unresolved_alert": False})
-    monkeypatch.setattr(dashboard, "latest_trade_activity_day", lambda *args, **kwargs: "20260709")
-    monkeypatch.setattr(dashboard, "latest_trade_log_day", lambda *args, **kwargs: "20260709")
     monkeypatch.setattr(dashboard, "load_trade_records", lambda *args, **kwargs: list(trades))
+    monkeypatch.setattr(dashboard, "_chart_trade_day", lambda: trade_day)
     monkeypatch.setattr(dashboard, "_desired_audit_mode", lambda: "paper")
     monkeypatch.setattr(dashboard, "_enrich_ticker_descriptions", lambda top3_list: top3_list)
     monkeypatch.setattr(
@@ -124,6 +129,38 @@ def test_chart_api_unknown_ticker_is_safe(monkeypatch):
     payload = response.get_json()
     assert payload["ticker"] == "UNKNOWN"
     assert payload["prices"] == []
+    assert payload["trades"] == []
+
+
+def test_chart_api_ignores_previous_day_trades_when_today_log_is_empty(monkeypatch):
+    def load_trade_records_for_day(*args, **kwargs):
+        day = kwargs.get("day")
+        if day == "20260710":
+            return []
+        if day == "20260709":
+            return [
+                _filled_order_record("1", "SOFI", "Buy", 8.42, 20, "2026-07-09T21:36:10+08:00"),
+                _filled_order_record("2", "SOFI", "Sell", 8.58, 20, "2026-07-09T21:37:10+08:00"),
+            ]
+        return []
+
+    _patch_chart_basics(
+        monkeypatch,
+        {
+            8092: {"price": 8.42, "timestamp": "2026-07-10T21:35:00+08:00"},
+        },
+        [],
+        trade_day="20260710",
+    )
+    monkeypatch.setattr(dashboard, "load_trade_records", load_trade_records_for_day)
+
+    client = dashboard.app.test_client()
+    response = client.get("/api/chart/SOFI")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ticker"] == "SOFI"
+    assert payload["prices"]
     assert payload["trades"] == []
 
 
