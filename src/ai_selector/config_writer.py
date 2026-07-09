@@ -126,6 +126,8 @@ def _default_ai_selector_config() -> dict:
         "allow_fallback_paper_entries": False,
         "allow_fallback_live_entries": False,
         "fallback_paper_position_multiplier": 0.25,
+        "entry_proximity_enabled": True,
+        "entry_proximity_weight": 0.0,
     }
 
 
@@ -144,6 +146,22 @@ def _load_ai_selector_config() -> dict:
         if isinstance(section, dict):
             ai_selector.update(section)
     return ai_selector
+
+
+def _entry_payload(item: dict) -> dict:
+    entry = item.get("entry")
+    if isinstance(entry, dict):
+        payload = dict(entry)
+    else:
+        payload = {}
+    payload.setdefault("entry_proximity_score", _coalesce_float(item.get("entry_proximity_score"), default=50.0))
+    payload.setdefault("good_for_entry_now", bool(item.get("good_for_entry_now", False)))
+    payload.setdefault("entry_quality", str(item.get("entry_quality") or "unknown"))
+    payload.setdefault("entry_reason", str(item.get("entry_reason") or ""))
+    payload.setdefault("range_position", item.get("range_position"))
+    payload.setdefault("dist_to_support", item.get("dist_to_support"))
+    payload.setdefault("dist_to_resistance", item.get("dist_to_resistance"))
+    return payload
 
 def write_top_configs(top_items):
     if not top_items:
@@ -179,6 +197,7 @@ def write_top_configs(top_items):
         composition_reject_reason = str(item.get("composition_reject_reason") or "")
         final_rank = int(item.get("final_rank") or i)
         allocation = dict(allocations.get(str(item.get("ticker") or "").upper()) or {})
+        entry = _entry_payload(item)
 
         cfg = {
             "ticker": item["ticker"],
@@ -205,6 +224,7 @@ def write_top_configs(top_items):
                     or item.get("selection_penalty_reason")
                     or "ai_selector"
                 ),
+                "entry": entry,
             },
             "allocation": {
                 "target_capital": float(allocation.get("capital") or 0.0),
@@ -265,6 +285,12 @@ def write_top_configs(top_items):
                 ),
                 "fallback_paper_position_multiplier": float(
                     ai_selector_cfg.get("fallback_paper_position_multiplier", 0.25)
+                ),
+                "entry_proximity_enabled": bool(
+                    ai_selector_cfg.get("entry_proximity_enabled", True)
+                ),
+                "entry_proximity_weight": float(
+                    ai_selector_cfg.get("entry_proximity_weight", 0.0)
                 ),
             },
             "trading_hours": {

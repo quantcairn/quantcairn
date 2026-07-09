@@ -57,10 +57,39 @@ def test_ai_selector_fallback_policy_defaults_and_parses_yaml():
     assert defaults.ai_selector.fallback_paper_position_multiplier == 0.25
 
 
+def test_ai_selector_entry_proximity_defaults_and_parses_yaml():
+    config = _parse_config(
+        {
+            "ticker": "SOFI",
+            "mode": "paper",
+            "range": {"mode": "auto"},
+            "ai_selector": {
+                "entry_proximity_enabled": True,
+                "entry_proximity_weight": 0.15,
+            },
+        }
+    )
+
+    assert config.ai_selector.entry_proximity_enabled is True
+    assert config.ai_selector.entry_proximity_weight == 0.15
+
+    defaults = _parse_config(
+        {
+            "ticker": "SOFI",
+            "mode": "paper",
+            "range": {"mode": "auto"},
+        }
+    )
+
+    assert defaults.ai_selector.entry_proximity_enabled is True
+    assert defaults.ai_selector.entry_proximity_weight == 0.0
+
+
 def run_test_direct():
     test_position_size_defaults_to_auto_when_omitted()
     test_reduce_only_defaults_false_and_parses_yaml()
     test_ai_selector_fallback_policy_defaults_and_parses_yaml()
+    test_ai_selector_entry_proximity_defaults_and_parses_yaml()
 
 
 if __name__ == "__main__":

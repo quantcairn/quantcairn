@@ -308,8 +308,53 @@ def test_config_writer_includes_ai_selector_fallback_policy(tmp_path, monkeypatc
     assert updated["ai_selector"]["allow_fallback_paper_entries"] is True
     assert updated["ai_selector"]["allow_fallback_live_entries"] is False
     assert updated["ai_selector"]["fallback_paper_position_multiplier"] == 0.25
+    assert updated["ai_selector"]["entry_proximity_enabled"] is True
+    assert updated["ai_selector"]["entry_proximity_weight"] == 0.0
     assert "selection" in updated
     assert "allocation" in updated
+
+
+def test_config_writer_includes_entry_diagnostics(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    write_top_configs([
+        {
+            "ticker": "SOFI",
+            "range_low": 17.0,
+            "range_high": 19.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 10,
+            "entry": {
+                "entry_proximity_score": 80.0,
+                "good_for_entry_now": True,
+                "entry_quality": "good",
+                "entry_reason": "near_support",
+                "range_position": 35.0,
+                "dist_to_support": 4.2,
+                "dist_to_resistance": 18.8,
+            },
+            "entry_proximity_score": 80.0,
+            "good_for_entry_now": True,
+            "entry_quality": "good",
+            "entry_reason": "near_support",
+            "range_position": 35.0,
+            "dist_to_support": 4.2,
+            "dist_to_resistance": 18.8,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    entry = updated["selection"]["entry"]
+    assert entry["entry_proximity_score"] == 80.0
+    assert entry["good_for_entry_now"] is True
+    assert entry["entry_quality"] == "good"
+    assert entry["entry_reason"] == "near_support"
+    assert entry["range_position"] == 35.0
+    assert entry["dist_to_support"] == 4.2
+    assert entry["dist_to_resistance"] == 18.8
 
 
 def test_config_writer_includes_composition_metadata(tmp_path, monkeypatch):

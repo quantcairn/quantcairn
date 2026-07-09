@@ -58,9 +58,20 @@ def test_range_score_outputs_complete_fields_and_bounds():
         "liquidity_score",
         "spread_score",
         "stability_score",
+        "entry",
     }
     for key in ("range_score", "volatility_score", "mean_reversion_score", "liquidity_score", "spread_score", "stability_score"):
         assert 0.0 <= payload[key] <= 100.0
+    assert set(payload["entry"]) == {
+        "entry_proximity_score",
+        "good_for_entry_now",
+        "entry_quality",
+        "entry_reason",
+        "range_position",
+        "dist_to_support",
+        "dist_to_resistance",
+    }
+    assert payload["entry"]["entry_quality"] in {"excellent", "good", "neutral", "poor", "very_poor", "unknown"}
 
 
 def test_ai_selector_final_score_sorting_uses_range_score():

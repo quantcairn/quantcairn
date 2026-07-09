@@ -12,6 +12,8 @@ FMP_ENABLED = bool(FMP_API_KEY)
 ALLOW_FALLBACK_PAPER_ENTRIES = False
 ALLOW_FALLBACK_LIVE_ENTRIES = False
 FALLBACK_PAPER_POSITION_MULTIPLIER = 0.25
+ENTRY_PROXIMITY_ENABLED = True
+ENTRY_PROXIMITY_WEIGHT = 0.0
 TOP_N = 3
 ANALYSIS_UNIVERSE_LIMIT = 9
 UNIVERSE = [
@@ -53,6 +55,8 @@ class AISelectorRuntimeConfig:
     allow_fallback_paper_entries: bool = ALLOW_FALLBACK_PAPER_ENTRIES
     allow_fallback_live_entries: bool = ALLOW_FALLBACK_LIVE_ENTRIES
     fallback_paper_position_multiplier: float = FALLBACK_PAPER_POSITION_MULTIPLIER
+    entry_proximity_enabled: bool = ENTRY_PROXIMITY_ENABLED
+    entry_proximity_weight: float = ENTRY_PROXIMITY_WEIGHT
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -120,5 +124,13 @@ def load_runtime_config() -> AISelectorRuntimeConfig:
         fallback_paper_position_multiplier=_float_env(
             "SOXS_AI_SELECTOR_FALLBACK_PAPER_POSITION_MULTIPLIER",
             FALLBACK_PAPER_POSITION_MULTIPLIER,
+        ),
+        entry_proximity_enabled=_bool_env(
+            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_ENABLED",
+            ENTRY_PROXIMITY_ENABLED,
+        ),
+        entry_proximity_weight=_float_env(
+            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_WEIGHT",
+            ENTRY_PROXIMITY_WEIGHT,
         ),
     )

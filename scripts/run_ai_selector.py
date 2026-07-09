@@ -33,6 +33,7 @@ import json
 import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
+import yaml
 
 from src.config.local_env import load_local_ai_env
 from src.ai_selector.settings import load_runtime_settings
@@ -46,7 +47,30 @@ from src.notifier.alerts import notify_ai_selection_result
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
-TOP_COUNT = max(1, int(load_runtime_config().top_n))
+AI_SELECTOR_RUNTIME = load_runtime_config()
+TOP_COUNT = max(1, int(AI_SELECTOR_RUNTIME.top_n))
+
+
+def _load_ai_selector_file_config() -> dict:
+    merged: dict = {}
+    for path in (PROJECT_DIR / "config.yaml", PROJECT_DIR / "config.local.yaml"):
+        try:
+            if not path.exists():
+                continue
+            with open(path, "r", encoding="utf-8") as handle:
+                raw = yaml.safe_load(handle) or {}
+            if isinstance(raw, dict):
+                section = raw.get("ai_selector")
+                if isinstance(section, dict):
+                    merged.update(section)
+        except Exception:
+            continue
+    return merged
+
+
+_AI_SELECTOR_FILE_CONFIG = _load_ai_selector_file_config()
+ENTRY_PROXIMITY_ENABLED = bool(_AI_SELECTOR_FILE_CONFIG.get("entry_proximity_enabled", True))
+ENTRY_PROXIMITY_WEIGHT = max(0.0, min(1.0, float(_AI_SELECTOR_FILE_CONFIG.get("entry_proximity_weight", 0.0) or 0.0)))
 RANGE_SCORER = RangeFitnessScorer()
 TRADE_FILTER = TradeEligibilityFilter()
 COMPOSITION_FILTER = CompositionFilter()
@@ -223,11 +247,19 @@ def _apply_range_scores(rows: list[dict]) -> list[dict]:
         ai_score = _coalesce_float(item.get("ai_score"), item.get("score"), default=50.0)
         range_score = _coalesce_float(range_result.get("range_score"), default=50.0)
         final_score = round(0.6 * ai_score + 0.4 * range_score, 2)
+        entry = dict(range_result.get("entry") or {})
+        entry_score = _coalesce_float(entry.get("entry_proximity_score"), default=50.0)
+        if ENTRY_PROXIMITY_ENABLED and ENTRY_PROXIMITY_WEIGHT > 0.0:
+            final_score = round(
+                final_score * (1.0 - ENTRY_PROXIMITY_WEIGHT) + entry_score * ENTRY_PROXIMITY_WEIGHT,
+                2,
+            )
         item.update(range_result)
         item["ai_score"] = round(ai_score, 2)
         item["range_score"] = round(range_score, 2)
         item["final_score"] = final_score
         item["score"] = final_score
+        item["entry"] = entry
         scored.append(item)
     return sorted(scored, key=lambda item: (-float(item.get("final_score") or 0.0), item.get("ticker") or ""))
 
@@ -643,6 +675,8 @@ def _split_selected_and_protected_positions(
                     "ai_selected": True,
                 }
             )
+            if isinstance(item.get("entry"), dict):
+                protected["entry"] = dict(item.get("entry") or {})
             protected["reduce_only"] = True if ticker == "SOXS" else bool(protected.get("reduce_only", False))
             protected_map[ticker] = protected
             continue
@@ -689,12 +723,12 @@ def main():
 
     selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
     selected = _apply_range_scores(selected)
-    report_top10 = _build_report_top10(
+    report_top10 = _apply_range_scores(_build_report_top10(
         list(out.get("top10") or []),
         list(selected),
         integrated_ai.get("signal_map") or {},
         live_positions or [],
-    )
+    ))
     candidate_pool = _annotate_with_ai_signals(list(report_top10 or []), integrated_ai.get("signal_map") or {})
     if integrated_ai.get("preferred_symbols"):
         candidate_pool = _prioritize_ai_rank(candidate_pool, integrated_ai.get("signal_map") or {})
@@ -703,64 +737,88 @@ def main():
         live_positions or [],
         limit=min(sel.selection_size, TOP_COUNT),
     )
-    min_price, max_price = resolve_price_band(runtime_settings)
-    selected, out_of_band_symbols = _enforce_price_band(
-        selected,
-        min_price=min_price,
-        max_price=max_price,
-    )
-    selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
-    selected, trade_filter_report = _apply_trade_filter(selected)
-    selected, composition_filter_report = _apply_composition_filter(selected, top_n=TOP_COUNT)
+    selection_stage = str((out.get("settings") or {}).get("selection_stage") or "")
     fallback_pool_used = False
-    if len(selected) < TOP_COUNT:
-        blocked_symbols = {
-            str(item.get("ticker") or "").strip().upper()
-            for item in list(selected) + list(protected_positions)
-            if str(item.get("ticker") or "").strip()
-        }
-        fallback_candidates = _build_conservative_fallback_candidates(blocked_symbols)
-        if fallback_candidates:
-            fallback_pool_used = True
-            fallback_candidates = _apply_range_scores(fallback_candidates)
-            fallback_candidates, fallback_trade_report = _apply_trade_filter(fallback_candidates)
-            fallback_candidates, fallback_composition_report = _apply_composition_filter(fallback_candidates, top_n=TOP_COUNT)
-            composition_filter_report.setdefault("rejected", [])
-            composition_filter_report.setdefault("warnings", [])
-            composition_filter_report["rejected"].extend(list(fallback_composition_report.get("rejected") or []))
-            composition_filter_report["warnings"].extend(list(fallback_composition_report.get("warnings") or []))
-            existing_tickers = {
+    out_of_band_symbols: list[str] = []
+    trade_filter_report: dict = {"rejected": [], "fallback_used": False}
+    fallback_trade_report: dict = {"rejected": [], "fallback_used": False}
+    composition_filter_report: dict = {"rejected": [], "warnings": []}
+    if selection_stage != "fast_preliminary":
+        min_price, max_price = resolve_price_band(runtime_settings)
+        selected, out_of_band_symbols = _enforce_price_band(
+            selected,
+            min_price=min_price,
+            max_price=max_price,
+        )
+        selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
+        selected, trade_filter_report = _apply_trade_filter(selected)
+        selected, composition_filter_report = _apply_composition_filter(selected, top_n=TOP_COUNT)
+        allow_conservative_fallback = True
+        if 0 < len(selected) < TOP_COUNT and allow_conservative_fallback:
+            blocked_symbols = {
                 str(item.get("ticker") or "").strip().upper()
-                for item in selected
+                for item in list(selected) + list(protected_positions)
                 if str(item.get("ticker") or "").strip()
             }
-            for item in fallback_candidates:
-                ticker = str(item.get("ticker") or "").strip().upper()
-                if not ticker or ticker in existing_tickers or len(selected) >= TOP_COUNT:
-                    continue
-                item["fallback_used"] = True
-                item["fallback_reason"] = "top_n_not_filled"
-                item["source"] = "conservative_fallback_pool"
-                item["selection_penalty_reason"] = "conservative_fallback_pool"
-                item["trade_filter_passed"] = bool(item.get("trade_filter_passed", True))
-                item["reject_reason"] = str(item.get("reject_reason") or "")
-                item["composition_filter_passed"] = bool(item.get("composition_filter_passed", True))
-                item["composition_reject_reason"] = str(item.get("composition_reject_reason") or "")
-                item["final_rank"] = len(selected) + 1
-                selected.append(item)
-                existing_tickers.add(ticker)
-            selected.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
-            for idx, item in enumerate(selected, start=1):
-                item["final_rank"] = idx
-            if len(selected) < TOP_COUNT and not any(
-                str(warning).startswith("top_n_not_filled")
-                for warning in composition_filter_report.get("warnings") or []
-            ):
+            fallback_candidates = _build_conservative_fallback_candidates(blocked_symbols)
+            if fallback_candidates:
+                fallback_pool_used = True
+                fallback_trade_rejected_rows: list[dict] = []
+                fallback_price_band = f"${min_price:.2f}-${max_price:.2f}"
+                for item in fallback_candidates:
+                    ticker = str(item.get("ticker") or "").strip().upper()
+                    if not ticker:
+                        continue
+                    price = _candidate_price(item)
+                    if price is not None and (price < min_price or price > max_price):
+                        fallback_trade_rejected_rows.append(
+                            {
+                                "ticker": ticker,
+                                "reason": "price_out_of_range",
+                                "price": round(float(price), 4),
+                                "allowed_range": fallback_price_band,
+                            }
+                        )
+                fallback_candidates = _apply_range_scores(fallback_candidates)
+                fallback_candidates, fallback_trade_report = _apply_trade_filter(fallback_candidates)
+                fallback_trade_report["rejected"] = list(fallback_trade_report.get("rejected") or []) + fallback_trade_rejected_rows
+                fallback_candidates, fallback_composition_report = _apply_composition_filter(fallback_candidates, top_n=TOP_COUNT)
+                composition_filter_report.setdefault("rejected", [])
+                composition_filter_report.setdefault("warnings", [])
+                composition_filter_report["rejected"].extend(list(fallback_composition_report.get("rejected") or []))
+                composition_filter_report["warnings"].extend(list(fallback_composition_report.get("warnings") or []))
+                existing_tickers = {
+                    str(item.get("ticker") or "").strip().upper()
+                    for item in selected
+                    if str(item.get("ticker") or "").strip()
+                }
+                for item in fallback_candidates:
+                    ticker = str(item.get("ticker") or "").strip().upper()
+                    if not ticker or ticker in existing_tickers or len(selected) >= TOP_COUNT:
+                        continue
+                    item["fallback_used"] = True
+                    item["fallback_reason"] = "top_n_not_filled"
+                    item["source"] = "conservative_fallback_pool"
+                    item["selection_penalty_reason"] = "conservative_fallback_pool"
+                    item["trade_filter_passed"] = bool(item.get("trade_filter_passed", True))
+                    item["reject_reason"] = str(item.get("reject_reason") or "")
+                    item["composition_filter_passed"] = bool(item.get("composition_filter_passed", True))
+                    item["composition_reject_reason"] = str(item.get("composition_reject_reason") or "")
+                    item["final_rank"] = len(selected) + 1
+                    selected.append(item)
+                    existing_tickers.add(ticker)
+                selected.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
+                for idx, item in enumerate(selected, start=1):
+                    item["final_rank"] = idx
+                if len(selected) < TOP_COUNT and not any(
+                    str(warning).startswith("top_n_not_filled")
+                    for warning in composition_filter_report.get("warnings") or []
+                ):
+                    composition_filter_report.setdefault("warnings", [])
+                    composition_filter_report["warnings"].append(f"top_n_not_filled:{len(selected)}/{TOP_COUNT}")
+            else:
                 composition_filter_report.setdefault("warnings", [])
                 composition_filter_report["warnings"].append(f"top_n_not_filled:{len(selected)}/{TOP_COUNT}")
-        else:
-            composition_filter_report.setdefault("warnings", [])
-            composition_filter_report["warnings"].append(f"top_n_not_filled:{len(selected)}/{TOP_COUNT}")
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -792,6 +850,9 @@ def main():
     ]
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
+    out["settings"] = dict(out.get("settings") or {})
+    out["settings"]["entry_proximity_enabled"] = bool(ENTRY_PROXIMITY_ENABLED)
+    out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
     write_selection_filter_log(quality_report)
     if not selected:
         print("AI selection produced no tradable symbols; aborting without updating TOP configs.")
@@ -814,7 +875,14 @@ def main():
             item["final_rank"] = idx
         out["top5"] = list(selected)
         out["top3"] = list(selected)
-        out["report"] = sel._format_report_rows(selected)
+        formatter = getattr(sel, "_format_report_rows", None)
+        if callable(formatter):
+            out["report"] = formatter(selected)
+        else:
+            out["report"] = [
+                {"rank": idx, "ticker": row.get("ticker"), "score": row.get("score")}
+                for idx, row in enumerate(selected, start=1)
+            ]
     timestamp = datetime.now().isoformat()
     print(f"AI selection completed at {timestamp}")
     print("Top10:")

@@ -686,6 +686,16 @@ class AIStrategySelector:
     def _format_report_rows(self, rows: List[dict]) -> List[dict]:
         out = []
         for idx, row in enumerate(rows, start=1):
+            entry = row.get("entry") if isinstance(row.get("entry"), dict) else {}
+            entry_score = entry.get("entry_proximity_score")
+            if entry_score is None:
+                entry_score = row.get("entry_proximity_score", 50.0)
+            entry_quality = entry.get("entry_quality")
+            if entry_quality is None:
+                entry_quality = row.get("entry_quality", "unknown")
+            entry_reason = entry.get("entry_reason")
+            if entry_reason is None:
+                entry_reason = row.get("entry_reason", "")
             out.append({
                 "rank": idx,
                 "ticker": row.get("ticker"),
@@ -699,5 +709,14 @@ class AIStrategySelector:
                 "diversity_bonus": float(round(row.get("diversity_bonus", 0.0), 2)),
                 "suggested_range": row.get("suggested_range"),
                 "sector": row.get("sector"),
+                "entry": {
+                    "entry_proximity_score": float(round(float(entry_score), 2)),
+                    "good_for_entry_now": bool(entry.get("good_for_entry_now", row.get("good_for_entry_now", False))),
+                    "entry_quality": entry_quality,
+                    "entry_reason": entry_reason,
+                    "range_position": entry.get("range_position", row.get("range_position")),
+                    "dist_to_support": entry.get("dist_to_support", row.get("dist_to_support")),
+                    "dist_to_resistance": entry.get("dist_to_resistance", row.get("dist_to_resistance")),
+                },
             })
         return out

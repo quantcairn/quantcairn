@@ -76,6 +76,34 @@ def _recent_change_pct(market_data: dict[str, Any]) -> float | None:
     return None
 
 
+def _extract_support_resistance(market_data: dict[str, Any]) -> tuple[float | None, float | None]:
+    support = _safe_float(
+        market_data.get("support_price"),
+        _safe_float(market_data.get("range_low"), _safe_float(market_data.get("recent_low"))),
+    )
+    resistance = _safe_float(
+        market_data.get("resistance_price"),
+        _safe_float(market_data.get("range_high"), _safe_float(market_data.get("recent_high"))),
+    )
+    if support is not None and support <= 0:
+        support = None
+    if resistance is not None and resistance <= 0:
+        resistance = None
+    return support, resistance
+
+
+def _entry_quality_from_position(position: float) -> tuple[float, str, bool]:
+    if position <= 20.0:
+        return 95.0, "excellent", True
+    if position <= 40.0:
+        return 80.0, "good", True
+    if position <= 60.0:
+        return 55.0, "neutral", False
+    if position <= 80.0:
+        return 30.0, "poor", False
+    return 10.0, "very_poor", False
+
+
 class RangeFitnessScorer:
     def calculate(self, symbol, market_data) -> dict:
         ticker = str(symbol or "").strip().upper()
@@ -87,6 +115,7 @@ class RangeFitnessScorer:
         three_day_change_pct = _recent_change_pct(data)
         closes = _extract_sequence(data, "close_history", "closes", "prices")
         returns = _extract_sequence(data, "returns")
+        entry = self._entry_proximity(price, data)
 
         volatility_score = self._volatility_score(closes, returns, data)
         mean_reversion_score = self._mean_reversion_score(price, closes, data)
@@ -110,6 +139,57 @@ class RangeFitnessScorer:
             "liquidity_score": round(_clamp(liquidity_score), 2),
             "spread_score": round(_clamp(spread_score), 2),
             "stability_score": round(_clamp(stability_score), 2),
+            "entry": entry,
+        }
+
+    def _entry_proximity(self, price: float | None, market_data: dict[str, Any]) -> dict[str, Any]:
+        support, resistance = _extract_support_resistance(market_data)
+        if price is None or price <= 0 or support is None or resistance is None or resistance <= support:
+            return {
+                "entry_proximity_score": 50.0,
+                "good_for_entry_now": False,
+                "entry_quality": "unknown",
+                "entry_reason": "missing_support_resistance_or_price",
+                "range_position": None,
+                "dist_to_support": None,
+                "dist_to_resistance": None,
+            }
+
+        range_width = resistance - support
+        range_position = 100.0 * max(0.0, min(1.0, (price - support) / range_width))
+        dist_to_support = ((price - support) / support) * 100.0 if support > 0 else None
+        dist_to_resistance = ((resistance - price) / price) * 100.0 if price > 0 else None
+        entry_proximity_score, entry_quality, good_for_entry_now = _entry_quality_from_position(range_position)
+        entry_reason = "price_balanced_in_range"
+
+        if dist_to_resistance is not None and dist_to_resistance <= 1.0:
+            entry_proximity_score = 10.0
+            entry_quality = "very_poor"
+            good_for_entry_now = False
+            entry_reason = "price_near_resistance_not_suitable_for_new_entry"
+        elif dist_to_support is not None and dist_to_support >= 8.0:
+            if entry_quality in {"excellent", "good", "neutral"}:
+                entry_proximity_score = min(entry_proximity_score, 30.0)
+                entry_quality = "poor"
+            good_for_entry_now = False
+            entry_reason = "price_far_from_support_not_suitable_for_new_entry"
+        elif entry_quality in {"excellent", "good"}:
+            entry_reason = "price_near_support_good_for_new_entry"
+        elif entry_quality == "neutral":
+            entry_reason = "mid_range_observation_only"
+        elif entry_quality == "poor":
+            entry_reason = "price_far_from_support_observation_only"
+        elif entry_quality == "very_poor":
+            entry_reason = "high_range_position_not_suitable_for_new_entry"
+
+        return {
+            "entry_proximity_score": round(_clamp(entry_proximity_score), 2),
+            "good_for_entry_now": bool(good_for_entry_now),
+            "entry_quality": entry_quality,
+            "entry_reason": entry_reason,
+            "range_position": round(range_position, 2),
+            "dist_to_support": round(dist_to_support, 2) if dist_to_support is not None else None,
+            "dist_to_resistance": round(dist_to_resistance, 2) if dist_to_resistance is not None else None,
         }
 
     def _volatility_score(self, closes: list[float], returns: list[float], market_data: dict[str, Any]) -> float:

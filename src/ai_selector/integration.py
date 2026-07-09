@@ -123,6 +123,8 @@ class AISelector:
             "provider_fallback_used": provider_fallback_used,
             "fallback_used": provider_fallback_used,
             "range_score_enabled": True,
+            "entry_proximity_enabled": bool(getattr(self.config, "entry_proximity_enabled", True)),
+            "entry_proximity_weight": float(getattr(self.config, "entry_proximity_weight", 0.0) or 0.0),
             "trade_filter_enabled": True,
             "trade_filter_fallback_used": bool(self.last_run_metadata.get("trade_filter_fallback_used", False)),
             "composition_filter_enabled": True,
@@ -145,6 +147,8 @@ class AISelector:
 
     def _apply_range_scores(self, ranked: list[dict]) -> list[dict]:
         scored: list[dict] = []
+        entry_weight = max(0.0, min(1.0, float(getattr(self.config, "entry_proximity_weight", 0.0) or 0.0)))
+        entry_enabled = bool(getattr(self.config, "entry_proximity_enabled", True))
         for item in ranked:
             candidate = dict(item)
             ticker = str(candidate.get("ticker") or "").strip().upper()
@@ -153,10 +157,15 @@ class AISelector:
             ai_score = _coalesce_float(candidate.get("ai_score"), candidate.get("score"), default=50.0)
             range_score = _coalesce_float(range_result.get("range_score"), default=50.0)
             final_score = round(0.6 * ai_score + 0.4 * range_score, 2)
+            entry = dict(range_result.get("entry") or {})
+            entry_score = _coalesce_float(entry.get("entry_proximity_score"), default=50.0)
+            if entry_enabled and entry_weight > 0.0:
+                final_score = round(final_score * (1.0 - entry_weight) + entry_score * entry_weight, 2)
             candidate.update(range_result)
             candidate["ai_score"] = round(ai_score, 2)
             candidate["final_score"] = final_score
             candidate["score"] = final_score
+            candidate["entry"] = entry
             candidate["trade_market_data"] = market_data
             scored.append(candidate)
         scored.sort(key=lambda item: (-float(item.get("final_score") or 0.0), item.get("ticker") or ""))
@@ -280,6 +289,13 @@ class AISelector:
             "providers_disabled": list(self.last_run_metadata.get("providers_disabled") or []),
             "fmp_enabled": bool(self.last_run_metadata.get("fmp_enabled", False)),
             "fallback_used": bool(self.last_run_metadata.get("fallback_used", False)),
+            "settings": {
+                "range_score_enabled": bool(self.last_run_metadata.get("range_score_enabled", True)),
+                "entry_proximity_enabled": bool(self.last_run_metadata.get("entry_proximity_enabled", True)),
+                "entry_proximity_weight": float(self.last_run_metadata.get("entry_proximity_weight", 0.0) or 0.0),
+                "trade_filter_enabled": bool(self.last_run_metadata.get("trade_filter_enabled", True)),
+                "composition_filter_enabled": bool(self.last_run_metadata.get("composition_filter_enabled", True)),
+            },
             "composition_filter": {
                 "max_leveraged_etf_in_top3": int(
                     self.last_run_metadata.get("composition_filter_max_leveraged_etf_in_top3") or 1

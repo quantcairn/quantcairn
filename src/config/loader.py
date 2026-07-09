@@ -115,6 +115,8 @@ class AiSelectorConfig:
     allow_fallback_paper_entries: bool = False
     allow_fallback_live_entries: bool = False
     fallback_paper_position_multiplier: float = 0.25
+    entry_proximity_enabled: bool = True
+    entry_proximity_weight: float = 0.0
 
 
 @dataclass
@@ -335,6 +337,15 @@ def _parse_config(raw: dict) -> AppConfig:
             ai_selector_raw.get("fallback_paper_position_multiplier", 0.25),
         )
         or 0.25,
+        entry_proximity_enabled=_bool_env(
+            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_ENABLED",
+            ai_selector_raw.get("entry_proximity_enabled", True),
+        ),
+        entry_proximity_weight=_float_env(
+            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_WEIGHT",
+            ai_selector_raw.get("entry_proximity_weight", 0.0),
+        )
+        or 0.0,
     )
 
     return config
