@@ -35,6 +35,18 @@ TOP_COUNT = max(1, int(load_runtime_config().top_n))
 RANGE_SCORER = RangeFitnessScorer()
 TRADE_FILTER = TradeEligibilityFilter()
 COMPOSITION_FILTER = CompositionFilter()
+CONSERVATIVE_FALLBACK_POOL = [
+    "SOFI",
+    "PLTR",
+    "AMD",
+    "AAPL",
+    "BAC",
+    "F",
+    "T",
+    "PFE",
+    "KO",
+    "INTC",
+]
 
 
 def _et_now() -> datetime:
@@ -237,6 +249,51 @@ def _apply_composition_filter(rows: list[dict], top_n: int = TOP_COUNT) -> tuple
     accepted = list(result.get("accepted") or [])
     accepted.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
     return accepted, dict(result)
+
+
+def _build_conservative_fallback_candidates(existing_symbols: set[str] | None = None) -> list[dict]:
+    blocked = {str(item or "").strip().upper() for item in (existing_symbols or set()) if str(item or "").strip()}
+    candidates: list[dict] = []
+    for ticker in CONSERVATIVE_FALLBACK_POOL:
+        ticker = _normalize_ticker(ticker)
+        if not ticker or ticker in blocked:
+            continue
+        price = _live_candidate_price(ticker)
+        if not price or price <= 0:
+            continue
+        row = {
+            "ticker": ticker,
+            "score": 55.0,
+            "ai_score": 55.0,
+            "range_score": 55.0,
+            "final_score": 55.0,
+            "confidence": 0.35,
+            "reason": "conservative_fallback_pool",
+            "source": "conservative_fallback_pool",
+            "fallback_used": True,
+            "fallback_reason": "top_n_not_filled",
+            "ai_selected": False,
+            "current_price": float(price),
+            "range_low": round(float(price) * 0.96, 4),
+            "range_high": round(float(price) * 1.04, 4),
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 1,
+            "trade_market_data": {
+                "earnings_within_days": 999,
+                "price_change_5d": 0.0,
+                "avg_volume": 10_000_000,
+                "bid_ask_spread_pct": 0.1,
+                "regime": "NORMAL",
+                "data_age_seconds": 0,
+                "current_price": float(price),
+                "close_history": [float(price)],
+                "returns": [],
+                "recent_low": round(float(price) * 0.96, 4),
+                "recent_high": round(float(price) * 1.04, 4),
+            },
+        }
+        candidates.append(row)
+    return candidates
 
 
 def _merged_selection_symbols(preferred_symbols: list[str] | None) -> list[str] | None:
@@ -640,6 +697,55 @@ def main():
     selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
     selected, trade_filter_report = _apply_trade_filter(selected)
     selected, composition_filter_report = _apply_composition_filter(selected, top_n=TOP_COUNT)
+    fallback_pool_used = False
+    if len(selected) < TOP_COUNT:
+        blocked_symbols = {
+            str(item.get("ticker") or "").strip().upper()
+            for item in list(selected) + list(protected_positions)
+            if str(item.get("ticker") or "").strip()
+        }
+        fallback_candidates = _build_conservative_fallback_candidates(blocked_symbols)
+        if fallback_candidates:
+            fallback_pool_used = True
+            fallback_candidates = _apply_range_scores(fallback_candidates)
+            fallback_candidates, fallback_trade_report = _apply_trade_filter(fallback_candidates)
+            fallback_candidates, fallback_composition_report = _apply_composition_filter(fallback_candidates, top_n=TOP_COUNT)
+            composition_filter_report.setdefault("rejected", [])
+            composition_filter_report.setdefault("warnings", [])
+            composition_filter_report["rejected"].extend(list(fallback_composition_report.get("rejected") or []))
+            composition_filter_report["warnings"].extend(list(fallback_composition_report.get("warnings") or []))
+            existing_tickers = {
+                str(item.get("ticker") or "").strip().upper()
+                for item in selected
+                if str(item.get("ticker") or "").strip()
+            }
+            for item in fallback_candidates:
+                ticker = str(item.get("ticker") or "").strip().upper()
+                if not ticker or ticker in existing_tickers or len(selected) >= TOP_COUNT:
+                    continue
+                item["fallback_used"] = True
+                item["fallback_reason"] = "top_n_not_filled"
+                item["source"] = "conservative_fallback_pool"
+                item["selection_penalty_reason"] = "conservative_fallback_pool"
+                item["trade_filter_passed"] = bool(item.get("trade_filter_passed", True))
+                item["reject_reason"] = str(item.get("reject_reason") or "")
+                item["composition_filter_passed"] = bool(item.get("composition_filter_passed", True))
+                item["composition_reject_reason"] = str(item.get("composition_reject_reason") or "")
+                item["final_rank"] = len(selected) + 1
+                selected.append(item)
+                existing_tickers.add(ticker)
+            selected.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
+            for idx, item in enumerate(selected, start=1):
+                item["final_rank"] = idx
+            if len(selected) < TOP_COUNT and not any(
+                str(warning).startswith("top_n_not_filled")
+                for warning in composition_filter_report.get("warnings") or []
+            ):
+                composition_filter_report.setdefault("warnings", [])
+                composition_filter_report["warnings"].append(f"top_n_not_filled:{len(selected)}/{TOP_COUNT}")
+        else:
+            composition_filter_report.setdefault("warnings", [])
+            composition_filter_report["warnings"].append(f"top_n_not_filled:{len(selected)}/{TOP_COUNT}")
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -652,12 +758,20 @@ def main():
     quality_report["removed_out_of_price_band"] = out_of_band_symbols
     quality_report["trade_filter_passed"] = [bool(item.get("trade_filter_passed", False)) for item in selected]
     quality_report["reject_reason"] = [str(item.get("reject_reason") or "") for item in selected]
-    quality_report["fallback_used"] = bool(trade_filter_report.get("fallback_used", False)) or bool(integrated_ai.get("fallback_used"))
+    quality_report["fallback_used"] = bool(trade_filter_report.get("fallback_used", False)) or bool(integrated_ai.get("fallback_used")) or bool(fallback_pool_used)
+    quality_report["fallback_pool_used"] = bool(fallback_pool_used)
     quality_report["composition_filter"] = {
         "max_leveraged_etf_in_top3": 1,
         "rejected": list(composition_filter_report.get("rejected") or []),
         "warnings": list(composition_filter_report.get("warnings") or []),
     }
+    quality_report["selection_count"] = len(selected)
+    quality_report["target_top_n"] = TOP_COUNT
+    quality_report["top_n_filled"] = len(selected) >= TOP_COUNT
+    quality_report["missing_slots"] = max(0, TOP_COUNT - len(selected))
+    quality_report["disabled_configs"] = [
+        f"TOP{i}.yaml" for i in range(len(selected) + 1, TOP_COUNT + 1)
+    ]
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     write_selection_filter_log(quality_report)
@@ -678,6 +792,8 @@ def main():
             item["final_rank"] = int(item.get("final_rank") or 0)
         write_top_configs(selected)
         selected = list(selected[:TOP_COUNT])
+        for idx, item in enumerate(selected, start=1):
+            item["final_rank"] = idx
         out["top5"] = list(selected)
         out["top3"] = list(selected)
         out["report"] = sel._format_report_rows(selected)
@@ -704,6 +820,14 @@ def main():
         'top10': out.get('top10', []),
         'top5': list(selected),
         'top3': list(out.get('top3', [])),
+        'selection_count': len(selected),
+        'target_top_n': TOP_COUNT,
+        'top_n_filled': len(selected) >= TOP_COUNT,
+        'missing_slots': max(0, TOP_COUNT - len(selected)),
+        'fallback_pool_used': bool(fallback_pool_used),
+        'disabled_configs': [
+            f"TOP{i}.yaml" for i in range(len(selected) + 1, TOP_COUNT + 1)
+        ],
         'protected_positions': [
             {
                 "ticker": str(item.get("ticker") or "").upper(),
@@ -719,7 +843,7 @@ def main():
             }
             for item in protected_positions
         ],
-        'fallback_used': bool(integrated_ai.get("fallback_used")) or any(
+        'fallback_used': bool(integrated_ai.get("fallback_used")) or bool(fallback_pool_used) or any(
             bool(item.get("fallback_history_incomplete"))
             or str(item.get("selection_penalty_reason") or "").startswith("quality_filter_backfill")
             for item in selected

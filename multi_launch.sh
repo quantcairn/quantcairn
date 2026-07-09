@@ -2,7 +2,7 @@
 # AI 选股后的 TOP3 并发交易系统
 # TOP1 (8091) + TOP2 (8092) + TOP3 (8093)
 
-PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+PROJECT_DIR="${SOXS_PROJECT_DIR:-/Users/chenwei/soxs-range-arbitrage}"
 LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
@@ -396,6 +396,8 @@ EOF
                     echo "❌ $TOP failed to bind to :$port in manual fallback mode"
                     return 1
                 }
+            else
+                echo "Skipping $TOP: config not found"
             fi
         done
         return 0
@@ -405,6 +407,12 @@ EOF
         launchd_failed=0
         for job in $(launchd_top_jobs); do
             plist="$PROJECT_DIR/launchd/${job}.plist"
+            top_name="TOP${job##*.top}"
+            cfg="$PROJECT_DIR/configs/${top_name}.yaml"
+            if [ ! -f "$cfg" ]; then
+                echo "Skipping $top_name: config not found"
+                continue
+            fi
             if [ -f "$plist" ]; then
                 launchctl enable gui/"$UID_NUM"/"$job" 2>/dev/null || true
                 if launchctl print gui/"$UID_NUM"/"$job" >/dev/null 2>&1; then
@@ -541,6 +549,11 @@ case "$1" in
         echo "═══════════════════════════════════"
         for ticker in "${TOP_ENGINES[@]}"; do
             port="$(port_for_top "$ticker")"
+            cfg="$PROJECT_DIR/configs/${ticker}.yaml"
+            if [ ! -f "$cfg" ]; then
+                echo "  $ticker: disabled / config missing"
+                continue
+            fi
 
             status=$(curl -s "http://localhost:$port/api/status" 2>/dev/null)
             if [ -n "$status" ]; then

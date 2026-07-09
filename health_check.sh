@@ -1,7 +1,7 @@
 #!/bin/bash
 # Quick operational health check for the Top3 trading system.
 
-PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+PROJECT_DIR="${SOXS_PROJECT_DIR:-/Users/chenwei/soxs-range-arbitrage}"
 LOG_DIR="$PROJECT_DIR/logs"
 cd "$PROJECT_DIR" || exit 1
 
@@ -34,6 +34,22 @@ check_port() {
     else
         echo "WARN port $port not listening: $name"
     fi
+}
+
+check_top_slot() {
+    local top_name="$1"
+    local port="$2"
+    local cfg="$PROJECT_DIR/configs/${top_name}.yaml"
+    if [ ! -f "$cfg" ]; then
+        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "WARN $top_name: config missing but port $port is still listening"
+        else
+            echo "OK   $top_name: disabled / config missing"
+        fi
+        return
+    fi
+    check_port "$port" "$top_name"
+    check_fd "$port" "$top_name"
 }
 
 check_fd() {
@@ -115,17 +131,14 @@ check_launchd "com.soxs.arbitrage.stop"
 echo
 echo "== ports =="
 if market_is_open; then
-    check_port 8091 "TOP1"
-    check_fd 8091 "TOP1"
-    check_port 8092 "TOP2"
-    check_fd 8092 "TOP2"
-    check_port 8093 "TOP3"
-    check_fd 8093 "TOP3"
+    check_top_slot "TOP1" 8091
+    check_top_slot "TOP2" 8092
+    check_top_slot "TOP3" 8093
 else
     echo "OK   US market closed; TOP1-TOP3 may remain online for snapshot-only sync"
-    check_port 8091 "TOP1"
-    check_port 8092 "TOP2"
-    check_port 8093 "TOP3"
+    check_top_slot "TOP1" 8091
+    check_top_slot "TOP2" 8092
+    check_top_slot "TOP3" 8093
 fi
 check_port 8090 "combined"
 check_fd 8090 "combined"
