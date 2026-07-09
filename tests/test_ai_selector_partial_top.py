@@ -17,6 +17,7 @@ HEALTH_CHECK = PROJECT_DIR / "health_check.sh"
 
 
 def _load_module():
+    os.environ["SOXS_SKIP_VENV_REEXEC"] = "1"
     if "bs4" not in sys.modules:
         fake_bs4 = importlib.util.module_from_spec(importlib.util.spec_from_loader("bs4", loader=None))
 
@@ -157,7 +158,7 @@ def _patch_common(module, tmpdir: Path):
     module.load_local_ai_env = lambda: None
     module.load_runtime_settings = lambda: {
         "min_price": 4.0,
-        "max_price": 30.0,
+        "max_price": 50.0,
         "auto_refresh_minutes": 5,
         "max_symbols": 20,
     }
@@ -167,6 +168,7 @@ def _patch_common(module, tmpdir: Path):
     module._spawn_background_refinement = lambda timestamp: None
     module.write_selection_filter_log = lambda payload: None
     module.write_selection_state = lambda **payload: None
+    module._notify_selection_result = lambda *args, **kwargs: None
     module._run_integrated_ai_selector = lambda: {
         "enabled": True,
         "top3": [],
@@ -227,11 +229,26 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
 
         original_base = config_writer.BASE
         original_fallback_builder = module._build_conservative_fallback_candidates
+        original_apply_trade_filter = module._apply_trade_filter
         written_reports: list[dict] = []
         try:
             config_writer.BASE = str(tmpdir)
             _patch_common(module, tmpdir)
+            module._apply_trade_filter = original_apply_trade_filter
             module._build_conservative_fallback_candidates = original_fallback_builder
+            original_live_candidate_price = module._live_candidate_price
+            module._live_candidate_price = lambda ticker: {
+                "PLTR": 25.0,
+                "AMD": 28.0,
+                "AAPL": 309.4,
+                "BAC": 29.0,
+                "F": 12.0,
+                "T": 18.0,
+                "PFE": 28.0,
+                "KO": 29.0,
+                "INTC": 25.0,
+                "SOFI": 17.0,
+            }.get(str(ticker).upper())
             module._write_reports = lambda summary: (
                 written_reports.append(dict(summary)) or True
             ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
@@ -243,6 +260,7 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
                 os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
                 os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
         finally:
+            module._live_candidate_price = original_live_candidate_price
             config_writer.BASE = original_base
 
         assert written_reports
@@ -255,9 +273,21 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
         assert summary["disabled_configs"] == []
         assert summary["quality_filter_report"]["fallback_pool_used"] is True
         assert summary["quality_filter_report"]["top_n_filled"] is True
+        rejected = summary["quality_filter_report"]["trade_filter_rejected"]
+        assert any(
+            str(item.get("ticker") or "").upper() == "AAPL"
+            and item.get("reason") == "price_out_of_range"
+            and item.get("allowed_range") == "$4.00-$50.00"
+            for item in rejected
+        )
         top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
-        assert top3["ticker"] == "PLTR"
+        assert top3["ticker"] != "AAPL"
+        assert top3["ticker"] in {"PLTR", "AMD", "BAC", "F", "T", "PFE", "KO", "INTC", "SOFI"}
         assert top3["selection"]["fallback_used"] is True
+        assert all(
+            yaml.safe_load((tmpdir / f"configs/TOP{idx}.yaml").read_text(encoding="utf-8"))["ticker"] != "AAPL"
+            for idx in (1, 2, 3)
+        )
 
 
 def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slot():

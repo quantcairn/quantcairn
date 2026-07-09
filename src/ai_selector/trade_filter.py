@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from typing import Any
+
+from .settings import DEFAULT_MAX_PRICE, DEFAULT_MIN_PRICE
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
@@ -14,6 +17,24 @@ def _safe_float(value: Any, default: float | None = None) -> float | None:
 
 def _normalize_ticker(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _price_band(ctx: dict[str, Any]) -> tuple[float, float]:
+    min_price = _safe_float(
+        ctx.get("min_price"),
+        _safe_float(os.environ.get("AI_SELECTOR_MIN_PRICE"), DEFAULT_MIN_PRICE) or DEFAULT_MIN_PRICE,
+    )
+    max_price = _safe_float(
+        ctx.get("max_price"),
+        _safe_float(os.environ.get("AI_SELECTOR_MAX_PRICE"), DEFAULT_MAX_PRICE) or DEFAULT_MAX_PRICE,
+    )
+    if min_price is None:
+        min_price = DEFAULT_MIN_PRICE
+    if max_price is None:
+        max_price = DEFAULT_MAX_PRICE
+    if min_price > max_price:
+        min_price, max_price = max_price, min_price
+    return float(min_price), float(max_price)
 
 
 class TradeEligibilityFilter:
@@ -31,7 +52,7 @@ class TradeEligibilityFilter:
             ctx = self._context_for(ticker, item, market_data)
             reason = self._reject_reason(ctx)
             if reason:
-                rejected.append({"ticker": ticker, "reason": reason})
+                rejected.append(self._rejected_item(ticker, ctx, reason))
                 item["trade_filter_passed"] = False
                 item["reject_reason"] = reason
                 item["fallback_used"] = False
@@ -55,11 +76,15 @@ class TradeEligibilityFilter:
                     break
                 ticker = _normalize_ticker(item.get("ticker"))
                 ctx = self._context_for(ticker, item, market_data)
+                reason = self._reject_reason(ctx)
+                fallback_used = True
+                if reason == "price_out_of_range":
+                    rejected.append(self._rejected_item(ticker, ctx, reason))
+                    continue
                 item["trade_filter_passed"] = False
-                item["reject_reason"] = self._reject_reason(ctx) or "fallback_pool"
+                item["reject_reason"] = reason or "fallback_pool"
                 item["fallback_used"] = True
                 accepted.append(item)
-                fallback_used = True
 
         accepted.sort(
             key=lambda row: (
@@ -102,9 +127,20 @@ class TradeEligibilityFilter:
             ctx["data_age_seconds"] = candidate.get("data_age_seconds") or 0
         if ctx.get("earnings_within_days") is None:
             ctx["earnings_within_days"] = candidate.get("earnings_within_days")
+        if ctx.get("current_price") is None:
+            ctx["current_price"] = candidate.get("current_price") or candidate.get("price") or candidate.get("price_midpoint_hint")
+        if ctx.get("min_price") is None:
+            ctx["min_price"] = candidate.get("min_price")
+        if ctx.get("max_price") is None:
+            ctx["max_price"] = candidate.get("max_price")
         return ctx
 
     def _reject_reason(self, ctx: dict[str, Any]) -> str | None:
+        current_price = _safe_float(ctx.get("current_price"))
+        min_price, max_price = _price_band(ctx)
+        if current_price is not None and (current_price < min_price or current_price > max_price):
+            return "price_out_of_range"
+
         earnings_days = _safe_float(ctx.get("earnings_within_days"))
         if earnings_days is not None and earnings_days <= 3:
             return "earnings_too_close"
@@ -130,3 +166,12 @@ class TradeEligibilityFilter:
             return "stale_data"
 
         return None
+
+    def _rejected_item(self, ticker: str, ctx: dict[str, Any], reason: str) -> dict[str, Any]:
+        current_price = _safe_float(ctx.get("current_price"))
+        min_price, max_price = _price_band(ctx)
+        item = {"ticker": ticker, "reason": reason}
+        if current_price is not None:
+            item["price"] = round(current_price, 4)
+        item["allowed_range"] = f"${min_price:.2f}-${max_price:.2f}"
+        return item

@@ -5,6 +5,7 @@ Usage: scripts/run_ai_selector.py
 """
 import os
 import sys
+import subprocess
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
@@ -38,6 +39,7 @@ from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector.selector import write_selection_filter_log
 from src.ai_selector.selection_state import write_selection_state
 from src.ai_selector.config import load_runtime_config
+from src.ai_selector.settings import resolve_price_band
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
 
@@ -656,8 +658,9 @@ def _split_selected_and_protected_positions(
 def main():
     load_local_ai_env()
     runtime_settings = load_runtime_settings()
-    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(runtime_settings.get("min_price", 4.0)))
-    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(runtime_settings.get("max_price", 30.0)))
+    min_price, max_price = resolve_price_band(runtime_settings)
+    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
+    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
     os.environ.setdefault(
         "AI_SELECTOR_AUTO_REFRESH_MINUTES",
         str(runtime_settings.get("auto_refresh_minutes", 5)),
@@ -700,8 +703,7 @@ def main():
         live_positions or [],
         limit=min(sel.selection_size, TOP_COUNT),
     )
-    min_price = float(runtime_settings.get("min_price", 4.0) or 4.0)
-    max_price = float(runtime_settings.get("max_price", 30.0) or 30.0)
+    min_price, max_price = resolve_price_band(runtime_settings)
     selected, out_of_band_symbols = _enforce_price_band(
         selected,
         min_price=min_price,
@@ -771,6 +773,9 @@ def main():
     quality_report["removed_out_of_price_band"] = out_of_band_symbols
     quality_report["trade_filter_passed"] = [bool(item.get("trade_filter_passed", False)) for item in selected]
     quality_report["reject_reason"] = [str(item.get("reject_reason") or "") for item in selected]
+    trade_filter_rejected = list(trade_filter_report.get("rejected") or [])
+    trade_filter_rejected.extend(list(fallback_trade_report.get("rejected") or []) if fallback_pool_used else [])
+    quality_report["trade_filter_rejected"] = trade_filter_rejected
     quality_report["fallback_used"] = bool(trade_filter_report.get("fallback_used", False)) or bool(integrated_ai.get("fallback_used")) or bool(fallback_pool_used)
     quality_report["fallback_pool_used"] = bool(fallback_pool_used)
     quality_report["composition_filter"] = {

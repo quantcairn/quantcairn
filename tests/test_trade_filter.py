@@ -96,6 +96,51 @@ def test_accepts_eligible_candidate():
     assert result["fallback_used"] is False
 
 
+def test_rejects_price_out_of_range_for_fallback_pool_candidate():
+    result = TradeEligibilityFilter().filter(
+        [_candidate("AAPL", 95.0, 95.0)],
+        {
+            "AAPL": {
+                "earnings_within_days": 10,
+                "avg_volume": 8_000_000,
+                "bid_ask_spread_pct": 0.1,
+                "regime": "NORMAL",
+                "data_age_seconds": 10,
+                "price_change_5d": 2,
+                "current_price": 309.4,
+            }
+        },
+    )
+
+    assert result["accepted"] == []
+    assert result["fallback_used"] is True
+    assert result["rejected"][0]["ticker"] == "AAPL"
+    assert result["rejected"][0]["reason"] == "price_out_of_range"
+    assert result["rejected"][0]["allowed_range"] == "$4.00-$50.00"
+    assert result["rejected"][0]["price"] == 309.4
+
+
+def test_rejects_price_below_minimum():
+    result = TradeEligibilityFilter().filter(
+        [_candidate("PENNY", 95.0, 95.0)],
+        {
+            "PENNY": {
+                "earnings_within_days": 10,
+                "avg_volume": 8_000_000,
+                "bid_ask_spread_pct": 0.1,
+                "regime": "NORMAL",
+                "data_age_seconds": 10,
+                "price_change_5d": 2,
+                "current_price": 3.99,
+            }
+        },
+    )
+
+    assert result["accepted"] == []
+    assert result["rejected"][0]["reason"] == "price_out_of_range"
+    assert result["rejected"][0]["allowed_range"] == "$4.00-$50.00"
+
+
 def test_fallback_pool_fills_top3_without_crashing():
     candidates = [
         _candidate("AAA", 92.0, 92.0),
