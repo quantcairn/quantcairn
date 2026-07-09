@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.ai_selector.integration import AISelector
 from src.ai_selector.selector import AIStrategySelector
+from src.ai_selector.range_score import RangeFitnessScorer
+from src.ai_selector.trade_filter import TradeEligibilityFilter
 from datetime import datetime
 import os
 import json
@@ -29,6 +31,8 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 TOP_COUNT = max(1, int(load_runtime_config().top_n))
+RANGE_SCORER = RangeFitnessScorer()
+TRADE_FILTER = TradeEligibilityFilter()
 
 
 def _et_now() -> datetime:
@@ -144,12 +148,86 @@ def _annotate_with_ai_signals(rows: list[dict], signal_map: dict[str, dict]) -> 
         ticker = _normalize_ticker(item.get("ticker"))
         ai_signal = dict(signal_map.get(ticker) or {})
         if ai_signal:
-            item["ai_score"] = float(ai_signal.get("score") or 0.0)
+            item["ai_score"] = float(ai_signal.get("ai_score") or ai_signal.get("score") or 0.0)
+            item["range_score"] = float(ai_signal.get("range_score") or item.get("range_score") or 50.0)
+            item["final_score"] = float(ai_signal.get("final_score") or ai_signal.get("score") or item.get("score") or 0.0)
             item["confidence"] = float(ai_signal.get("confidence") or item.get("confidence") or 0.0)
             item["reason"] = str(ai_signal.get("reason") or item.get("reason") or "")
             item["source"] = str(ai_signal.get("source") or item.get("source") or "ai_selector")
         annotated.append(item)
     return annotated
+
+
+def _coalesce_float(*values: object, default: float = 50.0) -> float:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return float(default)
+
+
+def _range_market_data(item: dict) -> dict:
+    series = item.get("series") if isinstance(item.get("series"), dict) else {}
+    return {
+        "current_price": item.get("current_price") or item.get("price_midpoint_hint"),
+        "avg_10d_volume": item.get("avg_10d_volume") or item.get("avg_daily_volume_hint"),
+        "spread_pct": item.get("spread_pct_live") or item.get("spread_pct"),
+        "three_day_change_pct": item.get("three_day_change_pct"),
+        "close_history": series.get("closes") or series.get("close_history") or [],
+        "returns": series.get("returns") or [],
+        "recent_low": item.get("range_low"),
+        "recent_high": item.get("range_high"),
+        "bid": item.get("bid"),
+        "ask": item.get("ask"),
+    }
+
+
+def _apply_range_scores(rows: list[dict]) -> list[dict]:
+    scored = []
+    for raw in rows or []:
+        item = dict(raw)
+        ticker = _normalize_ticker(item.get("ticker"))
+        range_result = RANGE_SCORER.calculate(ticker, _range_market_data(item))
+        ai_score = _coalesce_float(item.get("ai_score"), item.get("score"), default=50.0)
+        range_score = _coalesce_float(range_result.get("range_score"), default=50.0)
+        final_score = round(0.6 * ai_score + 0.4 * range_score, 2)
+        item.update(range_result)
+        item["ai_score"] = round(ai_score, 2)
+        item["range_score"] = round(range_score, 2)
+        item["final_score"] = final_score
+        item["score"] = final_score
+        scored.append(item)
+    return sorted(scored, key=lambda item: (-float(item.get("final_score") or 0.0), item.get("ticker") or ""))
+
+
+def _trade_market_data(item: dict) -> dict:
+    series = item.get("series") if isinstance(item.get("series"), dict) else {}
+    return {
+        "earnings_within_days": item.get("earnings_within_days"),
+        "price_change_5d": item.get("price_change_5d") or item.get("day_change_pct"),
+        "avg_volume": item.get("avg_volume") or item.get("avg_10d_volume") or item.get("volume"),
+        "bid_ask_spread_pct": item.get("bid_ask_spread_pct") or item.get("spread_pct_live") or item.get("spread_pct"),
+        "regime": item.get("regime") or "NORMAL",
+        "data_age_seconds": item.get("data_age_seconds") or 0,
+        "current_price": item.get("current_price") or item.get("price_midpoint_hint"),
+        "close_history": series.get("closes") or series.get("close_history") or [],
+        "returns": series.get("returns") or [],
+        "recent_low": item.get("range_low"),
+        "recent_high": item.get("range_high"),
+        "bid": item.get("bid"),
+        "ask": item.get("ask"),
+    }
+
+
+def _apply_trade_filter(rows: list[dict]) -> tuple[list[dict], dict]:
+    market_data = {_normalize_ticker(item.get("ticker")): _trade_market_data(item) for item in rows or [] if _normalize_ticker(item.get("ticker"))}
+    result = TRADE_FILTER.filter(rows or [], market_data)
+    accepted = list(result.get("accepted") or [])
+    accepted.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
+    return accepted, dict(result)
 
 
 def _merged_selection_symbols(preferred_symbols: list[str] | None) -> list[str] | None:
@@ -276,7 +354,8 @@ def _build_report_top10(
 def _prioritize_ai_rank(rows: list[dict], signal_map: dict[str, dict]) -> list[dict]:
     def _sort_key(item: dict):
         ticker = _normalize_ticker(item.get("ticker"))
-        ai_score = float((signal_map.get(ticker) or {}).get("score") or -1.0)
+        signal = signal_map.get(ticker) or {}
+        ai_score = float(signal.get("final_score") or signal.get("ai_score") or signal.get("score") or -1.0)
         base_score = float(item.get("score") or 0.0)
         return (-ai_score, -base_score, ticker)
 
@@ -527,6 +606,7 @@ def main():
         selected = out.get('top5') or out.get('top3') or []
 
     selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
+    selected = _apply_range_scores(selected)
     report_top10 = _build_report_top10(
         list(out.get("top10") or []),
         list(selected),
@@ -548,6 +628,8 @@ def main():
         min_price=min_price,
         max_price=max_price,
     )
+    selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
+    selected, trade_filter_report = _apply_trade_filter(selected)
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -558,6 +640,9 @@ def main():
     ]
     quality_report["existing_real_positions_preserved"] = preserved_positions
     quality_report["removed_out_of_price_band"] = out_of_band_symbols
+    quality_report["trade_filter_passed"] = [bool(item.get("trade_filter_passed", False)) for item in selected]
+    quality_report["reject_reason"] = [str(item.get("reject_reason") or "") for item in selected]
+    quality_report["fallback_used"] = bool(trade_filter_report.get("fallback_used", False)) or bool(integrated_ai.get("fallback_used"))
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     write_selection_filter_log(quality_report)
@@ -569,6 +654,9 @@ def main():
         for item in selected:
             item["selection_date"] = _selection_date()
             item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
+            item["trade_filter_passed"] = bool(item.get("trade_filter_passed", False))
+            item["reject_reason"] = str(item.get("reject_reason") or "")
+            item["fallback_used"] = bool(item.get("fallback_used", False)) or bool(trade_filter_report.get("fallback_used", False))
         write_top_configs(selected)
         selected = list(selected[:TOP_COUNT])
         out["top5"] = list(selected)
@@ -616,7 +704,7 @@ def main():
             bool(item.get("fallback_history_incomplete"))
             or str(item.get("selection_penalty_reason") or "").startswith("quality_filter_backfill")
             for item in selected
-        ),
+        ) or bool(trade_filter_report.get("fallback_used", False)),
         'report': out.get('report', []),
         'settings': out.get('settings', {}),
         'quality_filter_report': out.get('quality_filter_report', {}),
