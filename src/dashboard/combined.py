@@ -10,6 +10,7 @@ import yaml
 import re
 from zoneinfo import ZoneInfo
 
+from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
 from src.ai_selector.selection_state import current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
@@ -2138,6 +2139,114 @@ def _fetch_status(port):
         return None
 
 
+def _combined_process_count() -> int:
+    try:
+        result = subprocess.run(
+            ["pgrep", "-af", r"scripts/start_combined.py|src.dashboard.combined|start_combined\(8090\)"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        lines = []
+        for line in (result.stdout or "").splitlines():
+            text = str(line or "").strip()
+            if not text or "health_check.sh" in text:
+                continue
+            lines.append(text)
+        return len(lines)
+    except Exception:
+        return 1 if _pid_alive(os.getpid()) else 0
+
+
+def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | None) -> dict:
+    port = int(item.get("port", 0) or 0)
+    status = _fetch_status(port) if port else None
+    if status is not None and not isinstance(status, dict):
+        status = {}
+    online = bool(status)
+    payload_mode = str((status or {}).get("mode") or mode or "unknown").strip().lower() or "unknown"
+    signal = str((status or {}).get("last_signal") or (status or {}).get("signal") or ("OFFLINE" if not online else "HOLD")).strip().upper()
+    price = (status or {}).get("price") if online else None
+    halted = bool((status or {}).get("halted", False)) if online else False
+    return {
+        "rank": rank,
+        "ticker": ticker if ticker else None,
+        "port": port,
+        "online": online,
+        "mode": payload_mode,
+        "signal": signal,
+        "price": price,
+        "halted": halted,
+    }
+
+
+def _fallback_runtime_flags() -> tuple[bool, bool]:
+    try:
+        runtime_config = load_runtime_config()
+        return bool(runtime_config.allow_fallback_live_entries), bool(runtime_config.allow_fallback_paper_entries)
+    except Exception:
+        return False, False
+
+
+def _api_status_payload() -> dict[str, object]:
+    runtime_config = load_runtime_config()
+    ai_selection = _load_ai_selection_report()
+    if not isinstance(ai_selection, dict):
+        ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
+    selection_sync = _selection_sync_status()
+    trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=None, mode=_desired_audit_mode())
+    execution_mode = _resolve_dashboard_execution_mode(trade_audit)
+    top_modes = _load_top_modes()
+    top_tickers = list((selection_sync or {}).get("current_top_config_symbols") or current_top_config_symbols(limit=len(TICKERS)))
+    top_engines = [
+        _top_engine_status(
+            item,
+            rank=index + 1,
+            ticker=top_tickers[index] if index < len(top_tickers) else None,
+            mode=top_modes[index] if index < len(top_modes) else "unknown",
+        )
+        for index, item in enumerate(TICKERS)
+    ]
+    selection_date = (
+        str((selection_sync or {}).get("state_date") or "").strip()
+        or str((selection_sync or {}).get("required_date") or "").strip()
+        or None
+    )
+    fallback_used = bool(ai_selection.get("fallback_used"))
+    if not fallback_used:
+        fallback_used = any(bool((item or {}).get("fallback_used")) for item in (ai_selection.get("top3") or []))
+    live_guard_ok = not any(str(mode).strip().lower() == "live" for mode in top_modes) or bool((selection_sync or {}).get("ok"))
+    return {
+        "ok": True,
+        "mode": execution_mode or "paper",
+        "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+        "combined": {
+            "port": _COMBINED_PORT,
+            "process_count": _combined_process_count(),
+        },
+        "selection": {
+            "synced": bool((selection_sync or {}).get("ok")),
+            "selection_date": selection_date,
+            "selection_state_tickers": list((selection_sync or {}).get("selection_state_symbols") or []),
+            "top_config_tickers": list((selection_sync or {}).get("current_top_config_symbols") or top_tickers),
+            "fallback_used": fallback_used,
+            "reason": str((selection_sync or {}).get("mismatch_reason") or ""),
+        },
+        "top_engines": top_engines,
+        "risk": {
+            "live_guard_ok": live_guard_ok,
+            "fallback_live_allowed": bool(runtime_config.allow_fallback_live_entries),
+            "fallback_paper_allowed": bool(runtime_config.allow_fallback_paper_entries),
+        },
+        "dashboard": {
+            "chart_api_available": True,
+        },
+        "ai_selection": {
+            "price_band": _ai_selection_price_band(ai_selection),
+        },
+    }
+
+
 @app.route("/api/chart/<ticker>")
 def api_chart(ticker):
     try:
@@ -2152,6 +2261,46 @@ def api_chart(ticker):
         )
     except Exception:
         return jsonify({"ticker": _chart_ticker(ticker), "prices": [], "trades": []})
+
+
+@app.route("/api/status")
+def api_status():
+    try:
+        return jsonify(_api_status_payload()), 200
+    except Exception as exc:
+        fallback_live_allowed, fallback_paper_allowed = _fallback_runtime_flags()
+        return jsonify(
+            {
+                "ok": False,
+                "mode": "paper",
+                "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                "combined": {
+                    "port": _COMBINED_PORT,
+                    "process_count": _combined_process_count(),
+                },
+                "selection": {
+                    "synced": False,
+                    "selection_date": None,
+                    "selection_state_tickers": [],
+                    "top_config_tickers": [],
+                    "fallback_used": False,
+                    "reason": str(exc),
+                },
+                "top_engines": [],
+                "risk": {
+                    "live_guard_ok": False,
+                    "fallback_live_allowed": fallback_live_allowed,
+                    "fallback_paper_allowed": fallback_paper_allowed,
+                },
+                "dashboard": {
+                    "chart_api_available": True,
+                },
+                "ai_selection": {
+                    "price_band": {"min": 4.0, "max": 50.0, "defaulted": True},
+                },
+                "error": str(exc),
+            }
+        ), 200
 
 
 def _load_config_defaults(config_name):
