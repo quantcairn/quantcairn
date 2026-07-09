@@ -6,12 +6,14 @@ from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template_string, request
 import yaml
+import re
+from zoneinfo import ZoneInfo
 
-from src.ai_selector.settings import load_runtime_settings, save_runtime_settings
+from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
 from src.ai_selector.selection_state import current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.reports import daily_report as daily_report_module
-from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log
+from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 
 app = Flask(__name__)
 
@@ -38,6 +40,10 @@ _STATUS_OFFLINE_THRESHOLD = 3
 _UNRESOLVED_ALERT_SECONDS = float(os.getenv("SOXS_UNRESOLVED_ALERT_SECONDS", "120"))
 _COMBINED_PORT = 8090
 _SYNTHETIC_TEST_TICKERS = {"TEST", "MOCK", "FAKE"}
+_CHART_CACHE_LOCK = threading.Lock()
+_CHART_PRICE_HISTORY: dict[str, list[dict[str, object]]] = {}
+_CHART_HISTORY_LIMIT = 300
+_CHART_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -1158,6 +1164,34 @@ HTML = """<!DOCTYPE html>
     .ticker-audit-title{font-size:15px;font-weight:800;color:#eef4ff}
     .ticker-audit-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
     .ticker-audit-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+    .mini-chart{
+        margin-top:12px;padding:12px 13px;border-radius:14px;background:rgba(255,255,255,.03);
+        border:1px solid rgba(255,255,255,.06)
+    }
+    .mini-chart-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px}
+    .mini-chart-title{font-size:13px;font-weight:800;color:#eef4ff}
+    .mini-chart-meta{color:var(--muted);font-size:12px;white-space:nowrap}
+    .mini-chart-body{position:relative;min-height:124px}
+    .mini-chart-empty{
+        position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+        color:var(--muted);font-size:12px;letter-spacing:.02em
+    }
+    .mini-chart-svg{width:100%;height:124px;display:block;overflow:visible}
+    .mini-chart-line{fill:none;stroke:#7dd3fc;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+    .mini-chart-grid{stroke:rgba(148,163,184,.12);stroke-width:1}
+    .mini-chart-point-buy{fill:#34d399;stroke:#0f172a;stroke-width:1.2}
+    .mini-chart-point-sell{fill:#fb7185;stroke:#0f172a;stroke-width:1.2}
+    .mini-chart-label{
+        font-size:10px;font-weight:800;fill:#fff;text-anchor:middle;dominant-baseline:middle
+    }
+    .mini-chart-trades{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    .mini-chart-trade{
+        display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;
+        font-size:11px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:#d1d5db
+    }
+    .mini-chart-trade.buy{border-color:rgba(52,211,153,.22);color:#b8f5d0;background:rgba(52,211,153,.08)}
+    .mini-chart-trade.sell{border-color:rgba(251,113,133,.24);color:#fecdd3;background:rgba(251,113,133,.08)}
+    .mini-chart-trade .side{font-weight:900;letter-spacing:.08em}
     .sparkline{display:none}
     .spark-bar{flex:1;min-width:2px;border-radius:999px;opacity:.95}
     .sig-buy{background:rgba(52,211,153,.1);color:#b8f5d0;border-color:rgba(52,211,153,.22)}
@@ -1676,6 +1710,18 @@ HTML = """<!DOCTYPE html>
                     </div>
                 </div>
 
+                <div class="mini-chart" data-ticker="{{ card.ticker }}">
+                    <div class="mini-chart-head">
+                        <span class="mini-chart-title">轻量图 · {{ card.ticker }}</span>
+                        <span class="mini-chart-meta chart-meta">等待数据</span>
+                    </div>
+                    <div class="mini-chart-body">
+                        <div class="mini-chart-empty">暂无图表数据</div>
+                        <svg class="mini-chart-svg" viewBox="0 0 320 124" preserveAspectRatio="none" aria-label="{{ card.ticker }} price chart"></svg>
+                    </div>
+                    <div class="mini-chart-trades"></div>
+                </div>
+
                 <div class="range-block">
                     <div class="row"><span class="label">运行区间</span><span class="val">${{ "%.2f"|format(card.support) }} - ${{ "%.2f"|format(card.resistance) }} ({{ "%.1f"|format(card.spread_pct) }}%)</span></div>
                     <div class="row" style="margin-top:6px"><span class="label">AI参考区间</span><span class="val">{% if card.ai_range_low is not none and card.ai_range_high is not none %}${{ "%.2f"|format(card.ai_range_low) }} - ${{ "%.2f"|format(card.ai_range_high) }}{% else %}{{ card.ai_suggested_range }}{% endif %}</span></div>
@@ -1708,6 +1754,185 @@ HTML = """<!DOCTYPE html>
 
     <div class="refresh">每 5 秒自动刷新 · {{ update_time }}</div>
 </div>
+<script>
+(function() {
+    const charts = Array.from(document.querySelectorAll('.mini-chart[data-ticker]'));
+    if (!charts.length) {
+        return;
+    }
+
+    const ns = "http://www.w3.org/2000/svg";
+
+    function formatPrice(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? `$${number.toFixed(2)}` : '$0.00';
+    }
+
+    function parseTime(value) {
+        const ts = Date.parse(value);
+        return Number.isFinite(ts) ? ts : null;
+    }
+
+    function priceToY(price, minPrice, maxPrice, height, padding) {
+        if (!Number.isFinite(price)) {
+            return height / 2;
+        }
+        const low = Number.isFinite(minPrice) ? minPrice : price;
+        const high = Number.isFinite(maxPrice) ? maxPrice : price;
+        const range = Math.max(high - low, 0.0001);
+        const usable = Math.max(height - padding * 2, 1);
+        const ratio = (price - low) / range;
+        return height - padding - Math.max(0, Math.min(1, ratio)) * usable;
+    }
+
+    function buildSvg(prices, trades) {
+        const width = 320;
+        const height = 124;
+        const padding = 12;
+        const svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        svg.setAttribute('class', 'mini-chart-svg');
+        svg.setAttribute('preserveAspectRatio', 'none');
+
+        const validPrices = prices.filter((item) => Number(item && item.price) > 0);
+        if (!validPrices.length) {
+            return { svg, empty: true };
+        }
+
+        const values = validPrices.map((item) => Number(item.price));
+        const minPrice = Math.min(...values);
+        const maxPrice = Math.max(...values);
+        const points = validPrices.map((item, index) => {
+            const x = padding + (validPrices.length === 1 ? (width - padding * 2) / 2 : (index / (validPrices.length - 1)) * (width - padding * 2));
+            const y = priceToY(Number(item.price), minPrice, maxPrice, height, padding);
+            return { x, y, time: item.time, price: Number(item.price) };
+        });
+
+        const grid = document.createElementNS(ns, 'line');
+        grid.setAttribute('x1', '12');
+        grid.setAttribute('x2', '308');
+        grid.setAttribute('y1', '62');
+        grid.setAttribute('y2', '62');
+        grid.setAttribute('class', 'mini-chart-grid');
+        svg.appendChild(grid);
+
+        if (points.length > 1) {
+            const polyline = document.createElementNS(ns, 'polyline');
+            polyline.setAttribute('class', 'mini-chart-line');
+            polyline.setAttribute('points', points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '));
+            svg.appendChild(polyline);
+        } else {
+            const single = document.createElementNS(ns, 'circle');
+            single.setAttribute('cx', points[0].x.toFixed(1));
+            single.setAttribute('cy', points[0].y.toFixed(1));
+            single.setAttribute('r', '3.5');
+            single.setAttribute('class', 'mini-chart-point-buy');
+            svg.appendChild(single);
+        }
+
+        trades.forEach((trade) => {
+            const tradeTime = parseTime(trade.time);
+            if (tradeTime == null) {
+                return;
+            }
+            const price = Number(trade.price);
+            const side = String(trade.side || '').toUpperCase();
+            let closest = points[points.length - 1];
+            let smallest = Infinity;
+            points.forEach((candidate) => {
+                const candidateTime = parseTime(candidate.time);
+                if (candidateTime == null) {
+                    return;
+                }
+                const diff = Math.abs(candidateTime - tradeTime);
+                if (diff < smallest) {
+                    smallest = diff;
+                    closest = candidate;
+                }
+            });
+            const circle = document.createElementNS(ns, 'circle');
+            circle.setAttribute('cx', closest.x.toFixed(1));
+            circle.setAttribute('cy', priceToY(price, minPrice, maxPrice, height, padding).toFixed(1));
+            circle.setAttribute('r', '8');
+            circle.setAttribute('class', side === 'SELL' ? 'mini-chart-point-sell' : 'mini-chart-point-buy');
+
+            const title = document.createElementNS(ns, 'title');
+            title.textContent = `${trade.side || 'FILLED'} ${formatPrice(trade.price)} · ${trade.qty || 0}股 · ${trade.time || ''}`;
+            circle.appendChild(title);
+            svg.appendChild(circle);
+
+            const label = document.createElementNS(ns, 'text');
+            label.setAttribute('x', closest.x.toFixed(1));
+            label.setAttribute('y', priceToY(price, minPrice, maxPrice, height, padding).toFixed(1));
+            label.setAttribute('class', 'mini-chart-label');
+            label.textContent = side === 'SELL' ? 'S' : 'B';
+            svg.appendChild(label);
+        });
+
+        return { svg, empty: false };
+    }
+
+    function render(chartEl, payload) {
+        const svgHost = chartEl.querySelector('.mini-chart-body');
+        const meta = chartEl.querySelector('.chart-meta');
+        const tradesBox = chartEl.querySelector('.mini-chart-trades');
+        const empty = chartEl.querySelector('.mini-chart-empty');
+        const prices = Array.isArray(payload && payload.prices) ? payload.prices : [];
+        const trades = Array.isArray(payload && payload.trades) ? payload.trades : [];
+
+        if (meta) {
+            meta.textContent = payload && payload.current_price != null ? `现价 ${formatPrice(payload.current_price)}` : (prices.length ? `${prices.length} 个点` : '暂无现价');
+        }
+
+        if (tradesBox) {
+            tradesBox.innerHTML = '';
+            trades.slice(-4).forEach((trade) => {
+                const pill = document.createElement('span');
+                pill.className = `mini-chart-trade ${String(trade.side || '').toUpperCase() === 'SELL' ? 'sell' : 'buy'}`;
+                pill.textContent = `${String(trade.side || 'FILLED').toUpperCase().slice(0, 1)} ${formatPrice(trade.price)} ×${trade.qty || 0}`;
+                tradesBox.appendChild(pill);
+            });
+        }
+
+        const built = buildSvg(prices, trades);
+        svgHost.querySelectorAll('.mini-chart-svg').forEach((node) => node.remove());
+        svgHost.appendChild(built.svg);
+        if (empty) {
+            empty.style.display = built.empty ? 'flex' : 'none';
+        }
+    }
+
+    async function refreshChart(chartEl) {
+        const ticker = chartEl.dataset.ticker || '';
+        if (!ticker) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/chart/${encodeURIComponent(ticker)}`, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`chart ${ticker} status ${response.status}`);
+            }
+            const payload = await response.json();
+            render(chartEl, payload);
+        } catch (error) {
+            render(chartEl, { prices: [], trades: [] });
+        }
+    }
+
+    function schedule() {
+        charts.forEach((chartEl) => refreshChart(chartEl));
+        window.setInterval(() => {
+            charts.forEach((chartEl) => refreshChart(chartEl));
+        }, 10000);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', schedule, { once: true });
+    } else {
+        schedule();
+    }
+})();
+</script>
 </body>
 </html>"""
 
@@ -1728,6 +1953,22 @@ def _fetch_status(port):
         if failures < _STATUS_OFFLINE_THRESHOLD and port in _STATUS_CACHE:
             return _STATUS_CACHE[port]
         return None
+
+
+@app.route("/api/chart/<ticker>")
+def api_chart(ticker):
+    try:
+        snapshot = _chart_snapshot_for_ticker(ticker, refresh=True)
+        return jsonify(
+            {
+                "ticker": _chart_ticker(ticker),
+                "prices": snapshot.get("prices", []),
+                "trades": snapshot.get("trades", []),
+                "current_price": snapshot.get("current_price"),
+            }
+        )
+    except Exception:
+        return jsonify({"ticker": _chart_ticker(ticker), "prices": [], "trades": []})
 
 
 def _load_config_defaults(config_name):
@@ -1790,6 +2031,191 @@ def _build_sparkline(prices, current_price):
         bars.insert(0, {"height": 50, "color": "#222"})
 
     return bars
+
+
+def _chart_ticker(value: object) -> str:
+    return str(value or "").strip().upper().split(".")[0]
+
+
+def _chart_parse_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        number = float(value)
+        if number != number:
+            return None
+        return number
+    except (TypeError, ValueError):
+        return None
+
+
+def _chart_parse_timestamp(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _chart_display_time(value: object) -> str:
+    parsed = _chart_parse_timestamp(value)
+    if parsed is None:
+        return str(value or "")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+    try:
+        parsed = parsed.astimezone(_CHART_TZ)
+    except Exception:
+        pass
+    return parsed.isoformat(timespec="seconds")
+
+
+def _chart_normalize_points(points: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    cleaned: list[dict[str, object]] = []
+    for raw in points or []:
+        if not isinstance(raw, dict):
+            continue
+        price = _chart_parse_float(raw.get("price"))
+        time_value = str(raw.get("time") or "").strip()
+        if price is None or price <= 0 or not time_value:
+            continue
+        cleaned.append({"time": time_value, "price": round(price, 4)})
+    return cleaned[-_CHART_HISTORY_LIMIT:]
+
+
+def _chart_cache_price_point(ticker: str, price: float, timestamp: object | None = None) -> None:
+    normalized = _chart_ticker(ticker)
+    if not normalized:
+        return
+    price = _chart_parse_float(price)
+    if price is None or price <= 0:
+        return
+    time_value = _chart_display_time(timestamp or datetime.now(ZoneInfo("UTC")))
+    point = {"time": time_value, "price": round(price, 4)}
+    with _CHART_CACHE_LOCK:
+        history = _CHART_PRICE_HISTORY.setdefault(normalized, [])
+        if history and history[-1].get("time") == point["time"] and history[-1].get("price") == point["price"]:
+            return
+        history.append(point)
+        if len(history) > _CHART_HISTORY_LIMIT:
+            del history[:-_CHART_HISTORY_LIMIT]
+
+
+def _chart_history_for_ticker(ticker: str) -> list[dict[str, object]]:
+    normalized = _chart_ticker(ticker)
+    if not normalized:
+        return []
+    with _CHART_CACHE_LOCK:
+        history = list(_CHART_PRICE_HISTORY.get(normalized, []))
+    return _chart_normalize_points(history)
+
+
+def _chart_port_for_ticker(ticker: str) -> int | None:
+    normalized = _chart_ticker(ticker)
+    if not normalized:
+        return None
+    for item in TICKERS:
+        cfg = _load_config_defaults(item["config"])
+        if _chart_ticker(cfg.get("ticker")) == normalized:
+            try:
+                return int(item["port"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _chart_snapshot_for_ticker(ticker: str, *, refresh: bool = True) -> dict[str, object]:
+    normalized = _chart_ticker(ticker)
+    if not normalized:
+        return {"ticker": "", "prices": [], "trades": []}
+    if refresh:
+        port = _chart_port_for_ticker(normalized)
+        if port is not None:
+            try:
+                status = _fetch_status(port)
+            except Exception:
+                status = None
+            if isinstance(status, dict):
+                price = _chart_parse_float(status.get("price"))
+                if price is not None and price > 0:
+                    _chart_cache_price_point(normalized, price, status.get("timestamp") or datetime.now(ZoneInfo("UTC")))
+    prices = _chart_history_for_ticker(normalized)
+    trades = _chart_trades_for_ticker(normalized)
+    current_price = None
+    if prices:
+        current_price = prices[-1].get("price")
+    elif trades:
+        current_price = trades[-1].get("price")
+    return {
+        "ticker": normalized,
+        "prices": prices,
+        "trades": trades,
+        "current_price": current_price,
+    }
+
+
+_FILL_PRICE_PATTERN = re.compile(r"executed_price:\s*Some\(([^)]+)\)")
+_SIDE_PATTERN = re.compile(r"side:\s*(Buy|Sell)")
+_SYMBOL_PATTERN = re.compile(r"symbol:\s*\"([A-Za-z0-9.-]+)\"")
+_QTY_PATTERN = re.compile(r"quantity:\s*(\d+)")
+_STATUS_PATTERN = re.compile(r"status:\s*Filled", re.IGNORECASE)
+_ORDER_ID_PATTERN = re.compile(r"order_id:\s*\"([^\"]+)\"")
+_TIME_PATTERN = re.compile(r'submitted_at:\s*"([^"]+)"')
+
+
+def _chart_trades_for_ticker(ticker: str) -> list[dict[str, object]]:
+    normalized = _chart_ticker(ticker)
+    if not normalized:
+        return []
+    day = latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode()) or latest_trade_log_day(PROJECT_DIR / "logs")
+    if not day:
+        return []
+    records = load_trade_records(PROJECT_DIR / "logs", day=day)
+    trades: list[dict[str, object]] = []
+    seen_order_ids: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("action") or "").strip().lower() != "get_order":
+            continue
+        request = record.get("request") if isinstance(record.get("request"), dict) else {}
+        response = record.get("response") if isinstance(record.get("response"), dict) else {}
+        raw_order = str(response.get("order") or "")
+        if not raw_order or not _STATUS_PATTERN.search(raw_order):
+            continue
+        symbol_match = _SYMBOL_PATTERN.search(raw_order)
+        symbol = _chart_ticker(symbol_match.group(1) if symbol_match else "")
+        if symbol != normalized:
+            continue
+        order_id = str(request.get("order_id") or "")
+        if order_id and order_id in seen_order_ids:
+            continue
+        seen_order_ids.add(order_id or f"{normalized}:{record.get('timestamp')}")
+        side_match = _SIDE_PATTERN.search(raw_order)
+        price_match = _FILL_PRICE_PATTERN.search(raw_order)
+        qty_match = _QTY_PATTERN.search(raw_order)
+        time_match = _TIME_PATTERN.search(raw_order)
+        price = _chart_parse_float(price_match.group(1) if price_match else None)
+        qty = int(qty_match.group(1)) if qty_match else 0
+        if price is None:
+            continue
+        trades.append(
+            {
+                "time": _chart_display_time(time_match.group(1) if time_match else record.get("timestamp")),
+                "ticker": normalized,
+                "side": str(side_match.group(1) if side_match else "").upper() or "FILLED",
+                "price": round(price, 4),
+                "qty": qty,
+                "status": "FILLED",
+                "order_id": order_id,
+            }
+        )
+    trades.sort(key=lambda item: str(item.get("time") or ""))
+    return trades[-100:]
 
 
 def _fmt_vol(v):
@@ -1976,9 +2402,11 @@ def index():
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
             hold_source = "真实账户" if account_pos else "引擎状态"
             ai_range = ai_ranges.get(selected_ticker, {})
+            chart_snapshot = _chart_snapshot_for_ticker(selected_ticker, refresh=True)
 
             card = {
                 "name": f"{t['name']} · {defaults['ticker']}" if t["name"].startswith("TOP") else t["name"],
+                "ticker": selected_ticker,
                 "desc": t["desc"],
                 "online": True,
                 "price": price,
@@ -2018,6 +2446,8 @@ def index():
                 "avg_pnl": float(d.get("avg_pnl", 0) or 0.0),
                 "halted": d.get("halted", False),
                 "trade_in_progress": bool(d.get("trade_in_progress", False)),
+                "chart_prices": chart_snapshot.get("prices", []),
+                "chart_trades": chart_snapshot.get("trades", []),
             }
             cards.append(card)
             day_pnl = float(d.get("daily_pnl", 0) or 0.0)
@@ -2035,8 +2465,10 @@ def index():
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
             account_price = float((account_pos or {}).get("current_price", 0.0) or 0.0)
             ai_range = ai_ranges.get(selected_ticker, {})
+            chart_snapshot = _chart_snapshot_for_ticker(selected_ticker, refresh=True)
             cards.append({
                 "name": defaults["ticker"], "desc": t["desc"],
+                "ticker": selected_ticker,
                 "online": False,
                 "price": account_price,
                 "price_change": 0,
@@ -2065,6 +2497,8 @@ def index():
                 "best_trade": 0, "worst_trade": 0, "avg_pnl": 0,
                 "halted": False,
                 "trade_in_progress": False,
+                "chart_prices": chart_snapshot.get("prices", []),
+                "chart_trades": chart_snapshot.get("trades", []),
             })
             total_capital += initial_capital
             total_equity += initial_capital
@@ -2164,8 +2598,8 @@ def index():
         selection_sync=selection_sync,
         startup_guard=startup_guard,
         runtime_settings={
-            "min_price": float(runtime_settings.get("min_price", ai_selection.get("settings", {}).get("min_price", 4.0)) or 4.0),
-            "max_price": float(runtime_settings.get("max_price", ai_selection.get("settings", {}).get("max_price", 30.0)) or 30.0),
+            "min_price": float(resolve_price_band(runtime_settings or ai_selection.get("settings", {}))[0]),
+            "max_price": float(resolve_price_band(runtime_settings or ai_selection.get("settings", {}))[1]),
             "auto_refresh_minutes": int(runtime_settings.get("auto_refresh_minutes", ai_selection.get("settings", {}).get("auto_refresh_minutes", 5)) or 5),
         },
         active_symbols=active_symbols,
@@ -2286,8 +2720,9 @@ def _run_ai_selector_now() -> None:
     settings = load_runtime_settings()
     env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
     env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
-    env.setdefault("AI_SELECTOR_MIN_PRICE", str(settings.get("min_price", 4.0)))
-    env.setdefault("AI_SELECTOR_MAX_PRICE", str(settings.get("max_price", 30.0)))
+    min_price, max_price = resolve_price_band(settings)
+    env.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
+    env.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
     env.setdefault("AI_SELECTOR_AUTO_REFRESH_MINUTES", str(settings.get("auto_refresh_minutes", 5)))
     python_bin = PROJECT_DIR / ".venv" / "bin" / "python"
     if not python_bin.exists():
@@ -2311,11 +2746,11 @@ def update_ai_selector_settings():
     try:
         min_price = float(raw_min_price)
     except (TypeError, ValueError):
-        min_price = float(settings.get("min_price", 4.0) or 4.0)
+        min_price = float(resolve_price_band(settings)[0])
     try:
         max_price = float(raw_max_price)
     except (TypeError, ValueError):
-        max_price = float(settings.get("max_price", 30.0) or 30.0)
+        max_price = float(resolve_price_band(settings)[1])
     try:
         auto_refresh_minutes = int(raw_auto_refresh_minutes)
     except (TypeError, ValueError):
