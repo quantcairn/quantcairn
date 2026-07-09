@@ -100,6 +100,24 @@ class FakePortfolioManager:
         }
 
 
+class FakePortfolioRisk:
+    def __init__(self, correlation_factor=1.0, total_exposure=0.0):
+        self.correlation_factor = correlation_factor
+        self.total_exposure = total_exposure
+        self.calls = []
+        self.position_values = []
+
+    def check_correlation_limit(self, ticker_a, ticker_b):
+        self.calls.append((ticker_a, ticker_b))
+        return self.correlation_factor
+
+    def get_total_exposure(self):
+        return self.total_exposure
+
+    def set_position_value(self, ticker, value):
+        self.position_values.append((ticker, value))
+
+
 def _engine(portfolio_enabled=False):
     config = AppConfig(
         ticker="SOFI",
@@ -171,6 +189,7 @@ def test_portfolio_guard_does_not_block_sell_orders():
     engine = _engine(portfolio_enabled=True)
     calls = []
     engine.portfolio_manager = FakePortfolioManager(allowed=False, reason="should_not_run")
+    engine.portfolio_risk = FakePortfolioRisk(correlation_factor=0.0, total_exposure=0.0)
     engine._position_shares = 5
     engine._entry_price = 10.0
     engine.broker = SimpleNamespace(
@@ -191,6 +210,7 @@ def test_portfolio_guard_does_not_block_sell_orders():
 
     assert len(calls) == 1
     assert engine.portfolio_manager.calls == []
+    assert engine.portfolio_risk.calls == []
 
 
 def test_reduce_only_buy_bypasses_portfolio_guard():
@@ -198,6 +218,7 @@ def test_reduce_only_buy_bypasses_portfolio_guard():
     engine._reduce_only = True
     calls = []
     engine.portfolio_manager = FakePortfolioManager(allowed=False, reason="should_not_run")
+    engine.portfolio_risk = FakePortfolioRisk(correlation_factor=0.0, total_exposure=0.0)
     engine.broker = SimpleNamespace(
         get_account=lambda: SimpleNamespace(cash=1000.0, buying_power=1000.0, positions=[]),
         place_order=lambda **kwargs: calls.append(kwargs),
@@ -207,6 +228,7 @@ def test_reduce_only_buy_bypasses_portfolio_guard():
 
     assert calls == []
     assert engine.portfolio_manager.calls == []
+    assert engine.portfolio_risk.calls == []
     assert engine._last_signal_reason == "仅减仓模式：今晚不新开仓"
 
 
@@ -254,3 +276,81 @@ def test_portfolio_guard_records_rejection_reason():
     assert audit[0]["reason"] == "leveraged_group_exposure_exceeded"
     assert audit[0]["current_exposure"] == 0.40
     assert audit[0]["projected_exposure"] == 0.55
+
+
+def test_portfolio_risk_correlation_factor_reduces_buy_quantity():
+    engine = _engine(portfolio_enabled=False)
+    calls = []
+    engine.portfolio_risk = FakePortfolioRisk(correlation_factor=0.5, total_exposure=0.0)
+    engine.broker = SimpleNamespace(
+        get_account=lambda: SimpleNamespace(cash=1000.0, buying_power=1000.0, equity=5000.0, positions=[]),
+        place_order=lambda **kwargs: calls.append(kwargs)
+        or Order(
+            order_id="O-2",
+            ticker="SOFI",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=kwargs["quantity"],
+            filled_quantity=kwargs["quantity"],
+            avg_fill_price=kwargs["current_ask"],
+            status=OrderStatus.FILLED,
+        ),
+    )
+
+    engine._handle_buy_signal(_buy_signal(), 10.0, 10.1)
+
+    assert len(calls) == 1
+    assert engine.portfolio_risk.calls == [("SOFI", "SOFI")]
+    assert engine._write_runtime_audit_events
+    portfolio_risk_events = [item for item in engine._write_runtime_audit_events if item["phase"] == "risk_decision"]
+    assert portfolio_risk_events
+    decision = portfolio_risk_events[-1]
+    assert decision["final_action"] == "buy_candidate"
+    assert decision["risk_approved"] is True
+    assert decision["adjusted_target_shares"] > 0
+    assert decision["adjusted_target_shares"] <= decision["original_target_shares"]
+    assert calls[0]["quantity"] < decision["original_target_shares"]
+    assert calls[0]["quantity"] > 0
+
+
+def test_portfolio_risk_correlation_factor_at_least_one_does_not_crash():
+    engine = _engine(portfolio_enabled=False)
+    calls = []
+    engine.portfolio_risk = FakePortfolioRisk(correlation_factor=1.0, total_exposure=0.0)
+    engine.broker = SimpleNamespace(
+        get_account=lambda: SimpleNamespace(cash=1000.0, buying_power=1000.0, equity=5000.0, positions=[]),
+        place_order=lambda **kwargs: calls.append(kwargs)
+        or Order(
+            order_id="O-3",
+            ticker="SOFI",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=kwargs["quantity"],
+            filled_quantity=kwargs["quantity"],
+            avg_fill_price=kwargs["current_ask"],
+            status=OrderStatus.FILLED,
+        ),
+    )
+
+    engine._handle_buy_signal(_buy_signal(), 10.0, 10.1)
+
+    assert len(calls) == 1
+    assert engine.portfolio_risk.calls == [("SOFI", "SOFI")]
+    assert calls[0]["quantity"] > 0
+
+
+def test_portfolio_risk_correlation_limit_blocks_when_reduced_below_one():
+    engine = _engine(portfolio_enabled=False)
+    calls = []
+    engine.portfolio_risk = FakePortfolioRisk(correlation_factor=0.0, total_exposure=0.0)
+    engine.broker = SimpleNamespace(
+        get_account=lambda: SimpleNamespace(cash=1000.0, buying_power=1000.0, equity=5000.0, positions=[]),
+        place_order=lambda **kwargs: calls.append(kwargs),
+    )
+
+    engine._handle_buy_signal(_buy_signal(), 10.0, 10.1)
+
+    assert calls == []
+    assert engine.portfolio_risk.calls == [("SOFI", "SOFI")]
+    assert any("组合相关性限制" in item.get("reason", "") for item in engine._write_runtime_audit_events)
+    assert any(item["phase"] == "risk_decision" and item.get("adjusted_target_shares") == 0 for item in engine._write_runtime_audit_events)

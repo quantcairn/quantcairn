@@ -477,6 +477,29 @@ def _merge_rejected_rows(rows: list[dict]) -> list[dict]:
     return merged
 
 
+def _normalize_entry_report_fields(item: dict) -> dict:
+    normalized = dict(item or {})
+    entry = normalized.get("entry") if isinstance(normalized.get("entry"), dict) else {}
+    entry_payload = {
+        "entry_proximity_score": _coalesce_float(entry.get("entry_proximity_score"), normalized.get("entry_proximity_score"), default=50.0),
+        "good_for_entry_now": bool(entry.get("good_for_entry_now", normalized.get("good_for_entry_now", False))),
+        "entry_quality": str(entry.get("entry_quality") or normalized.get("entry_quality") or "unknown"),
+        "entry_reason": str(entry.get("entry_reason") or normalized.get("entry_reason") or ""),
+        "range_position": entry.get("range_position", normalized.get("range_position")),
+        "dist_to_support": entry.get("dist_to_support", normalized.get("dist_to_support")),
+        "dist_to_resistance": entry.get("dist_to_resistance", normalized.get("dist_to_resistance")),
+    }
+    normalized["entry"] = entry_payload
+    normalized["entry_proximity_score"] = entry_payload["entry_proximity_score"]
+    normalized["good_for_entry_now"] = entry_payload["good_for_entry_now"]
+    normalized["entry_quality"] = entry_payload["entry_quality"]
+    normalized["entry_reason"] = entry_payload["entry_reason"]
+    normalized["range_position"] = entry_payload["range_position"]
+    normalized["dist_to_support"] = entry_payload["dist_to_support"]
+    normalized["dist_to_resistance"] = entry_payload["dist_to_resistance"]
+    return normalized
+
+
 def _build_report_top10(
     selector_top10: list[dict],
     selected: list[dict],
@@ -882,6 +905,8 @@ def main():
 
     selected, final_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
     price_band_rejected_rows.extend(final_price_band_rejected)
+    selected = [_normalize_entry_report_fields(item) for item in selected]
+    report_top10 = [_normalize_entry_report_fields(item) for item in report_top10]
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions

@@ -88,12 +88,12 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
                 "top10": [
-                    {"ticker": "NVDA", "score": 91.5},
-                    {"ticker": "MSFT", "score": 88.2},
+                    {"ticker": "NVDA", "score": 91.5, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
+                    {"ticker": "MSFT", "score": 88.2, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
                 ],
                 "top5": [
-                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False},
-                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False},
+                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
+                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
                 ],
                 "top3": [],
                 "report": [],
@@ -130,6 +130,13 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     original_spawn = module._spawn_background_refinement
     original_load_local_env = module.load_local_ai_env
     original_run_integrated = module._run_integrated_ai_selector
+    original_split_selected = module._split_selected_and_protected_positions
+    original_annotate = module._annotate_with_ai_signals
+    original_apply_range_scores = module._apply_range_scores
+    original_build_report_top10 = module._build_report_top10
+    original_finalize_price_band = module._finalize_price_band
+    original_apply_trade_filter = module._apply_trade_filter
+    original_apply_composition_filter = module._apply_composition_filter
     original_env = os.environ.copy()
     try:
         module.AIStrategySelector = FakeSelector
@@ -142,6 +149,13 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         module._restart_top_engines = lambda: 0
         module._spawn_background_refinement = lambda timestamp: spawned_refinement.append(timestamp)
         module.load_local_ai_env = lambda: None
+        module._annotate_with_ai_signals = lambda rows, signal_map: [dict(item) for item in rows]
+        module._apply_range_scores = lambda rows: [dict(item) for item in rows]
+        module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: [dict(item) for item in (selector_top10 or selected or [])]
+        module._finalize_price_band = lambda candidates, min_price, max_price: ([dict(item) for item in candidates], [])
+        module._apply_trade_filter = lambda rows: ([dict(item) for item in rows], {"rejected": [], "fallback_used": False})
+        module._apply_composition_filter = lambda rows, top_n=3: ([dict(item) for item in rows], {"rejected": [], "warnings": []})
+        module._split_selected_and_protected_positions = lambda candidates, positions, limit=5: (list(candidates)[:limit], [])
         module._run_integrated_ai_selector = lambda: {
             "enabled": True,
             "top3": [],
@@ -178,6 +192,13 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         module._spawn_background_refinement = original_spawn
         module.load_local_ai_env = original_load_local_env
         module._run_integrated_ai_selector = original_run_integrated
+        module._split_selected_and_protected_positions = original_split_selected
+        module._annotate_with_ai_signals = original_annotate
+        module._apply_range_scores = original_apply_range_scores
+        module._build_report_top10 = original_build_report_top10
+        module._finalize_price_band = original_finalize_price_band
+        module._apply_trade_filter = original_apply_trade_filter
+        module._apply_composition_filter = original_apply_composition_filter
         os.environ.clear()
         os.environ.update(original_env)
         if original_config_writer is None:
@@ -193,6 +214,19 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     assert written_states[0]["selected_symbols"] == ["NVDA", "MSFT"]
     assert written_reports
     assert written_reports[0]["top3"][0]["ticker"] == "NVDA"
+    top_item = written_reports[0]["top3"][0]
+    assert isinstance(top_item.get("entry"), dict)
+    for key in [
+        "entry_proximity_score",
+        "good_for_entry_now",
+        "entry_quality",
+        "entry_reason",
+        "range_position",
+        "dist_to_support",
+        "dist_to_resistance",
+    ]:
+        assert key in top_item["entry"]
+        assert key in top_item
     assert "selector_core" in written_reports[0]["providers_used"]
     assert "yfinance" in written_reports[0]["providers_used"]
     assert "openbb" in written_reports[0]["providers_used"]
@@ -213,8 +247,8 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
             return {
                 "top10": [],
                 "top5": [
-                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False},
-                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False},
+                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
+                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
                 ],
                 "top3": [],
                 "report": [],
@@ -243,6 +277,13 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
     original_spawn = module._spawn_background_refinement
     original_load_local_env = module.load_local_ai_env
     original_run_integrated = module._run_integrated_ai_selector
+    original_split_selected = module._split_selected_and_protected_positions
+    original_annotate = module._annotate_with_ai_signals
+    original_apply_range_scores = module._apply_range_scores
+    original_build_report_top10 = module._build_report_top10
+    original_finalize_price_band = module._finalize_price_band
+    original_apply_trade_filter = module._apply_trade_filter
+    original_apply_composition_filter = module._apply_composition_filter
     original_env = os.environ.copy()
     try:
         module.AIStrategySelector = FakeSelector
@@ -255,6 +296,13 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
         module._restart_top_engines = lambda: 0
         module._spawn_background_refinement = lambda timestamp: None
         module.load_local_ai_env = lambda: None
+        module._annotate_with_ai_signals = lambda rows, signal_map: [dict(item) for item in rows]
+        module._apply_range_scores = lambda rows: [dict(item) for item in rows]
+        module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: [dict(item) for item in (selector_top10 or selected or [])]
+        module._finalize_price_band = lambda candidates, min_price, max_price: ([dict(item) for item in candidates], [])
+        module._apply_trade_filter = lambda rows: ([dict(item) for item in rows], {"rejected": [], "fallback_used": False})
+        module._apply_composition_filter = lambda rows, top_n=3: ([dict(item) for item in rows], {"rejected": [], "warnings": []})
+        module._split_selected_and_protected_positions = lambda candidates, positions, limit=5: (list(candidates)[:limit], [])
         module._run_integrated_ai_selector = lambda: {
             "enabled": True,
             "top3": [],
@@ -284,6 +332,13 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
         module._spawn_background_refinement = original_spawn
         module.load_local_ai_env = original_load_local_env
         module._run_integrated_ai_selector = original_run_integrated
+        module._split_selected_and_protected_positions = original_split_selected
+        module._annotate_with_ai_signals = original_annotate
+        module._apply_range_scores = original_apply_range_scores
+        module._build_report_top10 = original_build_report_top10
+        module._finalize_price_band = original_finalize_price_band
+        module._apply_trade_filter = original_apply_trade_filter
+        module._apply_composition_filter = original_apply_composition_filter
         os.environ.clear()
         os.environ.update(original_env)
         if original_config_writer is None:

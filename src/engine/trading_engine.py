@@ -1176,6 +1176,7 @@ class TradingEngine:
                 correlation_factor = self.portfolio_risk.check_correlation_limit(
                     self.ticker, self.ticker
                 )
+                reduced_shares = shares
                 if correlation_factor < 1.0:
                     reduced_shares = int(shares * correlation_factor)
                 if reduced_shares < 1:
@@ -1215,13 +1216,14 @@ class TradingEngine:
                         }
                     )
                     return
-                    shares = reduced_shares
+                if reduced_shares != shares:
                     logger.info(
                         "PortfolioRisk: correlation limit reduced %s buy from %d → %d shares",
                         self.ticker,
-                        int(shares / correlation_factor) if correlation_factor else shares,
                         shares,
+                        reduced_shares,
                     )
+                    shares = reduced_shares
 
                 total_exposure = self.portfolio_risk.get_total_exposure()
                 cost = shares * (ask if ask > 0 else current_price)
