@@ -111,6 +111,13 @@ class PortfolioConfig:
 
 
 @dataclass
+class AiSelectorConfig:
+    allow_fallback_paper_entries: bool = False
+    allow_fallback_live_entries: bool = False
+    fallback_paper_position_multiplier: float = 0.25
+
+
+@dataclass
 class AppConfig:
     ticker: str = "SOXS"
     mode: Literal["paper", "live", "backtest"] = "paper"
@@ -123,6 +130,7 @@ class AppConfig:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+    ai_selector: AiSelectorConfig = field(default_factory=AiSelectorConfig)
     signal_interval_seconds: int = 60
     order_cooldown_seconds: int = 300
 
@@ -312,6 +320,23 @@ def _parse_config(raw: dict) -> AppConfig:
         ),
     )
 
+    ai_selector_raw = raw.get("ai_selector", {}) or {}
+    config.ai_selector = AiSelectorConfig(
+        allow_fallback_paper_entries=_bool_env(
+            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_PAPER_ENTRIES",
+            ai_selector_raw.get("allow_fallback_paper_entries", False),
+        ),
+        allow_fallback_live_entries=_bool_env(
+            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_LIVE_ENTRIES",
+            ai_selector_raw.get("allow_fallback_live_entries", False),
+        ),
+        fallback_paper_position_multiplier=_float_env(
+            "SOXS_AI_SELECTOR_FALLBACK_PAPER_POSITION_MULTIPLIER",
+            ai_selector_raw.get("fallback_paper_position_multiplier", 0.25),
+        )
+        or 0.25,
+    )
+
     return config
 
 
@@ -319,7 +344,10 @@ def _float_env(key: str, default) -> Optional[float]:
     """Get float from env var or return default."""
     val = os.environ.get(key)
     if val is not None:
-        return float(val)
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return float(default) if default is not None else None
     if default is not None:
         return float(default)
     return None

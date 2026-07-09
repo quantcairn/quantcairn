@@ -9,6 +9,7 @@ Runs in paper or live mode.
 """
 import json
 import logging
+import math
 import os
 import random
 import time
@@ -360,6 +361,53 @@ class TradingEngine:
             )
         return False
 
+    def _ai_fallback_policy(self) -> tuple[bool, bool, float]:
+        ai_cfg = getattr(self.config, "ai_selector", None)
+        allow_paper = bool(getattr(ai_cfg, "allow_fallback_paper_entries", False))
+        allow_live = bool(getattr(ai_cfg, "allow_fallback_live_entries", False))
+        try:
+            multiplier = float(
+                getattr(ai_cfg, "fallback_paper_position_multiplier", 0.25) or 0.25
+            )
+        except (TypeError, ValueError):
+            multiplier = 0.25
+        return allow_paper, allow_live, max(0.0, multiplier)
+
+    def _build_ai_buy_plan(self, acct, current_price: float, ask: float) -> dict:
+        cash = float(getattr(acct, "cash", 0.0) or 0.0)
+        buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
+        available_cash = max(0.0, max(cash, buying_power))
+        available_cash = self._cap_ai_available_cash(available_cash, acct)
+        execution_price = ask if ask > 0 else current_price
+        original_target_shares = determine_buy_quantity(
+            current_price=current_price,
+            available_cash=available_cash,
+            configured_size=self.config.position.size_per_trade,
+            max_position=self.config.position.max_position,
+            execution_price=execution_price,
+        )
+        return {
+            "cash": cash,
+            "buying_power": buying_power,
+            "available_cash": available_cash,
+            "execution_price": execution_price,
+            "original_target_shares": int(original_target_shares or 0),
+        }
+
+    def _emit_risk_decision(self, payload: dict) -> None:
+        record = {
+            "ticker": self.ticker,
+            "symbol": self.ticker,
+            "execution_mode": self.mode,
+            "reduce_only": self._reduce_only,
+            **(payload or {}),
+        }
+        logger.info(
+            "risk_decision: %s",
+            json.dumps(record, ensure_ascii=False, sort_keys=True, default=str),
+        )
+        self._write_runtime_audit("risk_decision", **record)
+
     # ---- Main Loop ----
 
     def run(self) -> None:
@@ -616,7 +664,37 @@ class TradingEngine:
             elif has_position:
                 self._last_signal_reason = "HOLD: 已有持仓，跳过买入"
             elif not self._ai_entry_allowed():
+                plan = self._build_ai_buy_plan(acct, current_price, quote.ask)
+                fallback_used = bool(self._ai_selection.fallback_used)
+                allow_paper, allow_live, multiplier = self._ai_fallback_policy()
                 self._last_signal_reason = self._blocked_ai_reason()
+                self._emit_risk_decision(
+                    {
+                        "ticker": self.ticker,
+                        "mode": self.mode,
+                        "signal": signal.type.value,
+                        "fallback_used": fallback_used,
+                        "allow_fallback_paper_entries": allow_paper,
+                        "allow_fallback_live_entries": allow_live,
+                        "risk_approved": False,
+                        "blocked_by": "ai_entry_gate",
+                        "reason": self._last_signal_reason,
+                        "original_target_shares": int(plan["original_target_shares"]),
+                        "adjusted_target_shares": 0,
+                        "position_multiplier": multiplier if fallback_used else 1.0,
+                        "current_price": current_price,
+                        "buying_power": float(getattr(acct, "buying_power", 0.0) or 0.0),
+                        "available_cash": float(plan["available_cash"]),
+                        "required_cash": float(plan["original_target_shares"]) * float(plan["execution_price"]),
+                        "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": bool(self.order_state.is_blocked),
+                        "order_state_reason": self.order_state.blocked_reason,
+                        "final_action": "blocked",
+                        "reduce_only": self._reduce_only,
+                    }
+                )
             elif not is_halted:
                 self._handle_buy_signal(signal, current_price, quote.ask)
             else:
@@ -745,20 +823,98 @@ class TradingEngine:
                     portfolio_enabled=self._portfolio_guard_enabled(),
                 )
                 return
-            cash = float(getattr(acct, "cash", 0.0) or 0.0)
-            buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
-            # Use buying_power when available (margin accounts share one
-            # broker across multiple engines — cash can be near zero while
-            # buying_power still reflects real available funds).
-            available_cash = max(0.0, max(cash, buying_power))
-            available_cash = self._cap_ai_available_cash(available_cash, acct)
-            shares = determine_buy_quantity(
-                current_price=current_price,
-                available_cash=available_cash,
-                configured_size=self.config.position.size_per_trade,
-                max_position=self.config.position.max_position,
-                execution_price=ask if ask > 0 else current_price,
-            )
+            plan = self._build_ai_buy_plan(acct, current_price, ask)
+            cash = float(plan["cash"])
+            buying_power = float(plan["buying_power"])
+            available_cash = float(plan["available_cash"])
+            shares = int(plan["original_target_shares"])
+            execution_price = float(plan["execution_price"])
+            fallback_used = bool(self._ai_selection.fallback_used)
+            allow_paper, allow_live, multiplier = self._ai_fallback_policy()
+            policy_reason = "ai_entry_allowed"
+            adjusted_shares = shares
+
+            if fallback_used:
+                if self.mode == "live":
+                    policy_reason = "fallback_used_live_blocked"
+                elif self.mode == "paper":
+                    if not allow_paper:
+                        policy_reason = "fallback_used_blocked"
+                    else:
+                        adjusted_shares = int(math.floor(shares * multiplier))
+                        if adjusted_shares < 1:
+                            policy_reason = "fallback_reduced_size_below_minimum"
+                        else:
+                            policy_reason = "fallback_used_paper_allowed_with_reduced_size"
+                else:
+                    policy_reason = "fallback_used_blocked"
+
+            if fallback_used and policy_reason not in {
+                "fallback_used_paper_allowed_with_reduced_size",
+            }:
+                self._last_signal_reason = policy_reason
+                self._emit_risk_decision(
+                    {
+                        "ticker": self.ticker,
+                        "mode": self.mode,
+                        "signal": getattr(signal.type, "value", str(signal.type)),
+                        "fallback_used": fallback_used,
+                        "allow_fallback_paper_entries": allow_paper,
+                        "allow_fallback_live_entries": allow_live,
+                        "risk_approved": False,
+                        "blocked_by": "ai_fallback_policy",
+                        "reason": policy_reason,
+                        "original_target_shares": shares,
+                        "adjusted_target_shares": 0,
+                        "position_multiplier": multiplier if self.mode == "paper" else 0.0,
+                        "current_price": current_price,
+                        "buying_power": buying_power,
+                        "available_cash": available_cash,
+                        "required_cash": shares * execution_price,
+                        "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": bool(self.order_state.is_blocked),
+                        "order_state_reason": self.order_state.blocked_reason,
+                        "final_action": "blocked",
+                        "reduce_only": self._reduce_only,
+                    }
+                )
+                return
+
+            if fallback_used and adjusted_shares < 1:
+                self._last_signal_reason = policy_reason
+                self._emit_risk_decision(
+                    {
+                        "ticker": self.ticker,
+                        "mode": self.mode,
+                        "signal": getattr(signal.type, "value", str(signal.type)),
+                        "fallback_used": fallback_used,
+                        "allow_fallback_paper_entries": allow_paper,
+                        "allow_fallback_live_entries": allow_live,
+                        "risk_approved": False,
+                        "blocked_by": "ai_fallback_policy",
+                        "reason": policy_reason,
+                        "original_target_shares": shares,
+                        "adjusted_target_shares": 0,
+                        "position_multiplier": multiplier,
+                        "current_price": current_price,
+                        "buying_power": buying_power,
+                        "available_cash": available_cash,
+                        "required_cash": shares * execution_price,
+                        "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": bool(self.order_state.is_blocked),
+                        "order_state_reason": self.order_state.blocked_reason,
+                        "final_action": "blocked",
+                        "reduce_only": self._reduce_only,
+                    }
+                )
+                return
+
+            if fallback_used and adjusted_shares != shares:
+                shares = adjusted_shares
 
             if shares <= 0:
                 self._last_signal_reason = (
@@ -766,11 +922,66 @@ class TradingEngine:
                     f"不足以买入 ${max(current_price, ask):.2f} 的标的"
                 )
                 self.notifier.alert(self._last_signal_reason, "warning")
+                self._emit_risk_decision(
+                    {
+                        "ticker": self.ticker,
+                        "mode": self.mode,
+                        "signal": getattr(signal.type, "value", str(signal.type)),
+                        "fallback_used": fallback_used,
+                        "allow_fallback_paper_entries": allow_paper,
+                        "allow_fallback_live_entries": allow_live,
+                        "risk_approved": False,
+                        "blocked_by": "position_sizing",
+                        "reason": "insufficient_shares",
+                        "original_target_shares": int(plan["original_target_shares"]),
+                        "adjusted_target_shares": int(shares),
+                        "position_multiplier": multiplier if fallback_used else 1.0,
+                        "current_price": current_price,
+                        "buying_power": buying_power,
+                        "available_cash": available_cash,
+                        "required_cash": shares * execution_price,
+                        "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": bool(self.order_state.is_blocked),
+                        "order_state_reason": self.order_state.blocked_reason,
+                        "final_action": "blocked",
+                        "reduce_only": self._reduce_only,
+                    }
+                )
                 return
+
+            self._emit_risk_decision(
+                {
+                    "ticker": self.ticker,
+                    "mode": self.mode,
+                    "signal": getattr(signal.type, "value", str(signal.type)),
+                    "fallback_used": fallback_used,
+                    "allow_fallback_paper_entries": allow_paper,
+                    "allow_fallback_live_entries": allow_live,
+                    "risk_approved": True,
+                    "blocked_by": "",
+                    "reason": policy_reason,
+                    "original_target_shares": int(plan["original_target_shares"]),
+                    "adjusted_target_shares": int(shares),
+                    "position_multiplier": multiplier if fallback_used else 1.0,
+                    "current_price": current_price,
+                    "buying_power": buying_power,
+                    "available_cash": available_cash,
+                    "required_cash": shares * execution_price,
+                    "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                    "portfolio_allowed": None,
+                    "portfolio_reason": "not_evaluated",
+                    "order_state_blocked": bool(self.order_state.is_blocked),
+                    "order_state_reason": self.order_state.blocked_reason,
+                    "final_action": "buy_candidate",
+                    "reduce_only": self._reduce_only,
+                }
+            )
 
             # ---- Pre-trade buying-power check ----
             bp_ok, bp_reason = self.order_state.check_buying_power(
-                price=ask if ask > 0 else current_price,
+                price=execution_price,
                 quantity=shares,
                 available_cash=available_cash,
             )
@@ -778,6 +989,33 @@ class TradingEngine:
                 self._last_signal_reason = bp_reason
                 self.notifier.alert(bp_reason, "warning")
                 # Record as rejected without even sending to broker
+                self._emit_risk_decision(
+                    {
+                        "ticker": self.ticker,
+                        "mode": self.mode,
+                        "signal": getattr(signal.type, "value", str(signal.type)),
+                        "fallback_used": fallback_used,
+                        "allow_fallback_paper_entries": allow_paper,
+                        "allow_fallback_live_entries": allow_live,
+                        "risk_approved": False,
+                        "blocked_by": "buying_power",
+                        "reason": bp_reason,
+                        "original_target_shares": int(plan["original_target_shares"]),
+                        "adjusted_target_shares": int(shares),
+                        "position_multiplier": multiplier if fallback_used else 1.0,
+                        "current_price": current_price,
+                        "buying_power": buying_power,
+                        "available_cash": available_cash,
+                        "required_cash": shares * execution_price,
+                        "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": bool(self.order_state.is_blocked),
+                        "order_state_reason": bp_reason,
+                        "final_action": "blocked",
+                        "reduce_only": self._reduce_only,
+                    }
+                )
                 self.order_state.record_rejected(
                     order_id="BP_CHECK",
                     reason=bp_reason,
@@ -795,6 +1033,33 @@ class TradingEngine:
             if not entry_check.allowed:
                 self._last_signal_reason = entry_check.reason
                 self.notifier.alert(entry_check.reason, "warning")
+                self._emit_risk_decision(
+                    {
+                        "ticker": self.ticker,
+                        "mode": self.mode,
+                        "signal": getattr(signal.type, "value", str(signal.type)),
+                        "fallback_used": fallback_used,
+                        "allow_fallback_paper_entries": allow_paper,
+                        "allow_fallback_live_entries": allow_live,
+                        "risk_approved": False,
+                        "blocked_by": "risk_manager",
+                        "reason": entry_check.reason,
+                        "original_target_shares": int(plan["original_target_shares"]),
+                        "adjusted_target_shares": int(shares),
+                        "position_multiplier": multiplier if fallback_used else 1.0,
+                        "current_price": current_price,
+                        "buying_power": buying_power,
+                        "available_cash": available_cash,
+                        "required_cash": shares * execution_price,
+                        "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": bool(self.order_state.is_blocked),
+                        "order_state_reason": self.order_state.blocked_reason,
+                        "final_action": "blocked",
+                        "reduce_only": self._reduce_only,
+                    }
+                )
                 return
 
             # ---- Optional portfolio-level guard before broker submission ----
@@ -806,6 +1071,33 @@ class TradingEngine:
                         "组合风控启用但无法读取账户/持仓，禁止新买入"
                     )
                     self.notifier.alert(self._last_signal_reason, "warning")
+                    self._emit_risk_decision(
+                        {
+                            "ticker": self.ticker,
+                            "mode": self.mode,
+                            "signal": getattr(signal.type, "value", str(signal.type)),
+                            "fallback_used": fallback_used,
+                            "allow_fallback_paper_entries": allow_paper,
+                            "allow_fallback_live_entries": allow_live,
+                            "risk_approved": False,
+                            "blocked_by": "portfolio_guard",
+                            "reason": reason,
+                            "original_target_shares": int(plan["original_target_shares"]),
+                            "adjusted_target_shares": int(shares),
+                            "position_multiplier": multiplier if fallback_used else 1.0,
+                            "current_price": current_price,
+                            "buying_power": buying_power,
+                            "available_cash": available_cash,
+                            "required_cash": shares * execution_price,
+                            "portfolio_guard_enabled": True,
+                            "portfolio_allowed": False,
+                            "portfolio_reason": reason,
+                            "order_state_blocked": bool(self.order_state.is_blocked),
+                            "order_state_reason": self.order_state.blocked_reason,
+                            "final_action": "blocked",
+                            "reduce_only": self._reduce_only,
+                        }
+                    )
                     self._write_runtime_audit(
                         "portfolio_risk_blocked",
                         ticker=self.ticker,
@@ -838,6 +1130,33 @@ class TradingEngine:
                     reason = str(portfolio_check.get("reason") or "portfolio_blocked")
                     self._last_signal_reason = f"组合风控阻止买入：{reason}"
                     self.notifier.alert(self._last_signal_reason, "warning")
+                    self._emit_risk_decision(
+                        {
+                            "ticker": self.ticker,
+                            "mode": self.mode,
+                            "signal": getattr(signal.type, "value", str(signal.type)),
+                            "fallback_used": fallback_used,
+                            "allow_fallback_paper_entries": allow_paper,
+                            "allow_fallback_live_entries": allow_live,
+                            "risk_approved": False,
+                            "blocked_by": "portfolio_guard",
+                            "reason": reason,
+                            "original_target_shares": int(plan["original_target_shares"]),
+                            "adjusted_target_shares": int(shares),
+                            "position_multiplier": multiplier if fallback_used else 1.0,
+                            "current_price": current_price,
+                            "buying_power": buying_power,
+                            "available_cash": available_cash,
+                            "required_cash": shares * execution_price,
+                            "portfolio_guard_enabled": True,
+                            "portfolio_allowed": False,
+                            "portfolio_reason": reason,
+                            "order_state_blocked": bool(self.order_state.is_blocked),
+                            "order_state_reason": self.order_state.blocked_reason,
+                            "final_action": "blocked",
+                            "reduce_only": self._reduce_only,
+                        }
+                    )
                     self._write_runtime_audit(
                         "portfolio_risk_blocked",
                         ticker=self.ticker,
@@ -859,16 +1178,43 @@ class TradingEngine:
                 )
                 if correlation_factor < 1.0:
                     reduced_shares = int(shares * correlation_factor)
-                    if reduced_shares < 1:
-                        sector_hint = LEVERAGED_ETF_REGISTRY.get(
-                            self.ticker, {}
-                        ).get("sector", "")
-                        self._last_signal_reason = (
-                            f"组合相关性限制：同一{sector_hint}杠杆ETF限70%，"
-                            f"计算后无有效买入数量"
-                        )
-                        self.notifier.alert(self._last_signal_reason, "warning")
-                        return
+                if reduced_shares < 1:
+                    sector_hint = LEVERAGED_ETF_REGISTRY.get(
+                        self.ticker, {}
+                    ).get("sector", "")
+                    self._last_signal_reason = (
+                        f"组合相关性限制：同一{sector_hint}杠杆ETF限70%，"
+                        f"计算后无有效买入数量"
+                    )
+                    self.notifier.alert(self._last_signal_reason, "warning")
+                    self._emit_risk_decision(
+                        {
+                            "ticker": self.ticker,
+                            "mode": self.mode,
+                            "signal": getattr(signal.type, "value", str(signal.type)),
+                            "fallback_used": fallback_used,
+                            "allow_fallback_paper_entries": allow_paper,
+                            "allow_fallback_live_entries": allow_live,
+                            "risk_approved": False,
+                            "blocked_by": "risk_manager",
+                            "reason": self._last_signal_reason,
+                            "original_target_shares": int(plan["original_target_shares"]),
+                            "adjusted_target_shares": 0,
+                            "position_multiplier": multiplier if fallback_used else 1.0,
+                            "current_price": current_price,
+                            "buying_power": buying_power,
+                            "available_cash": available_cash,
+                            "required_cash": shares * execution_price,
+                            "portfolio_guard_enabled": self._portfolio_guard_enabled(),
+                            "portfolio_allowed": None,
+                            "portfolio_reason": "not_evaluated",
+                            "order_state_blocked": bool(self.order_state.is_blocked),
+                            "order_state_reason": self.order_state.blocked_reason,
+                            "final_action": "blocked",
+                            "reduce_only": self._reduce_only,
+                        }
+                    )
+                    return
                     shares = reduced_shares
                     logger.info(
                         "PortfolioRisk: correlation limit reduced %s buy from %d → %d shares",
@@ -1314,6 +1660,11 @@ class TradingEngine:
         if regime == "EVENT":
             return False
         if fallback_used:
+            allow_paper, _allow_live, _multiplier = self._ai_fallback_policy()
+            if self.mode == "live":
+                return False
+            if self.mode == "paper":
+                return bool(allow_paper)
             return False
         return 0.0 < allocation_weight <= 0.30
 
@@ -1322,8 +1673,6 @@ class TradingEngine:
             return True
         if not self._ai_selection.active:
             return True
-        if self._ai_selection.fallback_used:
-            return False
         if self._ai_selection.regime == "EVENT":
             return False
         return bool(self._ai_selection.signal_for_ticker and self._ai_selection.risk_approved)
@@ -1334,7 +1683,12 @@ class TradingEngine:
         if not self._ai_selection.active:
             return f"AI 选股回退原配置：{self._ai_selection.fallback_reason or 'unknown'}"
         if self._ai_selection.fallback_used:
-            return "AI 选股已降级到回退数据，禁止新开仓"
+            allow_paper, _allow_live, _multiplier = self._ai_fallback_policy()
+            if self.mode == "live":
+                return "fallback_used_live_blocked"
+            if self.mode == "paper" and not allow_paper:
+                return "fallback_used_blocked"
+            return "fallback_used_paper_allowed_with_reduced_size"
         if self._ai_selection.regime == "EVENT":
             return "AI 市场状态为 EVENT，禁止开新仓"
         if not self._ai_selection.signal_for_ticker:

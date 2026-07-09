@@ -9,6 +9,9 @@ AI_SELECTOR_ENABLED = False
 OPENBB_ENABLED = False
 FMP_API_KEY = os.getenv("FMP_API_KEY", "").strip()
 FMP_ENABLED = bool(FMP_API_KEY)
+ALLOW_FALLBACK_PAPER_ENTRIES = False
+ALLOW_FALLBACK_LIVE_ENTRIES = False
+FALLBACK_PAPER_POSITION_MULTIPLIER = 0.25
 TOP_N = 3
 ANALYSIS_UNIVERSE_LIMIT = 9
 UNIVERSE = [
@@ -47,6 +50,9 @@ class AISelectorRuntimeConfig:
     openbb_enabled: bool = OPENBB_ENABLED
     fmp_enabled: bool = FMP_ENABLED
     fmp_api_key: str = FMP_API_KEY
+    allow_fallback_paper_entries: bool = ALLOW_FALLBACK_PAPER_ENTRIES
+    allow_fallback_live_entries: bool = ALLOW_FALLBACK_LIVE_ENTRIES
+    fallback_paper_position_multiplier: float = FALLBACK_PAPER_POSITION_MULTIPLIER
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -63,6 +69,15 @@ def _int_env(name: str, default: int) -> int:
     except (TypeError, ValueError):
         parsed = int(default)
     return max(1, parsed)
+
+
+def _float_env(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    try:
+        parsed = float(value) if value is not None else float(default)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return max(0.0, parsed)
 
 
 def _list_env(name: str, default: list[str]) -> list[str]:
@@ -94,4 +109,16 @@ def load_runtime_config() -> AISelectorRuntimeConfig:
             os.environ.get("FMP_API_KEY", FMP_API_KEY).strip()
         ),
         fmp_api_key=os.environ.get("FMP_API_KEY", FMP_API_KEY).strip(),
+        allow_fallback_paper_entries=_bool_env(
+            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_PAPER_ENTRIES",
+            ALLOW_FALLBACK_PAPER_ENTRIES,
+        ),
+        allow_fallback_live_entries=_bool_env(
+            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_LIVE_ENTRIES",
+            ALLOW_FALLBACK_LIVE_ENTRIES,
+        ),
+        fallback_paper_position_multiplier=_float_env(
+            "SOXS_AI_SELECTOR_FALLBACK_PAPER_POSITION_MULTIPLIER",
+            FALLBACK_PAPER_POSITION_MULTIPLIER,
+        ),
     )

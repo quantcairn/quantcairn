@@ -120,6 +120,31 @@ def _load_portfolio_config() -> dict:
             portfolio.update(section)
     return portfolio
 
+
+def _default_ai_selector_config() -> dict:
+    return {
+        "allow_fallback_paper_entries": False,
+        "allow_fallback_live_entries": False,
+        "fallback_paper_position_multiplier": 0.25,
+    }
+
+
+def _load_ai_selector_config() -> dict:
+    """
+    Load AI selector fallback settings using the same priority expected by the project:
+    config.local.yaml -> config.yaml -> default values.
+    """
+    ai_selector = _default_ai_selector_config()
+    for path in (
+        os.path.join(BASE, "config.yaml"),
+        os.path.join(BASE, "config.local.yaml"),
+    ):
+        raw = _load_yaml_file(path)
+        section = raw.get("ai_selector")
+        if isinstance(section, dict):
+            ai_selector.update(section)
+    return ai_selector
+
 def write_top_configs(top_items):
     if not top_items:
         logger.warning("write_top_configs called with empty list — refusing to delete existing configs")
@@ -127,6 +152,7 @@ def write_top_configs(top_items):
     default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
     portfolio_cfg = _load_portfolio_config()
+    ai_selector_cfg = _load_ai_selector_config()
     allocator = RiskAllocator()
     allocations = allocator.allocate_positions(list(top_items), TOP_INITIAL_CAPITAL)
     for i, item in enumerate(top_items, start=1):
@@ -228,6 +254,17 @@ def write_top_configs(top_items):
                 ),
                 "leveraged_etf_max_group_exposure": float(
                     portfolio_cfg.get("leveraged_etf_max_group_exposure", 0.50)
+                ),
+            },
+            "ai_selector": {
+                "allow_fallback_paper_entries": bool(
+                    ai_selector_cfg.get("allow_fallback_paper_entries", False)
+                ),
+                "allow_fallback_live_entries": bool(
+                    ai_selector_cfg.get("allow_fallback_live_entries", False)
+                ),
+                "fallback_paper_position_multiplier": float(
+                    ai_selector_cfg.get("fallback_paper_position_multiplier", 0.25)
                 ),
             },
             "trading_hours": {

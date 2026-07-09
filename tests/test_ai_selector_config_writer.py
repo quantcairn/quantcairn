@@ -259,6 +259,55 @@ def test_config_writer_includes_portfolio_from_local_over_config(tmp_path, monke
     assert updated["portfolio"]["max_total_risk"] == 0.05
     assert updated["portfolio"]["leveraged_etf_max_single_position"] == 0.15
     assert updated["portfolio"]["leveraged_etf_max_group_exposure"] == 0.50
+
+
+def test_config_writer_includes_ai_selector_fallback_policy(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    (repo_root / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "ai_selector": {
+                    "allow_fallback_paper_entries": False,
+                    "allow_fallback_live_entries": False,
+                    "fallback_paper_position_multiplier": 0.10,
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (repo_root / "config.local.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "ai_selector": {
+                    "allow_fallback_paper_entries": True,
+                    "allow_fallback_live_entries": False,
+                    "fallback_paper_position_multiplier": 0.25,
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    write_top_configs([
+        {
+            "ticker": "SOFI",
+            "range_low": 17.0,
+            "range_high": 19.0,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 10,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    assert updated["ai_selector"]["allow_fallback_paper_entries"] is True
+    assert updated["ai_selector"]["allow_fallback_live_entries"] is False
+    assert updated["ai_selector"]["fallback_paper_position_multiplier"] == 0.25
     assert "selection" in updated
     assert "allocation" in updated
 
