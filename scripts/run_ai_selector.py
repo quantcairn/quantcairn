@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.ai_selector.integration import AISelector
+from src.ai_selector.composition_filter import CompositionFilter
 from src.ai_selector.selector import AIStrategySelector
 from src.ai_selector.range_score import RangeFitnessScorer
 from src.ai_selector.trade_filter import TradeEligibilityFilter
@@ -33,6 +34,7 @@ EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 TOP_COUNT = max(1, int(load_runtime_config().top_n))
 RANGE_SCORER = RangeFitnessScorer()
 TRADE_FILTER = TradeEligibilityFilter()
+COMPOSITION_FILTER = CompositionFilter()
 
 
 def _et_now() -> datetime:
@@ -225,6 +227,13 @@ def _trade_market_data(item: dict) -> dict:
 def _apply_trade_filter(rows: list[dict]) -> tuple[list[dict], dict]:
     market_data = {_normalize_ticker(item.get("ticker")): _trade_market_data(item) for item in rows or [] if _normalize_ticker(item.get("ticker"))}
     result = TRADE_FILTER.filter(rows or [], market_data)
+    accepted = list(result.get("accepted") or [])
+    accepted.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
+    return accepted, dict(result)
+
+
+def _apply_composition_filter(rows: list[dict], top_n: int = TOP_COUNT) -> tuple[list[dict], dict]:
+    result = COMPOSITION_FILTER.filter_top_n(rows or [], top_n=top_n)
     accepted = list(result.get("accepted") or [])
     accepted.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
     return accepted, dict(result)
@@ -630,6 +639,7 @@ def main():
     )
     selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
     selected, trade_filter_report = _apply_trade_filter(selected)
+    selected, composition_filter_report = _apply_composition_filter(selected, top_n=TOP_COUNT)
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -643,6 +653,11 @@ def main():
     quality_report["trade_filter_passed"] = [bool(item.get("trade_filter_passed", False)) for item in selected]
     quality_report["reject_reason"] = [str(item.get("reject_reason") or "") for item in selected]
     quality_report["fallback_used"] = bool(trade_filter_report.get("fallback_used", False)) or bool(integrated_ai.get("fallback_used"))
+    quality_report["composition_filter"] = {
+        "max_leveraged_etf_in_top3": 1,
+        "rejected": list(composition_filter_report.get("rejected") or []),
+        "warnings": list(composition_filter_report.get("warnings") or []),
+    }
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     write_selection_filter_log(quality_report)
@@ -657,6 +672,10 @@ def main():
             item["trade_filter_passed"] = bool(item.get("trade_filter_passed", False))
             item["reject_reason"] = str(item.get("reject_reason") or "")
             item["fallback_used"] = bool(item.get("fallback_used", False)) or bool(trade_filter_report.get("fallback_used", False))
+            item["leveraged_etf"] = bool(item.get("leveraged_etf", False))
+            item["composition_filter_passed"] = bool(item.get("composition_filter_passed", True))
+            item["composition_reject_reason"] = str(item.get("composition_reject_reason") or "")
+            item["final_rank"] = int(item.get("final_rank") or 0)
         write_top_configs(selected)
         selected = list(selected[:TOP_COUNT])
         out["top5"] = list(selected)
@@ -708,6 +727,11 @@ def main():
         'report': out.get('report', []),
         'settings': out.get('settings', {}),
         'quality_filter_report': out.get('quality_filter_report', {}),
+        'composition_filter': {
+            'max_leveraged_etf_in_top3': 1,
+            'rejected': list(composition_filter_report.get("rejected") or []),
+            'warnings': list(composition_filter_report.get("warnings") or []),
+        },
     }
 
     latest_report_path, _ = _write_reports(summary)

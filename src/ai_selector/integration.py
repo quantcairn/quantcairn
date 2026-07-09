@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import AISelectorRuntimeConfig, load_runtime_config
+from .composition_filter import CompositionFilter
 from .providers.finrobot_provider import FinRobotProvider
 from .providers.openbb_provider import OpenBBProvider
 from .providers.tradingagents_provider import TradingAgentsProvider
@@ -43,6 +44,7 @@ class AISelector:
         self.openbb_provider = openbb_provider or OpenBBProvider(self.config)
         self.range_scorer = RangeFitnessScorer()
         self.trade_filter = TradeEligibilityFilter()
+        self.composition_filter = CompositionFilter()
         self.last_top10: list[dict] = []
         self.last_run_metadata: dict[str, object] = {}
 
@@ -112,6 +114,7 @@ class AISelector:
 
         ranked = self._apply_range_scores(ranked)
         ranked = self._apply_trade_filter(ranked)
+        ranked = self._apply_composition_filter(ranked)
         self.last_top10 = ranked[:10]
         self.last_run_metadata = {
             "providers_used": providers_used,
@@ -122,6 +125,10 @@ class AISelector:
             "range_score_enabled": True,
             "trade_filter_enabled": True,
             "trade_filter_fallback_used": bool(self.last_run_metadata.get("trade_filter_fallback_used", False)),
+            "composition_filter_enabled": True,
+            "composition_filter_max_leveraged_etf_in_top3": 1,
+            "composition_filter_rejected": list(self.last_run_metadata.get("composition_filter_rejected") or []),
+            "composition_filter_warnings": list(self.last_run_metadata.get("composition_filter_warnings") or []),
             "analysis_universe": analyzed_universe,
             "analysis_universe_limit": analysis_limit,
         }
@@ -205,6 +212,19 @@ class AISelector:
         self.last_run_metadata["trade_filter_accepted"] = [str(item.get("ticker") or "").strip().upper() for item in accepted]
         return accepted
 
+    def _apply_composition_filter(self, ranked: list[dict]) -> list[dict]:
+        result = self.composition_filter.filter_top_n(ranked, top_n=self.config.top_n)
+        accepted = [dict(item) for item in (result.get("accepted") or [])]
+        rejected = [dict(item) for item in (result.get("rejected") or [])]
+        warnings = list(result.get("warnings") or [])
+        self.last_run_metadata["composition_filter_rejected"] = rejected
+        self.last_run_metadata["composition_filter_warnings"] = warnings
+        self.last_run_metadata["composition_filter_passed"] = len(rejected) == 0
+        self.last_run_metadata["composition_filter_accepted"] = [
+            str(item.get("ticker") or "").strip().upper() for item in accepted
+        ]
+        return accepted
+
     def _market_data_snapshot(self, ticker: str) -> dict:
         if not ticker:
             return {}
@@ -260,6 +280,13 @@ class AISelector:
             "providers_disabled": list(self.last_run_metadata.get("providers_disabled") or []),
             "fmp_enabled": bool(self.last_run_metadata.get("fmp_enabled", False)),
             "fallback_used": bool(self.last_run_metadata.get("fallback_used", False)),
+            "composition_filter": {
+                "max_leveraged_etf_in_top3": int(
+                    self.last_run_metadata.get("composition_filter_max_leveraged_etf_in_top3") or 1
+                ),
+                "rejected": list(self.last_run_metadata.get("composition_filter_rejected") or []),
+                "warnings": list(self.last_run_metadata.get("composition_filter_warnings") or []),
+            },
             "analysis_universe": list(self.last_run_metadata.get("analysis_universe") or []),
             "analysis_universe_limit": int(self.last_run_metadata.get("analysis_universe_limit") or self.config.analysis_universe_limit),
             "top10": ranked,

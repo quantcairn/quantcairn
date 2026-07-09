@@ -263,6 +263,41 @@ def test_config_writer_includes_portfolio_from_local_over_config(tmp_path, monke
     assert "allocation" in updated
 
 
+def test_config_writer_includes_composition_metadata(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    write_top_configs([
+        {
+            "ticker": "SOXS",
+            "range_low": 3.5,
+            "range_high": 4.2,
+            "risk": {"stop_loss_pct": 1.5},
+            "size": 50,
+            "ai_score": 90.0,
+            "range_score": 80.0,
+            "final_score": 88.0,
+            "confidence": 0.75,
+            "trade_filter_passed": True,
+            "reject_reason": "",
+            "fallback_used": False,
+            "leveraged_etf": True,
+            "composition_filter_passed": True,
+            "composition_reject_reason": "",
+            "final_rank": 1,
+        }
+    ])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    selection = updated["selection"]
+    assert selection["leveraged_etf"] is True
+    assert selection["composition_filter_passed"] is True
+    assert selection["composition_reject_reason"] == ""
+    assert selection["final_rank"] == 1
+
+
 def test_config_writer_defaults_portfolio_when_missing(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"

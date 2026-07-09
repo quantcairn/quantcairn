@@ -148,6 +148,10 @@ def write_top_configs(top_items):
         final_score = _coalesce_float(item.get("final_score"), item.get("score"), ai_score, default=0.0)
         trade_filter_passed = bool(item.get("trade_filter_passed", True))
         fallback_used = bool(item.get("fallback_used", False))
+        leveraged_etf = bool(item.get("leveraged_etf", False))
+        composition_filter_passed = bool(item.get("composition_filter_passed", True))
+        composition_reject_reason = str(item.get("composition_reject_reason") or "")
+        final_rank = int(item.get("final_rank") or i)
         allocation = dict(allocations.get(str(item.get("ticker") or "").upper()) or {})
 
         cfg = {
@@ -164,6 +168,10 @@ def write_top_configs(top_items):
                 "trade_filter_passed": trade_filter_passed,
                 "reject_reason": str(item.get("reject_reason") or ""),
                 "fallback_used": fallback_used,
+                "leveraged_etf": leveraged_etf,
+                "composition_filter_passed": composition_filter_passed,
+                "composition_reject_reason": composition_reject_reason,
+                "final_rank": final_rank,
                 "protected_position": protected_position,
                 "reduce_only": reduce_only,
                 "reason": str(
