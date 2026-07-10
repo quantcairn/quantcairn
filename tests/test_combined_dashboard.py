@@ -742,7 +742,244 @@ def test_combined_dashboard_uses_paper_account_summary_when_live_account_missing
     assert "$2100.00" in html
     assert "精选持仓数量" in html
     assert ">3<" in html or "3</span>" in html
-    assert "暂无" not in html.split("账户与持仓", 1)[1].split("真实仓位", 1)[0]
+    assert "虚拟持仓" in html
+    assert "3 股" in html
+    assert "暂无" not in html.split("账户与持仓", 1)[1].split("虚拟持仓", 1)[0]
+
+
+def test_combined_dashboard_shows_paper_position_pnl_from_engine_status(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: {
+        "price": 11.0,
+        "change": 0.0,
+        "high_1m": 11.0,
+        "low_1m": 11.0,
+        "bid": 10.9,
+        "ask": 11.1,
+        "support": 10.0,
+        "resistance": 12.0,
+        "spread_pct": 0.2,
+        "range_ready": True,
+        "range_source": "paper",
+        "last_signal": "HOLD",
+        "last_signal_reason": "paper",
+        "initial_capital": 700.0,
+        "cash": 700.0,
+        "position_shares": 3,
+        "entry_price": 10.0,
+        "unrealized_pnl": 3.0,
+        "unrealized_pnl_pct": 10.0,
+        "daily_pnl": 0.0,
+        "equity": 703.0,
+        "trades_today": 0,
+        "win_rate": 0.0,
+        "wins": 0,
+        "losses": 0,
+        "best_trade": 0.0,
+        "worst_trade": 0.0,
+        "avg_pnl": 0.0,
+        "halted": False,
+        "trade_in_progress": False,
+    })
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "虚拟持仓" in html
+    assert '<span class="val red">$+3.00</span>' in html or 'class="val red">$+3.00' in html
+    assert '<span class="val red">+10.00%</span>' in html or 'class="val red">+10.00%' in html
+
+
+def test_combined_dashboard_shows_negative_pnl_in_green(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: {
+        "price": 9.0,
+        "change": 0.0,
+        "high_1m": 9.0,
+        "low_1m": 9.0,
+        "bid": 8.9,
+        "ask": 9.1,
+        "support": 8.5,
+        "resistance": 9.5,
+        "spread_pct": 0.2,
+        "range_ready": True,
+        "range_source": "paper",
+        "last_signal": "HOLD",
+        "last_signal_reason": "paper",
+        "initial_capital": 700.0,
+        "cash": 700.0,
+        "position_shares": 2,
+        "entry_price": 10.0,
+        "unrealized_pnl": -2.0,
+        "unrealized_pnl_pct": -10.0,
+        "daily_pnl": 0.0,
+        "equity": 698.0,
+        "trades_today": 0,
+        "win_rate": 0.0,
+        "wins": 0,
+        "losses": 0,
+        "best_trade": 0.0,
+        "worst_trade": 0.0,
+        "avg_pnl": 0.0,
+        "halted": False,
+        "trade_in_progress": False,
+    })
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert '<span class="val green">$-2.00</span>' in html or 'class="val green">$-2.00' in html
+    assert '<span class="val green">-10.00%</span>' in html or 'class="val green">-10.00%' in html
+
+
+def test_combined_dashboard_paper_mode_ignores_live_account_positions(monkeypatch):
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
+        "mode": "paper",
+        "cash": 9999.0,
+        "equity": 9999.0,
+        "buying_power": 9999.0,
+        "positions": [
+            {
+                "ticker": "SOXS",
+                "quantity": 12,
+                "avg_entry_price": 4.17,
+                "current_price": 4.17,
+                "market_value": 699.90,
+                "unrealized_pnl": 0.0,
+                "unrealized_pnl_pct": 0.0,
+            }
+        ],
+    })
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: {
+        "price": 4.21,
+        "change": 0.0,
+        "high_1m": 4.21,
+        "low_1m": 4.21,
+        "bid": 4.20,
+        "ask": 4.22,
+        "support": 4.0,
+        "resistance": 4.5,
+        "spread_pct": 0.2,
+        "range_ready": True,
+        "range_source": "paper",
+        "last_signal": "HOLD",
+        "last_signal_reason": "paper",
+        "initial_capital": 700.0,
+        "cash": 700.0,
+        "position_shares": 12,
+        "entry_price": 4.198503232108468,
+        "unrealized_pnl": 0.13796121469837885,
+        "unrealized_pnl_pct": 0.274500,
+        "daily_pnl": 0.0,
+        "equity": 700.14,
+        "trades_today": 0,
+        "win_rate": 0.0,
+        "wins": 0,
+        "losses": 0,
+        "best_trade": 0.0,
+        "worst_trade": 0.0,
+        "avg_pnl": 0.0,
+        "halted": False,
+        "trade_in_progress": False,
+    })
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "虚拟持仓" in html
+    assert "$4.20" in html or "$4.21" in html
+    assert "+$0.14" in html or "0.14" in html
+    assert "$699.90" not in html
 
 
 def run_test_direct():

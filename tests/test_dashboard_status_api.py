@@ -123,3 +123,51 @@ def test_api_status_reports_selection_mismatch_without_error(monkeypatch):
     assert payload["selection"]["selection_state_tickers"] == ["AAPL", "SOFI", "DRIP"]
     assert payload["selection"]["top_config_tickers"] == ["SOXS", "YINN", "LABD"]
     assert payload["combined"]["process_count"] == 1
+
+
+def test_api_status_prefers_top_config_fallback_flags(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    configs_dir = project_dir / "configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    for name in ["TOP1.yaml", "TOP2.yaml", "TOP3.yaml"]:
+        (configs_dir / name).write_text(
+            "\n".join(
+                [
+                    "ticker: SOXS",
+                    "mode: paper",
+                    "ai_selector:",
+                    "  allow_fallback_paper_entries: true",
+                    "  allow_fallback_live_entries: false",
+                    "  fallback_paper_position_multiplier: 0.25",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
+    monkeypatch.setattr(dashboard, "_fetch_status", lambda port: {"mode": "paper", "price": 4.12, "last_signal": "HOLD", "halted": False})
+    monkeypatch.setattr(
+        dashboard,
+        "_selection_sync_status",
+        lambda: {
+            "ok": True,
+            "state_date": "2026-07-10",
+            "required_date": "2026-07-10",
+            "selection_state_symbols": ["SOXS", "SOXS", "SOXS"],
+            "current_top_config_symbols": ["SOXS", "SOXS", "SOXS"],
+            "mismatch_reason": "",
+        },
+    )
+    monkeypatch.setattr(dashboard, "_load_ai_selection_report", lambda: {"fallback_used": False, "top3": [], "settings": {}})
+    monkeypatch.setattr(dashboard, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(dashboard, "_combined_process_count", lambda: 1)
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "paper", "execution_count": 0, "buy_count": 0, "sell_count": 0, "decision_count": 0})
+    monkeypatch.setattr(dashboard, "load_runtime_config", lambda: SimpleNamespace(allow_fallback_live_entries=False, allow_fallback_paper_entries=False))
+
+    client = dashboard.app.test_client()
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["risk"]["fallback_paper_allowed"] is True
+    assert payload["risk"]["fallback_live_allowed"] is False

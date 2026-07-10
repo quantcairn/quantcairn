@@ -424,13 +424,36 @@ def _selected_stock_positions_count(live_account: dict | None, selected_tickers:
 def _paper_account_summary_from_cards(cards: list[dict]) -> dict[str, object]:
     cash = round(sum(float(card.get("cash", 0.0) or 0.0) for card in cards), 2)
     equity = round(sum(float(card.get("equity", 0.0) or 0.0) for card in cards), 2)
-    positions_count = sum(1 for card in cards if int(card.get("shares", 0) or 0) > 0)
+    position_rows: list[dict[str, object]] = []
+    for card in cards:
+        shares = int(card.get("shares", 0) or 0)
+        if shares <= 0:
+            continue
+        current_price = float(card.get("price", 0.0) or 0.0)
+        pnl = float(card.get("pnl", 0.0) or 0.0)
+        pnl_pct = float(card.get("pnl_pct", 0.0) or 0.0)
+        market_value = round(shares * current_price, 2)
+        avg_entry_price = float(card.get("avg_entry_price", 0.0) or 0.0)
+        if avg_entry_price <= 0 and shares > 0 and current_price > 0:
+            avg_entry_price = max(0.0, current_price - (pnl / shares))
+        position_rows.append(
+            {
+                "ticker": str(card.get("ticker") or "").strip().upper(),
+                "quantity": shares,
+                "avg_entry_price": avg_entry_price,
+                "current_price": current_price,
+                "market_value": market_value,
+                "unrealized_pnl": pnl,
+                "unrealized_pnl_pct": pnl_pct,
+            }
+        )
+    positions_count = len(position_rows)
     return {
         "cash": cash,
         "equity": equity,
         "buying_power": cash,
         "positions_count": positions_count,
-        "positions": [],
+        "positions": position_rows,
         "mode": "paper",
         "data_stale": False,
         "account_error": False,
@@ -834,6 +857,31 @@ def _load_top_modes() -> list[str]:
         mode = str(data.get("mode", "paper")).strip().lower() or "paper"
         modes.append(mode)
     return modes
+
+
+def _load_top_ai_selector_flags() -> tuple[bool | None, bool | None]:
+    """Read fallback flags from current TOP configs when available."""
+    paper_flags: list[bool] = []
+    live_flags: list[bool] = []
+    seen_any = False
+    for item in TICKERS:
+        cfg_path = PROJECT_DIR / "configs" / item["config"]
+        try:
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        ai_selector = data.get("ai_selector") if isinstance(data.get("ai_selector"), dict) else {}
+        if "allow_fallback_live_entries" in ai_selector:
+            seen_any = True
+            live_flags.append(bool(ai_selector.get("allow_fallback_live_entries")))
+        if "allow_fallback_paper_entries" in ai_selector:
+            seen_any = True
+            paper_flags.append(bool(ai_selector.get("allow_fallback_paper_entries")))
+    if not seen_any:
+        return None, None
+    live_allowed = all(live_flags) if live_flags else None
+    paper_allowed = all(paper_flags) if paper_flags else None
+    return live_allowed, paper_allowed
 
 
 def _resolve_dashboard_execution_mode(trade_audit: dict) -> str:
@@ -1390,12 +1438,12 @@ HTML = """<!DOCTYPE html>
             <div class="headline-stats">
                 <div class="headline-stat">
                     <span class="label">今日总收益</span>
-                    <span class="value {{ 'green' if today_total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(today_total_pnl) }}</span>
+                    <span class="value {{ 'red' if today_total_pnl >= 0 else 'green' }}">${{ "%+.2f"|format(today_total_pnl) }}</span>
                     <span class="sub">按 3 路策略今日盈亏汇总</span>
                 </div>
                 <div class="headline-stat">
                     <span class="label">账户浮盈亏</span>
-                    <span class="value {{ 'green' if total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(total_pnl) }}</span>
+                    <span class="value {{ 'red' if total_pnl >= 0 else 'green' }}">${{ "%+.2f"|format(total_pnl) }}</span>
                     <span class="sub">总成交 {{ total_trades }} 笔</span>
                 </div>
                 <div class="headline-stat">
@@ -1466,7 +1514,7 @@ HTML = """<!DOCTYPE html>
                         <span class="hint">可用资金与真实仓位</span>
                     </div>
                     <div class="account-strip">
-                            <div class="account-summary">
+                        <div class="account-summary">
                                 <div class="metric">
                                     <span class="metric-label">账户现金</span>
                                     <span class="metric-value">{% if account_summary and account_summary.cash is not none %}${{ "%.2f"|format(account_summary.cash) }}{% else %}暂无{% endif %}</span>
@@ -1486,12 +1534,12 @@ HTML = """<!DOCTYPE html>
                             </div>
                         <div>
                             <div class="panel-head" style="margin:0 0 8px 0;">
-                                <h2>真实仓位</h2>
-                                <span class="hint">显示真实账户全部持仓</span>
+                                <h2>{{ display_positions_title }}</h2>
+                                <span class="hint">{{ display_positions_hint }}</span>
                             </div>
-                            {% if live_account and live_account.positions %}
+                            {% if display_positions %}
                             <div class="position-list">
-                                {% for pos in live_account.positions %}
+                                {% for pos in display_positions %}
                                 <div class="position-item">
                                     <div class="position-cell">
                                         <span class="position-ticker">{{ pos.ticker }}</span>
@@ -1500,8 +1548,8 @@ HTML = """<!DOCTYPE html>
                                     <div class="position-cell"><span class="label">成本</span><span class="val">${{ "%.2f"|format(pos.avg_entry_price) }}</span></div>
                                     <div class="position-cell"><span class="label">现价</span><span class="val">${{ "%.2f"|format(pos.current_price) }}</span></div>
                                     <div class="position-cell"><span class="label">市值</span><span class="val">${{ "%.2f"|format(pos.market_value) }}</span></div>
-                                    <div class="position-cell"><span class="label">浮盈亏</span><span class="val {{ 'green' if pos.unrealized_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(pos.unrealized_pnl) }}</span></div>
-                                    <div class="position-cell"><span class="label">收益率</span><span class="val {{ 'green' if pos.unrealized_pnl_pct >= 0 else 'red' }}">{{ "%+.2f"|format(pos.unrealized_pnl_pct) }}%</span></div>
+                                    <div class="position-cell"><span class="label">浮盈亏</span><span class="val {{ 'red' if pos.unrealized_pnl >= 0 else 'green' }}">${{ "%+.2f"|format(pos.unrealized_pnl) }}</span></div>
+                                    <div class="position-cell"><span class="label">收益率</span><span class="val {{ 'red' if pos.unrealized_pnl_pct >= 0 else 'green' }}">{{ "%+.2f"|format(pos.unrealized_pnl_pct) }}%</span></div>
                                 </div>
                                 {% endfor %}
                             </div>
@@ -1835,7 +1883,7 @@ HTML = """<!DOCTYPE html>
             </div>
             <div class="stat-box">
                 <span class="stat-label">今日总盈亏</span>
-                <span class="stat-value {{ 'green' if trade_stats.total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(trade_stats.total_pnl) }}</span>
+                <span class="stat-value {{ 'red' if trade_stats.total_pnl >= 0 else 'green' }}">${{ "%+.2f"|format(trade_stats.total_pnl) }}</span>
             </div>
         </div>
         <div class="panel-head" style="margin:4px 0 2px">
@@ -1927,7 +1975,7 @@ HTML = """<!DOCTYPE html>
                     <div class="quote-item"><span class="label">持股</span><span class="val">{{ card.shares }}</span></div>
                     <div class="quote-item"><span class="label">持仓来源</span><span class="val">{{ card.hold_source }}</span></div>
                     <div class="quote-item"><span class="label">成交</span><span class="val">{{ card.trades }}</span></div>
-                    <div class="quote-item"><span class="label">盈亏</span><span class="val {{ 'green' if card.pnl >= 0 else 'red' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
+                    <div class="quote-item"><span class="label">盈亏</span><span class="val {{ 'red' if card.pnl >= 0 else 'green' }}">${{ "%+.2f"|format(card.pnl) }}</span></div>
                     <div class="quote-item"><span class="label">区间源</span><span class="val {{ 'muted' if not card.range_ready else '' }}">{{ card.range_source }}</span></div>
                     <div class="quote-item"><span class="label">AI区间</span><span class="val">{{ card.ai_suggested_range }}</span></div>
                 </div>
@@ -2181,11 +2229,22 @@ def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | No
 
 
 def _fallback_runtime_flags() -> tuple[bool, bool]:
+    top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags()
     try:
         runtime_config = load_runtime_config()
-        return bool(runtime_config.allow_fallback_live_entries), bool(runtime_config.allow_fallback_paper_entries)
+        live_allowed = (
+            bool(top_live_allowed)
+            if top_live_allowed is not None
+            else bool(runtime_config.allow_fallback_live_entries)
+        )
+        paper_allowed = (
+            bool(top_paper_allowed)
+            if top_paper_allowed is not None
+            else bool(runtime_config.allow_fallback_paper_entries)
+        )
+        return live_allowed, paper_allowed
     except Exception:
-        return False, False
+        return bool(top_live_allowed), bool(top_paper_allowed)
 
 
 def _api_status_payload() -> dict[str, object]:
@@ -2216,6 +2275,7 @@ def _api_status_payload() -> dict[str, object]:
     if not fallback_used:
         fallback_used = any(bool((item or {}).get("fallback_used")) for item in (ai_selection.get("top3") or []))
     live_guard_ok = not any(str(mode).strip().lower() == "live" for mode in top_modes) or bool((selection_sync or {}).get("ok"))
+    fallback_live_allowed, fallback_paper_allowed = _fallback_runtime_flags()
     return {
         "ok": True,
         "mode": execution_mode or "paper",
@@ -2235,8 +2295,8 @@ def _api_status_payload() -> dict[str, object]:
         "top_engines": top_engines,
         "risk": {
             "live_guard_ok": live_guard_ok,
-            "fallback_live_allowed": bool(runtime_config.allow_fallback_live_entries),
-            "fallback_paper_allowed": bool(runtime_config.allow_fallback_paper_entries),
+            "fallback_live_allowed": fallback_live_allowed,
+            "fallback_paper_allowed": fallback_paper_allowed,
         },
         "dashboard": {
             "chart_api_available": True,
@@ -2740,6 +2800,7 @@ def index():
     runtime_settings = load_runtime_settings()
     live_account = _fetch_live_account_summary()
     account_positions = _position_lookup(live_account)
+    use_live_account_positions = bool(live_account and live_account.get("mode") == "live")
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
@@ -2775,6 +2836,7 @@ def index():
             and float(trade_audit.get("broker_unresolved_oldest_seconds", 0.0) or 0.0) >= _UNRESOLVED_ALERT_SECONDS
         ),
     }
+    dashboard_execution_mode = _resolve_dashboard_execution_mode(trade_audit)
     dashboard_status_by_symbol: dict[str, dict | None] = {}
     for item in TICKERS:
         defaults = _load_config_defaults(item["config"])
@@ -2811,15 +2873,31 @@ def index():
             supp = d.get("support", 0)
             res = d.get("resistance", 0)
             price = d.get("price", 0)
+            entry_price = float(d.get("entry_price", 0.0) or 0.0)
+            position_shares = int(d.get("position_shares", 0) or 0)
+            unrealized_pnl = float(d.get("unrealized_pnl", 0.0) or 0.0)
+            unrealized_pnl_pct = float(d.get("unrealized_pnl_pct", 0.0) or 0.0)
+            if position_shares > 0 and float(price or 0.0) > 0.0 and entry_price > 0.0:
+                derived_pnl = round((float(price or 0.0) - entry_price) * position_shares, 6)
+                if unrealized_pnl == 0.0:
+                    unrealized_pnl = derived_pnl
+                if unrealized_pnl_pct == 0.0:
+                    unrealized_pnl_pct = round(((float(price or 0.0) - entry_price) / entry_price) * 100.0, 6)
             pos_pct = ((price - supp) / (res - supp) * 100) if res and supp and res != supp else 50
             pos_pct = max(0, min(100, pos_pct))
 
             sparkline = _build_sparkline([price], price)
             selected_ticker = str(defaults["ticker"]).strip().upper()
-            account_pos = account_positions.get(selected_ticker)
+            account_pos = account_positions.get(selected_ticker) if use_live_account_positions else None
             account_shares = int((account_pos or {}).get("quantity", 0) or 0)
             account_pnl = float((account_pos or {}).get("unrealized_pnl", 0.0) or 0.0)
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
+            if account_shares > 0 and float(price or 0.0) > 0.0:
+                account_entry_price = float((account_pos or {}).get("avg_entry_price", 0.0) or entry_price or 0.0)
+                if account_entry_price > 0.0 and account_pnl == 0.0:
+                    account_pnl = round((float(price or 0.0) - account_entry_price) * account_shares, 6)
+                if account_entry_price > 0.0 and account_pnl_pct == 0.0:
+                    account_pnl_pct = round(((float(price or 0.0) - account_entry_price) / account_entry_price) * 100.0, 6)
             hold_source = "真实账户" if account_pos else "引擎状态"
             ai_range = ai_ranges.get(selected_ticker, {})
             chart_snapshot = _chart_snapshot_for_ticker(selected_ticker, refresh=True)
@@ -2852,8 +2930,11 @@ def index():
                 "initial_capital": d.get("initial_capital", 0),
                 "cash": d.get("cash", 0),
                 "shares": account_shares if account_pos else int(d.get("position_shares", 0) or 0),
-                "pnl": account_pnl if account_pos else float(d.get("daily_pnl", 0) or 0.0),
-                "pnl_pct": account_pnl_pct if account_pos else 0.0,
+                "avg_entry_price": account_pos.get("avg_entry_price") if account_pos else entry_price,
+                "current_price_for_position": price,
+                "market_value": float((account_pos or {}).get("market_value", 0.0) or (position_shares * float(price or 0.0))),
+                "pnl": account_pnl if account_pos else unrealized_pnl,
+                "pnl_pct": account_pnl_pct if account_pos else unrealized_pnl_pct,
                 "hold_source": hold_source,
                 "reduce_only": defaults.get("reduce_only", False),
                 "equity": d.get("equity", 0),
@@ -2879,11 +2960,17 @@ def index():
         else:
             initial_capital = defaults["initial_capital"]
             selected_ticker = str(defaults["ticker"]).strip().upper()
-            account_pos = account_positions.get(selected_ticker)
+            account_pos = account_positions.get(selected_ticker) if use_live_account_positions else None
             account_shares = int((account_pos or {}).get("quantity", 0) or 0)
             account_pnl = float((account_pos or {}).get("unrealized_pnl", 0.0) or 0.0)
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
             account_price = float((account_pos or {}).get("current_price", 0.0) or 0.0)
+            account_entry_price = float((account_pos or {}).get("avg_entry_price", 0.0) or 0.0)
+            if account_shares > 0 and account_price > 0.0 and account_entry_price > 0.0:
+                if account_pnl == 0.0:
+                    account_pnl = round((account_price - account_entry_price) * account_shares, 6)
+                if account_pnl_pct == 0.0:
+                    account_pnl_pct = round(((account_price - account_entry_price) / account_entry_price) * 100.0, 6)
             ai_range = ai_ranges.get(selected_ticker, {})
             chart_snapshot = _chart_snapshot_for_ticker(selected_ticker, refresh=True)
             cards.append({
@@ -2908,6 +2995,9 @@ def index():
                 "ai_range_high": ai_range.get("range_high"),
                 "ai_suggested_range": ai_range.get("suggested_range") or "暂无",
                 "shares": account_shares,
+                "avg_entry_price": account_pos.get("avg_entry_price") if account_pos else account_entry_price,
+                "current_price_for_position": account_price,
+                "market_value": float((account_pos or {}).get("market_value", 0.0) or (account_shares * account_price)),
                 "initial_capital": initial_capital, "cash": initial_capital,
                 "pnl": account_pnl,
                 "pnl_pct": account_pnl_pct,
@@ -2924,14 +3014,20 @@ def index():
             total_equity += initial_capital
 
     paper_account_summary = _paper_account_summary_from_cards(cards)
-    if live_account and live_account.get("mode") == "live":
+    if dashboard_execution_mode == "live" and live_account and live_account.get("mode") == "live":
         account_summary = live_account
         selected_positions_count = _selected_stock_positions_count(live_account, selected_tickers)
+        display_positions = list(live_account.get("positions") or [])
+        display_positions_title = "真实仓位"
+        display_positions_hint = "显示真实账户全部持仓"
     else:
         account_summary = paper_account_summary
         selected_positions_count = int(paper_account_summary.get("positions_count", 0) or 0)
+        display_positions = list(paper_account_summary.get("positions") or [])
+        display_positions_title = "虚拟持仓"
+        display_positions_hint = "显示当前 paper 运行中的虚拟仓位"
 
-    if live_account and live_account.get("mode") == "live":
+    if dashboard_execution_mode == "live" and live_account and live_account.get("mode") == "live":
         total_pnl = sum(float((pos or {}).get("unrealized_pnl", 0.0) or 0.0) for pos in (live_account.get("positions") or []))
         total_capital = float(live_account.get("cash") or 0.0)
         total_equity = float(live_account.get("equity") or 0.0)
@@ -3019,6 +3115,9 @@ def index():
         live_account=live_account,
         account_summary=account_summary,
         selected_positions_count=selected_positions_count,
+        display_positions=display_positions,
+        display_positions_title=display_positions_title,
+        display_positions_hint=display_positions_hint,
         ai_selection=ai_selection,
         ai_selection_price_band=ai_selection_price_band,
         ai_runtime=ai_runtime,

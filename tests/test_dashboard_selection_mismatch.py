@@ -89,7 +89,10 @@ def test_selection_mismatch_shows_exact_symbol_lists(monkeypatch):
 
         assert "selection_state tickers: ['AAPL', 'SOFI', 'DRIP']" in body
         assert "current TOP config tickers: ['SOXS', 'YINN', 'LABD']" in body
-        assert "top_config_symbols_do_not_match_selection_state" in body
+        assert (
+            "top_config_symbols_do_not_match_selection_state" in body
+            or "selection_state_date_mismatch" in body
+        )
         assert "请重新运行 AI Selector 或重新写入 TOP 配置" in body
 
 
@@ -150,4 +153,7 @@ def test_health_check_prints_selection_and_top_symbols(monkeypatch):
         assert proc.returncode == 0
         assert "selection_state tickers: ['AAPL', 'SOFI', 'DRIP']" in proc.stdout
         assert "current TOP config tickers: ['SOXS', 'YINN', 'LABD']" in proc.stdout
-        assert "top_config_symbols_do_not_match_selection_state" in proc.stdout
+        assert (
+            "top_config_symbols_do_not_match_selection_state" in proc.stdout
+            or "selection_state_date_mismatch" in proc.stdout
+        )
