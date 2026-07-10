@@ -179,6 +179,19 @@ def test_fallback_used_paper_mode_blocks_when_disabled():
     )
 
 
+def test_detect_market_regime_ignores_missing_confidence():
+    engine = TradingEngine(AppConfig(ticker="SOXS", mode="paper"), ignore_trading_hours=True)
+    regime = engine._detect_market_regime(
+        [
+            {"ticker": "SOXS", "confidence": None},
+            {"ticker": "YINN"},
+            {"ticker": "DRIP", "confidence": 0.58},
+        ],
+        {"ticker": "SOXS", "confidence": None},
+    )
+    assert regime == "NORMAL"
+
+
 def test_fallback_used_paper_mode_allows_smaller_buy():
     engine = _engine(mode="paper", allow_paper=True, multiplier=0.25, size_per_trade=10)
     calls = []

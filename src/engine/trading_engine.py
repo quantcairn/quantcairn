@@ -1633,7 +1633,30 @@ class TradingEngine:
     def _detect_market_regime(self, top3: list[dict], signal_for_ticker: Optional[dict]) -> str:
         if signal_for_ticker is None:
             return "NO_SELECTION"
-        avg_confidence = sum(float(item.get("confidence") or 0.0) for item in top3) / max(1, len(top3))
+
+        confidences: list[float] = []
+        missing_confidence = 0
+        for item in top3:
+            raw_confidence = item.get("confidence") if isinstance(item, dict) else None
+            try:
+                confidence = float(raw_confidence) if raw_confidence is not None else None
+            except (TypeError, ValueError):
+                confidence = None
+            if confidence is None:
+                missing_confidence += 1
+                continue
+            confidences.append(confidence)
+
+        if confidences:
+            avg_confidence = sum(confidences) / len(confidences)
+        else:
+            avg_confidence = 0.5
+
+        if missing_confidence and len(confidences) < len(top3):
+            # 缺失 confidence 代表该条结果没有提供置信度，不应按 0 处理。
+            # 使用中性阈值，避免把整组 selection 误判成 EVENT。
+            avg_confidence = max(avg_confidence, 0.5)
+
         if avg_confidence < 0.30:
             return "EVENT"
         return "NORMAL"
@@ -1689,7 +1712,7 @@ class TradingEngine:
             if self.mode == "live":
                 return "fallback_used_live_blocked"
             if self.mode == "paper" and not allow_paper:
-                return "fallback_used_blocked"
+                return "AI 选股已降级到回退数据，fallback_used_blocked"
             return "fallback_used_paper_allowed_with_reduced_size"
         if self._ai_selection.regime == "EVENT":
             return "AI 市场状态为 EVENT，禁止开新仓"
