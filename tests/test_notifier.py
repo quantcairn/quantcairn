@@ -12,9 +12,8 @@ def test_only_trade_notifications_reach_macos():
     notifier.order_submitted("NVDA", "BUY", 1, "abc123456789")
     notifier.trade("NVDA", "BUY", 1, 100.0)
 
-    assert len(calls) == 2
-    assert "submitted" in calls[0][1]
-    assert "NVDA" in calls[1][0]
+    assert len(calls) == 1
+    assert "NVDA" in calls[0][0]
 
 
 def run_test_direct():

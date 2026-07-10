@@ -277,6 +277,22 @@ def _load_notification_config() -> dict:
     return notifications
 
 
+def _load_ai_selector_notification_config() -> dict:
+    notifications = _load_notification_config()
+    ai_section = notifications.get("ai_selector")
+    if isinstance(ai_section, dict):
+        merged = dict(notifications)
+        merged.update(
+            {
+                "ai_selector_webhook_url": ai_section.get("webhook_url", merged.get("ai_selector_webhook_url")),
+                "ai_selector_telegram_bot_token": ai_section.get("telegram_bot_token", merged.get("ai_selector_telegram_bot_token")),
+                "ai_selector_telegram_chat_id": ai_section.get("telegram_chat_id", merged.get("ai_selector_telegram_chat_id")),
+            }
+        )
+        return merged
+    return notifications
+
+
 def _truncate_reason(value: object, limit: int = 72) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -468,19 +484,28 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
 
 
 def notify_ai_selection_result(selection_report: dict, top_configs: list | None = None) -> None:
-    notification_cfg = _load_notification_config()
-    webhook_url = os.environ.get("AI_SELECTOR_WEBHOOK") or notification_cfg.get("webhook_url")
+    notification_cfg = _load_ai_selector_notification_config()
+    webhook_url = (
+        os.environ.get("SOXS_AI_SELECTOR_WEBHOOK")
+        or os.environ.get("AI_SELECTOR_WEBHOOK")
+        or notification_cfg.get("ai_selector_webhook_url")
+        or notification_cfg.get("webhook_url")
+    )
     notifier = Notifier(
         console=False,
         macos_notification=False,
         webhook_url=webhook_url,
         trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
         telegram_bot_token=(
-            os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
+            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN")
+            or notification_cfg.get("ai_selector_telegram_bot_token", "")
+            or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
             or notification_cfg.get("telegram_bot_token", "")
         ),
         telegram_chat_id=(
-            os.environ.get("SOXS_TELEGRAM_CHAT_ID")
+            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID")
+            or notification_cfg.get("ai_selector_telegram_chat_id", "")
+            or os.environ.get("SOXS_TELEGRAM_CHAT_ID")
             or notification_cfg.get("telegram_chat_id", "")
         ),
     )

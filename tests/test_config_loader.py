@@ -85,11 +85,37 @@ def test_ai_selector_entry_proximity_defaults_and_parses_yaml():
     assert defaults.ai_selector.entry_proximity_weight == 0.0
 
 
+def test_notifications_split_trade_and_ai_selector_channels():
+    config = _parse_config(
+        {
+            "ticker": "SOFI",
+            "mode": "paper",
+            "range": {"mode": "auto"},
+            "notifications": {
+                "telegram_bot_token": "trade-token",
+                "telegram_chat_id": "trade-chat",
+                "ai_selector": {
+                    "telegram_bot_token": "ai-token",
+                    "telegram_chat_id": "ai-chat",
+                    "webhook_url": "https://example.com/ai",
+                },
+            },
+        }
+    )
+
+    assert config.notifications.telegram_bot_token == "trade-token"
+    assert config.notifications.telegram_chat_id == "trade-chat"
+    assert config.notifications.ai_selector_telegram_bot_token == "ai-token"
+    assert config.notifications.ai_selector_telegram_chat_id == "ai-chat"
+    assert config.notifications.ai_selector_webhook_url == "https://example.com/ai"
+
+
 def run_test_direct():
     test_position_size_defaults_to_auto_when_omitted()
     test_reduce_only_defaults_false_and_parses_yaml()
     test_ai_selector_fallback_policy_defaults_and_parses_yaml()
     test_ai_selector_entry_proximity_defaults_and_parses_yaml()
+    test_notifications_split_trade_and_ai_selector_channels()
 
 
 if __name__ == "__main__":

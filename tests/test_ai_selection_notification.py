@@ -259,3 +259,37 @@ def test_notify_ai_selection_result_send_failure_does_not_raise(monkeypatch):
     monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
 
     alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+
+def test_ai_selection_notification_prefers_ai_selector_bot(monkeypatch):
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {
+            "webhook_url": "https://example.com/trade-hook",
+            "telegram_bot_token": "trade-bot",
+            "telegram_chat_id": "trade-chat",
+            "ai_selector_webhook_url": "https://example.com/ai-hook",
+            "ai_selector_telegram_bot_token": "ai-bot",
+            "ai_selector_telegram_chat_id": "ai-chat",
+        },
+    )
+
+    captured = {}
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self._telegram_enabled = True
+            self.webhook_url = kwargs.get("webhook_url")
+
+        def _send(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    assert captured["telegram_bot_token"] == "ai-bot"
+    assert captured["telegram_chat_id"] == "ai-chat"
+    assert captured["webhook_url"] == "https://example.com/ai-hook"

@@ -79,6 +79,9 @@ class NotificationConfig:
     trade_summary_interval: int = 5
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    ai_selector_webhook_url: Optional[str] = None
+    ai_selector_telegram_bot_token: str = ""
+    ai_selector_telegram_chat_id: str = ""
 
 
 @dataclass
@@ -253,6 +256,7 @@ def _parse_config(raw: dict) -> AppConfig:
 
     # Notifications
     n = raw.get("notifications", {})
+    ai_n = n.get("ai_selector", {}) if isinstance(n.get("ai_selector", {}), dict) else {}
     # Notifications: env overrides config file values
     config.notifications = NotificationConfig(
         console=n.get("console", True),
@@ -266,6 +270,21 @@ def _parse_config(raw: dict) -> AppConfig:
         telegram_chat_id=(
             os.environ.get("SOXS_TELEGRAM_CHAT_ID")
             or n.get("telegram_chat_id", "")
+        ),
+        ai_selector_webhook_url=(
+            os.environ.get("SOXS_AI_SELECTOR_WEBHOOK")
+            or ai_n.get("webhook_url")
+            or n.get("ai_selector_webhook_url")
+        ),
+        ai_selector_telegram_bot_token=(
+            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN")
+            or ai_n.get("telegram_bot_token", "")
+            or n.get("ai_selector_telegram_bot_token", "")
+        ),
+        ai_selector_telegram_chat_id=(
+            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID")
+            or ai_n.get("telegram_chat_id", "")
+            or n.get("ai_selector_telegram_chat_id", "")
         ),
     )
 
