@@ -217,6 +217,109 @@ def _patch_common(module, tmpdir: Path):
     }.get(str(ticker).upper())
 
 
+def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_metadata():
+    module = _load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+        for folder in ("configs", "reports", "state", "logs", "runtime"):
+            (tmpdir / folder).mkdir()
+        (tmpdir / "configs" / "TOP2.yaml").write_text("ticker: OLD2\nmode: paper\n", encoding="utf-8")
+        (tmpdir / "configs" / "TOP3.yaml").write_text("ticker: OLD3\nmode: paper\n", encoding="utf-8")
+
+        from src.ai_selector import config_writer
+
+        original_base = config_writer.BASE
+        original_composition_filter = module._apply_composition_filter
+        written_reports: list[dict] = []
+
+        def _row(ticker: str, score: float) -> dict:
+            price = {"SOXS": 4.5, "YINN": 25.0, "DRIP": 5.0}[ticker]
+            return {
+                "ticker": ticker,
+                "score": score,
+                "final_score": score,
+                "ai_score": score,
+                "range_score": score,
+                "range_low": price * 0.9,
+                "range_high": price * 1.1,
+                "current_price": price,
+                "risk": {"stop_loss_pct": 1.5},
+                "size": 10,
+                "confidence": 0.7,
+                "reason": "stub",
+                "source": "stub",
+            }
+
+        result = {
+            "top10": [_row("SOXS", 90.0), _row("YINN", 89.0), _row("DRIP", 88.0)],
+            "top5": [_row("SOXS", 90.0), _row("YINN", 89.0), _row("DRIP", 88.0)],
+            "top3": [],
+            "report": [],
+            "settings": {"selection_stage": "fast_preliminary"},
+            "quality_filter_report": {},
+        }
+
+        try:
+            config_writer.BASE = str(tmpdir)
+            _patch_common(module, tmpdir)
+            module._apply_composition_filter = original_composition_filter
+            module._live_candidate_price = lambda ticker: {"SOXS": 4.5, "YINN": 25.0, "DRIP": 5.0}.get(str(ticker).upper())
+            module._run_integrated_ai_selector = lambda: {
+                "enabled": True,
+                "top3": [],
+                "top10": [],
+                "preferred_symbols": [],
+                "signal_map": {},
+                "providers_used": [],
+                "providers_disabled": ["openbb", "fmp"],
+                "fmp_enabled": False,
+                "fallback_used": True,
+            }
+            module.AIStrategySelector = type(
+                "FakeSelector",
+                (),
+                {
+                    "selection_size": 3,
+                    "__init__": lambda self, *args, **kwargs: None,
+                    "run_selection": lambda self, write_configs=True, symbols_override=None: result,
+                    "_format_report_rows": lambda self, selected: [
+                        {"rank": idx + 1, "ticker": row["ticker"], "score": row["score"]}
+                        for idx, row in enumerate(selected)
+                    ],
+                },
+            )
+            module._write_reports = lambda summary: (
+                written_reports.append(dict(summary)) or True
+            ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
+            os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
+            os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+            try:
+                module.main()
+            finally:
+                os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
+                os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+        finally:
+            config_writer.BASE = original_base
+
+        assert written_reports
+        summary = written_reports[0]
+        assert summary["fallback_used"] is True
+        assert summary["settings"]["fallback_used"] is True
+        assert summary["selection_count"] == 1
+        assert summary["top_n_filled"] is False
+        assert any(
+            item.get("reason") == "leveraged_etf_limit_exceeded"
+            for item in summary["composition_filter"]["rejected"]
+        )
+        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
+        assert top1["ticker"] == "SOXS"
+        assert top1["selection"]["leveraged_etf"] is True
+        assert top1["selection"]["trade_filter_passed"] is True
+        assert top1["selection"]["reject_reason"] == ""
+        assert not (tmpdir / "configs" / "TOP2.yaml").exists()
+        assert not (tmpdir / "configs" / "TOP3.yaml").exists()
+
+
 def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
     module = _load_module()
     with tempfile.TemporaryDirectory() as tmp:

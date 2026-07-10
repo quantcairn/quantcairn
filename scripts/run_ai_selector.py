@@ -23,7 +23,11 @@ print(f"Using Python: {sys.executable}")
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.ai_selector.integration import AISelector
-from src.ai_selector.composition_filter import CompositionFilter
+from src.ai_selector.composition_filter import (
+    CompositionFilter,
+    is_inverse_etf,
+    is_leveraged_or_inverse_etf,
+)
 from src.ai_selector.selector import AIStrategySelector
 from src.ai_selector.range_score import RangeFitnessScorer
 from src.ai_selector.trade_filter import TradeEligibilityFilter
@@ -296,6 +300,29 @@ def _apply_composition_filter(rows: list[dict], top_n: int = TOP_COUNT) -> tuple
     accepted = list(result.get("accepted") or [])
     accepted.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
     return accepted, dict(result)
+
+
+def _normalize_selection_metadata(item: dict) -> dict:
+    normalized = dict(item or {})
+    ticker = _normalize_ticker(normalized.get("ticker"))
+    normalized["ticker"] = ticker
+    normalized["leveraged_etf"] = bool(normalized.get("leveraged_etf")) or is_leveraged_or_inverse_etf(ticker)
+    normalized["inverse_etf"] = bool(normalized.get("inverse_etf")) or is_inverse_etf(ticker)
+
+    reject_reason = str(normalized.get("reject_reason") or "").strip()
+    fallback_used = bool(normalized.get("fallback_used", False))
+    if fallback_used and not reject_reason and not bool(normalized.get("trade_filter_passed", True)):
+        reject_reason = str(normalized.get("fallback_reason") or "fallback_pool")
+    if "trade_filter_passed" not in normalized:
+        normalized["trade_filter_passed"] = True
+    elif normalized.get("trade_filter_passed") is False and not reject_reason and not fallback_used:
+        # A final TOP item without a rejection reason is an accepted candidate.
+        normalized["trade_filter_passed"] = True
+    normalized["reject_reason"] = reject_reason
+    normalized["fallback_used"] = fallback_used
+    normalized.setdefault("composition_filter_passed", True)
+    normalized.setdefault("composition_reject_reason", "")
+    return normalized
 
 
 def _build_conservative_fallback_candidates(existing_symbols: set[str] | None = None) -> list[dict]:
@@ -792,6 +819,7 @@ def main():
         selected = out.get('top5') or out.get('top3') or []
 
     selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
+    selected = [_normalize_selection_metadata(item) for item in selected]
     selected = _apply_range_scores(selected)
     price_band_rejected_rows: list[dict] = []
     report_top10 = _apply_range_scores(_build_report_top10(
@@ -820,6 +848,7 @@ def main():
     selected, initial_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
     price_band_rejected_rows.extend(initial_price_band_rejected)
     selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
+    selected = [_normalize_selection_metadata(item) for item in selected]
 
     if selection_stage != "fast_preliminary":
         selected, trade_filter_report = _apply_trade_filter(selected)
@@ -888,7 +917,7 @@ def main():
                     item["composition_filter_passed"] = bool(item.get("composition_filter_passed", True))
                     item["composition_reject_reason"] = str(item.get("composition_reject_reason") or "")
                     item["final_rank"] = len(selected) + 1
-                    selected.append(item)
+                    selected.append(_normalize_selection_metadata(item))
                     existing_tickers.add(ticker)
                 selected.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
                 for idx, item in enumerate(selected, start=1):
@@ -903,9 +932,15 @@ def main():
                 composition_filter_report.setdefault("warnings", [])
                 composition_filter_report["warnings"].append(f"top_n_not_filled:{len(selected)}/{TOP_COUNT}")
 
+    selected, final_composition_report = _apply_composition_filter(selected, top_n=TOP_COUNT)
+    composition_filter_report.setdefault("rejected", [])
+    composition_filter_report.setdefault("warnings", [])
+    composition_filter_report["rejected"].extend(list(final_composition_report.get("rejected") or []))
+    composition_filter_report["warnings"].extend(list(final_composition_report.get("warnings") or []))
+
     selected, final_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
     price_band_rejected_rows.extend(final_price_band_rejected)
-    selected = [_normalize_entry_report_fields(item) for item in selected]
+    selected = [_normalize_entry_report_fields(_normalize_selection_metadata(item)) for item in selected]
     report_top10 = [_normalize_entry_report_fields(item) for item in report_top10]
     preserved_positions = [
         str(item.get("ticker") or "").upper()
@@ -954,10 +989,8 @@ def main():
         for item in selected:
             item["selection_date"] = _selection_date()
             item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
-            item["trade_filter_passed"] = bool(item.get("trade_filter_passed", False))
-            item["reject_reason"] = str(item.get("reject_reason") or "")
-            item["fallback_used"] = bool(item.get("fallback_used", False)) or bool(trade_filter_report.get("fallback_used", False))
-            item["leveraged_etf"] = bool(item.get("leveraged_etf", False))
+            item.update(_normalize_selection_metadata(item))
+            item["fallback_used"] = bool(item.get("fallback_used", False))
             item["composition_filter_passed"] = bool(item.get("composition_filter_passed", True))
             item["composition_reject_reason"] = str(item.get("composition_reject_reason") or "")
             item["final_rank"] = int(item.get("final_rank") or 0)
@@ -985,6 +1018,14 @@ def main():
         print(f"{i}. {t['ticker']} — {t['score']}")
 
     providers_used, providers_disabled, fmp_enabled = _provider_metadata(out, live_positions, integrated_ai)
+    report_fallback_used = bool(integrated_ai.get("fallback_used")) or bool(fallback_pool_used) or any(
+        bool(item.get("fallback_history_incomplete"))
+        or str(item.get("selection_penalty_reason") or "").startswith("quality_filter_backfill")
+        or bool(item.get("fallback_used"))
+        for item in selected
+    ) or bool(trade_filter_report.get("fallback_used", False))
+    out["settings"]["fallback_used"] = report_fallback_used
+
     summary = {
         'timestamp': timestamp,
         'generated_at': timestamp,
@@ -1019,11 +1060,7 @@ def main():
             }
             for item in protected_positions
         ],
-        'fallback_used': bool(integrated_ai.get("fallback_used")) or bool(fallback_pool_used) or any(
-            bool(item.get("fallback_history_incomplete"))
-            or str(item.get("selection_penalty_reason") or "").startswith("quality_filter_backfill")
-            for item in selected
-        ) or bool(trade_filter_report.get("fallback_used", False)),
+        'fallback_used': report_fallback_used,
         'report': out.get('report', []),
         'settings': out.get('settings', {}),
         'quality_filter_report': out.get('quality_filter_report', {}),

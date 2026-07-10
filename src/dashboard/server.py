@@ -265,6 +265,9 @@ def get_dashboard_data() -> dict:
         )
 
         return {
+            "ok": True,
+            "ticker": _engine.ticker,
+            "mode": _engine.mode,
             "price": _nz(price, 0.0),
             "change": _nz(change, 0.0),
             "bid": _nz(bid, 0.0),
@@ -313,6 +316,9 @@ def get_dashboard_data() -> dict:
 
 def _empty_data() -> dict:
     return {
+        "ok": False,
+        "ticker": None,
+        "mode": None,
         "price": 0, "change": 0, "bid": 0, "ask": 0,
         "high_1m": 0, "low_1m": 0, "volume": 0,
         "support": 0, "resistance": 0, "spread_dollars": 0, "spread_pct": 0,

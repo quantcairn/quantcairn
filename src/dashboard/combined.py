@@ -3217,7 +3217,13 @@ def start_combined(port=8090):
     """Start combined dashboard as a foreground Flask server."""
     import socket
     from werkzeug.serving import make_server
-    daily_report_module.ensure_daily_report_scheduler()
+    if has_longbridge_runtime_credentials():
+        daily_report_module.ensure_daily_report_scheduler()
+    else:
+        print(
+            "Daily report scheduler disabled: missing LongBridge runtime credentials",
+            flush=True,
+        )
     allowed, metadata = _ensure_single_instance(port)
     print(
         "Combined dashboard startup:",

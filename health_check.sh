@@ -131,9 +131,10 @@ check_api() {
 
 check_combined() {
     local body
-    body=$(curl -fsS --max-time 5 "http://127.0.0.1:8090/" 2>/dev/null)
-    if [[ "$body" == *"AI 区间交易总览"* ]] || [[ "$body" == *"真实账户"* ]]; then
-        echo "OK   combined dashboard responding"
+    body=$(curl -fsS --max-time 5 "http://127.0.0.1:8090/api/status" 2>/dev/null)
+    if [ -n "$body" ]; then
+        "$PYTHON_BIN" -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok') is True; print('OK   combined dashboard responding: mode=%s synced=%s' % (d.get('mode'), (d.get('selection') or {}).get('synced')))" <<< "$body" 2>/dev/null \
+            || echo "WARN combined dashboard /api/status returned invalid status"
     else
         echo "WARN combined dashboard not responding correctly"
     fi
