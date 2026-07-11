@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 from enum import Enum
 from threading import Lock
+from urllib.parse import urlparse
 
 import longbridge.openapi as lb
 
@@ -192,13 +193,19 @@ def _global_reduce_only_enabled() -> bool:
 
 
 class LongBridgeBroker(BrokerBase):
-    """Long Bridge Securities live broker with sandbox support and audits."""
+    """Long Bridge broker with explicit production and sandbox separation.
+
+    Sandbox connections may read broker data and submit only to explicitly
+    configured non-production endpoints. Production Longbridge endpoints are
+    rejected in sandbox mode before any SDK order call is made.
+    """
 
     def __init__(
         self,
         app_key: str = "",
         app_secret: str = "",
         access_token: str = "",
+        account_type: str = "",
         region: str = "cn",
         environment: str = "prod",
         http_url: str | None = None,
@@ -206,6 +213,7 @@ class LongBridgeBroker(BrokerBase):
         trade_ws_url: str | None = None,
         log_path: str | None = None,
         audit_dir: str | None = None,
+        allow_live_order: bool = False,
     ):
         self._app_key = (
             get_runtime_env("LONGBRIDGE_APP_KEY")
@@ -218,8 +226,10 @@ class LongBridgeBroker(BrokerBase):
             or app_secret
         )
         self._access_token = get_runtime_env("LONGBRIDGE_ACCESS_TOKEN", access_token)
+        self._account_type = get_runtime_env("LONGBRIDGE_ACCOUNT_TYPE", account_type).strip().lower()
         self._region = get_runtime_env("LONGBRIDGE_REGION", region)
         self._environment = get_runtime_env("LONGBRIDGE_ENV", environment).strip().lower()
+        self._allow_live_order = bool(allow_live_order)
 
         self._http_url = get_runtime_env("LONGBRIDGE_HTTP_URL", http_url or "") or None
         self._quote_ws_url = get_runtime_env("LONGBRIDGE_QUOTE_WS_URL", quote_ws_url or "") or None
@@ -254,6 +264,9 @@ class LongBridgeBroker(BrokerBase):
         self._last_connect_error = ""
         self._last_positions_error = ""
         self._last_account_error = ""
+        self._sandbox_first_run_confirmed = False
+        self._sandbox_first_run_summary: dict[str, object] = {}
+        self._sandbox_bootstrap_ticker = ""
         self._account_cache_fetched_at = 0.0
         self._positions_cache_fetched_at = 0.0
         self._active_orders_cache: dict[str, list[Order]] = {}
@@ -282,6 +295,7 @@ class LongBridgeBroker(BrokerBase):
         self._shared_snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._shared_positions_path = self._shared_snapshot_dir / "longbridge_positions.json"
         self._shared_account_path = self._shared_snapshot_dir / "longbridge_account.json"
+        self._sandbox_bootstrap_path = self._shared_snapshot_dir / "longbridge_sandbox_bootstrap.json"
         active_ttl_env = os.environ.get("LONGBRIDGE_ACTIVE_ORDERS_CACHE_TTL_SECONDS")
         active_ttl_seconds = float(active_ttl_env) if active_ttl_env else 20.0
         self._active_orders_cache_ttl_seconds = max(5.0, min(active_ttl_seconds, 300.0))
@@ -432,6 +446,62 @@ class LongBridgeBroker(BrokerBase):
     def _audit_path(self) -> Path:
         return self._audit_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
 
+    def _sandbox_bootstrap_fingerprint(self) -> dict[str, str]:
+        return {
+            "environment": self._environment,
+            "account_type": self._account_type,
+            "region": self._region,
+            "http_url": str(self._http_url or ""),
+            "quote_ws_url": str(self._quote_ws_url or ""),
+            "trade_ws_url": str(self._trade_ws_url or ""),
+        }
+
+    def _load_sandbox_bootstrap_state(self) -> dict | None:
+        path = self._sandbox_bootstrap_path
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if not bool(payload.get("confirmed", False)):
+            return None
+        fingerprint = payload.get("fingerprint")
+        if not isinstance(fingerprint, dict):
+            return None
+        if fingerprint != self._sandbox_bootstrap_fingerprint():
+            return None
+        return payload
+
+    def _write_sandbox_bootstrap_state(self, payload: dict) -> None:
+        try:
+            record = {
+                "confirmed": bool(payload.get("confirmed", False)),
+                "confirmed_at": payload.get("confirmed_at") or datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "ticker": str(payload.get("ticker") or self._sandbox_bootstrap_ticker or ""),
+                "fingerprint": self._sandbox_bootstrap_fingerprint(),
+                "summary": _jsonable(payload.get("summary") or {}),
+            }
+            temp_path = self._sandbox_bootstrap_path.with_suffix(
+                self._sandbox_bootstrap_path.suffix + f".tmp.{os.getpid()}.{random.randint(10000, 99999)}"
+            )
+            temp_path.write_text(json.dumps(record, ensure_ascii=False, default=str), encoding="utf-8")
+            temp_path.replace(self._sandbox_bootstrap_path)
+        except Exception as exc:
+            logger.warning("Sandbox bootstrap state write skipped: %s", exc)
+
+    def sandbox_first_run_confirmed(self) -> bool:
+        return bool(self._sandbox_first_run_confirmed)
+
+    def sandbox_first_run_summary(self) -> dict[str, object]:
+        return dict(self._sandbox_first_run_summary or {})
+
+    def get_orders(self, ticker: str = "") -> Optional[list[Order]]:
+        """Compatibility alias for the sandbox bootstrap flow."""
+        return self.get_active_orders(ticker or self._sandbox_bootstrap_ticker)
+
     def _write_audit(self, action: str, request: dict, response: dict, *, ok: bool, error: str | None = None) -> None:
         try:
             record = {
@@ -464,6 +534,39 @@ class LongBridgeBroker(BrokerBase):
             log_path=self._sdk_log_path,
         )
 
+    def _is_sandbox_mode(self) -> bool:
+        return self._environment == "sandbox"
+
+    def _sandbox_safety_issues(self) -> list[str]:
+        """Return reasons sandbox startup/order flow should be blocked."""
+        if not self._is_sandbox_mode():
+            return []
+        issues: list[str] = []
+        if self._account_type not in {"paper", "demo"}:
+            issues.append("sandbox mode requires paper/demo account_type")
+        if self._allow_live_order:
+            issues.append("sandbox mode requires allow_live_order=false")
+        endpoint_defaults = {
+            "http_url": DEFAULT_PROD_HTTP_URL,
+            "quote_ws_url": DEFAULT_PROD_QUOTE_WS_URL,
+            "trade_ws_url": DEFAULT_PROD_TRADE_WS_URL,
+        }
+        for name, expected in endpoint_defaults.items():
+            value = getattr(self, f"_{name}")
+            if not value:
+                issues.append(f"sandbox mode requires {name}")
+                continue
+            parsed = urlparse(value)
+            if parsed.scheme not in {"http", "https", "ws", "wss"}:
+                issues.append(f"sandbox {name} has invalid scheme: {value}")
+                continue
+            if str(value).strip().rstrip("/") != expected:
+                issues.append(f"sandbox {name} must use the official Longbridge endpoint: {expected}")
+        return issues
+
+    def _sandbox_endpoints_are_safe(self) -> bool:
+        return not self._sandbox_safety_issues()
+
     def connect(self) -> bool:
         if not self._app_key or not self._app_secret or not self._access_token:
             logger.error(
@@ -473,11 +576,61 @@ class LongBridgeBroker(BrokerBase):
             return False
 
         if self._environment == "sandbox" and not (self._http_url and self._quote_ws_url and self._trade_ws_url):
-            logger.warning(
+            error_msg = (
                 "Long Bridge sandbox selected but endpoint URLs are incomplete. "
-                "Set LONGBRIDGE_SANDBOX_HTTP_URL / LONGBRIDGE_SANDBOX_QUOTE_WS_URL / "
-                "LONGBRIDGE_SANDBOX_TRADE_WS_URL, or provide direct URL overrides."
+                "Set the official Longbridge http_url, quote_ws_url and trade_ws_url."
             )
+            logger.error(error_msg)
+            self._last_connect_error = error_msg
+            self._write_audit(
+                "connect",
+                {
+                    "environment": self._environment,
+                    "region": self._region,
+                    "http_url": self._http_url,
+                    "quote_ws_url": self._quote_ws_url,
+                    "trade_ws_url": self._trade_ws_url,
+                },
+                {"connected": False, "reason": "sandbox endpoint URLs incomplete"},
+                ok=False,
+                error=error_msg,
+            )
+            return False
+        if self._environment == "sandbox":
+            sandbox_issues = self._sandbox_safety_issues()
+            if sandbox_issues:
+                error_msg = "; ".join(sandbox_issues)
+                logger.error(error_msg)
+                self._last_connect_error = error_msg
+                self._write_audit(
+                    "connect",
+                    {
+                        "environment": self._environment,
+                        "account_type": self._account_type,
+                        "region": self._region,
+                        "http_url": self._http_url,
+                        "quote_ws_url": self._quote_ws_url,
+                        "trade_ws_url": self._trade_ws_url,
+                    },
+                    {"connected": False, "reason": error_msg},
+                    ok=False,
+                    error=error_msg,
+                )
+                return False
+        if self._is_sandbox_mode():
+            bootstrap_state = self._load_sandbox_bootstrap_state()
+            if bootstrap_state is not None:
+                self._sandbox_first_run_confirmed = True
+                self._sandbox_first_run_summary = dict(bootstrap_state.get("summary") or {})
+                self._sandbox_bootstrap_ticker = str(bootstrap_state.get("ticker") or self._sandbox_bootstrap_ticker or "")
+                logger.info("Sandbox first-run bootstrap already confirmed; BUY flow allowed after read checks")
+            else:
+                self._sandbox_first_run_confirmed = False
+                self._sandbox_first_run_summary = {
+                    "confirmed": False,
+                    "reason": "sandbox first-run bootstrap pending",
+                }
+                logger.info("Sandbox first-run bootstrap pending; automatic trading stays read-only until confirmed")
 
         try:
             self._sdk_config = self._build_config()
@@ -494,6 +647,7 @@ class LongBridgeBroker(BrokerBase):
                 "connect",
                 {
                     "environment": self._environment,
+                    "account_type": self._account_type,
                     "region": self._region,
                     "http_url": self._http_url,
                     "quote_ws_url": self._quote_ws_url,
@@ -510,6 +664,7 @@ class LongBridgeBroker(BrokerBase):
                 "connect",
                 {
                     "environment": self._environment,
+                    "account_type": self._account_type,
                     "region": self._region,
                     "http_url": self._http_url,
                     "quote_ws_url": self._quote_ws_url,
@@ -520,6 +675,7 @@ class LongBridgeBroker(BrokerBase):
                 error=str(e),
             )
             return False
+
         except Exception as e:
             self._last_connect_error = str(e)
             logger.error(f"Long Bridge connection failed: {e}")
@@ -537,6 +693,80 @@ class LongBridgeBroker(BrokerBase):
                 error=str(e),
             )
             return False
+
+    def confirm_sandbox_first_run(self, ticker: str = "") -> dict[str, object]:
+        """Run the sandbox read-only bootstrap and persist the confirmation."""
+        summary: dict[str, object] = {
+            "confirmed": False,
+            "reason": "",
+            "ticker": _normalize_base_symbol(ticker or self._sandbox_bootstrap_ticker),
+            "account_ok": False,
+            "positions_ok": False,
+            "orders_ok": False,
+            "positions_count": 0,
+            "orders_count": 0,
+        }
+        if not self._is_sandbox_mode():
+            summary["reason"] = "sandbox bootstrap is only available in sandbox mode"
+            self._sandbox_first_run_summary = summary
+            return summary
+        if not self.is_connected():
+            summary["reason"] = "broker not connected"
+            self._sandbox_first_run_summary = summary
+            return summary
+        fingerprint_match = self._load_sandbox_bootstrap_state()
+        if fingerprint_match is not None:
+            self._sandbox_first_run_confirmed = True
+            cached_summary = dict(fingerprint_match.get("summary") or {})
+            cached_summary.setdefault("confirmed", True)
+            cached_summary.setdefault("reason", "sandbox bootstrap already confirmed")
+            self._sandbox_first_run_summary = cached_summary
+            if not self._sandbox_bootstrap_ticker:
+                self._sandbox_bootstrap_ticker = str(fingerprint_match.get("ticker") or summary["ticker"] or "")
+            return dict(self._sandbox_first_run_summary)
+        try:
+            self._sandbox_bootstrap_ticker = summary["ticker"] if isinstance(summary["ticker"], str) else ""
+            positions = self.get_positions() or []
+            account = self.get_account()
+            orders = self.get_orders(self._sandbox_bootstrap_ticker) if self._sandbox_bootstrap_ticker else []
+            summary["positions_count"] = len(positions)
+            summary["orders_count"] = len(orders or [])
+            summary["positions_ok"] = bool(self.is_positions_snapshot_reliable())
+            summary["account_ok"] = account is not None and self.is_account_snapshot_reliable()
+            summary["orders_ok"] = orders is not None
+            summary["confirmed"] = bool(summary["account_ok"] and summary["positions_ok"] and summary["orders_ok"])
+            if summary["confirmed"]:
+                summary["reason"] = "sandbox bootstrap confirmed"
+                self._sandbox_first_run_confirmed = True
+                self._sandbox_first_run_summary = dict(summary)
+                self._write_sandbox_bootstrap_state(
+                    {
+                        "confirmed": True,
+                        "ticker": self._sandbox_bootstrap_ticker,
+                        "summary": self._sandbox_first_run_summary,
+                    }
+                )
+                self._write_audit(
+                    "sandbox_first_run_confirmed",
+                    {"ticker": self._sandbox_bootstrap_ticker},
+                    _jsonable(self._sandbox_first_run_summary),
+                    ok=True,
+                )
+                return dict(self._sandbox_first_run_summary)
+            summary["reason"] = "sandbox bootstrap read-only checks incomplete"
+        except Exception as exc:
+            summary["reason"] = str(exc)
+            logger.warning("Sandbox first-run confirmation failed: %s", exc)
+        self._sandbox_first_run_confirmed = False
+        self._sandbox_first_run_summary = dict(summary)
+        self._write_audit(
+            "sandbox_first_run_confirmed",
+            {"ticker": self._sandbox_bootstrap_ticker},
+            _jsonable(summary),
+            ok=False,
+            error=str(summary.get("reason") or "sandbox bootstrap failed"),
+        )
+        return dict(summary)
 
     def disconnect(self) -> None:
         self._connected = False
@@ -569,6 +799,49 @@ class LongBridgeBroker(BrokerBase):
             "current_ask": current_ask,
             "notes": notes,
         }
+        if self._is_sandbox_mode() and not self._sandbox_endpoints_are_safe():
+            sandbox_issues = self._sandbox_safety_issues()
+            response = {
+                "status": "rejected",
+                "reason": "; ".join(sandbox_issues) or "sandbox safety check failed",
+            }
+            self._write_audit(
+                "place_order",
+                request,
+                response,
+                ok=False,
+                error="sandbox_safety_check_failed",
+            )
+            return Order(
+                order_id="",
+                ticker=ticker,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                status=OrderStatus.REJECTED,
+                notes=response["reason"],
+            )
+        if self._is_sandbox_mode() and not self._sandbox_first_run_confirmed:
+            response = {
+                "status": "rejected",
+                "reason": "sandbox first-run bootstrap not confirmed",
+            }
+            self._write_audit(
+                "place_order",
+                request,
+                response,
+                ok=False,
+                error="sandbox_first_run_pending",
+            )
+            return Order(
+                order_id="",
+                ticker=ticker,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                status=OrderStatus.REJECTED,
+                notes="Sandbox first-run bootstrap not confirmed; read-only mode",
+            )
         if not self.is_connected():
             response = {"status": "rejected", "reason": "not connected"}
             self._write_audit("place_order", request, response, ok=False, error="Not connected to Long Bridge")
@@ -581,7 +854,7 @@ class LongBridgeBroker(BrokerBase):
                 status=OrderStatus.REJECTED,
                 notes="Not connected to Long Bridge",
             )
-        if side == OrderSide.BUY and _global_reduce_only_enabled():
+        if side == OrderSide.BUY and _global_reduce_only_enabled() and not self._is_sandbox_mode():
             response = {"status": "rejected", "reason": "global reduce-only blocks live BUY"}
             self._write_audit(
                 "place_order",
@@ -624,6 +897,21 @@ class LongBridgeBroker(BrokerBase):
                 submitted_quantity=quantity,
                 time_in_force=lb.TimeInForceType.Day,
                 submitted_price=submit_price,
+            )
+            result_fields = []
+            try:
+                if isinstance(result, dict):
+                    result_fields = sorted(str(key) for key in result.keys())
+                else:
+                    result_fields = sorted(str(key) for key in vars(result).keys() if not str(key).startswith("_"))
+            except Exception:
+                result_fields = []
+            logger.debug(
+                "LongBridge submit_order debug: type=%s repr=%s fields=%s error_field=%s",
+                type(result).__name__,
+                repr(result),
+                result_fields,
+                getattr(result, "error", None) if not isinstance(result, dict) else result.get("error"),
             )
 
             response = {
@@ -730,6 +1018,7 @@ class LongBridgeBroker(BrokerBase):
                 side=OrderSide.BUY if od.side == lb.OrderSide.Buy else OrderSide.SELL,
                 order_type=OrderType.MARKET if od.order_type == lb.OrderType.MO else OrderType.LIMIT,
                 quantity=int(od.quantity or 0),
+                limit_price=float(getattr(od, "price", 0.0) or 0.0) or None,
                 filled_quantity=int(od.executed_quantity or 0),
                 avg_fill_price=float(od.executed_price or 0.0),
                 status=mapped_status,
@@ -763,12 +1052,16 @@ class LongBridgeBroker(BrokerBase):
                         side_value = str(item.get("side") or "").strip().upper()
                         status_value = str(item.get("status") or "").strip().upper()
                         order_type_value = str(item.get("order_type") or "").strip().upper()
+                        raw_limit_price = item.get("limit_price")
+                        if raw_limit_price in (None, ""):
+                            raw_limit_price = item.get("price")
                         orders.append(Order(
                             order_id=str(item.get("order_id") or ""),
                             ticker=str(item.get("ticker") or symbol),
                             side=OrderSide.BUY if side_value == "BUY" else OrderSide.SELL,
                             order_type=OrderType.LIMIT if order_type_value == "LIMIT" else OrderType.MARKET,
                             quantity=int(item.get("quantity") or 0),
+                            limit_price=float(raw_limit_price) if raw_limit_price not in (None, "") else None,
                             filled_quantity=int(item.get("filled_quantity") or 0),
                             avg_fill_price=float(item.get("avg_fill_price") or 0.0),
                             status=OrderStatus.PARTIALLY_FILLED if status_value == "PARTIALLY_FILLED" else OrderStatus.PENDING,
@@ -785,15 +1078,19 @@ class LongBridgeBroker(BrokerBase):
         if not self.is_connected():
             return []
         try:
-            details = self._trade_ctx.today_orders(_longbridge_symbol(ticker))
+            today_orders = getattr(self._trade_ctx, "today_orders", None)
+            if callable(today_orders):
+                details = today_orders(_longbridge_symbol(ticker))
+            else:
+                details = []
             active_statuses = (
-                _enum_token(lb.OrderStatus.New),
-                _enum_token(lb.OrderStatus.PartialFilled),
-                _enum_token(lb.OrderStatus.PendingCancel),
-                _enum_token(lb.OrderStatus.WaitToNew),
-                _enum_token(lb.OrderStatus.NotReported),
-                _enum_token(lb.OrderStatus.ProtectedNotReported),
-                _enum_token(lb.OrderStatus.VarietiesNotReported),
+                _enum_token(getattr(lb.OrderStatus, "New", "New")),
+                _enum_token(getattr(lb.OrderStatus, "PartialFilled", "PartialFilled")),
+                _enum_token(getattr(lb.OrderStatus, "PendingCancel", "PendingCancel")),
+                _enum_token(getattr(lb.OrderStatus, "WaitToNew", "WaitToNew")),
+                _enum_token(getattr(lb.OrderStatus, "NotReported", "NotReported")),
+                _enum_token(getattr(lb.OrderStatus, "ProtectedNotReported", "ProtectedNotReported")),
+                _enum_token(getattr(lb.OrderStatus, "VarietiesNotReported", "VarietiesNotReported")),
             )
             orders = []
             for od in details or []:
@@ -806,6 +1103,7 @@ class LongBridgeBroker(BrokerBase):
                     side=OrderSide.BUY if od.side == lb.OrderSide.Buy else OrderSide.SELL,
                     order_type=OrderType.MARKET if od.order_type == lb.OrderType.MO else OrderType.LIMIT,
                     quantity=int(od.quantity or 0),
+                    limit_price=float(getattr(od, "price", 0.0) or 0.0) or None,
                     filled_quantity=int(od.executed_quantity or 0),
                     avg_fill_price=float(od.executed_price or 0.0),
                     status=(
@@ -828,6 +1126,7 @@ class LongBridgeBroker(BrokerBase):
                             "side": order.side.value,
                             "order_type": order.order_type.value,
                             "quantity": order.quantity,
+                            "limit_price": order.limit_price,
                             "filled_quantity": order.filled_quantity,
                             "avg_fill_price": order.avg_fill_price,
                             "status": order.status.value,

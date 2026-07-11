@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
@@ -159,6 +160,270 @@ def test_combined_dashboard_shows_live_account_error_without_cache(monkeypatch):
     assert "凭证无效，请更新 LongBridge Access Token" in html
     assert "账户现金" in html
     assert "暂无" in html
+
+
+def test_combined_dashboard_shows_system_status_and_missing_data_labels(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="paper",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=False,
+                environment="prod",
+                account_type="",
+                allow_live_order=False,
+            )
+        ),
+    ))
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"})
+    monkeypatch.setattr(combined, "_load_lifecycle_summary", lambda kind: {
+        "available": False,
+        "status_label": "unavailable",
+        "detail": "no data",
+        "generated_at": None,
+    })
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "系统状态" in html
+    assert "PAPER" in html
+    assert "PaperBroker" in html
+    assert "PaperBroker / TOP engine runtime" in html
+    assert "no data" in html
+    assert "unavailable" in html
+
+
+def test_combined_dashboard_uses_sandbox_account_snapshot_without_paper_fallback(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="sandbox",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=True,
+                environment="sandbox",
+                account_type="paper",
+                allow_live_order=False,
+            )
+        ),
+    ))
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
+        "cash": 900.0,
+        "equity": 1000.0,
+        "buying_power": 900.0,
+        "positions_count": 1,
+        "positions": [
+            {
+                "ticker": "SOFI",
+                "quantity": 6,
+                "avg_entry_price": 10.98,
+                "current_price": 11.2,
+                "market_value": 67.2,
+                "unrealized_pnl": 1.32,
+                "unrealized_pnl_pct": 2.0,
+            }
+        ],
+        "mode": "sandbox",
+    })
+    monkeypatch.setattr(combined, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"})
+    monkeypatch.setattr(combined, "_load_lifecycle_summary", lambda kind: {
+        "available": False,
+        "status_label": "unavailable",
+        "detail": "no data",
+        "generated_at": None,
+    })
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "sandbox",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "SANDBOX" in html
+    assert "LongBridge" in html
+    assert "LongBridge sandbox" in html
+    assert "LongBridge sandbox 持仓" in html
+    assert "PaperBroker / TOP engine runtime" not in html
+
+
+def test_combined_dashboard_shows_lifecycle_result_cards(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="paper",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=False,
+                environment="prod",
+                account_type="",
+                allow_live_order=False,
+            )
+        ),
+    ))
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "_load_active_orders_summary", lambda tickers: {"available": True, "count": 0, "orders": [], "sources": [], "status_label": "0", "detail": "无活动订单"})
+    monkeypatch.setattr(combined, "_load_lifecycle_summary", lambda kind: {
+        "available": True,
+        "status_label": "PASS" if kind == "weekend_paper" else "FAIL",
+        "detail": "BUY FILLED · SELL FILLED · position 0" if kind == "weekend_paper" else "bootstrap PASS · BUY PENDING · SELL PENDING",
+        "generated_at": "2026-07-11T09:00:00+08:00",
+        "mode": "PAPER" if kind == "weekend_paper" else "SANDBOX",
+        "broker": "PaperBroker" if kind == "weekend_paper" else "LongBridge",
+        "account_type": "PAPER",
+        "ticker": "TEST" if kind == "weekend_paper" else "SOFI",
+    })
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "最近一次 weekend paper lifecycle" in html
+    assert "PASS" in html
+    assert "BUY FILLED · SELL FILLED · position 0" in html
+    assert "最近一次 LongBridge sandbox lifecycle" in html
+    assert "FAIL" in html
+
+
+def test_combined_dashboard_does_not_use_submit_order_from_page(monkeypatch):
+    class ForbiddenBroker:
+        def __init__(self, *args, **kwargs):
+            self.submit_order = lambda *a, **k: (_ for _ in ()).throw(AssertionError("submit_order should not be called"))
+
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="paper",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=False,
+                environment="prod",
+                account_type="",
+                allow_live_order=False,
+            )
+        ),
+    ))
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"})
+    monkeypatch.setattr(combined, "_load_lifecycle_summary", lambda kind: {"available": False, "status_label": "unavailable", "detail": "no data", "generated_at": None})
+    monkeypatch.setattr(combined, "PaperBroker", ForbiddenBroker)
+    monkeypatch.setattr(combined, "LongBridgeBroker", ForbiddenBroker, raising=False)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "只读研究简报" in html
+    assert "系统状态" in html
 
 
 def test_stale_live_account_without_cache_returns_error_state():

@@ -527,6 +527,32 @@ def _normalize_entry_report_fields(item: dict) -> dict:
     return normalized
 
 
+def _filter_entry_quality(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    for raw in candidates or []:
+        item = _normalize_entry_report_fields(dict(raw))
+        quality = str(item.get("entry_quality") or "unknown").strip().lower()
+        if quality in {"poor", "very_poor"}:
+            rejected.append(
+                {
+                    "ticker": _normalize_ticker(item.get("ticker")),
+                    "reason": "entry_quality_too_low",
+                    "entry_quality": quality,
+                    "good_for_entry_now": bool(item.get("good_for_entry_now", False)),
+                    "entry_reason": str(item.get("entry_reason") or ""),
+                    "entry_proximity_score": _coalesce_float(item.get("entry_proximity_score"), default=50.0),
+                    "range_position": item.get("range_position"),
+                    "dist_to_support": item.get("dist_to_support"),
+                    "dist_to_resistance": item.get("dist_to_resistance"),
+                    "source": str(item.get("source") or ""),
+                }
+            )
+            continue
+        accepted.append(item)
+    return accepted, rejected
+
+
 def _build_report_top10(
     selector_top10: list[dict],
     selected: list[dict],
@@ -941,6 +967,7 @@ def main():
     selected, final_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
     price_band_rejected_rows.extend(final_price_band_rejected)
     selected = [_normalize_entry_report_fields(_normalize_selection_metadata(item)) for item in selected]
+    selected, low_quality_rejected = _filter_entry_quality(selected)
     report_top10 = [_normalize_entry_report_fields(item) for item in report_top10]
     preserved_positions = [
         str(item.get("ticker") or "").upper()
@@ -959,6 +986,8 @@ def main():
     quality_report["trade_filter_rejected"] = trade_filter_rejected
     quality_report["fallback_used"] = bool(trade_filter_report.get("fallback_used", False)) or bool(integrated_ai.get("fallback_used")) or bool(fallback_pool_used)
     quality_report["fallback_pool_used"] = bool(fallback_pool_used)
+    quality_report["removed_low_entry_quality"] = low_quality_rejected
+    quality_report["entry_quality_threshold"] = ["excellent", "good", "neutral"]
     quality_report["composition_filter"] = {
         "max_leveraged_etf_in_top3": 1,
         "rejected": list(composition_filter_report.get("rejected") or []),
@@ -1036,7 +1065,7 @@ def main():
         'provider_fallback_used': bool(integrated_ai.get("provider_fallback_used", False)),
         'top10': out.get('top10', []),
         'top5': list(selected),
-        'top3': list(out.get('top3', [])),
+        'top3': [_normalize_entry_report_fields(item) for item in selected],
         'selection_count': len(selected),
         'target_top_n': TOP_COUNT,
         'top_n_filled': len(selected) >= TOP_COUNT,

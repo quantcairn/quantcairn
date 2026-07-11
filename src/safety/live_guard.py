@@ -84,8 +84,8 @@ class LiveGuard:
 
     def _check_mode(self) -> None:
         mode = str(self._context.get("mode") or "").strip().lower()
-        if mode not in ("paper", "live", "backtest"):
-            self._error(f"Invalid or missing mode: '{mode}' (must be paper/live/backtest)")
+        if mode not in ("paper", "sandbox", "live", "backtest"):
+            self._error(f"Invalid or missing mode: '{mode}' (must be paper/sandbox/live/backtest)")
             return
         if mode != "live":
             self._warn(f"Mode is '{mode}' — live checks are advisory only")

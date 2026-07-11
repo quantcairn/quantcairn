@@ -6,15 +6,21 @@ __pycache__/
 .env.*
 .env.ai_selector.local
 !.env.ai_selector.local.example
+!.env.example
 
 logs/
 *.log
 snapshots.log
 trading-*.log
+/tmp/
 /reports/
+reports/research/
 src/ai_selector/reports/*.json
 state/
 runtime/
+artifacts/backtests/
+site/
+.pytest_cache/
 config.local.yaml
 
 .DS_Store

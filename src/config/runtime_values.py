@@ -16,6 +16,7 @@ _LONGBRIDGE_KEY_MAP = {
     "LONGBRIDGE_APP_SECRET": "app_secret",
     "LONGBRIDGE_API_SECRET": "app_secret",
     "LONGBRIDGE_ACCESS_TOKEN": "access_token",
+    "LONGBRIDGE_ACCOUNT_TYPE": "account_type",
     "LONGBRIDGE_REGION": "region",
     "LONGBRIDGE_ENABLED": "enabled",
     "LONGBRIDGE_ENV": "environment",
@@ -44,7 +45,11 @@ def load_private_longbridge_config() -> dict[str, Any]:
         broker = raw.get("broker") if isinstance(raw, dict) else {}
         longbridge = broker.get("longbridge") if isinstance(broker, dict) else {}
         if isinstance(longbridge, dict):
-            return dict(longbridge)
+            result = dict(longbridge)
+            sandbox = result.get("sandbox")
+            if isinstance(sandbox, dict) and "account_type" in sandbox and "account_type" not in result:
+                result["account_type"] = sandbox["account_type"]
+            return result
     return {}
 
 
@@ -66,16 +71,18 @@ def _launchctl_getenv(name: str) -> str:
 
 
 def get_runtime_env(name: str, default: str = "") -> str:
+    # Explicit process/launch environment must override private config so a
+    # deliberate mode switch cannot be shadowed by a stale local file.
+    value = os.getenv(name)
+    if value is not None and str(value).strip():
+        return str(value).strip()
+
     mapped_key = _LONGBRIDGE_KEY_MAP.get(name)
     if mapped_key:
         config = load_private_longbridge_config()
         candidate = config.get(mapped_key)
         if candidate not in (None, ""):
             return str(candidate).strip()
-
-    value = os.getenv(name)
-    if value is not None and str(value).strip():
-        return str(value).strip()
 
     launchd_value = _launchctl_getenv(name)
     if launchd_value:

@@ -1,6 +1,7 @@
 import tempfile
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from src.broker.base import Order, OrderSide, OrderStatus, OrderType
@@ -25,8 +26,8 @@ class FakeNotifier:
         self.trades = []
         self.alerts = []
 
-    def trade(self, ticker, side, quantity, price, pnl=None):
-        self.trades.append((ticker, side, quantity, price, pnl))
+    def trade(self, ticker, side, quantity, price, pnl=None, mode=None, **kwargs):
+        self.trades.append((ticker, side, quantity, price, pnl, mode, kwargs))
 
     def alert(self, message, level="info"):
         self.alerts.append((message, level))
@@ -92,7 +93,7 @@ def test_reconcile_pending_buy_fill_updates_local_state():
     assert engine._entry_price == 7.25
     assert engine._position_shares == 5
     assert engine.strategy.recorded_entries == [7.25]
-    assert engine.notifier.trades == [("SOFI", "BUY", 5, 7.25, None)]
+    assert engine.notifier.trades == [("SOFI", "BUY", 5, 7.25, None, "paper", {})]
 
 
 def test_reconcile_partial_buy_fill_keeps_pending_order():
@@ -129,7 +130,7 @@ def test_reconcile_partial_buy_fill_keeps_pending_order():
     assert engine._pending_order is not None
     assert engine._pending_order["acknowledged_filled_quantity"] == 2
     assert engine._position_shares == 2
-    assert engine.notifier.trades == [("SOFI", "BUY", 2, 7.2, None)]
+    assert engine.notifier.trades == [("SOFI", "BUY", 2, 7.2, None, "paper", {})]
 
 
 def test_reconcile_pending_sell_fill_records_trade():
@@ -214,27 +215,7 @@ def test_buy_sizing_does_not_use_margin_buying_power():
     assert "现金 $50.00" in engine._last_signal_reason
 
 
-def test_adopt_active_live_order_retries_after_rate_limit(monkeypatch=None):
-    if monkeypatch is None:
-        class SimpleMonkeyPatch:
-            def __init__(self):
-                self._originals = {}
-
-            def setattr(self, target, value):
-                module_name, attr_name = target.rsplit(".", 1)
-                module = __import__(module_name, fromlist=[attr_name])
-                key = (module_name, attr_name)
-                if key not in self._originals:
-                    self._originals[key] = getattr(module, attr_name)
-                setattr(module, attr_name, value)
-
-            def restore(self):
-                for (module_name, attr_name), original in self._originals.items():
-                    module = __import__(module_name, fromlist=[attr_name])
-                    setattr(module, attr_name, original)
-
-        monkeypatch = SimpleMonkeyPatch()
-
+def test_adopt_active_live_order_retries_after_rate_limit():
     engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
     use_test_pending_path(engine, "adopt-retry")
     engine.notifier = FakeNotifier()
@@ -247,14 +228,11 @@ def test_adopt_active_live_order_retries_after_rate_limit(monkeypatch=None):
             return None
         return []
 
-    try:
-        monkeypatch.setattr("src.engine.trading_engine.time.sleep", lambda _seconds: None)
+    with patch("src.engine.trading_engine.time.sleep", lambda _seconds: None):
         engine.broker = SimpleNamespace(get_active_orders=fake_get_active_orders)
         assert engine._adopt_active_live_order() is True
         assert calls["count"] == 3
         assert engine.notifier.alerts == []
-    finally:
-        monkeypatch.restore()
 
 
 def test_partial_immediate_sell_keeps_unfilled_position():
@@ -442,7 +420,8 @@ def test_refresh_broker_snapshots_updates_live_cache_outside_hours():
         is_account_snapshot_reliable=lambda: True,
     )
 
-    engine._refresh_broker_snapshots(outside_trading_hours=True)
+    with patch("src.engine.trading_engine.random.random", lambda: 0.9):
+        engine._refresh_broker_snapshots(outside_trading_hours=True)
 
     assert engine._latest_position.quantity == 30
     assert engine._latest_account.cash == 707.61

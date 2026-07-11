@@ -437,6 +437,202 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
         assert not (tmpdir / "configs" / "TOP3.yaml").exists()
 
 
+def test_low_entry_quality_candidates_do_not_fill_top_slots():
+    module = _load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+        for folder in ("configs", "reports", "state", "logs", "runtime"):
+            (tmpdir / folder).mkdir()
+
+        from src.ai_selector import config_writer
+
+        original_base = config_writer.BASE
+        written_reports: list[dict] = []
+        try:
+            config_writer.BASE = str(tmpdir)
+            _patch_common(module, tmpdir)
+            module._build_conservative_fallback_candidates = lambda existing_symbols=None: []
+            module._apply_trade_filter = lambda rows: (
+                list(rows),
+                {"fallback_used": False, "accepted": list(rows), "rejected": [], "warnings": []},
+            )
+            module._apply_composition_filter = lambda rows, top_n=3: (list(rows), {"rejected": [], "warnings": []})
+            module._live_candidate_price = lambda ticker: {"AAA": 10.0, "BBB": 11.0, "CCC": 12.0}.get(str(ticker).upper())
+            module.AIStrategySelector = type(
+                "FakeSelector",
+                (),
+                {
+                    "selection_size": 3,
+                    "__init__": lambda self, *args, **kwargs: None,
+                    "run_selection": lambda self, write_configs=True, symbols_override=None: {
+                        "top10": [
+                            {
+                                "ticker": "AAA",
+                                "score": 90.0,
+                                "current_price": 10.0,
+                                "range_low": 9.5,
+                                "range_high": 10.5,
+                                "risk": {"stop_loss_pct": 1.5},
+                                "size": 10,
+                                "confidence": 0.9,
+                                "reason": "stub",
+                                "source": "stub",
+                                "entry": {
+                                    "entry_proximity_score": 90,
+                                    "good_for_entry_now": True,
+                                    "entry_quality": "excellent",
+                                    "entry_reason": "close to support",
+                                    "range_position": 10,
+                                    "dist_to_support": 2,
+                                    "dist_to_resistance": 20,
+                                },
+                            },
+                            {
+                                "ticker": "BBB",
+                                "score": 80.0,
+                                "current_price": 11.0,
+                                "range_low": 10.4,
+                                "range_high": 11.6,
+                                "risk": {"stop_loss_pct": 1.5},
+                                "size": 10,
+                                "confidence": 0.8,
+                                "reason": "stub",
+                                "source": "stub",
+                                "entry": {
+                                    "entry_proximity_score": 30,
+                                    "good_for_entry_now": False,
+                                    "entry_quality": "poor",
+                                    "entry_reason": "too far from support",
+                                    "range_position": 70,
+                                    "dist_to_support": 12,
+                                    "dist_to_resistance": 6,
+                                },
+                            },
+                            {
+                                "ticker": "CCC",
+                                "score": 70.0,
+                                "current_price": 12.0,
+                                "range_low": 11.4,
+                                "range_high": 12.6,
+                                "risk": {"stop_loss_pct": 1.5},
+                                "size": 10,
+                                "confidence": 0.7,
+                                "reason": "stub",
+                                "source": "stub",
+                                "entry": {
+                                    "entry_proximity_score": 10,
+                                    "good_for_entry_now": False,
+                                    "entry_quality": "very_poor",
+                                    "entry_reason": "near resistance",
+                                    "range_position": 90,
+                                    "dist_to_support": 15,
+                                    "dist_to_resistance": 1,
+                                },
+                            },
+                        ],
+                        "top5": [
+                            {
+                                "ticker": "AAA",
+                                "score": 90.0,
+                                "current_price": 10.0,
+                                "range_low": 9.5,
+                                "range_high": 10.5,
+                                "risk": {"stop_loss_pct": 1.5},
+                                "size": 10,
+                                "confidence": 0.9,
+                                "reason": "stub",
+                                "source": "stub",
+                                "entry": {
+                                    "entry_proximity_score": 90,
+                                    "good_for_entry_now": True,
+                                    "entry_quality": "excellent",
+                                    "entry_reason": "close to support",
+                                    "range_position": 10,
+                                    "dist_to_support": 2,
+                                    "dist_to_resistance": 20,
+                                },
+                            },
+                            {
+                                "ticker": "BBB",
+                                "score": 80.0,
+                                "current_price": 11.0,
+                                "range_low": 10.4,
+                                "range_high": 11.6,
+                                "risk": {"stop_loss_pct": 1.5},
+                                "size": 10,
+                                "confidence": 0.8,
+                                "reason": "stub",
+                                "source": "stub",
+                                "entry": {
+                                    "entry_proximity_score": 30,
+                                    "good_for_entry_now": False,
+                                    "entry_quality": "poor",
+                                    "entry_reason": "too far from support",
+                                    "range_position": 70,
+                                    "dist_to_support": 12,
+                                    "dist_to_resistance": 6,
+                                },
+                            },
+                            {
+                                "ticker": "CCC",
+                                "score": 70.0,
+                                "current_price": 12.0,
+                                "range_low": 11.4,
+                                "range_high": 12.6,
+                                "risk": {"stop_loss_pct": 1.5},
+                                "size": 10,
+                                "confidence": 0.7,
+                                "reason": "stub",
+                                "source": "stub",
+                                "entry": {
+                                    "entry_proximity_score": 10,
+                                    "good_for_entry_now": False,
+                                    "entry_quality": "very_poor",
+                                    "entry_reason": "near resistance",
+                                    "range_position": 90,
+                                    "dist_to_support": 15,
+                                    "dist_to_resistance": 1,
+                                },
+                            },
+                        ],
+                        "top3": [],
+                        "report": [],
+                        "settings": {"selection_stage": "quality_refined"},
+                        "quality_filter_report": {},
+                    },
+                    "_format_report_rows": lambda self, selected: [
+                        {"rank": idx + 1, "ticker": row["ticker"], "score": row["score"]}
+                        for idx, row in enumerate(selected)
+                    ],
+                },
+            )
+            module._write_reports = lambda summary: (
+                written_reports.append(dict(summary)) or True
+            ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
+            os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
+            os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+            try:
+                module.main()
+            finally:
+                os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
+                os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+        finally:
+            config_writer.BASE = original_base
+
+        assert written_reports
+        summary = written_reports[0]
+        assert summary["selection_count"] == 1
+        assert summary["top_n_filled"] is False
+        assert summary["quality_filter_report"]["removed_low_entry_quality"]
+        assert summary["quality_filter_report"]["removed_low_entry_quality"][0]["reason"] == "entry_quality_too_low"
+        assert summary["quality_filter_report"]["removed_low_entry_quality"][0]["ticker"] in {"BBB", "CCC"}
+        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
+        assert top1["ticker"] == "AAA"
+        assert top1["selection"]["entry"]["entry_quality"] == "excellent"
+        assert not (tmpdir / "configs" / "TOP2.yaml").exists()
+        assert not (tmpdir / "configs" / "TOP3.yaml").exists()
+
+
 def test_shell_scripts_treat_missing_top3_as_disabled():
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)

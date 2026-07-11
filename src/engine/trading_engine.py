@@ -195,20 +195,22 @@ class TradingEngine:
         )
 
         # Broker setup
-        if config.mode == "live" and config.broker.longbridge.enabled:
+        if config.mode in {"live", "sandbox"} and config.broker.longbridge.enabled:
             from ..broker.longbridge_broker import LongBridgeBroker
             self.broker: BrokerBase = LongBridgeBroker(
                 app_key=config.broker.longbridge.app_key,
                 app_secret=config.broker.longbridge.app_secret,
                 access_token=config.broker.longbridge.access_token,
+                account_type=config.broker.longbridge.account_type,
                 region=config.broker.longbridge.region,
                 environment=config.broker.longbridge.environment,
                 http_url=config.broker.longbridge.http_url,
                 quote_ws_url=config.broker.longbridge.quote_ws_url,
                 trade_ws_url=config.broker.longbridge.trade_ws_url,
                 log_path=config.broker.longbridge.log_path,
+                allow_live_order=config.broker.longbridge.allow_live_order,
             )
-            logger.info("Using Long Bridge (LIVE) broker")
+            logger.info("Using Long Bridge (%s) broker", config.mode.upper())
         else:
             self.broker = PaperBroker(initial_cash=config.position.initial_capital)
             logger.info(f"Using Paper Trading broker (initial capital: ${config.position.initial_capital:,.2f})")
@@ -376,7 +378,9 @@ class TradingEngine:
     def _build_ai_buy_plan(self, acct, current_price: float, ask: float) -> dict:
         cash = float(getattr(acct, "cash", 0.0) or 0.0)
         buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
-        available_cash = max(0.0, max(cash, buying_power))
+        # Ordinary BUY sizing must stay cash-constrained; do not expand sizing
+        # from margin buying power.
+        available_cash = max(0.0, min(cash, buying_power) if buying_power > 0 else cash)
         available_cash = self._cap_ai_available_cash(available_cash, acct)
         execution_price = ask if ask > 0 else current_price
         original_target_shares = determine_buy_quantity(
@@ -419,6 +423,35 @@ class TradingEngine:
         if not self.broker.connect():
             self.notifier.alert("Failed to connect to broker", "error")
             return
+
+        if self.mode == "sandbox":
+            confirm_fn = getattr(self.broker, "confirm_sandbox_first_run", None)
+            if callable(confirm_fn):
+                try:
+                    bootstrap = confirm_fn(self.ticker)
+                    if isinstance(bootstrap, dict):
+                        if bootstrap.get("confirmed"):
+                            logger.info(
+                                "Sandbox first-run bootstrap confirmed for %s; BUY flow enabled after read-only checks",
+                                self.ticker,
+                            )
+                        else:
+                            logger.warning(
+                                "Sandbox first-run bootstrap pending for %s: %s",
+                                self.ticker,
+                                bootstrap.get("reason") or "read-only checks incomplete",
+                            )
+                    elif bootstrap:
+                        logger.info(
+                            "Sandbox first-run bootstrap confirmed for %s; BUY flow enabled after read-only checks",
+                            self.ticker,
+                        )
+                    else:
+                        logger.warning(
+                            "Sandbox first-run bootstrap pending for %s", self.ticker
+                        )
+                except Exception as exc:
+                    logger.warning("Sandbox first-run bootstrap failed for %s: %s", self.ticker, exc)
 
         if self.mode == "live" and not self._verify_live_startup_safety():
             self.broker.disconnect()
@@ -1735,6 +1768,18 @@ class TradingEngine:
 
     def _verify_live_startup_safety(self) -> bool:
         """Fail closed unless live startup has verified selection and broker data."""
+        if not self._reduce_only:
+            self._last_signal_reason = "实盘启动已阻止：global reduce-only 未开启"
+            self._write_runtime_audit(
+                "startup_safety_check",
+                broker_position_verified=False,
+                broker_account_verified=False,
+                startup_allowed=False,
+                reason="global_reduce_only_disabled",
+                startup_role=self._startup_role,
+            )
+            self.notifier.alert(self._last_signal_reason, "error")
+            return False
         top_symbols = {
             str(symbol or "").strip().upper() for symbol in current_top_config_symbols()
         }

@@ -35,6 +35,7 @@ from src.engine.trading_engine import TradingEngine
 from src.engine.position_sizing import determine_buy_quantity
 from src.dashboard.server import start_dashboard
 from src.ai_selector.selection_state import verify_live_startup_selection
+from src.safety.trading_environment_guard import TradingEnvironmentGuard
 
 
 TOP_CONFIG_RE = re.compile(r"TOP[1-5]\.yaml$", re.IGNORECASE)
@@ -156,6 +157,13 @@ Environment variables:
         print("   Review the error lines above and update the relevant config fields.\n")
         if not args.dry_run:
             sys.exit(1)
+
+    env_guard = TradingEnvironmentGuard()
+    env_verdict = env_guard.validate(config)
+    print("\n" + env_guard.format_report(env_verdict) + "\n")
+    if not env_verdict.ok:
+        print("❌ Trading environment check failed. Refusing to start.\n")
+        sys.exit(1)
 
     # Dry run: validate only
     if args.dry_run:

@@ -52,6 +52,7 @@ broker:
     app_key: ""
     app_secret: ""
     access_token: ""
+    account_type: "paper"  # required for sandbox: paper or demo account
     region: "cn"
     enabled: false
     environment: "prod"   # sandbox / prod
@@ -59,3 +60,12 @@ broker:
     quote_ws_url: null
     trade_ws_url: null
     log_path: null
+    # sandbox mode still uses the official Longbridge endpoints.
+    # Switch trading.mode to sandbox, keep allow_live_order=false,
+    # and set account_type to paper or demo before enabling this section.
+    sandbox:
+      enabled: false
+      allow_live_order: false  # ignored by the hard sandbox order block
+      http_url: "https://openapi.longbridge.com"
+      quote_ws_url: "wss://openapi-quote.longbridge.com/v2"
+      trade_ws_url: "wss://openapi-trade.longbridge.com/v2"

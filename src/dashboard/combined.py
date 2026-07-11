@@ -3,6 +3,7 @@ import atexit
 import inspect
 import json, os, signal, subprocess, threading, urllib.request
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template_string, request, send_file
@@ -13,16 +14,23 @@ from zoneinfo import ZoneInfo
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
 from src.ai_selector.selection_state import current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
+from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
+from src.broker.paper_broker import PaperBroker
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 from src.research_report.site import build_research_site
+from src.safety.trading_environment_guard import TradingEnvironmentGuard
+from src.utils.market_calendar import is_us_market_trading_day
 
 app = Flask(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
 TRADING_FLAGS_PATH = STATE_DIR / "trading_flags.json"
+LIFECYCLE_DIR = STATE_DIR / "lifecycle"
+WEEKEND_PAPER_LIFECYCLE_PATH = LIFECYCLE_DIR / "weekend_paper_lifecycle.json"
+LONGBRIDGE_SANDBOX_LIFECYCLE_PATH = LIFECYCLE_DIR / "longbridge_sandbox_lifecycle.json"
 RUNTIME_DIR = Path(os.environ.get("SOXS_RUNTIME_DIR", "").strip() or (PROJECT_DIR / "runtime"))
 COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
 
@@ -249,6 +257,30 @@ def _has_live_account_env() -> bool:
     return has_longbridge_runtime_credentials()
 
 
+def _load_cached_longbridge_account_summary(mode_hint: str | None = None) -> dict | None:
+    cache_path = STATE_DIR / "broker_cache" / "longbridge_account.json"
+    try:
+        if not cache_path.exists():
+            return None
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        payload = cached.get("payload") if isinstance(cached, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        summary = dict(payload)
+        mode_value = str(mode_hint or "").strip().lower()
+        if mode_value not in {"sandbox", "live"}:
+            mode_value = "sandbox"
+        summary.setdefault("mode", mode_value)
+        summary.setdefault("environment", mode_value)
+        summary.setdefault("data_stale", False)
+        summary.setdefault("account_error", False)
+        summary.setdefault("stale_reason", "")
+        summary.setdefault("fetched_at", cached.get("fetched_at"))
+        return summary
+    except Exception:
+        return None
+
+
 def _fetch_live_account_summary():
     """Read live buying power from LongBridge if credentials are present."""
     global _LIVE_ACCOUNT_CACHE, _LIVE_ACCOUNT_CACHE_AT
@@ -256,7 +288,20 @@ def _fetch_live_account_summary():
     with _LIVE_ACCOUNT_LOCK:
         if _LIVE_ACCOUNT_CACHE and (now - _LIVE_ACCOUNT_CACHE_AT) < _LIVE_ACCOUNT_CACHE_TTL:
             return _LIVE_ACCOUNT_CACHE
+        dashboard_config = _load_dashboard_config()
+        dashboard_mode = str(getattr(dashboard_config, "mode", "") or "").strip().lower() if dashboard_config else ""
+        if dashboard_mode == "sandbox":
+            cached_summary = _load_cached_longbridge_account_summary(dashboard_mode)
+            if cached_summary is not None:
+                _LIVE_ACCOUNT_CACHE = cached_summary
+                _LIVE_ACCOUNT_CACHE_AT = now
+                return cached_summary
         if not _has_live_account_env():
+            cached_summary = _load_cached_longbridge_account_summary(dashboard_mode)
+            if cached_summary is not None:
+                _LIVE_ACCOUNT_CACHE = cached_summary
+                _LIVE_ACCOUNT_CACHE_AT = now
+                return cached_summary
             return None
         return _refresh_live_account_summary(now)
 
@@ -313,13 +358,15 @@ def _refresh_live_account_summary(now: float):
                     "unrealized_pnl_pct": float(getattr(pos, "unrealized_pnl_pct", 0.0) or 0.0),
                 }
             )
+        environment = str(_env("LONGBRIDGE_ENV", "prod") or "prod").strip().lower()
         summary = {
             "cash": float(getattr(account, "cash", 0.0) or 0.0),
             "equity": float(getattr(account, "equity", 0.0) or 0.0),
             "buying_power": float(getattr(account, "buying_power", 0.0) or 0.0),
             "positions_count": len(positions or []),
             "positions": position_rows,
-            "mode": "live",
+            "mode": "sandbox" if environment == "sandbox" else "live",
+            "environment": environment,
             "data_stale": False,
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -624,6 +671,140 @@ def _load_latest_research_digest() -> dict[str, object]:
     return {"available": False}
 
 
+def _dashboard_order_status_summary(active_orders_summary: dict | None) -> dict[str, int]:
+    orders = (active_orders_summary or {}).get("orders") if isinstance(active_orders_summary, dict) else []
+    orders = orders if isinstance(orders, list) else []
+    counts = Counter(str((order or {}).get("status") or "").strip().upper() for order in orders if isinstance(order, dict))
+    return {
+        "total": len(orders),
+        "pending": counts.get("PENDING", 0),
+        "partial_filled": counts.get("PARTIAL_FILLED", 0),
+        "filled": counts.get("FILLED", 0),
+        "cancelled": counts.get("CANCELLED", 0),
+        "rejected": counts.get("REJECTED", 0),
+    }
+
+
+def _dashboard_risk_summary(account_summary: dict | None, display_positions: list[dict] | None) -> dict[str, object]:
+    positions = display_positions if isinstance(display_positions, list) else []
+    equity = float((account_summary or {}).get("equity", 0.0) or 0.0)
+    cash = float((account_summary or {}).get("cash", 0.0) or 0.0)
+    buying_power = float((account_summary or {}).get("buying_power", cash) or cash or 0.0)
+    total_market_value = 0.0
+    largest_position = 0.0
+    for pos in positions:
+        if not isinstance(pos, dict):
+            continue
+        market_value = float(pos.get("market_value", 0.0) or 0.0)
+        total_market_value += market_value
+        largest_position = max(largest_position, market_value)
+    exposure_pct = (total_market_value / equity * 100.0) if equity > 0 else None
+    cash_pct = (cash / equity * 100.0) if equity > 0 else None
+    largest_pct = (largest_position / equity * 100.0) if equity > 0 else None
+    if equity <= 0:
+        risk_level = "UNKNOWN"
+        risk_label = "无可用权益"
+    elif largest_pct is not None and largest_pct >= 30:
+        risk_level = "HIGH"
+        risk_label = "高风险"
+    elif largest_pct is not None and largest_pct >= 15:
+        risk_level = "MEDIUM"
+        risk_label = "中等风险"
+    else:
+        risk_level = "LOW"
+        risk_label = "低风险"
+    return {
+        "equity": round(equity, 2),
+        "cash": round(cash, 2),
+        "buying_power": round(buying_power, 2),
+        "total_market_value": round(total_market_value, 2),
+        "largest_position_value": round(largest_position, 2),
+        "position_count": len([pos for pos in positions if isinstance(pos, dict) and int(pos.get("quantity", 0) or 0) > 0]),
+        "exposure_pct": round(exposure_pct, 2) if exposure_pct is not None else None,
+        "cash_pct": round(cash_pct, 2) if cash_pct is not None else None,
+        "largest_pct": round(largest_pct, 2) if largest_pct is not None else None,
+        "risk_level": risk_level,
+        "risk_label": risk_label,
+    }
+
+
+def _dashboard_timeline_items(
+    *,
+    trade_audit: dict | None,
+    system_status: dict | None,
+    selection_sync: dict | None,
+    ai_runtime: dict | None,
+    research_digest: dict | None,
+    startup_guard: dict | None,
+) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    if isinstance(trade_audit, dict):
+        if trade_audit.get("latest_submitted_line"):
+            items.append({
+                "time": str(trade_audit.get("latest_submitted_at") or trade_audit.get("latest_submitted_line")[:16] or "now"),
+                "title": "订单提交",
+                "detail": str(trade_audit.get("latest_submitted_line")),
+                "tone": "cyan",
+            })
+        if trade_audit.get("latest_filled_line"):
+            items.append({
+                "time": str(trade_audit.get("latest_filled_at") or trade_audit.get("latest_filled_line")[:16] or "now"),
+                "title": "订单成交",
+                "detail": str(trade_audit.get("latest_filled_line")),
+                "tone": "green",
+            })
+        if trade_audit.get("latest_line"):
+            items.append({
+                "time": str(trade_audit.get("latest_submitted_at") or trade_audit.get("latest_filled_at") or "now"),
+                "title": "最新审计",
+                "detail": str(trade_audit.get("latest_line")),
+                "tone": "purple",
+            })
+    if isinstance(selection_sync, dict) and selection_sync:
+        items.append({
+            "time": str(selection_sync.get("state_date") or selection_sync.get("required_date") or "now"),
+            "title": "选股同步",
+            "detail": str(selection_sync.get("detail") or selection_sync.get("label") or "unknown"),
+            "tone": "yellow" if not selection_sync.get("ok") else "green",
+        })
+    if isinstance(startup_guard, dict) and startup_guard:
+        items.append({
+            "time": "startup",
+            "title": "启动校验",
+            "detail": str(startup_guard.get("detail") or startup_guard.get("label") or "unknown"),
+            "tone": "red" if str(startup_guard.get("level") or "").lower() in {"blocked", "red"} else "cyan",
+        })
+    if isinstance(ai_runtime, dict) and ai_runtime:
+        items.append({
+            "time": "AI",
+            "title": "AI 选股状态",
+            "detail": f"{ai_runtime.get('label') or 'unknown'} · {ai_runtime.get('detail') or ''}".strip(" ·"),
+            "tone": "green" if str(ai_runtime.get("level") or "").lower() in {"green", "live"} else "yellow",
+        })
+    if isinstance(system_status, dict) and system_status:
+        lifecycle = system_status.get("lifecycle") if isinstance(system_status.get("lifecycle"), dict) else {}
+        for name, label in (
+            ("weekend_paper", "Weekend paper lifecycle"),
+            ("longbridge_sandbox", "LongBridge sandbox lifecycle"),
+        ):
+            report = lifecycle.get(name) if isinstance(lifecycle, dict) else {}
+            if isinstance(report, dict):
+                items.append({
+                    "time": str(report.get("generated_at") or "no data"),
+                    "title": label,
+                    "detail": f"{report.get('status_label') or 'unavailable'} · {report.get('detail') or 'no data'}",
+                    "tone": "green" if str(report.get("status_label") or "").upper() == "PASS" else "yellow" if str(report.get("status_label") or "").lower() == "unavailable" else "red",
+                })
+    if isinstance(research_digest, dict) and research_digest.get("available"):
+        items.append({
+            "time": str(research_digest.get("generated_at") or research_digest.get("date") or "now"),
+            "title": "策略评分复盘",
+            "detail": str(research_digest.get("strategy_summary") or "暂无"),
+            "tone": "purple",
+        })
+    return items[:8]
+
+
 def _ai_selection_price_band(ai_selection: dict | None) -> dict[str, float | bool]:
     settings = (ai_selection or {}).get("settings") if isinstance(ai_selection, dict) else {}
     settings = settings if isinstance(settings, dict) else {}
@@ -642,6 +823,266 @@ def _ai_selection_price_band(ai_selection: dict | None) -> dict[str, float | boo
         "min": float(min_price),
         "max": float(max_price),
         "defaulted": not has_explicit_band,
+    }
+
+
+def _resolve_dashboard_config_path() -> Path | None:
+    explicit = str(_env("SOXS_CONFIG", "") or "").strip()
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.extend(
+        [
+            PROJECT_DIR / "config.local.yaml",
+            PROJECT_DIR / "config.yaml",
+            PROJECT_DIR / "config.sample.yaml",
+        ]
+    )
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _load_dashboard_config():
+    config_path = _resolve_dashboard_config_path()
+    if config_path is None:
+        return None
+    try:
+        return load_config(str(config_path))
+    except Exception:
+        return None
+
+
+def _mode_label(mode: str | None) -> str:
+    value = str(mode or "").strip().lower()
+    return {
+        "paper": "PAPER",
+        "sandbox": "SANDBOX",
+        "live": "PROD",
+        "backtest": "BACKTEST",
+    }.get(value, "UNKNOWN")
+
+
+def _market_status_snapshot(now_et: datetime | None = None) -> dict[str, object]:
+    try:
+        now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now_et = datetime.utcnow()
+    trade_day = now_et.date()
+    open_now = bool(is_us_market_trading_day(trade_day) and (9, 30) <= (now_et.hour, now_et.minute) < (16, 0))
+    return {
+        "open": open_now,
+        "label": "开盘中" if open_now else "已收盘",
+        "detail": "US market open" if open_now else "US market closed",
+        "timestamp": now_et.isoformat(),
+    }
+
+
+def _read_json_file(path: Path) -> dict[str, object] | None:
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _format_lifecycle_detail(report: dict[str, object], *, kind: str) -> str:
+    if kind == "weekend_paper":
+        buy = report.get("buy") if isinstance(report.get("buy"), dict) else {}
+        sell = report.get("sell") if isinstance(report.get("sell"), dict) else {}
+        checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+        parts = [
+            "BUY " + str(buy.get("status") or "unknown").upper(),
+            "SELL " + str(sell.get("status") or "unknown").upper(),
+            f"position {'0' if checks.get('position_returned_to_zero') else 'not zero'}",
+        ]
+        return " · ".join(parts)
+    if kind == "sandbox":
+        precheck = report.get("precheck") if isinstance(report.get("precheck"), dict) else {}
+        buy = report.get("buy") if isinstance(report.get("buy"), dict) else {}
+        sell = report.get("sell") if isinstance(report.get("sell"), dict) else {}
+        checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+        parts = [
+            f"bootstrap {'PASS' if checks.get('bootstrap_confirmed') else 'FAIL'}",
+            "BUY " + str(buy.get("final_status") or buy.get("status") or "unknown").upper(),
+            "SELL " + str(sell.get("final_status") or sell.get("status") or "unknown").upper(),
+        ]
+        if precheck.get("current_quote"):
+            parts.append("read-only bootstrap")
+        return " · ".join(parts)
+    return "no data"
+
+
+def _load_lifecycle_summary(kind: str) -> dict[str, object]:
+    path = WEEKEND_PAPER_LIFECYCLE_PATH if kind == "weekend_paper" else LONGBRIDGE_SANDBOX_LIFECYCLE_PATH
+    raw = _read_json_file(path)
+    if raw is None:
+        return {
+            "available": False,
+            "status": "unavailable",
+            "status_label": "unavailable",
+            "detail": "no data",
+            "generated_at": None,
+            "path": str(path),
+        }
+    report = raw.get("report") if isinstance(raw.get("report"), dict) else raw
+    report = report if isinstance(report, dict) else {}
+    if kind == "weekend_paper":
+        buy = report.get("buy") if isinstance(report.get("buy"), dict) else {}
+        sell = report.get("sell") if isinstance(report.get("sell"), dict) else {}
+        checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+        ok = bool(checks.get("overall"))
+        mode = str(report.get("mode") or "paper").strip().lower()
+        broker = str(report.get("broker") or "PaperBroker")
+        account_type = str(report.get("account_type") or "paper").strip().lower()
+        ticker = str(buy.get("ticker") or sell.get("ticker") or report.get("ticker") or "TEST")
+    else:
+        precheck = report.get("precheck") if isinstance(report.get("precheck"), dict) else {}
+        buy = report.get("buy") if isinstance(report.get("buy"), dict) else {}
+        sell = report.get("sell") if isinstance(report.get("sell"), dict) else {}
+        checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+        ok = bool(report.get("ok"))
+        mode = str(report.get("mode") or "sandbox").strip().lower()
+        broker = str(report.get("broker") or "Longbridge")
+        account_type = str(report.get("account_type") or "paper").strip().lower()
+        ticker = str(report.get("ticker") or "SOFI")
+    generated_at = str(raw.get("generated_at") or report.get("generated_at") or "")
+    if not generated_at:
+        try:
+            generated_at = datetime.fromtimestamp(path.stat().st_mtime, tz=ZoneInfo("Asia/Shanghai")).isoformat()
+        except Exception:
+            generated_at = None
+    detail = _format_lifecycle_detail(report, kind=kind)
+    if not detail or detail == "no data":
+        detail = str(report.get("reason") or "no data")
+    return {
+        "available": True,
+        "status": "PASS" if ok else "FAIL",
+        "status_label": "PASS" if ok else "FAIL",
+        "detail": detail,
+        "generated_at": generated_at,
+        "path": str(path),
+        "mode": _mode_label(mode),
+        "broker": broker,
+        "account_type": account_type.upper() if account_type else "UNKNOWN",
+        "ticker": ticker,
+        "report": report,
+    }
+
+
+def _load_active_orders_summary(tickers: list[str]) -> dict[str, object]:
+    root = STATE_DIR / "broker_cache"
+    orders: list[dict[str, object]] = []
+    sources: list[str] = []
+    for ticker in tickers or []:
+        normalized = _chart_ticker(ticker)
+        path = root / f"longbridge_active_orders_{normalized}.json"
+        payload = _read_json_file(path)
+        if not payload:
+            continue
+        sources.append(str(path))
+        inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        items = inner.get("orders") if isinstance(inner.get("orders"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            orders.append(
+                {
+                    "ticker": _chart_ticker(item.get("ticker") or normalized),
+                    "side": str(item.get("side") or "").upper() or "UNKNOWN",
+                    "quantity": int(item.get("quantity", 0) or 0),
+                    "filled_quantity": int(item.get("filled_quantity", 0) or 0),
+                    "status": str(item.get("status") or "UNKNOWN"),
+                    "limit_price": item.get("limit_price"),
+                    "avg_fill_price": item.get("avg_fill_price"),
+                    "order_id": str(item.get("order_id") or ""),
+                }
+            )
+    available = bool(sources)
+    status_label = "no data" if not available else (f"{len(orders)}" if orders else "0")
+    detail = "no data" if not available else ("无活动订单" if not orders else "LongBridge active order cache")
+    return {
+        "available": available,
+        "count": len(orders),
+        "orders": orders,
+        "sources": sources,
+        "status_label": status_label,
+        "detail": detail,
+    }
+
+
+def _system_status_snapshot(
+    *,
+    runtime_config=None,
+    live_account: dict | None = None,
+    trade_audit: dict | None = None,
+    active_orders: dict | None = None,
+    update_time: str | None = None,
+    mode_override: str | None = None,
+) -> dict[str, object]:
+    config = runtime_config or _load_dashboard_config()
+    config_mode = str(getattr(config, "mode", "") or "paper").strip().lower() if config is not None else "paper"
+    override_mode = str(mode_override or "").strip().lower()
+    mode = override_mode if override_mode in {"paper", "sandbox", "live"} else config_mode
+    guard = TradingEnvironmentGuard().validate(config) if config is not None else None
+    longbridge_cfg = getattr(getattr(config, "broker", None), "longbridge", None) if config is not None else None
+    live_order_enabled = bool(getattr(longbridge_cfg, "allow_live_order", False)) if longbridge_cfg else False
+    reduce_only = bool((trade_audit or {}).get("reduce_only", False))
+    live_account_mode = str((live_account or {}).get("mode") or "").strip().lower()
+    broker_connected = False
+    broker_connection_label = "not connected"
+    data_source = "no data"
+    account_source = "no data"
+    if mode == "paper":
+        broker_connected = True
+        broker_connection_label = "local memory"
+        data_source = "PaperBroker / TOP engine runtime"
+        account_source = "PaperBroker runtime state"
+    elif live_account and not (live_account or {}).get("account_error") and live_account_mode in {"live", "sandbox"}:
+        broker_connected = True
+        broker_connection_label = "connected"
+        if live_account_mode == "sandbox":
+            data_source = "LongBridge sandbox snapshot"
+            account_source = "LongBridge sandbox account"
+        else:
+            data_source = "LongBridge production snapshot"
+            account_source = "LongBridge production account"
+    elif mode in {"sandbox", "live"}:
+        broker_connection_label = "not connected"
+        data_source = "no data"
+        account_source = "not connected"
+    market = _market_status_snapshot()
+    lifecycle_weekend = _load_lifecycle_summary("weekend_paper")
+    lifecycle_sandbox = _load_lifecycle_summary("sandbox")
+    return {
+        "api_status": "OK",
+        "mode": _mode_label(mode),
+        "mode_key": mode or "paper",
+        "broker_type": "PaperBroker" if mode == "paper" else "LongBridge",
+        "broker_connection": broker_connection_label,
+        "broker_connected": broker_connected,
+        "data_source": data_source,
+        "account_source": account_source,
+        "market_open": market.get("open"),
+        "market_open_label": market.get("label"),
+        "market_open_detail": market.get("detail"),
+        "last_updated": update_time or datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+        "global_reduce_only": reduce_only,
+        "live_order_enabled": live_order_enabled,
+        "lifecycle": {
+            "weekend_paper": lifecycle_weekend,
+            "longbridge_sandbox": lifecycle_sandbox,
+        },
+        "active_orders": active_orders or {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"},
+        "environment": (guard.summary if guard is not None else {}),
+        "warnings": list(getattr(guard, "warnings", []) or []),
+        "errors": list(getattr(guard, "errors", []) or []),
     }
 
 
@@ -1025,25 +1466,25 @@ HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="5">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI区间交易总览</title>
 <style>
     :root{
-        --bg:#05070d;
-        --bg2:#0a1020;
-        --panel:rgba(11,17,31,.82);
-        --panel-strong:rgba(15,22,40,.94);
-        --line:rgba(255,255,255,.08);
-        --text:#e6edf8;
-        --muted:#8c97ab;
-        --accent:#86efac;
+        --bg:#030816;
+        --bg2:#071126;
+        --panel:rgba(8,14,28,.88);
+        --panel-strong:rgba(13,20,38,.96);
+        --line:rgba(125,211,252,.14);
+        --text:#edf4ff;
+        --muted:#93a4bf;
+        --accent:#34d399;
         --accent2:#7dd3fc;
+        --accent3:#c084fc;
         --warn:#fbbf24;
         --down:#fb7185;
         --up:#34d399;
-        --shadow:0 24px 80px rgba(0,0,0,.45);
-        --radius-panel:22px;
+        --shadow:0 28px 110px rgba(0,0,0,.55);
+        --radius-panel:24px;
         --radius-card:18px;
     }
     *{margin:0;padding:0;box-sizing:border-box}
@@ -1055,12 +1496,40 @@ HTML = """<!DOCTYPE html>
         line-height:1.58;
         letter-spacing:.01em;
         background:
-            radial-gradient(circle at top left, rgba(125,211,252,.14), transparent 28%),
-            radial-gradient(circle at top right, rgba(52,211,153,.12), transparent 24%),
-            linear-gradient(180deg, #04060b 0%, #060913 44%, #05070d 100%);
+            radial-gradient(circle at 10% 5%, rgba(125,211,252,.16), transparent 24%),
+            radial-gradient(circle at 88% 8%, rgba(192,132,252,.14), transparent 18%),
+            radial-gradient(circle at 50% 0%, rgba(52,211,153,.08), transparent 28%),
+            linear-gradient(180deg, #02050d 0%, #050b18 40%, #030816 100%);
         padding:18px 18px 30px;
         overflow-x:hidden;
         overflow-y:auto;
+        position:relative;
+    }
+    body::before{
+        content:"";
+        position:fixed;
+        inset:0;
+        pointer-events:none;
+        background:
+            linear-gradient(rgba(125,211,252,.05) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(125,211,252,.05) 1px, transparent 1px);
+        background-size:64px 64px;
+        mask-image: linear-gradient(180deg, rgba(0,0,0,.6), rgba(0,0,0,.2) 52%, rgba(0,0,0,.05));
+        opacity:.32;
+        z-index:0;
+    }
+    body::after{
+        content:"";
+        position:fixed;
+        inset:-40px;
+        pointer-events:none;
+        background:
+            radial-gradient(circle at 20% 25%, rgba(125,211,252,.08), transparent 10%),
+            radial-gradient(circle at 78% 18%, rgba(168,85,247,.08), transparent 9%),
+            radial-gradient(circle at 64% 72%, rgba(52,211,153,.07), transparent 12%);
+        filter:blur(6px);
+        opacity:.75;
+        z-index:0;
     }
     .page{
         max-width:1680px;
@@ -1069,27 +1538,49 @@ HTML = """<!DOCTYPE html>
         display:flex;
         flex-direction:column;
         gap:20px;
+        position:relative;
+        z-index:1;
     }
     .topbar{
         display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
-        padding:18px 20px;border:1px solid var(--line);
-        background:linear-gradient(180deg, rgba(16,24,44,.92), rgba(9,13,24,.86));
-        border-radius:var(--radius-panel);box-shadow:var(--shadow);backdrop-filter:blur(14px);
+        padding:22px 22px 18px;border:1px solid rgba(125,211,252,.18);
+        background:
+            linear-gradient(180deg, rgba(11,17,31,.94), rgba(5,10,22,.88)),
+            radial-gradient(circle at 18% 16%, rgba(125,211,252,.10), transparent 30%),
+            radial-gradient(circle at 82% 0%, rgba(192,132,252,.08), transparent 20%);
+        border-radius:var(--radius-panel);
+        box-shadow:0 0 0 1px rgba(255,255,255,.03), var(--shadow);
+        backdrop-filter:blur(18px);
         position:sticky;top:10px;z-index:5;
+        overflow:hidden;
+    }
+    .topbar::before{
+        content:"";
+        position:absolute;
+        inset:0;
+        border-radius:inherit;
+        padding:1px;
+        background:linear-gradient(135deg, rgba(125,211,252,.7), rgba(52,211,153,.3), rgba(192,132,252,.55));
+        -webkit-mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+        -webkit-mask-composite:xor;
+        mask-composite:exclude;
+        pointer-events:none;
     }
     .brand{display:flex;flex-direction:column;gap:10px}
-    .brand h1{font-size:32px;line-height:1.04;letter-spacing:.015em;font-weight:780}
-    .brand p{color:var(--muted);font-size:14px;line-height:1.5}
+    .brand h1{font-size:34px;line-height:1.04;letter-spacing:.02em;font-weight:860}
+    .brand p{color:#aab7cc;font-size:14px;line-height:1.5;max-width:920px}
     .headline-stats{
-        display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;min-width:1040px
+        display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;min-width:1140px
     }
     .headline-stat{
         padding:16px 18px;border-radius:18px;
         background:
             linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.02)),
-            radial-gradient(circle at top right, rgba(125,211,252,.09), transparent 42%);
-        border:1px solid rgba(255,255,255,.08);
-        box-shadow:inset 0 1px 0 rgba(255,255,255,.04)
+            radial-gradient(circle at top right, rgba(125,211,252,.12), transparent 46%),
+            linear-gradient(135deg, rgba(16,24,44,.92), rgba(7,12,24,.88));
+        border:1px solid rgba(125,211,252,.16);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 10px 30px rgba(0,0,0,.25);
+        min-width:0;
     }
     .headline-stat .label{
         display:block;color:#a8b4c8;font-size:11px;letter-spacing:.12em;text-transform:uppercase
@@ -1111,9 +1602,151 @@ HTML = """<!DOCTYPE html>
     .pill.live{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22);color:#b8f5d0}
     .pill.warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.24);color:#fde68a}
     .pill.research{background:rgba(59,130,246,.08);border-color:rgba(59,130,246,.24);color:#bfdbfe}
+    .pill.mode-paper{background:rgba(192,132,252,.12);border-color:rgba(192,132,252,.28);color:#e9d5ff}
+    .pill.mode-sandbox{background:rgba(125,211,252,.12);border-color:rgba(125,211,252,.28);color:#cffafe}
+    .pill.mode-live{background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.28);color:#fecdd3;box-shadow:0 0 0 1px rgba(251,113,133,.12), 0 0 28px rgba(251,113,133,.12)}
+    .pill.mode-live strong{color:#fff}
+    .pill.mode-live::before{content:"⚠";font-size:12px}
+    .pill.status-live{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.24);color:#b8f5d0}
+    .pill.status-warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.24);color:#fde68a}
+    .pill.status-offline{background:rgba(148,163,184,.08);border-color:rgba(148,163,184,.18);color:#cbd5e1}
+    .hero-status-grid{
+        display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:8px;
+        margin-top:10px;
+        min-width:320px;
+    }
+    .hero-status-item{
+        display:flex;justify-content:space-between;gap:12px;align-items:center;
+        padding:9px 11px;border-radius:12px;
+        border:1px solid rgba(125,211,252,.14);
+        background:rgba(8,14,28,.62);
+        font-size:12px;color:#dbeafe
+    }
+    .hero-status-item .k{color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}
+    .hero-status-item .v{font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
     .overview-layout{
         display:grid;grid-template-columns:1fr;gap:16px;
     }
+    .board-section{
+        display:grid;
+        gap:14px;
+        padding:20px;
+        border-radius:var(--radius-panel);
+        border:1px solid rgba(125,211,252,.12);
+        background:linear-gradient(180deg, rgba(9,14,27,.92), rgba(5,9,18,.88));
+        box-shadow:var(--shadow);
+        backdrop-filter:blur(14px);
+        position:relative;
+        overflow:hidden;
+    }
+    .board-section::before{
+        content:"";
+        position:absolute;
+        inset:0;
+        background:
+            linear-gradient(135deg, rgba(125,211,252,.04), transparent 30%),
+            linear-gradient(315deg, rgba(192,132,252,.04), transparent 28%);
+        pointer-events:none;
+    }
+    .board-section > *{position:relative;z-index:1}
+    .board-section-head{
+        display:flex;
+        justify-content:space-between;
+        gap:12px;
+        align-items:flex-end;
+        flex-wrap:wrap;
+    }
+    .board-section-head h2{
+        font-size:17px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#dbe7ff
+    }
+    .board-section-head p{color:var(--muted);font-size:13px;line-height:1.55}
+    .viz-grid{
+        display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:14px;
+    }
+    .viz-card{
+        padding:16px;
+        border-radius:18px;
+        border:1px solid rgba(125,211,252,.12);
+        background:linear-gradient(180deg, rgba(13,20,38,.92), rgba(8,12,24,.86));
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+        min-width:0;
+        overflow:hidden;
+    }
+    .viz-card.wide{grid-column:span 2}
+    .viz-head{
+        display:flex;justify-content:space-between;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px
+    }
+    .viz-title{
+        font-size:14px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#eef4ff
+    }
+    .viz-subtitle{
+        color:var(--muted);font-size:12px;line-height:1.45
+    }
+    .viz-metrics{
+        display:grid;
+        grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:10px;
+        margin-top:10px;
+    }
+    .viz-metric{
+        padding:11px 12px;border-radius:14px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05)
+    }
+    .viz-metric .k{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+    .viz-metric .v{display:block;margin-top:6px;font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
+    .viz-metric .s{display:block;margin-top:5px;color:var(--muted);font-size:11px;line-height:1.45}
+    .risk-grid{
+        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px
+    }
+    .risk-meter{
+        height:8px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:8px
+    }
+    .risk-meter-fill{
+        height:100%;border-radius:999px;background:linear-gradient(90deg, #34d399, #7dd3fc, #c084fc);min-width:2%;
+    }
+    .order-bars{display:grid;gap:10px}
+    .order-bar{
+        display:grid;
+        grid-template-columns:110px minmax(0,1fr) 62px;
+        gap:10px;
+        align-items:center
+    }
+    .order-bar .k{color:var(--muted);font-size:12px;letter-spacing:.08em;text-transform:uppercase}
+    .order-bar-fill{
+        height:10px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden
+    }
+    .order-bar-fill > span{
+        display:block;height:100%;border-radius:999px
+    }
+    .timeline-list{display:grid;gap:10px;max-height:260px;overflow:auto;padding-right:4px}
+    .timeline-item{
+        display:grid;
+        grid-template-columns:120px 1fr;
+        gap:12px;
+        align-items:start;
+        padding:12px 13px;
+        border-radius:14px;
+        background:rgba(255,255,255,.03);
+        border:1px solid rgba(255,255,255,.06)
+    }
+    .timeline-time{color:var(--muted);font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums}
+    .timeline-title{font-size:13px;font-weight:800;color:#fff}
+    .timeline-detail{margin-top:4px;color:#cbd5e1;font-size:12px;line-height:1.5}
+    .timeline-tone-cyan .timeline-title{color:#bfdbfe}
+    .timeline-tone-green .timeline-title{color:#b8f5d0}
+    .timeline-tone-yellow .timeline-title{color:#fde68a}
+    .timeline-tone-red .timeline-title{color:#fecdd3}
+    .timeline-tone-purple .timeline-title{color:#e9d5ff}
+    .pause-button{
+        display:inline-flex;align-items:center;gap:6px;
+        padding:8px 12px;border-radius:999px;border:1px solid rgba(125,211,252,.22);
+        background:rgba(125,211,252,.08);color:#d7f0ff;font-size:12px;font-weight:800;letter-spacing:.05em;
+        cursor:pointer
+    }
+    .pause-button.paused{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.22);color:#fde68a}
     .control-grid{
         display:grid;
         grid-template-columns:minmax(0,1.08fr) minmax(0,1fr);
@@ -1249,6 +1882,58 @@ HTML = """<!DOCTYPE html>
         color:#bfdbfe;text-decoration:none;font-size:12px;font-weight:700
     }
     .research-brief-link:hover{text-decoration:underline}
+    .system-status{
+        margin-top:12px;
+        padding:12px;
+        border-radius:16px;
+        border:1px solid rgba(148,163,184,.18);
+        background:linear-gradient(180deg, rgba(15,23,42,.92), rgba(15,23,42,.7));
+        box-shadow:0 12px 30px rgba(2,6,23,.16);
+        display:grid;
+        gap:10px;
+    }
+    .system-status-head{
+        display:flex;
+        justify-content:space-between;
+        gap:10px;
+        align-items:center;
+        flex-wrap:wrap;
+    }
+    .system-status-grid{
+        display:grid;
+        grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:10px;
+    }
+    .system-status-card{
+        min-width:0;
+        padding:12px;
+        border-radius:14px;
+        border:1px solid rgba(148,163,184,.16);
+        background:rgba(15,23,42,.56);
+        display:grid;
+        gap:6px;
+    }
+    .system-status-card.wide{grid-column:span 2}
+    .system-status-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .system-status-value{font-size:15px;font-weight:800;color:#fff;word-break:break-word}
+    .system-status-detail{font-size:12px;color:var(--muted);line-height:1.45;word-break:break-word}
+    .system-status-orders{
+        display:flex;
+        gap:8px;
+        flex-wrap:wrap;
+    }
+    .system-order-pill{
+        display:inline-flex;
+        align-items:center;
+        gap:6px;
+        padding:6px 10px;
+        border-radius:999px;
+        border:1px solid rgba(148,163,184,.18);
+        background:rgba(15,23,42,.58);
+        color:#dbeafe;
+        font-size:12px;
+        font-variant-numeric:tabular-nums;
+    }
     .settings-form{
         display:flex;gap:8px;align-items:end;flex-wrap:wrap;
         margin-bottom:12px;padding:10px 12px;border-radius:14px;
@@ -1474,9 +2159,11 @@ HTML = """<!DOCTYPE html>
     .offline{opacity:.72}
     @media (max-width:1180px){
         .headline-stats{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
-        .overview-layout,.control-grid,.two-column,.cards{grid-template-columns:1fr}
+        .overview-layout,.control-grid,.two-column,.cards,.viz-grid,.risk-grid{grid-template-columns:1fr}
         .account-grid,.audit-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
         .selector-head,.selector-row,.position-item{grid-template-columns:repeat(5,minmax(0,1fr))}
+        .viz-card.wide{grid-column:span 1}
+        .board-section{padding:16px}
     }
     @media (max-width:760px){
         body{padding:14px;overflow:auto}
@@ -1487,7 +2174,10 @@ HTML = """<!DOCTYPE html>
         .headline-stats{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
         .headline-stat{padding:14px 15px}
         .headline-stat .value{font-size:24px}
-        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column,.audit-strip{grid-template-columns:1fr}
+        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column,.audit-strip,.system-status-grid{grid-template-columns:1fr}
+        .viz-grid,.risk-grid{grid-template-columns:1fr}
+        .hero-status-grid{grid-template-columns:1fr}
+        .viz-card.wide{grid-column:span 1}
         .settings-form{align-items:stretch}
         .settings-note{margin-left:0;width:100%}
         .price{font-size:30px}
@@ -1501,49 +2191,65 @@ HTML = """<!DOCTYPE html>
 <div class="page">
     <div class="topbar">
         <div class="brand">
-            <h1>AI区间交易总览</h1>
-            <p>TOP1 到 TOP3 三路联动监控，当前为 4-30 美元低价杠杆 / 反向工具池模式，每 5 秒自动刷新。</p>
+            <h1>SOXS 区间套利交易系统</h1>
+            <p>AUTOMATED TRADING · RISK CONTROL · LONGBRIDGE EXECUTION · 只读监控大屏，展示 PAPER / SANDBOX / PROD 的实时状态、区间位置、成交与风控。</p>
             <div class="headline-stats">
                 <div class="headline-stat">
-                    <span class="label">今日总收益</span>
-                    <span class="value {{ 'red' if today_total_pnl >= 0 else 'green' }}">${{ "%+.2f"|format(today_total_pnl) }}</span>
-                    <span class="sub">按 3 路策略今日盈亏汇总</span>
+                    <span class="label">账户总资产</span>
+                    <span class="value {% if account_equity_value is not none and account_equity_value >= 0 %}green{% else %}yellow{% endif %}" id="headline-total-equity">
+                        {% if account_equity_value is not none %}${{ "%.2f"|format(account_equity_value) }}{% else %}Unavailable{% endif %}
+                    </span>
+                    <span class="sub" id="headline-total-equity-sub">数据源：{{ system_status.account_source or 'unavailable' }}</span>
                 </div>
                 <div class="headline-stat">
-                    <span class="label">账户浮盈亏</span>
-                    <span class="value {{ 'red' if total_pnl >= 0 else 'green' }}">${{ "%+.2f"|format(total_pnl) }}</span>
-                    <span class="sub">总成交 {{ total_trades }} 笔</span>
+                    <span class="label">可用现金</span>
+                    <span class="value {% if available_cash_display is not none and available_cash_display >= 0 %}green{% else %}yellow{% endif %}" id="headline-available-cash">
+                        {% if available_cash_display is not none %}${{ "%.2f"|format(available_cash_display) }}{% else %}Unavailable{% endif %}
+                    </span>
+                    <span class="sub" id="headline-available-cash-sub">资金来源：{{ system_status.account_source or 'no data' }}</span>
                 </div>
                 <div class="headline-stat">
-                    <span class="label">{{ account_labels.footer_capital }}</span>
-                    <span class="value">{% if total_capital is not none %}${{ "%.2f"|format(total_capital) }}{% else %}暂无{% endif %}</span>
-                    <span class="sub">{% if total_equity is not none %}{{ account_labels.footer_equity }}：${{ "%.2f"|format(total_equity) }}{% else %}{{ account_labels.footer_equity }}：暂无{% endif %}</span>
+                    <span class="label">当前持仓</span>
+                    <span class="value" id="headline-position-count">{{ selected_positions_count }}</span>
+                    <span class="sub" id="headline-position-sub">
+                        {% if display_positions %}
+                            {{ display_positions|map(attribute='ticker')|join(' / ') }}
+                        {% else %}
+                            暂无持仓
+                        {% endif %}
+                    </span>
                 </div>
                 <div class="headline-stat">
-                    <span class="label">最近买点</span>
-                    <span class="value">{{ nearest_buy_trigger_name }}</span>
-                    <span class="sub">{{ nearest_buy_trigger }}</span>
+                    <span class="label">今日盈亏</span>
+                    <span class="value {% if today_total_pnl >= 0 %}green{% else %}red{% endif %}" id="headline-today-pnl">${{ "%+.2f"|format(today_total_pnl) }}</span>
+                    <span class="sub" id="headline-today-pnl-sub">按 3 路策略今日盈亏汇总 / 总成交 {{ total_trades }} 笔</span>
                 </div>
                 <div class="headline-stat">
-                    <span class="label">最近卖点</span>
-                    <span class="value">{{ nearest_sell_trigger_name }}</span>
-                    <span class="sub">{{ nearest_sell_trigger }}</span>
+                    <span class="label">活动订单</span>
+                    <span class="value" id="headline-active-orders">{{ active_order_summary.pending }}</span>
+                    <span class="sub" id="headline-active-orders-sub">PENDING {{ active_order_summary.pending }} · PARTIAL {{ active_order_summary.partial_filled }}</span>
+                </div>
+                <div class="headline-stat">
+                    <span class="label">系统状态</span>
+                    <span class="value {{ runtime_state_class }}" id="headline-system-state">{{ runtime_state_value }}</span>
+                    <span class="sub" id="headline-system-state-sub">Reduce-Only {{ 'ON' if system_status.global_reduce_only else 'OFF' }} · Live Order {{ 'ON' if system_status.live_order_enabled else 'OFF' }}</span>
                 </div>
             </div>
         </div>
         <div class="status-row">
-            <span class="pill live">实时监控</span>
-            <span class="pill">更新于 {{ update_time }}</span>
+            <span class="pill {{ mode_class }}" id="mode-pill">
+                <strong>{{ mode_display }}</strong>
+            </span>
+            <span class="pill {{ market_pill_class }}" id="market-pill">市场：{{ system_status.market_open_label or 'unavailable' }}</span>
+            <span class="pill {{ system_status.broker_connected and 'status-live' or 'status-offline' }}" id="broker-pill">Broker：{{ system_status.broker_connection or 'not connected' }}</span>
             <a class="pill research" href="{{ research_url }}" target="_blank" rel="noopener">只读研究简报</a>
             <span class="pill {{ startup_guard.level }}">
                 {{ startup_guard.label }}
             </span>
-            <span class="pill {% if live_account and live_account.mode == 'live' %}live{% else %}warn{% endif %}">
-                {% if live_account and live_account.mode == 'live' %}实盘账户{% elif live_account and live_account.account_error %}实盘账户异常{% else %}虚拟盘{% endif %}
-            </span>
+            <span class="pill">最后更新时间 <span id="last-updated-pill">{{ update_time }}</span></span>
             {% if live_account and live_account.data_stale %}
                 {% if live_account.account_error %}
-            <span class="pill warn">账户拉取失败 · {{ live_account.stale_reason }}</span>
+            <span class="pill warn">实盘账户异常 · 账户拉取失败 · {{ live_account.stale_reason }}</span>
                 {% else %}
             <span class="pill warn">账户数据已过期 · {{ live_account.fetched_at or '未知时间' }}</span>
                 {% endif %}
@@ -1560,6 +2266,237 @@ HTML = """<!DOCTYPE html>
         {{ startup_guard.detail }}
         · 要求美东日期 {{ startup_guard.required_date }}
         {% if startup_guard.state_date %} · 当前状态日期 {{ startup_guard.state_date }}{% endif %}
+    </div>
+    <div class="system-status">
+        <div class="system-status-head">
+            <div>
+                <h2 style="margin:0;font-size:18px;letter-spacing:.08em;text-transform:uppercase;color:#dbe7ff">系统状态</h2>
+                <div class="hint" style="margin-top:4px">只读展示 · 不触发下单 · 不修改环境变量或状态</div>
+            </div>
+            <span class="pill {{ 'mode-live' if system_status.mode_key == 'live' else 'mode-sandbox' if system_status.mode_key == 'sandbox' else 'mode-paper' }}" id="system-pill">
+                {{ system_status.mode }}{% if system_status.mode_key == 'paper' %} · 虚拟盘{% elif system_status.mode_key == 'sandbox' %} · 沙盒{% elif system_status.mode_key == 'live' %} · 实盘账户{% endif %}
+            </span>
+        </div>
+        <div class="system-status-grid">
+            <div class="system-status-card">
+                <span class="system-status-label">API 状态</span>
+                <span class="system-status-value" id="system-api-status">{{ system_status.api_status or 'unavailable' }}</span>
+                <span class="system-status-detail" id="system-last-updated">最后更新时间：{{ system_status.last_updated or 'unavailable' }}</span>
+            </div>
+            <div class="system-status-card">
+                <span class="system-status-label">broker 类型</span>
+                <span class="system-status-value" id="system-broker-type">{{ system_status.broker_type or 'unavailable' }}</span>
+                <span class="system-status-detail" id="system-broker-connection">连接状态：{{ system_status.broker_connection or 'not connected' }}</span>
+            </div>
+            <div class="system-status-card">
+                <span class="system-status-label">数据来源</span>
+                <span class="system-status-value" id="system-data-source">{{ system_status.data_source or 'no data' }}</span>
+                <span class="system-status-detail" id="system-account-source">{{ system_status.account_source or 'no data' }}</span>
+            </div>
+            <div class="system-status-card">
+                <span class="system-status-label">市场状态</span>
+                <span class="system-status-value" id="system-market-label">{{ system_status.market_open_label or 'unavailable' }}</span>
+                <span class="system-status-detail" id="system-market-detail">{{ system_status.market_open_detail or 'no data' }}</span>
+            </div>
+            <div class="system-status-card">
+                <span class="system-status-label">Global Reduce-Only</span>
+                <span class="system-status-value" id="system-reduce-only">{{ 'ENABLED' if system_status.global_reduce_only else 'DISABLED' }}</span>
+                <span class="system-status-detail">全局只减仓开关</span>
+            </div>
+            <div class="system-status-card">
+                <span class="system-status-label">Live Order</span>
+                <span class="system-status-value" id="system-live-order">{{ 'ENABLED' if system_status.live_order_enabled else 'DISABLED' }}</span>
+                <span class="system-status-detail">sandbox / paper 下默认应为 disabled</span>
+            </div>
+            <div class="system-status-card wide">
+                <span class="system-status-label">活动订单</span>
+                <span class="system-status-value" id="system-orders-status">{{ system_status.active_orders.status_label or 'no data' }}</span>
+                <span class="system-status-detail" id="system-orders-detail">{{ system_status.active_orders.detail or 'no data' }}</span>
+                <div class="system-status-orders" style="margin-top:6px">
+                    {% for order in system_status.active_orders.orders[:4] %}
+                    <span class="system-order-pill">
+                        {{ order.ticker }} {{ order.side }} {{ order.quantity }}股 · {{ order.status }}
+                    </span>
+                    {% endfor %}
+                    {% if not system_status.active_orders.orders %}
+                    <span class="system-status-detail">no data</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="system-status-card wide">
+                <span class="system-status-label">最近一次 weekend paper lifecycle</span>
+                <span class="system-status-value" id="system-weekend-lifecycle">{{ system_status.lifecycle.weekend_paper.status_label or 'unavailable' }}</span>
+                <span class="system-status-detail" id="system-weekend-detail">{{ system_status.lifecycle.weekend_paper.detail or 'no data' }}</span>
+                <span class="system-status-detail" id="system-weekend-time">报告：{{ system_status.lifecycle.weekend_paper.generated_at or 'no data' }}</span>
+            </div>
+            <div class="system-status-card wide">
+                <span class="system-status-label">最近一次 LongBridge sandbox lifecycle</span>
+                <span class="system-status-value" id="system-sandbox-lifecycle">{{ system_status.lifecycle.longbridge_sandbox.status_label or 'unavailable' }}</span>
+                <span class="system-status-detail" id="system-sandbox-detail">{{ system_status.lifecycle.longbridge_sandbox.detail or 'no data' }}</span>
+                <span class="system-status-detail" id="system-sandbox-time">报告：{{ system_status.lifecycle.longbridge_sandbox.generated_at or 'no data' }}</span>
+            </div>
+        </div>
+    </div>
+    <div class="board-section">
+        <div class="board-section-head">
+            <div>
+                <h2>交易大屏</h2>
+                <p>上方看六张核心卡，下面看图表、风险、订单和审计时间线。全部数据都来自只读状态，不触发任何下单。</p>
+            </div>
+            <button class="pause-button" id="auto-refresh-toggle" type="button">⏸ 暂停自动刷新</button>
+        </div>
+        <div class="viz-grid">
+            <div class="viz-card wide">
+                <div class="viz-head">
+                    <div>
+                        <div class="viz-title">账户权益变化</div>
+                        <div class="viz-subtitle">展示当前引擎权益对比与今日盈亏快照</div>
+                    </div>
+                    <div class="viz-subtitle">总权益 {{ "$%.2f"|format(total_equity) if total_equity is not none else 'Unavailable' }} · 今日盈亏 {{ "%+.2f"|format(today_total_pnl) }}</div>
+                </div>
+                {% if equity_curve_bars %}
+                    <div>{{ equity_curve_bars|safe }}</div>
+                {% else %}
+                    <div class="selector-empty">暂无权益曲线数据</div>
+                {% endif %}
+            </div>
+            <div class="viz-card">
+                <div class="viz-head">
+                    <div>
+                        <div class="viz-title">SOXS 价格与交易点</div>
+                        <div class="viz-subtitle">价格折线 + BUY / SELL 标记 + 最近成交</div>
+                    </div>
+                    <div class="viz-subtitle">{{ main_chart_card.ticker if main_chart_card else 'N/A' }}</div>
+                </div>
+                {% if main_chart_card %}
+                <div class="mini-chart" data-ticker="{{ main_chart_card.ticker }}">
+                    <div class="mini-chart-head">
+                        <span class="mini-chart-title">主图 · {{ main_chart_card.ticker }}</span>
+                        <span class="mini-chart-meta chart-meta">等待数据</span>
+                    </div>
+                    <div class="mini-chart-body">
+                        <div class="mini-chart-empty">暂无图表数据</div>
+                        <svg class="mini-chart-svg" viewBox="0 0 320 124" preserveAspectRatio="none" aria-label="{{ main_chart_card.ticker }} price chart"></svg>
+                    </div>
+                    <div class="mini-chart-trades"></div>
+                </div>
+                <div class="viz-metrics">
+                    <div class="viz-metric">
+                        <span class="k">平均成本</span>
+                        <span class="v">{% if main_chart_card.avg_entry_price %}${{ "%.2f"|format(main_chart_card.avg_entry_price) }}{% else %}--{% endif %}</span>
+                        <span class="s">持仓成本</span>
+                    </div>
+                    <div class="viz-metric">
+                        <span class="k">当前价格</span>
+                        <span class="v">{% if main_chart_card.price is not none %}${{ "%.2f"|format(main_chart_card.price) }}{% else %}--{% endif %}</span>
+                        <span class="s">最近行情</span>
+                    </div>
+                    <div class="viz-metric">
+                        <span class="k">未实现盈亏</span>
+                        <span class="v {{ 'green' if (main_chart_card.pnl or 0) >= 0 else 'red' }}">{% if main_chart_card.pnl is not none %}${{ "%+.2f"|format(main_chart_card.pnl) }}{% else %}--{% endif %}</span>
+                        <span class="s">真实持仓</span>
+                    </div>
+                    <div class="viz-metric">
+                        <span class="k">交易点</span>
+                        <span class="v">{{ (main_chart_card.chart_trades|length) if main_chart_card.chart_trades is defined else 0 }}</span>
+                        <span class="s">FILLED 成交</span>
+                    </div>
+                </div>
+                {% else %}
+                <div class="selector-empty">暂无主图数据</div>
+                {% endif %}
+            </div>
+            <div class="viz-card">
+                <div class="viz-head">
+                    <div>
+                        <div class="viz-title">持仓与风险监控</div>
+                        <div class="viz-subtitle">当前仓位、现金比例、单票暴露、风险等级</div>
+                    </div>
+                    <div class="viz-subtitle">{{ risk_summary.risk_label }}</div>
+                </div>
+                <div class="risk-grid">
+                    <div class="viz-metric">
+                        <span class="k">持仓数量</span>
+                        <span class="v">{{ risk_summary.position_count }}</span>
+                        <span class="s">当前真实 / 虚拟仓位</span>
+                    </div>
+                    <div class="viz-metric">
+                        <span class="k">现金占比</span>
+                        <span class="v">{% if risk_summary.cash_pct is not none %}{{ "%.1f"|format(risk_summary.cash_pct) }}%{% else %}--{% endif %}</span>
+                        <span class="s">按账户权益计算</span>
+                    </div>
+                    <div class="viz-metric">
+                        <span class="k">最大单票占比</span>
+                        <span class="v">{% if risk_summary.largest_pct is not none %}{{ "%.1f"|format(risk_summary.largest_pct) }}%{% else %}--{% endif %}</span>
+                        <span class="s">最大允许仓位</span>
+                    </div>
+                </div>
+                <div class="risk-meter"><span class="risk-meter-fill" style="width:{% if risk_summary.exposure_pct is not none %}{{ [risk_summary.exposure_pct, 100]|min }}%{% else %}8%{% endif %}"></span></div>
+                <div class="viz-metrics">
+                    {% for pos in display_positions[:3] %}
+                    <div class="viz-metric">
+                        <span class="k">{{ pos.ticker }}</span>
+                        <span class="v">{{ pos.quantity }} 股</span>
+                        <span class="s">
+                            {% if pos.market_value is not none %}市值 ${{ "%.2f"|format(pos.market_value) }}{% else %}市值 unavailable{% endif %}
+                        </span>
+                    </div>
+                    {% endfor %}
+                    {% if not display_positions %}
+                    <div class="selector-empty" style="grid-column:1/-1">暂无持仓数据</div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="viz-card">
+                <div class="viz-head">
+                    <div>
+                        <div class="viz-title">订单状态分布</div>
+                        <div class="viz-subtitle">PENDING / PARTIAL / FILLED / CANCELLED / REJECTED</div>
+                    </div>
+                    <div class="viz-subtitle">总计 {{ active_order_summary.total }}</div>
+                </div>
+                <div class="order-bars">
+                    {% for label, value, color in [
+                        ('PENDING', active_order_summary.pending, '#fbbf24'),
+                        ('PARTIAL', active_order_summary.partial_filled, '#7dd3fc'),
+                        ('FILLED', active_order_summary.filled, '#34d399'),
+                        ('CANCELLED', active_order_summary.cancelled, '#94a3b8'),
+                        ('REJECTED', active_order_summary.rejected, '#fb7185'),
+                    ] %}
+                    <div class="order-bar">
+                        <span class="k">{{ label }}</span>
+                        <div class="order-bar-fill">
+                            <span style="width:{% if active_order_summary.total > 0 %}{{ (value / active_order_summary.total * 100) if value else 2 }}%{% else %}2%{% endif %};background:{{ color }}"></span>
+                        </div>
+                        <span class="v" style="font-variant-numeric:tabular-nums">{{ value }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="viz-card">
+                <div class="viz-head">
+                    <div>
+                        <div class="viz-title">交易与审计事件</div>
+                        <div class="viz-subtitle">按时间倒序的关键事件摘要</div>
+                    </div>
+                    <div class="viz-subtitle">{{ trade_audit.execution_mode or 'unknown' }}</div>
+                </div>
+                <div class="timeline-list">
+                    {% for event in timeline_items %}
+                    <div class="timeline-item timeline-tone-{{ event.tone or 'cyan' }}">
+                        <div class="timeline-time">{{ event.time or 'now' }}</div>
+                        <div>
+                            <div class="timeline-title">{{ event.title }}</div>
+                            <div class="timeline-detail">{{ event.detail }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if not timeline_items %}
+                    <div class="selector-empty">暂无审计事件</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
     </div>
     {% if trade_audit.unresolved_alert %}
     <div class="warning-banner">
@@ -1622,7 +2559,7 @@ HTML = """<!DOCTYPE html>
                                 {% endfor %}
                             </div>
                             {% elif live_account and live_account.account_error %}
-                            <div class="position-empty">账户持仓拉取失败：{{ live_account.stale_reason }}</div>
+                            <div class="position-empty">实盘账户异常 / 账户拉取失败：{{ live_account.stale_reason }}</div>
                             {% else %}
                             <div class="position-empty">当前没有持仓。</div>
                             {% endif %}
@@ -1669,7 +2606,7 @@ HTML = """<!DOCTYPE html>
                         {% if ai_selection and ai_selection.timestamp %}
                             最新选股时间：{{ ai_selection.timestamp }}
                             {% if ai_selection.settings %}
-                                · 价格范围：${{ "%.2f"|format(ai_selection_price_band.min or 0) }} - ${{ "%.2f"|format(ai_selection_price_band.max or 0) }}{% if ai_selection_price_band.defaulted %} (default){% endif %}
+                                · 价格范围：${{ "%.2f"|format(ai_selection_price_band.min) }} - ${{ "%.2f"|format(ai_selection_price_band.max) }}{% if ai_selection_price_band.defaulted %} (default){% endif %}
                                 · 自动刷新：{{ ai_selection.settings.auto_refresh_minutes or 0 }} 分钟
                                 · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
                                 · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
@@ -2220,6 +3157,114 @@ HTML = """<!DOCTYPE html>
         }
     }
 
+    function formatMoney(value, fallback = 'Unavailable') {
+        const number = Number(value);
+        return Number.isFinite(number) ? `$${number.toFixed(2)}` : fallback;
+    }
+
+    function setText(id, value, fallback = 'Unavailable') {
+        const node = document.getElementById(id);
+        if (!node) {
+            return;
+        }
+        if (value === null || value === undefined || value === '') {
+            node.textContent = fallback;
+        } else {
+            node.textContent = value;
+        }
+    }
+
+    function setClass(id, className) {
+        const node = document.getElementById(id);
+        if (!node) {
+            return;
+        }
+        node.className = className;
+    }
+
+    let statusRefreshPaused = false;
+    const refreshToggle = document.getElementById('auto-refresh-toggle');
+    if (refreshToggle) {
+        refreshToggle.addEventListener('click', () => {
+            statusRefreshPaused = !statusRefreshPaused;
+            refreshToggle.textContent = statusRefreshPaused ? '▶ 恢复自动刷新' : '⏸ 暂停自动刷新';
+            refreshToggle.classList.toggle('paused', statusRefreshPaused);
+        });
+    }
+
+    async function refreshStatus() {
+        if (statusRefreshPaused) {
+            return;
+        }
+        try {
+            const response = await fetch('/api/status', { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`status ${response.status}`);
+            }
+            const payload = await response.json();
+            const system = payload.system || {};
+            const summary = (payload.dashboard && payload.dashboard.summary) || {};
+
+            setText('last-updated-pill', payload.timestamp || '');
+            setText('system-api-status', system.api_status || 'unavailable');
+            setText('system-last-updated', `最后更新时间：${system.last_updated || 'unavailable'}`);
+            setText('system-broker-type', system.broker_type || 'unavailable');
+            setText('system-broker-connection', `连接状态：${system.broker_connection || 'not connected'}`);
+            setText('system-data-source', system.data_source || 'no data');
+            setText('system-account-source', system.account_source || 'no data');
+            setText('system-market-label', system.market_open_label || 'unavailable');
+            setText('system-market-detail', system.market_open_detail || 'no data');
+            setText('system-reduce-only', system.global_reduce_only ? 'ENABLED' : 'DISABLED');
+            setText('system-live-order', system.live_order_enabled ? 'ENABLED' : 'DISABLED');
+            setText('system-orders-status', system.active_orders && system.active_orders.status_label ? system.active_orders.status_label : 'no data');
+            setText('system-orders-detail', system.active_orders && system.active_orders.detail ? system.active_orders.detail : 'no data');
+            setText('system-weekend-lifecycle', system.lifecycle && system.lifecycle.weekend_paper ? (system.lifecycle.weekend_paper.status_label || 'unavailable') : 'unavailable');
+            setText('system-weekend-detail', system.lifecycle && system.lifecycle.weekend_paper ? (system.lifecycle.weekend_paper.detail || 'no data') : 'no data');
+            setText('system-weekend-time', `报告：${system.lifecycle && system.lifecycle.weekend_paper ? (system.lifecycle.weekend_paper.generated_at || 'no data') : 'no data'}`);
+            setText('system-sandbox-lifecycle', system.lifecycle && system.lifecycle.longbridge_sandbox ? (system.lifecycle.longbridge_sandbox.status_label || 'unavailable') : 'unavailable');
+            setText('system-sandbox-detail', system.lifecycle && system.lifecycle.longbridge_sandbox ? (system.lifecycle.longbridge_sandbox.detail || 'no data') : 'no data');
+            setText('system-sandbox-time', `报告：${system.lifecycle && system.lifecycle.longbridge_sandbox ? (system.lifecycle.longbridge_sandbox.generated_at || 'no data') : 'no data'}`);
+            setText('headline-total-equity', formatMoney(summary.equity));
+            setText('headline-total-equity-sub', `数据源：${system.account_source || 'unavailable'}`);
+            setText('headline-available-cash', formatMoney(summary.buying_power ?? summary.cash));
+            setText('headline-available-cash-sub', `资金来源：${system.account_source || 'no data'}`);
+            setText('headline-position-count', summary.positions_count != null ? String(summary.positions_count) : '--');
+            setText('headline-position-sub', summary.positions_count ? `${summary.positions_count} 个仓位` : '暂无持仓');
+            setText('headline-today-pnl', formatMoney(summary.today_total_pnl ?? 0, '$0.00'));
+            setText('headline-today-pnl-sub', `按 3 路策略今日盈亏汇总 / 总成交 ${(summary.total_trades ?? 0)} 笔`);
+            setText('headline-active-orders', summary.active_orders_pending != null ? String(summary.active_orders_pending) : '0');
+            setText('headline-active-orders-sub', `PENDING ${summary.active_orders_pending ?? 0} · PARTIAL ${summary.active_orders_partial_filled ?? 0}`);
+            setText('headline-system-state', system.broker_connected ? 'RUNNING' : 'DEGRADED');
+            setText('headline-system-state-sub', `Reduce-Only ${system.global_reduce_only ? 'ON' : 'OFF'} · Live Order ${system.live_order_enabled ? 'ON' : 'OFF'}`);
+
+            const modeLabel = String(payload.mode || 'paper').toLowerCase();
+            const modeChip = document.getElementById('mode-pill');
+            if (modeChip) {
+                const modeText = modeLabel === 'sandbox' ? 'SANDBOX · 沙盒' : modeLabel === 'live' ? 'PROD · 实盘账户' : 'PAPER · 虚拟盘';
+                modeChip.className = `pill ${modeLabel === 'sandbox' ? 'mode-sandbox' : modeLabel === 'live' ? 'mode-live' : 'mode-paper'}`;
+                modeChip.innerHTML = `<strong>${modeText}</strong>`;
+            }
+            const marketChip = document.getElementById('market-pill');
+            if (marketChip) {
+                const marketOpen = !!system.market_open;
+                marketChip.className = `pill ${marketOpen ? 'status-live' : 'status-warn'}`;
+                marketChip.textContent = `市场：${system.market_open_label || 'unavailable'}`;
+            }
+            const brokerChip = document.getElementById('broker-pill');
+            if (brokerChip) {
+                brokerChip.className = `pill ${system.broker_connected ? 'status-live' : 'status-offline'}`;
+                brokerChip.textContent = `Broker：${system.broker_connection || 'not connected'}`;
+            }
+            const systemChip = document.getElementById('system-pill');
+            if (systemChip) {
+                systemChip.className = `pill ${system.broker_connected ? 'status-live' : 'status-offline'}`;
+                systemChip.innerHTML = `<strong>${system.mode || 'UNKNOWN'}</strong> · ${system.broker_connection || 'not connected'}`;
+            }
+        } catch (error) {
+            // Keep last known data on failures.
+        }
+    }
+
     async function refreshChart(chartEl) {
         const ticker = chartEl.dataset.ticker || '';
         if (!ticker) {
@@ -2239,8 +3284,10 @@ HTML = """<!DOCTYPE html>
 
     function schedule() {
         charts.forEach((chartEl) => refreshChart(chartEl));
+        refreshStatus();
         window.setInterval(() => {
             charts.forEach((chartEl) => refreshChart(chartEl));
+            refreshStatus();
         }, 10000);
     }
 
@@ -2311,25 +3358,40 @@ def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | No
         "signal": signal,
         "price": price,
         "halted": halted,
+        "daily_pnl": (status or {}).get("daily_pnl"),
+        "equity": (status or {}).get("equity"),
+        "cash": (status or {}).get("cash"),
+        "buying_power": (status or {}).get("buying_power"),
+        "position_shares": (status or {}).get("position_shares"),
+        "avg_entry_price": (status or {}).get("avg_entry_price"),
+        "unrealized_pnl": (status or {}).get("unrealized_pnl"),
+        "unrealized_pnl_pct": (status or {}).get("unrealized_pnl_pct"),
+        "trade_in_progress": bool((status or {}).get("trade_in_progress", False)) if online else False,
+        "range_ready": bool((status or {}).get("range_ready", False)) if online else False,
+        "range_source": (status or {}).get("range_source"),
+        "support": (status or {}).get("support"),
+        "resistance": (status or {}).get("resistance"),
+        "spread_pct": (status or {}).get("spread_pct"),
+        "bid": (status or {}).get("bid"),
+        "ask": (status or {}).get("ask"),
+        "volume": (status or {}).get("volume"),
+        "last_signal_reason": (status or {}).get("last_signal_reason"),
     }
 
 
 def _fallback_runtime_flags() -> tuple[bool, bool]:
-    top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags()
     try:
         runtime_config = load_runtime_config()
-        live_allowed = (
-            bool(top_live_allowed)
-            if top_live_allowed is not None
-            else bool(runtime_config.allow_fallback_live_entries)
-        )
-        paper_allowed = (
-            bool(top_paper_allowed)
-            if top_paper_allowed is not None
-            else bool(runtime_config.allow_fallback_paper_entries)
-        )
+        live_config_value = getattr(runtime_config, "allow_fallback_live_entries", None)
+        paper_config_value = getattr(runtime_config, "allow_fallback_paper_entries", None)
+        top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags()
+        live_candidates = [bool(value) for value in (live_config_value, top_live_allowed) if value is not None]
+        paper_candidates = [bool(value) for value in (paper_config_value, top_paper_allowed) if value is not None]
+        live_allowed = any(live_candidates) if live_candidates else False
+        paper_allowed = any(paper_candidates) if paper_candidates else False
         return live_allowed, paper_allowed
     except Exception:
+        top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags()
         return bool(top_live_allowed), bool(top_paper_allowed)
 
 
@@ -2340,9 +3402,12 @@ def _api_status_payload() -> dict[str, object]:
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
     selection_sync = _selection_sync_status()
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=None, mode=_desired_audit_mode())
-    execution_mode = _resolve_dashboard_execution_mode(trade_audit)
     top_modes = _load_top_modes()
     top_tickers = list((selection_sync or {}).get("current_top_config_symbols") or current_top_config_symbols(limit=len(TICKERS)))
+    dashboard_config = _load_dashboard_config()
+    dashboard_mode = str(getattr(dashboard_config, "mode", "") or "paper").strip().lower() if dashboard_config else "paper"
+    live_account = _fetch_live_account_summary() if dashboard_mode in {"sandbox", "live"} else None
+    active_orders = _load_active_orders_summary(top_tickers)
     top_engines = [
         _top_engine_status(
             item,
@@ -2352,6 +3417,7 @@ def _api_status_payload() -> dict[str, object]:
         )
         for index, item in enumerate(TICKERS)
     ]
+    order_counts = _dashboard_order_status_summary(active_orders)
     selection_date = (
         str((selection_sync or {}).get("state_date") or "").strip()
         or str((selection_sync or {}).get("required_date") or "").strip()
@@ -2362,9 +3428,30 @@ def _api_status_payload() -> dict[str, object]:
         fallback_used = any(bool((item or {}).get("fallback_used")) for item in (ai_selection.get("top3") or []))
     live_guard_ok = not any(str(mode).strip().lower() == "live" for mode in top_modes) or bool((selection_sync or {}).get("ok"))
     fallback_live_allowed, fallback_paper_allowed = _fallback_runtime_flags()
+    top_daily_pnl = 0.0
+    top_unrealized_pnl = 0.0
+    top_equity = 0.0
+    top_cash = 0.0
+    top_buying_power = 0.0
+    for item in top_engines:
+        try:
+            top_daily_pnl += float(item.get("daily_pnl") or 0.0)
+            top_unrealized_pnl += float(item.get("unrealized_pnl") or 0.0)
+            top_equity += float(item.get("equity") or 0.0)
+            top_cash += float(item.get("cash") or 0.0)
+            top_buying_power += float(item.get("buying_power") or 0.0)
+        except Exception:
+            continue
+    system_status = _system_status_snapshot(
+        runtime_config=dashboard_config,
+        live_account=live_account,
+        trade_audit=trade_audit,
+        active_orders=active_orders,
+        mode_override=dashboard_mode,
+    )
     return {
         "ok": True,
-        "mode": execution_mode or "paper",
+        "mode": dashboard_mode or "paper",
         "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "combined": {
             "port": _COMBINED_PORT,
@@ -2386,10 +3473,27 @@ def _api_status_payload() -> dict[str, object]:
         },
         "dashboard": {
             "chart_api_available": True,
+            "summary": {
+                "cash": live_account.get("cash") if isinstance(live_account, dict) else None,
+                "equity": live_account.get("equity") if isinstance(live_account, dict) else None,
+                "buying_power": live_account.get("buying_power") if isinstance(live_account, dict) else None,
+                "positions_count": len(live_account.get("positions") or []) if isinstance(live_account, dict) and isinstance(live_account.get("positions"), list) else (live_account or {}).get("positions_count"),
+                "top_engine_online_count": sum(1 for item in top_engines if item.get("online")),
+                "active_orders_total": order_counts["total"],
+                "active_orders_pending": order_counts["pending"],
+                "active_orders_partial_filled": order_counts["partial_filled"],
+                "today_total_pnl": round(top_daily_pnl, 2),
+                "total_pnl": round(top_unrealized_pnl, 2),
+                "total_equity": round(top_equity, 2),
+                "total_cash": round(top_cash, 2),
+                "total_buying_power": round(top_buying_power, 2),
+                "total_trades": int(trade_audit.get("execution_count", 0) or 0),
+            },
         },
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
         },
+        "system": system_status,
     }
 
 
@@ -2415,10 +3519,12 @@ def api_status():
         return jsonify(_api_status_payload()), 200
     except Exception as exc:
         fallback_live_allowed, fallback_paper_allowed = _fallback_runtime_flags()
+        dashboard_config = _load_dashboard_config()
+        dashboard_mode = str(getattr(dashboard_config, "mode", "") or "paper").strip().lower() if dashboard_config else "paper"
         return jsonify(
             {
                 "ok": False,
-                "mode": "paper",
+                "mode": dashboard_mode or "paper",
                 "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
                 "combined": {
                     "port": _COMBINED_PORT,
@@ -2444,6 +3550,13 @@ def api_status():
                 "ai_selection": {
                     "price_band": {"min": 4.0, "max": 50.0, "defaulted": True},
                 },
+                "system": _system_status_snapshot(
+                    runtime_config=dashboard_config,
+                    live_account=_fetch_live_account_summary() if dashboard_mode in {"sandbox", "live"} else None,
+                    trade_audit={},
+                    active_orders=None,
+                    mode_override=dashboard_mode,
+                ),
                 "error": str(exc),
             }
         ), 200
@@ -2883,10 +3996,13 @@ def index():
     total_capital = 0.0
     total_equity = 0.0
     total_trades = 0
+    dashboard_config = _load_dashboard_config()
+    runtime_mode = str(getattr(dashboard_config, "mode", "") or "paper").strip().lower() if dashboard_config else "paper"
     runtime_settings = load_runtime_settings()
-    live_account = _fetch_live_account_summary()
-    account_positions = _position_lookup(live_account)
-    use_live_account_positions = bool(live_account and live_account.get("mode") == "live")
+    live_account = None
+    account_positions = {}
+    live_account_mode = ""
+    use_external_account_positions = False
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
@@ -2907,6 +4023,7 @@ def index():
             startup_guard = _startup_guard_status(selection_sync)
     except (TypeError, ValueError):
         startup_guard = _startup_guard_status(selection_sync)
+    update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     latest_line = _latest_trade_line(trade_audit)
     trade_audit = {
         "broker_unresolved_count": int(trade_audit.get("broker_unresolved_count", 0) or 0),
@@ -2924,6 +4041,16 @@ def index():
         ),
     }
     dashboard_execution_mode = _resolve_dashboard_execution_mode(trade_audit)
+    runtime_account_mode = str(trade_audit.get("execution_mode") or "").strip().lower()
+    effective_mode = runtime_account_mode if runtime_account_mode in {"paper", "sandbox", "live"} else runtime_mode
+    live_account = _fetch_live_account_summary()
+    account_positions = _position_lookup(live_account)
+    live_account_mode = str((live_account or {}).get("mode") or "").strip().lower()
+    use_external_account_positions = bool(
+        live_account
+        and live_account_mode in {"live", "sandbox"}
+        and not (live_account or {}).get("account_error")
+    )
     dashboard_status_by_symbol: dict[str, dict | None] = {}
     for item in TICKERS:
         defaults = _load_config_defaults(item["config"])
@@ -2948,6 +4075,12 @@ def index():
         (audit_day or datetime.now().strftime("%Y%m%d"))
         if audit_scope in {"today", "latest"}
         else datetime.now().strftime("%Y%m%d")
+    )
+    active_orders_summary = _load_active_orders_summary(
+        [
+            str(_load_config_defaults(t["config"]).get("ticker") or "").strip().upper()
+            for t in TICKERS
+        ]
     )
     selected_tickers: set[str] = set()
 
@@ -2975,7 +4108,7 @@ def index():
 
             sparkline = _build_sparkline([price], price)
             selected_ticker = str(defaults["ticker"]).strip().upper()
-            account_pos = account_positions.get(selected_ticker) if use_live_account_positions else None
+            account_pos = account_positions.get(selected_ticker) if use_external_account_positions else None
             account_shares = int((account_pos or {}).get("quantity", 0) or 0)
             account_pnl = float((account_pos or {}).get("unrealized_pnl", 0.0) or 0.0)
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
@@ -2985,7 +4118,24 @@ def index():
                     account_pnl = round((float(price or 0.0) - account_entry_price) * account_shares, 6)
                 if account_entry_price > 0.0 and account_pnl_pct == 0.0:
                     account_pnl_pct = round(((float(price or 0.0) - account_entry_price) / account_entry_price) * 100.0, 6)
-            hold_source = "真实账户" if account_pos else "引擎状态"
+                if effective_mode == "paper":
+                    hold_source = "PaperBroker" if account_pos or account_summary else "PaperBroker / 引擎状态"
+                elif effective_mode == "sandbox":
+                    if live_account and live_account_mode == "sandbox":
+                        hold_source = "LongBridge sandbox"
+                        if not account_pos:
+                            hold_source += " / 账户无该标的"
+                    else:
+                        hold_source = "LongBridge sandbox / not connected"
+                elif effective_mode == "live":
+                    if live_account and live_account_mode == "live":
+                        hold_source = "LongBridge prod"
+                        if not account_pos:
+                            hold_source += " / 账户无该标的"
+                    else:
+                        hold_source = "LongBridge prod / not connected"
+            else:
+                hold_source = "引擎状态"
             ai_range = ai_ranges.get(selected_ticker, {})
             chart_snapshot = _chart_snapshot_for_ticker(selected_ticker, refresh=True)
 
@@ -3047,7 +4197,7 @@ def index():
         else:
             initial_capital = defaults["initial_capital"]
             selected_ticker = str(defaults["ticker"]).strip().upper()
-            account_pos = account_positions.get(selected_ticker) if use_live_account_positions else None
+            account_pos = account_positions.get(selected_ticker) if use_external_account_positions else None
             account_shares = int((account_pos or {}).get("quantity", 0) or 0)
             account_pnl = float((account_pos or {}).get("unrealized_pnl", 0.0) or 0.0)
             account_pnl_pct = float((account_pos or {}).get("unrealized_pnl_pct", 0.0) or 0.0)
@@ -3060,6 +4210,24 @@ def index():
                     account_pnl_pct = round(((account_price - account_entry_price) / account_entry_price) * 100.0, 6)
             ai_range = ai_ranges.get(selected_ticker, {})
             chart_snapshot = _chart_snapshot_for_ticker(selected_ticker, refresh=True)
+            if effective_mode == "paper":
+                hold_source = "PaperBroker" if account_pos or account_shares > 0 else "PaperBroker / 离线"
+            elif effective_mode == "sandbox":
+                if live_account and live_account_mode == "sandbox":
+                    hold_source = "LongBridge sandbox"
+                    if not account_pos:
+                        hold_source += " / 账户无该标的"
+                else:
+                    hold_source = "LongBridge sandbox / not connected"
+            elif effective_mode == "live":
+                if live_account and live_account_mode == "live":
+                    hold_source = "LongBridge prod"
+                    if not account_pos:
+                        hold_source += " / 账户无该标的"
+                else:
+                    hold_source = "LongBridge prod / not connected"
+            else:
+                hold_source = "离线"
             cards.append({
                 "name": defaults["ticker"], "desc": t["desc"],
                 "ticker": selected_ticker,
@@ -3088,7 +4256,7 @@ def index():
                 "initial_capital": initial_capital, "cash": initial_capital,
                 "pnl": account_pnl,
                 "pnl_pct": account_pnl_pct,
-                "hold_source": "真实账户" if account_pos else "离线",
+                "hold_source": hold_source,
                 "reduce_only": defaults.get("reduce_only", False), "equity": initial_capital,
                 "trades": 0, "win_rate": 0, "wins": 0, "losses": 0,
                 "best_trade": 0, "worst_trade": 0, "avg_pnl": 0,
@@ -3101,20 +4269,40 @@ def index():
             total_equity += initial_capital
 
     paper_account_summary = _paper_account_summary_from_cards(cards)
-    if dashboard_execution_mode == "live" and live_account and live_account.get("mode") == "live":
+    if live_account and live_account_mode in {"live", "sandbox"} and not live_account.get("account_error"):
         account_summary = live_account
         selected_positions_count = _selected_stock_positions_count(live_account, selected_tickers)
         display_positions = list(live_account.get("positions") or [])
-        display_positions_title = "真实仓位"
-        display_positions_hint = "显示真实账户全部持仓"
+        if live_account_mode == "sandbox":
+            display_positions_title = "LongBridge sandbox 持仓"
+            display_positions_hint = "显示 sandbox 账户全部持仓"
+        else:
+            display_positions_title = "真实仓位"
+            display_positions_hint = "显示真实账户全部持仓"
     else:
         account_summary = paper_account_summary
         selected_positions_count = int(paper_account_summary.get("positions_count", 0) or 0)
         display_positions = list(paper_account_summary.get("positions") or [])
-        display_positions_title = "虚拟持仓"
-        display_positions_hint = "显示当前 paper 运行中的虚拟仓位"
+        if effective_mode == "paper":
+            display_positions_title = "PaperBroker 虚拟持仓"
+            display_positions_hint = "显示当前 paper 运行中的虚拟仓位"
+        elif effective_mode == "sandbox":
+            display_positions_title = "LongBridge sandbox 持仓"
+            display_positions_hint = "sandbox 账户未连接时显示 unavailable"
+            account_summary = None
+            display_positions = []
+            selected_positions_count = 0
+        elif effective_mode == "live":
+            display_positions_title = "LongBridge 真实持仓"
+            display_positions_hint = "live 账户未连接时显示 unavailable"
+            account_summary = None
+            display_positions = []
+            selected_positions_count = 0
+        else:
+            display_positions_title = "账户持仓"
+            display_positions_hint = "显示当前运行中的仓位"
 
-    if dashboard_execution_mode == "live" and live_account and live_account.get("mode") == "live":
+    if effective_mode in {"live", "sandbox"} and live_account and live_account_mode in {"live", "sandbox"} and not live_account.get("account_error"):
         total_pnl = sum(float((pos or {}).get("unrealized_pnl", 0.0) or 0.0) for pos in (live_account.get("positions") or []))
         total_capital = float(live_account.get("cash") or 0.0)
         total_equity = float(live_account.get("equity") or 0.0)
@@ -3192,6 +4380,70 @@ def index():
         card["featured_class"] = ""
 
     other_cards = [card for card in cards if card["name"] not in featured_set]
+    system_status = _system_status_snapshot(
+        runtime_config=dashboard_config,
+        live_account=live_account,
+        trade_audit=trade_audit,
+        active_orders=active_orders_summary,
+        update_time=update_time,
+        mode_override=effective_mode,
+    )
+    active_order_summary = _dashboard_order_status_summary(active_orders_summary)
+    account_equity_value = total_equity if total_equity is not None else (account_summary.get("equity") if isinstance(account_summary, dict) else None)
+    if footer_buying_power is not None:
+        available_cash_display = float(footer_buying_power)
+    elif isinstance(account_summary, dict):
+        available_cash_display = account_summary.get("cash")
+    else:
+        available_cash_display = None
+    if isinstance(account_summary, dict):
+        account_positions_list = list(account_summary.get("positions") or [])
+    else:
+        account_positions_list = []
+    risk_summary = _dashboard_risk_summary(account_summary if isinstance(account_summary, dict) else None, account_positions_list)
+    risk_summary.setdefault("risk_label", "未知")
+    risk_summary.setdefault("risk_level", "UNKNOWN")
+    timeline_items = _dashboard_timeline_items(
+        trade_audit=trade_audit,
+        system_status=system_status,
+        selection_sync=selection_sync,
+        ai_runtime=ai_runtime,
+        research_digest=research_digest,
+        startup_guard=startup_guard,
+    )
+    main_chart_card = featured_cards[0] if featured_cards else (cards[0] if cards else None)
+    mode_display = (
+        "PAPER · 虚拟盘" if system_status["mode_key"] == "paper"
+        else "SANDBOX · 沙盒" if system_status["mode_key"] == "sandbox"
+        else "PROD · 实盘账户" if system_status["mode_key"] == "live"
+        else "UNKNOWN"
+    )
+    if system_status["mode_key"] == "live":
+        mode_class = "mode-live"
+    elif system_status["mode_key"] == "sandbox":
+        mode_class = "mode-sandbox"
+    else:
+        mode_class = "mode-paper"
+    startup_guard_level = str(getattr(startup_guard, "level", startup_guard.get("level") if isinstance(startup_guard, dict) else "") or "").strip().lower()
+    startup_guard_label = str(getattr(startup_guard, "label", startup_guard.get("label") if isinstance(startup_guard, dict) else "") or "")
+    startup_guard_detail = str(getattr(startup_guard, "detail", startup_guard.get("detail") if isinstance(startup_guard, dict) else "") or "")
+    runtime_state_value = "RUNNING"
+    runtime_state_class = "status-live"
+    runtime_state_detail = "系统正在同步读取只读状态"
+    if startup_guard_level in {"blocked", "red"}:
+        runtime_state_value = "BLOCKED"
+        runtime_state_class = "status-offline"
+        runtime_state_detail = startup_guard_label or startup_guard_detail or "启动校验阻断"
+    elif startup_guard_level in {"warn", "yellow"} or system_status.get("broker_connection") in {"not connected", "no data"}:
+        runtime_state_value = "DEGRADED"
+        runtime_state_class = "status-warn"
+        runtime_state_detail = startup_guard_detail or system_status.get("broker_connection") or "状态降级"
+    if system_status.get("broker_connected") and system_status.get("market_open"):
+        market_pill_class = "status-live"
+    elif system_status.get("broker_connected"):
+        market_pill_class = "status-warn"
+    else:
+        market_pill_class = "status-offline"
 
     return render_template_string(HTML,
         cards=cards,
@@ -3211,6 +4463,8 @@ def index():
         ai_runtime=ai_runtime,
         selection_sync=selection_sync,
         startup_guard=startup_guard,
+        system_status=system_status,
+        active_orders_summary=active_orders_summary,
         runtime_settings={
             "min_price": float(resolve_price_band(runtime_settings or ai_selection.get("settings", {}))[0]),
             "max_price": float(resolve_price_band(runtime_settings or ai_selection.get("settings", {}))[1]),
@@ -3231,10 +4485,22 @@ def index():
         total_capital=round(total_capital, 2) if total_capital is not None else None,
         total_equity=round(total_equity, 2) if total_equity is not None else None,
         total_trades=total_trades,
+        available_cash_display=available_cash_display,
+        account_equity_value=account_equity_value,
+        active_order_summary=active_order_summary,
+        risk_summary=risk_summary,
+        timeline_items=timeline_items,
+        main_chart_card=main_chart_card,
+        mode_display=mode_display,
+        mode_class=mode_class,
+        runtime_state_value=runtime_state_value,
+        runtime_state_class=runtime_state_class,
+        runtime_state_detail=runtime_state_detail,
+        market_pill_class=market_pill_class,
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
         equity_curve_bars=_build_equity_curve_bars(cards),
-        update_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        update_time=update_time,
     )
 
 

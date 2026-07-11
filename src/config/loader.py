@@ -8,6 +8,12 @@ from .runtime_values import load_private_longbridge_config
 from dataclasses import dataclass, field
 from typing import Optional, Literal
 
+from ..broker.longbridge_broker import (
+    DEFAULT_PROD_HTTP_URL,
+    DEFAULT_PROD_QUOTE_WS_URL,
+    DEFAULT_PROD_TRADE_WS_URL,
+)
+
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -89,6 +95,7 @@ class LongBridgeConfig:
     app_key: str = ""
     app_secret: str = ""
     access_token: str = ""
+    account_type: str = ""
     region: str = "cn"
     enabled: bool = False
     environment: str = "prod"
@@ -96,6 +103,8 @@ class LongBridgeConfig:
     quote_ws_url: Optional[str] = None
     trade_ws_url: Optional[str] = None
     log_path: Optional[str] = None
+    sandbox_enabled: bool = False
+    allow_live_order: bool = False
 
 
 @dataclass
@@ -123,9 +132,20 @@ class AiSelectorConfig:
 
 
 @dataclass
+class StrategyConfig:
+    dynamic_range_enabled: bool = False
+    scaled_entry_enabled: bool = False
+    scaled_exit_enabled: bool = False
+    inventory_aware_sizing_enabled: bool = False
+    trend_guard_enabled: bool = False
+    cost_filter_enabled: bool = False
+    time_stop_enabled: bool = False
+
+
+@dataclass
 class AppConfig:
     ticker: str = "SOXS"
-    mode: Literal["paper", "live", "backtest"] = "paper"
+    mode: Literal["paper", "sandbox", "live", "backtest"] = "paper"
     range: RangeConfig = field(default_factory=RangeConfig)
     position: PositionConfig = field(default_factory=PositionConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -136,6 +156,7 @@ class AppConfig:
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     ai_selector: AiSelectorConfig = field(default_factory=AiSelectorConfig)
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
     signal_interval_seconds: int = 60
     order_cooldown_seconds: int = 300
 
@@ -162,6 +183,26 @@ def _bool_env(key: str, default: bool = False) -> bool:
     return val.strip().lower() in TRUE_VALUES
 
 
+def _coerce_bool(value, default: bool = False) -> bool:
+    """Convert YAML/config values into a strict boolean."""
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        if normalized in TRUE_VALUES:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+        return bool(default)
+    return bool(value)
+
+
 def _load_trading_flags() -> dict:
     """Load shared runtime trading flags from the state directory."""
     try:
@@ -181,8 +222,12 @@ def _parse_config(raw: dict) -> AppConfig:
 
     if "ticker" in raw:
         config.ticker = os.environ.get("SOXS_TICKER", raw["ticker"])
-    if "mode" in raw:
-        config.mode = os.environ.get("SOXS_MODE", raw["mode"])
+    trading_raw = raw.get("trading", {}) or {}
+    if "mode" in raw or "mode" in trading_raw:
+        config.mode = os.environ.get(
+            "SOXS_MODE",
+            raw.get("mode", trading_raw.get("mode", "paper")),
+        )
 
     # Range
     r = raw.get("range", {})
@@ -289,8 +334,10 @@ def _parse_config(raw: dict) -> AppConfig:
     )
 
     # Broker
-    lb = raw.get("broker", {}).get("longbridge", {})
+    lb = raw.get("broker", {}).get("longbridge", {}) or {}
+    lb_sandbox = lb.get("sandbox", {}) or {}
     private_lb = load_private_longbridge_config()
+    private_sandbox = (private_lb.get("sandbox", {}) or {}) if isinstance(private_lb, dict) else {}
     app_key = (
         os.environ.get("LONGBRIDGE_APP_KEY")
         or os.environ.get("LONGBRIDGE_API_KEY")
@@ -303,10 +350,24 @@ def _parse_config(raw: dict) -> AppConfig:
         or lb.get("app_secret", "")
         or private_lb.get("app_secret", "")
     )
-    environment = os.environ.get("LONGBRIDGE_ENV", lb.get("environment") or private_lb.get("environment") or "prod")
-    http_url = os.environ.get("LONGBRIDGE_HTTP_URL", lb.get("http_url") or private_lb.get("http_url"))
-    quote_ws_url = os.environ.get("LONGBRIDGE_QUOTE_WS_URL", lb.get("quote_ws_url") or private_lb.get("quote_ws_url"))
-    trade_ws_url = os.environ.get("LONGBRIDGE_TRADE_WS_URL", lb.get("trade_ws_url") or private_lb.get("trade_ws_url"))
+    sandbox_enabled = _bool_env("LONGBRIDGE_SANDBOX_ENABLED", lb_sandbox.get("enabled", False))
+    environment = os.environ.get(
+        "LONGBRIDGE_ENV",
+        lb.get("environment") or private_lb.get("environment")
+        or ("sandbox" if sandbox_enabled else "prod"),
+    )
+    http_url = os.environ.get(
+        "LONGBRIDGE_HTTP_URL",
+        lb.get("http_url") or private_lb.get("http_url") or lb_sandbox.get("http_url"),
+    )
+    quote_ws_url = os.environ.get(
+        "LONGBRIDGE_QUOTE_WS_URL",
+        lb.get("quote_ws_url") or private_lb.get("quote_ws_url") or lb_sandbox.get("quote_ws_url"),
+    )
+    trade_ws_url = os.environ.get(
+        "LONGBRIDGE_TRADE_WS_URL",
+        lb.get("trade_ws_url") or private_lb.get("trade_ws_url") or lb_sandbox.get("trade_ws_url"),
+    )
     if environment.strip().lower() == "sandbox":
         http_url = http_url or os.environ.get("LONGBRIDGE_SANDBOX_HTTP_URL")
         quote_ws_url = quote_ws_url or os.environ.get("LONGBRIDGE_SANDBOX_QUOTE_WS_URL")
@@ -316,20 +377,35 @@ def _parse_config(raw: dict) -> AppConfig:
             app_key=app_key,
             app_secret=app_secret,
             access_token=os.environ.get("LONGBRIDGE_ACCESS_TOKEN", lb.get("access_token") or private_lb.get("access_token", "")),
+            account_type=(
+                os.environ.get("LONGBRIDGE_ACCOUNT_TYPE")
+                or lb.get("account_type")
+                or lb_sandbox.get("account_type")
+                or private_lb.get("account_type", "")
+                or private_sandbox.get("account_type", "")
+            ),
             region=os.environ.get("LONGBRIDGE_REGION", lb.get("region") or private_lb.get("region", "cn")),
-            enabled=_bool_env("LONGBRIDGE_ENABLED", lb.get("enabled", private_lb.get("enabled", False))),
+            enabled=_bool_env("LONGBRIDGE_ENABLED", _coerce_bool(lb.get("enabled", private_lb.get("enabled", False)))),
             environment=environment,
             http_url=http_url,
             quote_ws_url=quote_ws_url,
             trade_ws_url=trade_ws_url,
             log_path=os.environ.get("LONGBRIDGE_LOG_PATH", lb.get("log_path") or private_lb.get("log_path")),
+            sandbox_enabled=_bool_env(
+                "LONGBRIDGE_SANDBOX_ENABLED",
+                _coerce_bool(lb_sandbox.get("enabled", False)) or environment.strip().lower() == "sandbox",
+            ),
+            allow_live_order=_bool_env(
+                "LONGBRIDGE_ALLOW_LIVE_ORDER",
+                _coerce_bool(lb_sandbox.get("allow_live_order", False)),
+            ),
         )
     )
 
     # Portfolio risk guard (disabled by default to preserve existing behavior)
     portfolio_raw = raw.get("portfolio", {}) or {}
     config.portfolio = PortfolioConfig(
-        enabled=bool(portfolio_raw.get("enabled", False)),
+        enabled=_coerce_bool(portfolio_raw.get("enabled", False)),
         max_positions=int(portfolio_raw.get("max_positions", 3)),
         max_total_exposure=float(portfolio_raw.get("max_total_exposure", 1.0)),
         max_total_risk=float(portfolio_raw.get("max_total_risk", 0.05)),
@@ -345,11 +421,11 @@ def _parse_config(raw: dict) -> AppConfig:
     config.ai_selector = AiSelectorConfig(
         allow_fallback_paper_entries=_bool_env(
             "SOXS_AI_SELECTOR_ALLOW_FALLBACK_PAPER_ENTRIES",
-            ai_selector_raw.get("allow_fallback_paper_entries", False),
+            _coerce_bool(ai_selector_raw.get("allow_fallback_paper_entries", False)),
         ),
         allow_fallback_live_entries=_bool_env(
             "SOXS_AI_SELECTOR_ALLOW_FALLBACK_LIVE_ENTRIES",
-            ai_selector_raw.get("allow_fallback_live_entries", False),
+            _coerce_bool(ai_selector_raw.get("allow_fallback_live_entries", False)),
         ),
         fallback_paper_position_multiplier=_float_env(
             "SOXS_AI_SELECTOR_FALLBACK_PAPER_POSITION_MULTIPLIER",
@@ -358,13 +434,26 @@ def _parse_config(raw: dict) -> AppConfig:
         or 0.25,
         entry_proximity_enabled=_bool_env(
             "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_ENABLED",
-            ai_selector_raw.get("entry_proximity_enabled", True),
+            _coerce_bool(ai_selector_raw.get("entry_proximity_enabled", True)),
         ),
         entry_proximity_weight=_float_env(
             "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_WEIGHT",
             ai_selector_raw.get("entry_proximity_weight", 0.0),
         )
         or 0.0,
+    )
+
+    strategy_raw = raw.get("strategy", {}) or {}
+    config.strategy = StrategyConfig(
+        dynamic_range_enabled=_coerce_bool(strategy_raw.get("dynamic_range_enabled", False)),
+        scaled_entry_enabled=_coerce_bool(strategy_raw.get("scaled_entry_enabled", False)),
+        scaled_exit_enabled=_coerce_bool(strategy_raw.get("scaled_exit_enabled", False)),
+        inventory_aware_sizing_enabled=_coerce_bool(
+            strategy_raw.get("inventory_aware_sizing_enabled", False)
+        ),
+        trend_guard_enabled=_coerce_bool(strategy_raw.get("trend_guard_enabled", False)),
+        cost_filter_enabled=_coerce_bool(strategy_raw.get("cost_filter_enabled", False)),
+        time_stop_enabled=_coerce_bool(strategy_raw.get("time_stop_enabled", False)),
     )
 
     return config
@@ -399,9 +488,9 @@ def validate_config(config: AppConfig) -> list[str]:
         ):
             issues.append("[ERROR] support_price must be < resistance_price")
 
-    if config.mode == "live":
+    if config.mode in {"live", "sandbox"}:
         if not config.broker.longbridge.enabled:
-            issues.append("[ERROR] live mode selected but longbridge broker is disabled")
+            issues.append(f"[ERROR] {config.mode} mode selected but longbridge broker is disabled")
         if config.broker.longbridge.enabled:
             if not config.broker.longbridge.app_key:
                 issues.append("[ERROR] live mode requires longbridge app_key")
@@ -409,13 +498,31 @@ def validate_config(config: AppConfig) -> list[str]:
                 issues.append("[ERROR] live mode requires longbridge app_secret")
             if not config.broker.longbridge.access_token:
                 issues.append("[ERROR] live mode requires longbridge access_token")
-            if config.broker.longbridge.environment == "sandbox":
-                if not config.broker.longbridge.http_url:
-                    issues.append("[WARNING] sandbox mode selected but longbridge http_url is not set")
-                if not config.broker.longbridge.quote_ws_url:
-                    issues.append("[WARNING] sandbox mode selected but longbridge quote_ws_url is not set")
-                if not config.broker.longbridge.trade_ws_url:
-                    issues.append("[WARNING] sandbox mode selected but longbridge trade_ws_url is not set")
+            account_type = str(config.broker.longbridge.account_type or "").strip().lower()
+            if config.mode == "sandbox":
+                if config.broker.longbridge.environment != "sandbox":
+                    issues.append("[ERROR] sandbox mode requires longbridge environment: sandbox")
+                if account_type not in {"paper", "demo"}:
+                    issues.append("[ERROR] sandbox mode requires longbridge account_type: paper/demo")
+                if config.broker.longbridge.allow_live_order:
+                    issues.append("[ERROR] sandbox mode requires allow_live_order=false")
+                if config.broker.longbridge.http_url != DEFAULT_PROD_HTTP_URL:
+                    issues.append(
+                        "[ERROR] sandbox mode requires official Longbridge http_url: "
+                        f"{DEFAULT_PROD_HTTP_URL}"
+                    )
+                if config.broker.longbridge.quote_ws_url != DEFAULT_PROD_QUOTE_WS_URL:
+                    issues.append(
+                        "[ERROR] sandbox mode requires official Longbridge quote_ws_url: "
+                        f"{DEFAULT_PROD_QUOTE_WS_URL}"
+                    )
+                if config.broker.longbridge.trade_ws_url != DEFAULT_PROD_TRADE_WS_URL:
+                    issues.append(
+                        "[ERROR] sandbox mode requires official Longbridge trade_ws_url: "
+                        f"{DEFAULT_PROD_TRADE_WS_URL}"
+                    )
+            elif account_type in {"paper", "demo"}:
+                issues.append("[ERROR] live mode cannot use paper/demo longbridge account_type")
 
     spread_pct = (
         (config.range.resistance_price - config.range.support_price)
