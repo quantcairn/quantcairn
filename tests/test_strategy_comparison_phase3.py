@@ -71,4 +71,8 @@ def test_comparison_is_deterministic():
     bars, benchmark = _bars()
     left = compare_versions(bars, symbol="SOXS.US", benchmark_bars=benchmark, versions=["baseline", "a", "b", "c"], initial_cash=10_000.0)
     right = compare_versions(bars, symbol="SOXS.US", benchmark_bars=benchmark, versions=["baseline", "a", "b", "c"], initial_cash=10_000.0)
-    assert left.to_dict() == right.to_dict()
+    left_payload = left.to_dict()
+    right_payload = right.to_dict()
+    left_payload.pop("run_id", None)
+    right_payload.pop("run_id", None)
+    assert left_payload == right_payload

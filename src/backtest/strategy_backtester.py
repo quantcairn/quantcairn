@@ -114,6 +114,7 @@ class StrategyBacktester:
         *,
         symbol: str | None = None,
         benchmark_bars: Sequence[Bar] | None = None,
+        benchmark_status: str | None = None,
         trade_start_time: datetime | str | None = None,
         output_dir: str | None = None,
         parameter_set: dict[str, Any] | None = None,
@@ -130,11 +131,17 @@ class StrategyBacktester:
             raise ValueError(f"Unsupported strategy: {strategy}")
         allow_trade_after = self._coerce_trade_start_time(trade_start_time)
         normalized_strategy = "a" if strategy in {"a", "version_a"} else ("b" if strategy in {"b", "version_b"} else ("c" if strategy in {"c", "version_c"} else "baseline"))
+        aligned_benchmark_bars = self._align_benchmark_bars(bars_list, benchmark_bars)
+        effective_benchmark_status = str(
+            benchmark_status
+            or ("MISSING_BENCHMARK" if normalized_strategy == "c" and not aligned_benchmark_bars else "VALID")
+        ).upper()
         if normalized_strategy in {"b", "c"}:
             result = self._run_layered_strategy(
                 bars_list,
                 symbol=symbol,
-                benchmark_bars=benchmark_bars,
+                benchmark_bars=aligned_benchmark_bars,
+                benchmark_status=effective_benchmark_status,
                 trade_start_time=allow_trade_after,
                 output_dir=output_dir,
                 parameter_set=params,
@@ -150,7 +157,7 @@ class StrategyBacktester:
         trades: list[dict[str, Any]] = []
         orders: list[dict[str, Any]] = []
         rejected_signals: list[dict[str, Any]] = []
-        benchmark_lookup = {bar.timestamp: bar.close for bar in (benchmark_bars or []) if getattr(bar, "timestamp", None)}
+        benchmark_lookup = {bar.timestamp: bar.close for bar in (aligned_benchmark_bars or []) if getattr(bar, "timestamp", None)}
         history: list[Bar] = []
         warnings: list[str] = []
         trade_started = allow_trade_after is None
@@ -265,6 +272,7 @@ class StrategyBacktester:
         summary = {
             "symbol": symbol,
             "strategy": strategy,
+            "benchmark_status": benchmark_status,
             "bars": len(bars_list),
             "filled_orders": len([t for t in trades if str(t.get("status") or "").upper() in {"FILLED", "PARTIALLY_FILLED"}]),
             "rejected_signals": len(rejected_signals),
@@ -304,6 +312,7 @@ class StrategyBacktester:
         *,
         symbol: str,
         benchmark_bars: Sequence[Bar] | None,
+        benchmark_status: str,
         trade_start_time: datetime | None,
         output_dir: str | None,
         parameter_set: dict[str, Any],
@@ -387,25 +396,39 @@ class StrategyBacktester:
                 "trigger_reasons": [],
             }
             if strategy == "c":
-                benchmark_series = [benchmark_lookup.get(item.timestamp) for item in history if benchmark_lookup.get(item.timestamp) is not None]
-                trend_result = trend_guard.evaluate(
-                    timestamp=bar.timestamp,
-                    current_price=bar.close,
-                    closes=[item.close for item in history],
-                    highs=[item.high for item in history],
-                    lows=[item.low for item in history],
-                    benchmark_closes=benchmark_series,
-                    symbol=symbol,
-                )
-                if trend_result.get("regime") == "UNKNOWN":
-                    rejected_signals.append(
-                        {
-                            "timestamp": bar.timestamp.isoformat(),
-                            "symbol": symbol,
-                            "reason": "trend_guard_unknown",
-                            "strategy": strategy,
-                        }
+                if benchmark_status != "VALID":
+                    trend_result = {
+                        "regime": "INVALID_BENCHMARK",
+                        "trend_score": 0.0,
+                        "buy_allowed": False,
+                        "sell_allowed": True,
+                        "symbol_reduce_only": False,
+                        "cooldown_until": None,
+                        "trigger_reasons": [f"benchmark_{benchmark_status.lower()}"],
+                        "benchmark_status": benchmark_status,
+                    }
+                    if "invalid_benchmark" not in warnings:
+                        warnings.append("invalid_benchmark")
+                else:
+                    benchmark_series = [benchmark_lookup.get(item.timestamp) for item in history if benchmark_lookup.get(item.timestamp) is not None]
+                    trend_result = trend_guard.evaluate(
+                        timestamp=bar.timestamp,
+                        current_price=bar.close,
+                        closes=[item.close for item in history],
+                        highs=[item.high for item in history],
+                        lows=[item.low for item in history],
+                        benchmark_closes=benchmark_series,
+                        symbol=symbol,
                     )
+                    if trend_result.get("regime") == "UNKNOWN":
+                        rejected_signals.append(
+                            {
+                                "timestamp": bar.timestamp.isoformat(),
+                                "symbol": symbol,
+                                "reason": "trend_guard_unknown",
+                                "strategy": strategy,
+                            }
+                        )
 
             open_layers = [layer for layer in layer_states.values() if layer.get("status") == "filled" and layer.get("exit_status") not in {"exited", "closed"}]
             time_stop_triggered = False
@@ -670,6 +693,7 @@ class StrategyBacktester:
         summary = {
             "symbol": symbol,
             "strategy": strategy,
+            "benchmark_status": benchmark_status,
             "bars": len(bars_list),
             "filled_orders": len([t for t in trades if str(t.get("status") or "").upper() in {"FILLED", "PARTIALLY_FILLED"}]),
             "rejected_signals": len(rejected_signals),
@@ -754,6 +778,17 @@ class StrategyBacktester:
         if first and last and ((last - first) / first) * 100.0 > 2.5:
             return "BLOCK_BUY"
         return None
+
+    def _align_benchmark_bars(self, symbol_bars: Sequence[Bar], benchmark_bars: Sequence[Bar] | None) -> list[Bar]:
+        if not benchmark_bars:
+            return []
+        symbol_timestamps = {bar.timestamp for bar in symbol_bars if getattr(bar, "timestamp", None)}
+        if not symbol_timestamps:
+            return []
+        aligned = [bar for bar in benchmark_bars if getattr(bar, "timestamp", None) in symbol_timestamps]
+        if not aligned:
+            return []
+        return aligned
 
     def _make_order(
         self,

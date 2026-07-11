@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable, Sequence
 
 import pandas as pd
@@ -85,6 +86,8 @@ class BacktestDataFeed:
 
     def load_csv(self, path: str | Path, symbol: str | None = None) -> list[Bar]:
         frame = pd.read_csv(path)
+        if frame is not None and not frame.empty:
+            frame.columns = [str(col).strip().lower() for col in frame.columns]
         return self.from_dataframe(frame, symbol=symbol)
 
     def from_dataframe(self, frame: pd.DataFrame, symbol: str | None = None) -> list[Bar]:
@@ -106,6 +109,7 @@ class BacktestDataFeed:
             seen_timestamps.add(bar.timestamp)
             previous_timestamp = bar.timestamp
             bars.append(bar)
+        self._validate_frequency_consistency(bars)
         return bars
 
     def _coerce_bar(self, raw: Any, symbol: str | None = None) -> Bar:
@@ -119,7 +123,13 @@ class BacktestDataFeed:
                 if hasattr(raw, name):
                     payload[name] = getattr(raw, name)
 
-        ts = _coerce_timestamp(payload.get("timestamp") or payload.get("time"), assume_timezone=self.assume_timezone)
+        ts = _coerce_timestamp(
+            payload.get("timestamp")
+            or payload.get("time")
+            or payload.get("datetime")
+            or payload.get("date"),
+            assume_timezone=self.assume_timezone,
+        )
         if ts is None:
             raise BacktestDataError("Missing timestamp")
 
@@ -157,3 +167,60 @@ class BacktestDataFeed:
             ask=ask_value,
             source=str(payload.get("source") or "unknown"),
         )
+
+    def _validate_frequency_consistency(self, bars: list[Bar]) -> None:
+        if len(bars) < 2:
+            return
+        deltas = []
+        for previous, current in zip(bars, bars[1:]):
+            delta = current.timestamp - previous.timestamp
+            if delta.total_seconds() <= 0:
+                continue
+            deltas.append(delta)
+        if not deltas:
+            return
+        has_intraday = any(delta < timedelta(days=1) for delta in deltas)
+        has_daily_or_longer = any(delta >= timedelta(days=1) for delta in deltas)
+        if has_intraday and has_daily_or_longer:
+            raise BacktestDataError("Daily and intraday bars cannot be mixed")
+
+    def infer_frequency(self, bars: Sequence[Bar] | Iterable[Bar] | None) -> str:
+        return infer_bar_frequency(bars)
+
+
+def infer_bar_frequency(bars: Sequence[Bar] | Iterable[Bar] | None) -> str:
+    bar_list = list(bars or [])
+    if len(bar_list) < 2:
+        return "unknown"
+    deltas = []
+    for previous, current in zip(bar_list, bar_list[1:]):
+        previous_ts = getattr(previous, "timestamp", None)
+        if previous_ts is None and isinstance(previous, dict):
+            previous_ts = previous.get("timestamp") or previous.get("time") or previous.get("datetime") or previous.get("date")
+        current_ts = getattr(current, "timestamp", None)
+        if current_ts is None and isinstance(current, dict):
+            current_ts = current.get("timestamp") or current.get("time") or current.get("datetime") or current.get("date")
+        if previous_ts is None or current_ts is None:
+            continue
+        delta = current_ts - previous_ts
+        seconds = delta.total_seconds()
+        if seconds > 0:
+            deltas.append(seconds)
+    if not deltas:
+        return "unknown"
+    seconds = float(median(deltas))
+    if seconds >= 23 * 3600:
+        return "daily"
+    mapping = [
+        (300.0, "5m"),
+        (900.0, "15m"),
+        (1800.0, "30m"),
+        (3600.0, "1h"),
+    ]
+    for target, label in mapping:
+        if abs(seconds - target) <= max(30.0, target * 0.2):
+            return label
+    if seconds < 86400.0:
+        minutes = max(1, int(round(seconds / 60.0)))
+        return f"{minutes}m"
+    return "daily"

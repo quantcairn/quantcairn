@@ -78,3 +78,13 @@ def test_backtester_writes_artifacts(tmp_path):
     assert (artifact_dir / "summary.json").exists()
     assert (artifact_dir / "metrics.json").exists()
     assert (artifact_dir / "equity_curve.csv").exists()
+
+
+def test_version_c_fails_closed_without_benchmark():
+    bars = _make_bars()
+    backtester = StrategyBacktester(strategy="c", initial_cash=10_000.0, max_position=200)
+    result = backtester.run(bars, symbol="SOXS.US")
+
+    assert result.summary["benchmark_status"] == "MISSING_BENCHMARK"
+    assert result.metrics["trade_count"] == 0
+    assert any("invalid_benchmark" in warning or "benchmark_missing" in warning for warning in result.warnings)

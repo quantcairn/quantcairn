@@ -26,6 +26,9 @@ class WalkForwardConfig:
     instability_weight: float = 0.5
     no_trade_penalty: float = 1.0
     max_candidates: int = 50
+    minimum_trade_count_for_ranking: int = 20
+    minimum_active_windows_ratio: float = 0.5
+    maximum_no_trade_window_ratio: float = 0.5
 
 
 @dataclass
@@ -132,6 +135,19 @@ class WalkForwardEvaluator:
             )
 
         aggregate_metrics = self._aggregate_metrics([window.test_metrics for window in window_results])
+        total_windows = len(window_results)
+        total_trade_count = sum(int(window.trade_count or 0) for window in window_results)
+        active_window_count = sum(1 for window in window_results if int(window.trade_count or 0) > 0)
+        active_window_ratio = round(active_window_count / total_windows, 6) if total_windows else 0.0
+        no_trade_window_ratio = round(no_trade_count / total_windows, 6) if total_windows else 0.0
+        evidence_reasons: list[str] = []
+        if total_trade_count < self.config.minimum_trade_count_for_ranking:
+            evidence_reasons.append("trade_count_below_threshold")
+        if active_window_ratio < self.config.minimum_active_windows_ratio:
+            evidence_reasons.append("active_window_ratio_below_threshold")
+        if no_trade_window_ratio > self.config.maximum_no_trade_window_ratio:
+            evidence_reasons.append("no_trade_window_ratio_above_threshold")
+        ranking_status = "ELIGIBLE" if not evidence_reasons else "INSUFFICIENT_EVIDENCE"
         parameter_stability = {
             "unique_parameter_sets": len(selection_counts),
             "selection_counts": selection_counts,
@@ -140,12 +156,25 @@ class WalkForwardEvaluator:
             "instability_score": round(1.0 - (max(selection_counts.values()) / sum(selection_counts.values())), 6) if selection_counts else 1.0,
             "isolated_optimum": bool(selection_counts and max(selection_counts.values()) == 1),
             "regime_dependent": bool(len(selection_counts) > 2),
-            "too_few_trades": bool(no_trade_count > 0),
+            "too_few_trades": bool(total_trade_count < self.config.minimum_trade_count_for_ranking),
             "high_turnover": bool((aggregate_metrics.get("turnover_mean") or 0.0) > 0.5),
             "unstable_parameters": bool(selection_counts and (max(selection_counts.values()) / sum(selection_counts.values())) < 0.5),
             "drawdown_sensitive": bool((aggregate_metrics.get("max_drawdown_max") or 0.0) > 0.2),
+            "total_trade_count": total_trade_count,
+            "active_window_count": active_window_count,
+            "active_window_ratio": active_window_ratio,
+            "no_trade_window_ratio": no_trade_window_ratio,
+            "ranking_status": ranking_status,
+            "evidence_reasons": evidence_reasons,
+            "evidence_thresholds": {
+                "minimum_trade_count_for_ranking": int(self.config.minimum_trade_count_for_ranking),
+                "minimum_active_windows_ratio": float(self.config.minimum_active_windows_ratio),
+                "maximum_no_trade_window_ratio": float(self.config.maximum_no_trade_window_ratio),
+            },
         }
         parameter_sensitivity = self._parameter_sensitivity(candidate_records)
+        if evidence_reasons:
+            warnings.extend(["insufficient_evidence"] + evidence_reasons)
         result = WalkForwardResult(
             strategy=strategy,
             symbol=symbol,

@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from .benchmarking import BenchmarkValidation, validate_benchmark_alignment
+from .data_feed import infer_bar_frequency
 from .models import Bar, StrategyComparisonResult
 from .reporting import make_run_id, write_strategy_comparison_artifacts
 from .strategy_backtester import StrategyBacktester
@@ -50,6 +52,23 @@ def _copy_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _evidence_status(
+    *,
+    metrics: dict[str, Any],
+    benchmark_validation: BenchmarkValidation,
+    minimum_trade_count_for_ranking: int,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    trade_count = int(metrics.get("trade_count") or 0)
+    if benchmark_validation.status != "VALID":
+        reasons.append(benchmark_validation.status.lower())
+    if trade_count < minimum_trade_count_for_ranking:
+        reasons.append("trade_count_below_threshold")
+    if not reasons:
+        return "ELIGIBLE", []
+    return "INSUFFICIENT_EVIDENCE", reasons
+
+
 def _parameter_key(params: dict[str, Any]) -> str:
     return "|".join(f"{key}={params[key]}" for key in sorted(params))
 
@@ -64,29 +83,39 @@ def compare_versions(
     parameter_set: dict[str, Any] | None = None,
     output_dir: str | Path | None = None,
     scenario_name: str | None = None,
+    minimum_trade_count_for_ranking: int = 20,
 ) -> StrategyComparisonResult:
     backtester = StrategyBacktester(strategy="baseline", initial_cash=initial_cash)
     bars_list = backtester._load_bars(bars, symbol=symbol)
     if not bars_list:
         raise ValueError("No bars supplied")
     symbol = symbol or bars_list[0].symbol
+    benchmark_validation = validate_benchmark_alignment(symbol, bars_list, benchmark_bars)
+    symbol_frequency = infer_bar_frequency(bars_list)
     comparison_rows: list[dict[str, Any]] = []
     metric_rows: list[dict[str, Any]] = []
     results: list[Any] = []
     warnings: list[str] = []
     parameter_candidates: list[dict[str, Any]] = []
+    eligible_rows: list[dict[str, Any]] = []
 
     for version in versions:
         normalized = _normalize_version(version)
         result = StrategyBacktester(strategy=normalized, initial_cash=initial_cash).run(
             bars_list,
             symbol=symbol,
-            benchmark_bars=benchmark_bars,
+            benchmark_bars=benchmark_bars if benchmark_validation.status == "VALID" else None,
+            benchmark_status=benchmark_validation.status,
             parameter_set=dict(parameter_set or {}, strategy=normalized),
             initial_cash=initial_cash,
         )
         results.append(result)
         metrics = _copy_metrics(result.metrics)
+        evidence_status, evidence_reasons = _evidence_status(
+            metrics=metrics,
+            benchmark_validation=benchmark_validation,
+            minimum_trade_count_for_ranking=minimum_trade_count_for_ranking,
+        )
         metric_row = {
             "version": normalized,
             "strategy": result.strategy,
@@ -111,6 +140,10 @@ def compare_versions(
             "time_stop_count": metrics.get("time_stop_count"),
             "risk_adjusted_score": metrics.get("risk_adjusted_score"),
             "no_trade": metrics.get("no_trade"),
+            "evidence_status": evidence_status,
+            "evidence_reasons": evidence_reasons,
+            "benchmark_status": benchmark_validation.status,
+            "benchmark_symbol": benchmark_validation.benchmark_symbol,
         }
         full_row = dict(metric_row)
         full_row.update(
@@ -124,6 +157,8 @@ def compare_versions(
         )
         comparison_rows.append(full_row)
         metric_rows.append(metric_row)
+        if evidence_status == "ELIGIBLE":
+            eligible_rows.append(metric_row)
         parameter_candidates.append(
             {
                 "version": normalized,
@@ -139,17 +174,35 @@ def compare_versions(
 
     baseline_row = next((row for row in comparison_rows if row["version"] == "baseline"), None)
     ranking = sorted(metric_rows, key=lambda row: (row.get("risk_adjusted_score") or float("-inf")), reverse=True)
+    eligible_ranking = sorted(eligible_rows, key=lambda row: (row.get("risk_adjusted_score") or float("-inf")), reverse=True)
+    insufficient_evidence_rows = [row for row in metric_rows if row.get("evidence_status") != "ELIGIBLE"]
+    ranking_status = "ELIGIBLE" if benchmark_validation.status == "VALID" and eligible_ranking else "INSUFFICIENT_EVIDENCE"
+    if benchmark_validation.status != "VALID":
+        ranking_status = "INVALID_BENCHMARK"
     summary = {
         "baseline_version": baseline_row,
-        "best_version": ranking[0] if ranking else None,
+        "best_version": eligible_ranking[0] if eligible_ranking else None,
+        "best_version_all": ranking[0] if ranking else None,
         "risk_adjusted_ranking": [row["version"] for row in ranking],
-        "trade_count_warning": any(int(row.get("trade_count", 0) or 0) < 3 for row in comparison_rows),
+        "eligible_ranking": [row["version"] for row in eligible_ranking],
+        "insufficient_evidence_versions": [row["version"] for row in insufficient_evidence_rows],
+        "benchmark_status": benchmark_validation.status,
+        "benchmark_validation": benchmark_validation.to_dict(),
+        "data_frequency": symbol_frequency,
+        "benchmark_frequency": benchmark_validation.benchmark_frequency,
+        "ranking_status": ranking_status,
+        "evidence_thresholds": {
+            "minimum_trade_count_for_ranking": int(minimum_trade_count_for_ranking),
+        },
+        "trade_count_warning": any(int(row.get("trade_count", 0) or 0) < minimum_trade_count_for_ranking for row in comparison_rows),
         "no_trade_versions": [row["version"] for row in comparison_rows if row.get("no_trade")],
     }
     warnings.extend(
         [
+            "invalid_benchmark" if benchmark_validation.status != "VALID" else "",
             "no_trade_version_detected" if any(row.get("no_trade") for row in comparison_rows) else "",
-            "low_trade_count_detected" if any(int(row.get("trade_count", 0) or 0) < 3 for row in comparison_rows) else "",
+            "low_trade_count_detected" if any(int(row.get("trade_count", 0) or 0) < minimum_trade_count_for_ranking for row in comparison_rows) else "",
+            "insufficient_evidence" if ranking_status != "ELIGIBLE" else "",
         ]
     )
     warnings = [warning for warning in warnings if warning]
@@ -170,6 +223,11 @@ def compare_versions(
             "versions": [str(version) for version in versions],
             "scenario_name": scenario_name,
             "strategy_parameters": dict(parameter_set or {}),
+            "benchmark_validation": benchmark_validation.to_dict(),
+            "data_frequency": symbol_frequency,
+            "evidence_thresholds": {
+                "minimum_trade_count_for_ranking": int(minimum_trade_count_for_ranking),
+            },
         },
     )
     if output_dir:

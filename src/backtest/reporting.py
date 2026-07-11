@@ -188,13 +188,18 @@ def _write_markdown_report(path: Path, content: str) -> None:
 
 
 def _comparison_markdown(result: StrategyComparisonResult) -> str:
+    summary = result.summary or {}
     lines = [
         f"# Strategy Comparison Report",
         "",
         f"- Symbol: {result.symbol}",
         f"- Data start: {result.data_start}",
         f"- Data end: {result.data_end}",
+        f"- Data frequency: {summary.get('data_frequency')}",
+        f"- Benchmark frequency: {summary.get('benchmark_frequency')}",
         f"- Baseline: baseline",
+        f"- Benchmark status: {summary.get('benchmark_status')}",
+        f"- Ranking status: {summary.get('ranking_status')}",
         "",
         "## Risk-adjusted ranking",
     ]
@@ -202,6 +207,28 @@ def _comparison_markdown(result: StrategyComparisonResult) -> str:
         lines.append(
             f"- {row.get('version')}: score={row.get('risk_adjusted_score')} trade_count={row.get('trade_count')} total_return={row.get('total_return')} max_drawdown={row.get('max_drawdown')}"
         )
+    eligible = summary.get("eligible_ranking") or []
+    insufficient = summary.get("insufficient_evidence_versions") or []
+    lines.extend(
+        [
+            "",
+            "## Eligible ranking",
+        ]
+    )
+    if eligible:
+        lines.extend(f"- {version}" for version in eligible)
+    else:
+        lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "## Insufficient evidence",
+        ]
+    )
+    if insufficient:
+        lines.extend(f"- {version}" for version in insufficient)
+    else:
+        lines.append("- none")
     lines.extend(
         [
             "",
@@ -216,6 +243,7 @@ def _comparison_markdown(result: StrategyComparisonResult) -> str:
 
 
 def _walk_forward_markdown(result: WalkForwardResult) -> str:
+    stability = result.parameter_stability or {}
     lines = [
         "# Walk-forward Report",
         "",
@@ -224,10 +252,13 @@ def _walk_forward_markdown(result: WalkForwardResult) -> str:
         f"- Windows: {len(result.windows)}",
         f"- Window failures: {result.window_failure_count}",
         f"- No-trade windows: {result.no_trade_window_count}",
+        f"- Active window ratio: {stability.get('active_window_ratio')}",
+        f"- No-trade window ratio: {stability.get('no_trade_window_ratio')}",
+        f"- Ranking status: {stability.get('ranking_status')}",
         "",
         "## Parameter stability",
     ]
-    for key, value in (result.parameter_stability or {}).items():
+    for key, value in stability.items():
         lines.append(f"- {key}: {value}")
     lines.extend(["", "## Warnings"])
     if result.warnings:

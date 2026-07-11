@@ -18,6 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run an offline comparison across strategy versions.")
     parser.add_argument("--data", required=True, help="CSV or JSON path with OHLCV data")
     parser.add_argument("--benchmark-data", help="Optional CSV or JSON path with benchmark OHLCV data")
+    parser.add_argument("--benchmark-symbol", help="Optional benchmark symbol override, e.g. SMH.US")
     parser.add_argument("--symbol", required=True, help="Ticker symbol, e.g. SOXS.US")
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--versions", default="baseline,a,b,c", help="Comma separated list of versions")
@@ -42,7 +43,9 @@ def main() -> int:
     params = _load_params(args.config)
     feed = BacktestDataFeed()
     bars = feed.load(Path(args.data), symbol=args.symbol)
-    benchmark_bars = feed.load(Path(args.benchmark_data), symbol="BENCHMARK") if args.benchmark_data else None
+    benchmark_bars = None
+    if args.benchmark_data:
+        benchmark_bars = feed.load(Path(args.benchmark_data), symbol=args.benchmark_symbol) if args.benchmark_symbol else feed.load(Path(args.benchmark_data))
     versions = [part.strip() for part in str(args.versions).split(",") if part.strip()]
     result = compare_versions(
         bars,

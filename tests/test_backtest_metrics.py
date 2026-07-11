@@ -41,3 +41,28 @@ def test_metrics_compute_from_simple_round_trip():
     assert metrics["trade_count"] == 2
     assert metrics["blocked_by_trend_count"] == 1
     assert metrics["rejected_order_count"] == 1
+    assert metrics["turnover_notional"] == 206.0
+    assert metrics["turnover"] == round(206.0 / 1005.0, 6)
+
+
+def test_metrics_scale_turnover_by_average_equity():
+    equity_curve = [
+        {"timestamp": "2026-07-01T00:00:00Z", "equity": 1000.0},
+        {"timestamp": "2026-07-01T00:01:00Z", "equity": 1005.0},
+        {"timestamp": "2026-07-01T00:02:00Z", "equity": 1010.0},
+    ]
+    trades = [
+        {"symbol": "SOXS.US", "side": "BUY", "filled_quantity": 100, "filled_price": 10.0},
+        {"symbol": "SOXS.US", "side": "SELL", "filled_quantity": 100, "filled_price": 10.5},
+    ]
+    metrics = compute_backtest_metrics(
+        initial_cash=1000.0,
+        equity_curve=equity_curve,
+        trades=trades,
+        orders=trades,
+        rejected_signals=[],
+    )
+
+    assert metrics["turnover_notional"] == 2050.0
+    assert 0 < metrics["turnover"] < 3.0
+    assert metrics["turnover"] == round(2050.0 / 1005.0, 6)

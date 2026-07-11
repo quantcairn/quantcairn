@@ -47,7 +47,11 @@ def test_version_b_is_deterministic():
     backtester = StrategyBacktester(strategy="b", initial_cash=10_000.0, max_position=200)
     left = backtester.run(bars, symbol="SOXS.US")
     right = backtester.run(bars, symbol="SOXS.US")
-    assert left.to_dict() == right.to_dict()
+    left_payload = left.to_dict()
+    right_payload = right.to_dict()
+    left_payload.pop("run_id", None)
+    right_payload.pop("run_id", None)
+    assert left_payload == right_payload
 
 
 def test_version_c_trend_guard_blocks_buy_on_benchmark_uptrend():
@@ -94,6 +98,24 @@ def test_version_c_state_store_failure_blocks_new_buys(monkeypatch):
 
 def test_version_c_inventory_and_cost_filters_can_block_buys(monkeypatch):
     bars = _oscillating_bars()
+    benchmark = []
+    start = datetime(2026, 7, 1, 9, 30, tzinfo=timezone.utc)
+    for index in range(len(bars)):
+        ts = start + timedelta(minutes=index)
+        close = 100.0 + sin(index / 12.0) * 0.05
+        benchmark.append(
+            Bar(
+                symbol="SMH.US",
+                timestamp=ts,
+                open=round(close * 0.999, 4),
+                high=round(close * 1.01, 4),
+                low=round(close * 0.99, 4),
+                close=round(close, 4),
+                volume=220_000,
+                bid=round(close * 0.999, 4),
+                ask=round(close * 1.001, 4),
+            )
+        )
     backtester = StrategyBacktester(strategy="c", initial_cash=10_000.0, max_position=200)
 
     def _inventory_block(*args, **kwargs):
@@ -103,8 +125,8 @@ def test_version_c_inventory_and_cost_filters_can_block_buys(monkeypatch):
             "adjustment_factor": 0.0,
             "allowed": False,
             "reject_reason": "inventory_limit",
-        }
+    }
 
     monkeypatch.setattr("src.strategy.inventory_sizing.InventoryAwareSizer.adjust_quantity", _inventory_block)
-    result = backtester.run(bars, symbol="SOXS.US")
+    result = backtester.run(bars, symbol="SOXS.US", benchmark_bars=benchmark)
     assert result.metrics["blocked_by_inventory_count"] >= 1 or any(item.get("reason") == "inventory_limit" for item in result.rejected_signals)

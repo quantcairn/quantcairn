@@ -26,6 +26,26 @@ def _make_bars(rows: int = 120):
     return bars
 
 
+def _flat_bars(rows: int = 90):
+    start = datetime(2026, 7, 1, 9, 30, tzinfo=timezone.utc)
+    bars = []
+    for index in range(rows):
+        ts = start + timedelta(minutes=index)
+        close = 10.0
+        bars.append(
+            Bar(
+                symbol="SOXS.US",
+                timestamp=ts,
+                open=round(close * 0.999, 4),
+                high=round(close * 1.005, 4),
+                low=round(close * 0.995, 4),
+                close=round(close, 4),
+                volume=120_000,
+            )
+        )
+    return bars
+
+
 def test_walk_forward_emits_parameter_stability_outputs(tmp_path):
     bars = _make_bars()
     evaluator = WalkForwardEvaluator(
@@ -76,3 +96,22 @@ def test_walk_forward_does_not_use_test_window_for_selection():
         max_candidates=1,
     )
     assert left.to_dict() == right.to_dict()
+
+
+def test_walk_forward_reports_evidence_gate_fields():
+    bars = _flat_bars()
+    evaluator = WalkForwardEvaluator(
+        WalkForwardConfig(train_size=30, validation_size=15, test_size=15, step_size=15, purge_gap=2, embargo_gap=2)
+    )
+    result = evaluator.evaluate(
+        bars,
+        symbol="SOXS.US",
+        strategy="c",
+        parameter_grid=[{"minimum_range_pct": 1.0}],
+        max_candidates=1,
+    )
+
+    assert result.parameter_stability["ranking_status"] in {"ELIGIBLE", "INSUFFICIENT_EVIDENCE"}
+    assert "evidence_thresholds" in result.parameter_stability
+    assert "active_window_ratio" in result.parameter_stability
+    assert "no_trade_window_ratio" in result.parameter_stability

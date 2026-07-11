@@ -192,15 +192,16 @@ def compute_backtest_metrics(
             longest_losing_streak = max(longest_losing_streak, current_streak)
         else:
             current_streak = 0
-    turnover = 0.0
+    turnover_notional = 0.0
     for trade in trades:
         try:
             qty = abs(float(trade.get("filled_quantity") or trade.get("quantity") or 0))
             price = abs(float(trade.get("filled_price") or trade.get("price") or 0))
         except (TypeError, ValueError):
             continue
-        turnover += qty * price
+        turnover_notional += qty * price
     average_equity = _safe_mean(equities) or float(initial_cash)
+    turnover = turnover_notional / average_equity if average_equity > 0 else 0.0
     exposure = None
     if average_equity > 0:
         max_equity = max(equities) if equities else float(initial_cash)
@@ -249,6 +250,7 @@ def compute_backtest_metrics(
         "payoff_ratio": _round_or_none(payoff_ratio),
         "exposure": _round_or_none(exposure),
         "turnover": round(turnover, 6),
+        "turnover_notional": round(turnover_notional, 6),
         "trade_count": len(trades),
         "average_holding_time": _round_or_none(average_holding_time),
         "longest_losing_streak": int(longest_losing_streak),
