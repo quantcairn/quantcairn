@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import statistics
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ import yaml
 
 from src.ai_selector.selection_state import load_selection_state
 from src.ai_selector.settings import DEFAULT_MAX_PRICE, DEFAULT_MIN_PRICE, resolve_price_band
-from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, summarize_trade_log
+from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}, ()):
+            return value
+    return None
 
 
 def _fmt_money(value: Any) -> str:
@@ -512,11 +520,29 @@ def _selection_sync(project_dir: Path, report_day: date, top_configs: list[dict[
 def _quality_summary(top_cards: list[dict[str, Any]], ai_report: dict[str, Any]) -> dict[str, Any]:
     entry_ready = [card for card in top_cards if card.get("entry_ready")]
     observation_only = [card for card in top_cards if not card.get("entry_ready")]
+    quality_counts = Counter()
+    top_quality_rows = []
+    for card in top_cards:
+        entry = card.get("entry") if isinstance(card.get("entry"), dict) else {}
+        quality = str(card.get("entry_quality") or entry.get("entry_quality") or "unknown").strip().lower() or "unknown"
+        quality_counts[quality] += 1
+        top_quality_rows.append(
+            {
+                "rank": int(card.get("rank") or card.get("final_rank") or 0) or None,
+                "ticker": str(card.get("ticker") or ""),
+                "entry_quality": quality,
+                "good_for_entry_now": bool(card.get("entry_ready")),
+                "entry_reason": str(card.get("entry_reason") or entry.get("entry_reason") or ""),
+                "final_score": _safe_float(card.get("final_score"), None),
+            }
+        )
     return {
         "entry_ready_symbols": [card["ticker"] for card in entry_ready],
         "observation_only_symbols": [card["ticker"] for card in observation_only],
         "entry_ready_count": len(entry_ready),
         "observation_only_count": len(observation_only),
+        "top_quality_rows": top_quality_rows,
+        "top_quality_counts": dict(quality_counts),
         "fallback_used": bool(ai_report.get("fallback_used", False)),
         "provider_fallback_used": bool(ai_report.get("provider_fallback_used", False)),
         "price_band": {
@@ -532,10 +558,228 @@ def _no_trade_reason(top_cards: list[dict[str, Any]], trade_summary: dict[str, A
     return "当前 TOP 更偏观察级，价格位置不够理想，因此没有形成可开仓级别的买点。"
 
 
+def _trade_decision_summary(project_dir: Path, report_day: date, trade_summary: dict[str, Any]) -> dict[str, Any]:
+    requested_day = report_day.strftime("%Y%m%d")
+    path = project_dir / "logs" / f"trades-{requested_day}.jsonl"
+    day = requested_day if path.exists() else latest_trade_activity_day(log_dir=project_dir / "logs", mode="paper")
+    if not day:
+        day = latest_trade_log_day(log_dir=project_dir / "logs") or requested_day
+    records = load_trade_records(project_dir / "logs", day)
+    decision_records = [
+        record for record in records
+        if "decision" in str(record.get("phase") or "").lower() or str(record.get("phase") or "").lower() == "risk_decision"
+    ]
+
+    signal_counts: Counter[str] = Counter()
+    no_trade_reason_counts: Counter[str] = Counter()
+    risk_block_reason_counts: Counter[str] = Counter()
+    buy_signal_count = 0
+    buy_allowed_count = 0
+    buy_blocked_count = 0
+
+    for record in decision_records:
+        signal = str(
+            _first_non_empty(
+                record.get("signal"),
+                (record.get("trade_signal") or {}).get("action") if isinstance(record.get("trade_signal"), dict) else None,
+                (record.get("order") or {}).get("side") if isinstance(record.get("order"), dict) else None,
+            )
+            or ""
+        ).strip().upper()
+        if signal:
+            signal_counts[signal] += 1
+        if signal != "BUY":
+            if signal:
+                no_trade_reason_counts[f"signal_{signal.lower()}"] += 1
+            continue
+
+        buy_signal_count += 1
+        risk_approved = record.get("risk_approved")
+        final_action = str(record.get("final_action") or "").strip().lower()
+        if risk_approved is True or final_action in {"buy_allowed", "submitted", "filled", "allowed"}:
+            buy_allowed_count += 1
+            continue
+
+        buy_blocked_count += 1
+        reason = str(
+            _first_non_empty(
+                record.get("reason"),
+                record.get("blocked_by"),
+                record.get("ai_reason"),
+                record.get("blocked_reason"),
+            )
+            or "blocked"
+        ).strip()
+        no_trade_reason_counts[reason] += 1
+        risk_block_reason_counts[reason] += 1
+
+    execution_summary = trade_summary.get("summary") or {}
+    return {
+        "requested_trade_day": requested_day,
+        "trade_log_day_used": day,
+        "decision_record_count": len(decision_records),
+        "buy_signal_count": buy_signal_count,
+        "buy_allowed_count": buy_allowed_count,
+        "buy_blocked_count": buy_blocked_count,
+        "signal_counts": dict(signal_counts),
+        "no_trade_reason_counts": dict(no_trade_reason_counts),
+        "risk_block_reason_counts": dict(risk_block_reason_counts),
+        "trade_activity_execution_count": int(execution_summary.get("execution_count", 0) or 0),
+        "trade_activity_buy_count": int(execution_summary.get("buy_count", 0) or 0),
+        "trade_activity_sell_count": int(execution_summary.get("sell_count", 0) or 0),
+    }
+
+
+def _trade_event_flags(records: list[dict[str, Any]], ticker: str) -> dict[str, Any]:
+    normalized = _normalize_ticker(ticker)
+    buy_count = 0
+    sell_count = 0
+    buy_reasons: list[str] = []
+    sell_reasons: list[str] = []
+
+    for record in records or []:
+        record_ticker = _normalize_ticker(record.get("ticker") or (record.get("request") or {}).get("ticker"))
+        if record_ticker != normalized:
+            continue
+        signal = str(
+            _first_non_empty(
+                record.get("signal"),
+                (record.get("trade_signal") or {}).get("action") if isinstance(record.get("trade_signal"), dict) else None,
+                (record.get("order") or {}).get("side") if isinstance(record.get("order"), dict) else None,
+            )
+            or ""
+        ).strip().upper()
+        reason = str(
+            _first_non_empty(
+                record.get("reason"),
+                record.get("blocked_by"),
+                record.get("ai_reason"),
+                record.get("blocked_reason"),
+                (record.get("response") or {}).get("status") if isinstance(record.get("response"), dict) else None,
+            )
+            or ""
+        ).strip()
+
+        if signal == "BUY":
+            buy_count += 1
+            if reason:
+                buy_reasons.append(reason)
+        elif signal == "SELL":
+            sell_count += 1
+            if reason:
+                sell_reasons.append(reason)
+
+        phase = str(record.get("phase") or "").lower()
+        if phase == "execution" and isinstance(record.get("order"), dict):
+            side = str(record["order"].get("side") or "").strip().upper()
+            if side == "BUY":
+                buy_count += 1
+                if reason:
+                    buy_reasons.append(reason)
+            elif side == "SELL":
+                sell_count += 1
+                if reason:
+                    sell_reasons.append(reason)
+
+    return {
+        "buy_triggered": buy_count > 0,
+        "sell_triggered": sell_count > 0,
+        "buy_trigger_count": buy_count,
+        "sell_trigger_count": sell_count,
+        "buy_reasons": buy_reasons,
+        "sell_reasons": sell_reasons,
+    }
+
+
+def _strategy_review_summary(project_dir: Path, report_day: date, top_cards: list[dict[str, Any]], trade_activity: dict[str, Any]) -> dict[str, Any]:
+    requested_day = report_day.strftime("%Y%m%d")
+    trade_log_day = trade_activity.get("trade_log_day_used") or requested_day
+    records = load_trade_records(project_dir / "logs", trade_log_day)
+    review_rows: list[dict[str, Any]] = []
+    counts = Counter()
+
+    for idx, card in enumerate(top_cards or [], start=1):
+        market = card.get("market") if isinstance(card.get("market"), dict) else {}
+        entry = card.get("entry") if isinstance(card.get("entry"), dict) else {}
+        ticker = _normalize_ticker(card.get("ticker"))
+        entry_price = _safe_float(
+            _first_non_empty(
+                market.get("current_price"),
+                card.get("selection_price"),
+                card.get("entry_price"),
+                market.get("latest_close"),
+            ),
+            None,
+        )
+        day_high = _safe_float(_first_non_empty(market.get("price_range_high"), market.get("day_high")), None)
+        day_low = _safe_float(_first_non_empty(market.get("price_range_low"), market.get("day_low")), None)
+        day_close = _safe_float(_first_non_empty(market.get("latest_close"), market.get("current_price")), entry_price)
+
+        max_upside_pct = None
+        if entry_price and entry_price > 0 and day_high is not None:
+            max_upside_pct = round(((day_high - entry_price) / entry_price) * 100.0, 2)
+        max_drawdown_pct = None
+        if entry_price and entry_price > 0 and day_low is not None:
+            max_drawdown_pct = round(((day_low - entry_price) / entry_price) * 100.0, 2)
+        close_change_pct = None
+        if entry_price and entry_price > 0 and day_close is not None:
+            close_change_pct = round(((day_close - entry_price) / entry_price) * 100.0, 2)
+
+        trade_flags = _trade_event_flags(records, ticker)
+        entry_ready = bool(card.get("entry_ready"))
+        if trade_flags["buy_triggered"] or trade_flags["sell_triggered"]:
+            if (day_close is not None and entry_price and day_close >= entry_price) or (max_upside_pct is not None and max_upside_pct > 0):
+                review_result = "选股成功"
+            else:
+                review_result = "失败"
+        else:
+            review_result = "观察正确" if not entry_ready else "失败"
+
+        counts[review_result] += 1
+        review_rows.append(
+            {
+                "rank": idx,
+                "ticker": ticker,
+                "entry_price": entry_price,
+                "day_high": day_high,
+                "day_low": day_low,
+                "close_price": day_close,
+                "max_upside_pct": max_upside_pct,
+                "max_drawdown_pct": max_drawdown_pct,
+                "buy_triggered": trade_flags["buy_triggered"],
+                "sell_triggered": trade_flags["sell_triggered"],
+                "buy_trigger_count": trade_flags["buy_trigger_count"],
+                "sell_trigger_count": trade_flags["sell_trigger_count"],
+                "review_result": review_result,
+                "review_reason": (
+                    "已触发买卖且收盘不弱于入选价"
+                    if review_result == "选股成功"
+                    else "未触发交易且属于观察级标的"
+                    if review_result == "观察正确"
+                    else "买卖触发后走势未兑现预期"
+                ),
+                "entry_quality": str(card.get("entry_quality") or entry.get("entry_quality") or "unknown"),
+                "good_for_entry_now": bool(card.get("entry_ready")),
+            }
+        )
+
+    return {
+        "trade_log_day_used": trade_log_day,
+        "rows": review_rows,
+        "counts": dict(counts),
+        "success_count": int(counts.get("选股成功", 0) or 0),
+        "observation_correct_count": int(counts.get("观察正确", 0) or 0),
+        "failure_count": int(counts.get("失败", 0) or 0),
+        "buy_triggered_count": sum(1 for row in review_rows if row.get("buy_triggered")),
+        "sell_triggered_count": sum(1 for row in review_rows if row.get("sell_triggered")),
+    }
+
+
 def _format_summary_note(report: dict[str, Any]) -> list[str]:
     notes: list[str] = []
     sync = report.get("selection_sync") or {}
     quality = report.get("quality") or {}
+    decision = report.get("decision_summary") or {}
     trade = report.get("trade_activity") or {}
     account = report.get("account") or {}
     positions = report.get("positions") or []
@@ -552,6 +796,11 @@ def _format_summary_note(report: dict[str, Any]) -> list[str]:
         notes.append(f"可开仓级标的：{', '.join(entry_ready)}。")
     if observation:
         notes.append(f"观察级标的：{', '.join(observation)}。")
+    if decision.get("buy_blocked_count", 0):
+        notes.append(
+            f"买入被阻断 {int(decision.get('buy_blocked_count', 0) or 0)} 次，主要原因："
+            f"{', '.join(f'{k}×{v}' for k, v in list((decision.get('risk_block_reason_counts') or {}).items())[:3]) or '暂无'}。"
+        )
     if int(trade.get("execution_count", 0) or 0) == 0:
         notes.append("当日未见已完成成交。")
     else:
@@ -617,6 +866,84 @@ def _render_markdown(report: dict[str, Any]) -> str:
             "杠杆/反向ETF" if card.get("leveraged_etf") else "普通标的",
         ])
     lines.append(_render_markdown_table(headers, rows) if rows else "- 暂无 TOP 数据")
+    lines.append("")
+    lines.append("## TOP 质量总结")
+    quality = report.get("quality") or {}
+    quality_rows = []
+    for row in quality.get("top_quality_rows") or []:
+        quality_rows.append([
+            str(row.get("rank") or ""),
+            row.get("ticker", ""),
+            str(row.get("entry_quality") or "unknown"),
+            _fmt_bool(row.get("good_for_entry_now")),
+            _fmt_num(row.get("final_score")),
+            str(row.get("entry_reason") or ""),
+        ])
+    lines.append(
+        _render_markdown_table(["Rank", "Ticker", "Entry Quality", "Good For Entry", "Final", "Reason"], quality_rows)
+        if quality_rows
+        else "- 暂无质量总结"
+    )
+    lines.append("")
+    lines.append("## 策略评分复盘")
+    strategy = report.get("strategy_review") or {}
+    strategy_rows = []
+    for row in strategy.get("rows") or []:
+        strategy_rows.append([
+            str(row.get("rank") or ""),
+            row.get("ticker", ""),
+            _fmt_money(row.get("entry_price")),
+            _fmt_money(row.get("day_high")),
+            _fmt_money(row.get("day_low")),
+            _fmt_money(row.get("close_price")),
+            _fmt_pct(row.get("max_upside_pct")),
+            _fmt_pct(row.get("max_drawdown_pct")),
+            _fmt_bool(row.get("buy_triggered")),
+            _fmt_bool(row.get("sell_triggered")),
+            str(row.get("review_result") or ""),
+        ])
+    lines.append(
+        _render_markdown_table(
+            ["Rank", "Ticker", "Entry", "High", "Low", "Close", "Max Up", "Max DD", "Buy", "Sell", "Review"],
+            strategy_rows,
+        )
+        if strategy_rows
+        else "- 暂无策略评分复盘数据"
+    )
+    lines.append("")
+    lines.append("## 复盘评分统计")
+    if strategy:
+        lines.append(f"- 选股成功：`{int(strategy.get('success_count', 0) or 0)}`")
+        lines.append(f"- 观察正确：`{int(strategy.get('observation_correct_count', 0) or 0)}`")
+        lines.append(f"- 失败：`{int(strategy.get('failure_count', 0) or 0)}`")
+    else:
+        lines.append("- 暂无复盘评分统计。")
+    lines.append("")
+    lines.append("## 无交易 / 风控拦截统计")
+    decision = report.get("decision_summary") or {}
+    if decision:
+        lines.append(f"- BUY 信号：`{int(decision.get('buy_signal_count', 0) or 0)}`")
+        lines.append(f"- BUY 允许：`{int(decision.get('buy_allowed_count', 0) or 0)}`")
+        lines.append(f"- BUY 阻断：`{int(decision.get('buy_blocked_count', 0) or 0)}`")
+        reason_rows = []
+        for reason, count in (decision.get("no_trade_reason_counts") or {}).items():
+            reason_rows.append([reason, str(count)])
+        lines.append(
+            _render_markdown_table(["Reason", "Count"], reason_rows)
+            if reason_rows
+            else "- 暂无未成交原因统计"
+        )
+        lines.append("")
+        risk_rows = []
+        for reason, count in (decision.get("risk_block_reason_counts") or {}).items():
+            risk_rows.append([reason, str(count)])
+        lines.append(
+            _render_markdown_table(["Risk Block Reason", "Count"], risk_rows)
+            if risk_rows
+            else "- 暂无风控拦截统计"
+        )
+    else:
+        lines.append("- 暂无交易统计。")
     lines.append("")
     lines.append("## 当前持仓")
     if report.get("positions"):
@@ -735,6 +1062,57 @@ def _render_html(report: dict[str, Any]) -> str:
                 """
             )
         top_cards_html.append("</article>")
+
+    quality_rows = []
+    for row in (report.get("quality") or {}).get("top_quality_rows") or []:
+        quality_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('rank') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('ticker') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('entry_quality') or 'unknown'))}</td>"
+            f"<td>{html.escape(_fmt_bool(row.get('good_for_entry_now')))}</td>"
+            f"<td>{html.escape(_fmt_num(row.get('final_score')))}</td>"
+            f"<td>{html.escape(str(row.get('entry_reason') or ''))}</td>"
+            "</tr>"
+        )
+
+    strategy_rows = []
+    strategy = report.get("strategy_review") or {}
+    for row in strategy.get("rows") or []:
+        strategy_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('rank') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('ticker') or ''))}</td>"
+            f"<td>{html.escape(_fmt_money(row.get('entry_price')))}</td>"
+            f"<td>{html.escape(_fmt_money(row.get('day_high')))}</td>"
+            f"<td>{html.escape(_fmt_money(row.get('day_low')))}</td>"
+            f"<td>{html.escape(_fmt_money(row.get('close_price')))}</td>"
+            f"<td>{html.escape(_fmt_pct(row.get('max_upside_pct')))}</td>"
+            f"<td>{html.escape(_fmt_pct(row.get('max_drawdown_pct')))}</td>"
+            f"<td>{html.escape(_fmt_bool(row.get('buy_triggered')))}</td>"
+            f"<td>{html.escape(_fmt_bool(row.get('sell_triggered')))}</td>"
+            f"<td>{html.escape(str(row.get('review_result') or ''))}</td>"
+            "</tr>"
+        )
+
+    no_trade_rows = []
+    decision = report.get("decision_summary") or {}
+    for reason, count in (decision.get("no_trade_reason_counts") or {}).items():
+        no_trade_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(reason))}</td>"
+            f"<td>{html.escape(str(count))}</td>"
+            "</tr>"
+        )
+
+    risk_rows = []
+    for reason, count in (decision.get("risk_block_reason_counts") or {}).items():
+        risk_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(reason))}</td>"
+            f"<td>{html.escape(str(count))}</td>"
+            "</tr>"
+        )
 
     position_rows = []
     for row in report.get("positions") or []:
@@ -903,6 +1281,36 @@ def _render_html(report: dict[str, Any]) -> str:
 
     <section class="two-col">
       <div class="panel">
+        <h2>TOP 质量总结</h2>
+        {('<table><thead><tr><th>Rank</th><th>Ticker</th><th>Entry Quality</th><th>Good For Entry</th><th>Final</th><th>Reason</th></tr></thead><tbody>' + ''.join(quality_rows) + '</tbody></table>') if quality_rows else '<p class="muted">暂无质量总结。</p>'}
+      </div>
+      <div class="panel">
+        <h2>无交易 / 风控拦截统计</h2>
+        <div class="grid">
+          <div><span>BUY 信号</span><strong>{int(decision.get('buy_signal_count', 0) or 0)}</strong></div>
+          <div><span>BUY 允许</span><strong>{int(decision.get('buy_allowed_count', 0) or 0)}</strong></div>
+          <div><span>BUY 阻断</span><strong>{int(decision.get('buy_blocked_count', 0) or 0)}</strong></div>
+          <div><span>未成交原因</span><strong>{len(no_trade_rows)}</strong></div>
+        </div>
+        {('<table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>' + ''.join(no_trade_rows) + '</tbody></table>') if no_trade_rows else '<p class="muted">暂无未成交原因统计。</p>'}
+        <div style="height:12px"></div>
+        {('<table><thead><tr><th>Risk Block Reason</th><th>Count</th></tr></thead><tbody>' + ''.join(risk_rows) + '</tbody></table>') if risk_rows else '<p class="muted">暂无风控拦截统计。</p>'}
+      </div>
+    </section>
+
+    <section>
+      <h2>策略评分复盘</h2>
+      {('<table><thead><tr><th>Rank</th><th>Ticker</th><th>Entry</th><th>High</th><th>Low</th><th>Close</th><th>Max Up</th><th>Max DD</th><th>Buy</th><th>Sell</th><th>Review</th></tr></thead><tbody>' + ''.join(strategy_rows) + '</tbody></table>') if strategy_rows else '<p class="muted">暂无策略评分复盘数据。</p>'}
+      <div class="grid" style="margin-top: 14px;">
+        <div><span>选股成功</span><strong>{int(strategy.get('success_count', 0) or 0)}</strong></div>
+        <div><span>观察正确</span><strong>{int(strategy.get('observation_correct_count', 0) or 0)}</strong></div>
+        <div><span>失败</span><strong>{int(strategy.get('failure_count', 0) or 0)}</strong></div>
+        <div><span>BUY / SELL</span><strong>{int(strategy.get('buy_triggered_count', 0) or 0)} / {int(strategy.get('sell_triggered_count', 0) or 0)}</strong></div>
+      </div>
+    </section>
+
+    <section class="two-col">
+      <div class="panel">
         <h2>当前持仓</h2>
         {('<table><thead><tr><th>Ticker</th><th>Qty</th><th>Avg</th><th>Price</th><th>MV</th><th>UPnL</th><th>UPnL%</th></tr></thead><tbody>' + ''.join(position_rows) + '</tbody></table>') if position_rows else '<p class="muted">暂无持仓快照。</p>'}
       </div>
@@ -1013,6 +1421,8 @@ def _build_report_payload(
 
     top3_cards = top_cards[:3]
     quality = _quality_summary(top3_cards, ai_report)
+    decision_summary = _trade_decision_summary(project_dir, report_day, trade_summary)
+    strategy_review = _strategy_review_summary(project_dir, report_day, top3_cards, trade_activity)
     report = {
         "date": report_day.isoformat(),
         "generated_at": _et_now().isoformat(),
@@ -1045,6 +1455,8 @@ def _build_report_payload(
         "top_configs": top_configs,
         "top_cards": top3_cards,
         "quality": quality,
+        "decision_summary": decision_summary,
+        "strategy_review": strategy_review,
         "market_snapshots": market_snapshots,
         "trade_activity": trade_activity,
         "account": cached["account"],

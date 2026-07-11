@@ -268,6 +268,16 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
         "refinement_status": "background_fast_preliminary",
         "refinement_selection_stage": "fast_preliminary",
     })
+    monkeypatch.setattr(combined, "_load_latest_research_digest", lambda: {
+        "available": True,
+        "date": "2026-06-30",
+        "generated_at": "2026-06-30T18:00:00-04:00",
+        "top_line": "SOFI / NVDA / AAPL",
+        "strategy_summary": "成功 1 / 观察正确 2 / 失败 0",
+        "entry_ready": 1,
+        "observation_only": 2,
+        "research_url": "/research",
+    })
     monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "live",
         "reduce_only": False,
@@ -294,6 +304,10 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "启动阶段：fast_preliminary" in html
     assert "后台精筛：background_fast_preliminary" in html
     assert "（fast_preliminary）" in html
+    assert "研究简报" in html
+    assert "策略评分复盘" in html
+    assert "成功 1 / 观察正确 2 / 失败 0" in html
+    assert "打开研究简报" in html
     assert "选股配置校验" in html
     assert "已对齐" in html
     assert "当天配置已对齐（美东 2026-06-30）" in html

@@ -187,10 +187,62 @@ def _write_project_fixture(root: Path) -> None:
                 json.dumps(
                     {
                         "phase": "decision",
+                        "ticker": "F",
+                        "execution_mode": "paper",
+                        "signal": "HOLD",
+                        "reduce_only": False,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "phase": "risk_decision",
+                        "ticker": "YINN",
+                        "execution_mode": "paper",
+                        "signal": "BUY",
+                        "fallback_used": True,
+                        "allow_fallback_paper_entries": False,
+                        "risk_approved": False,
+                        "blocked_by": "ai_entry_gate",
+                        "reason": "fallback_used_blocked",
+                        "original_target_shares": 42,
+                        "adjusted_target_shares": 0,
+                        "position_multiplier": 0.25,
+                        "current_price": 25.07,
+                        "buying_power": 1400.0,
+                        "available_cash": 210.0,
+                        "required_cash": 209.16,
+                        "portfolio_guard_enabled": True,
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": False,
+                        "order_state_reason": "",
+                        "final_action": "blocked",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "phase": "risk_decision",
                         "ticker": "SOFI",
                         "execution_mode": "paper",
-                        "trade_signal": {"action": "BUY"},
-                        "reduce_only": False,
+                        "signal": "BUY",
+                        "fallback_used": False,
+                        "allow_fallback_paper_entries": True,
+                        "risk_approved": False,
+                        "blocked_by": "buying_power",
+                        "reason": "insufficient buying power",
+                        "original_target_shares": 12,
+                        "adjusted_target_shares": 0,
+                        "position_multiplier": 0.25,
+                        "current_price": 18.05,
+                        "buying_power": 100.0,
+                        "available_cash": 20.0,
+                        "required_cash": 216.6,
+                        "portfolio_guard_enabled": True,
+                        "portfolio_allowed": None,
+                        "portfolio_reason": "not_evaluated",
+                        "order_state_blocked": False,
+                        "order_state_reason": "",
+                        "final_action": "blocked",
                     }
                 ),
                 json.dumps(
@@ -230,11 +282,27 @@ def test_generate_daily_research_report_writes_html_md_json(tmp_path):
     assert [item["ticker"] for item in report["top_cards"]] == ["SOFI", "LABD", "F"]
     assert report["quality"]["entry_ready_symbols"] == ["SOFI"]
     assert report["quality"]["observation_only_symbols"] == ["LABD", "F"]
+    assert report["quality"]["top_quality_rows"][0]["entry_quality"] == "poor"
+    assert report["quality"]["top_quality_rows"][1]["entry_quality"] == "poor"
+    assert report["quality"]["top_quality_rows"][2]["entry_quality"] == "neutral"
+    assert report["strategy_review"]["success_count"] == 1
+    assert report["strategy_review"]["observation_correct_count"] == 2
+    assert report["strategy_review"]["failure_count"] == 0
+    assert report["strategy_review"]["rows"][0]["review_result"] == "选股成功"
+    assert report["strategy_review"]["rows"][1]["review_result"] == "观察正确"
+    assert report["strategy_review"]["rows"][2]["review_result"] == "观察正确"
+    assert report["decision_summary"]["buy_blocked_count"] == 2
+    assert report["decision_summary"]["risk_block_reason_counts"]["fallback_used_blocked"] == 1
+    assert report["decision_summary"]["risk_block_reason_counts"]["insufficient buying power"] == 1
     assert report["trade_activity"]["summary"]["execution_count"] >= 1
     assert any(row["ticker"] == "YINN" for row in report["order_state"]["historical"])
     assert report["market_snapshots"]["SOFI"]["available"] is True
     assert "每日研究报告 2026-07-09" in md_path.read_text(encoding="utf-8")
-    assert "研究报告首页" not in html_path.read_text(encoding="utf-8")
+    html_text = html_path.read_text(encoding="utf-8")
+    assert "研究报告首页" not in html_text
+    assert "TOP 质量总结" in html_text
+    assert "策略评分复盘" in html_text
+    assert "无交易 / 风控拦截统计" in html_text
 
 
 def test_generate_daily_research_report_handles_missing_inputs(tmp_path):
@@ -271,22 +339,28 @@ def test_build_research_site_writes_index(tmp_path):
         _write_text(
             reports_dir / f"daily-paper-report-{day}.json",
             json.dumps(
-                {
-                    "date": day,
-                    "generated_at": f"{day}T18:00:00-04:00",
-                    "mode": "paper",
-                    "top_cards": [{"ticker": ticker, "entry_ready": ticker == tops[0]} for ticker in tops],
+                    {
+                        "date": day,
+                        "generated_at": f"{day}T18:00:00-04:00",
+                        "mode": "paper",
+                        "top_cards": [{"ticker": ticker, "entry_ready": ticker == tops[0]} for ticker in tops],
                     "quality": {
                         "entry_ready_count": 1,
                         "observation_only_count": max(0, len(tops) - 1),
                         "fallback_used": fallback,
                         "provider_fallback_used": fallback,
                         "price_band": {"min": 4.0, "max": 50.0},
+                        },
+                        "strategy_review": {
+                            "success_count": 1 if fallback else 0,
+                            "observation_correct_count": max(0, len(tops) - 1),
+                            "failure_count": 0 if fallback else 1,
+                            "rows": [],
+                        },
+                        "selection_sync": {"ok": True, "reason": "ok"},
+                        "trade_activity": {"summary": {"execution_count": 2, "buy_count": 1, "sell_count": 1}},
+                        "warnings": ["sample warning"] if fallback else [],
                     },
-                    "selection_sync": {"ok": True, "reason": "ok"},
-                    "trade_activity": {"summary": {"execution_count": 2, "buy_count": 1, "sell_count": 1}},
-                    "warnings": ["sample warning"] if fallback else [],
-                },
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -300,3 +374,4 @@ def test_build_research_site_writes_index(tmp_path):
     assert "2026-07-08" in text
     assert "F / SOFI / DRIP" in text
     assert "SOFI / LABD" in text
+    assert "策略复盘" in text

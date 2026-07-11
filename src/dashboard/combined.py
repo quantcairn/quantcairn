@@ -579,6 +579,51 @@ def _load_ai_selection_report():
         }
 
 
+def _load_latest_research_digest() -> dict[str, object]:
+    reports_dir = PROJECT_DIR / "reports" / "research"
+    if not reports_dir.exists():
+        return {"available": False}
+    for path in sorted(reports_dir.glob("daily-paper-report-*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        top_cards = data.get("top_cards") if isinstance(data.get("top_cards"), list) else []
+        top_symbols = [
+            str(item.get("ticker") or "").strip().upper().split(".")[0]
+            for item in top_cards
+            if isinstance(item, dict) and str(item.get("ticker") or "").strip()
+        ]
+        quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
+        strategy = data.get("strategy_review") if isinstance(data.get("strategy_review"), dict) else {}
+        strategy_success_count = int(strategy.get("success_count", 0) or 0)
+        strategy_observation_correct_count = int(strategy.get("observation_correct_count", 0) or 0)
+        strategy_failure_count = int(strategy.get("failure_count", 0) or 0)
+        return {
+            "available": True,
+            "date": str(data.get("date") or ""),
+            "generated_at": str(data.get("generated_at") or ""),
+            "mode": str(data.get("mode") or "unknown"),
+            "top_line": " / ".join(top_symbols) if top_symbols else "暂无",
+            "top_symbols": top_symbols,
+            "entry_ready": int(quality.get("entry_ready_count", 0) or 0),
+            "observation_only": int(quality.get("observation_only_count", 0) or 0),
+            "strategy_summary": (
+                f"成功 {strategy_success_count} / "
+                f"观察正确 {strategy_observation_correct_count} / "
+                f"失败 {strategy_failure_count}"
+            ),
+            "success_count": strategy_success_count,
+            "observation_correct_count": strategy_observation_correct_count,
+            "failure_count": strategy_failure_count,
+            "research_url": "/research",
+            "report_path": str(path),
+        }
+    return {"available": False}
+
+
 def _ai_selection_price_band(ai_selection: dict | None) -> dict[str, float | bool]:
     settings = (ai_selection or {}).get("settings") if isinstance(ai_selection, dict) else {}
     settings = settings if isinstance(settings, dict) else {}
@@ -1181,6 +1226,29 @@ HTML = """<!DOCTYPE html>
         grid-template-columns:minmax(40px,.4fr) minmax(72px,.8fr) minmax(58px,.55fr) minmax(64px,.6fr) minmax(90px,.95fr);
     }
     .section-meta{margin-bottom:12px;color:var(--muted);font-size:13px;line-height:1.55}
+    .research-brief{
+        margin-top:12px;padding:12px 13px;border-radius:14px;
+        background:linear-gradient(180deg, rgba(59,130,246,.12), rgba(59,130,246,.06));
+        border:1px solid rgba(59,130,246,.22)
+    }
+    .research-brief-head{
+        display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap
+    }
+    .research-tag{
+        display:inline-flex;align-items:center;justify-content:center;
+        padding:5px 9px;border-radius:999px;background:rgba(59,130,246,.18);
+        color:#dbeafe;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase
+    }
+    .research-meta{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+    .research-brief-body{margin-top:8px;display:grid;gap:6px}
+    .research-brief-title{color:#fff;font-size:14px;font-weight:800}
+    .research-brief-summary{color:#e5eefc;font-size:13px;line-height:1.55}
+    .research-brief-detail{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:12px;line-height:1.45}
+    .research-brief-link{
+        display:inline-flex;align-self:start;justify-self:start;margin-top:4px;
+        color:#bfdbfe;text-decoration:none;font-size:12px;font-weight:700
+    }
+    .research-brief-link:hover{text-decoration:underline}
     .settings-form{
         display:flex;gap:8px;align-items:end;flex-wrap:wrap;
         margin-bottom:12px;padding:10px 12px;border-radius:14px;
@@ -1626,6 +1694,24 @@ HTML = """<!DOCTYPE html>
                             <div>current TOP config tickers: {{ (selection_sync.current_top_config_symbols or []) | safe }}</div>
                             <div>mismatch reason: {{ (selection_sync.mismatch_reason or 'unknown') | safe }}</div>
                             <div>建议操作：{{ (selection_sync.suggestion or '请重新运行 AI Selector 或重新写入 TOP 配置') | safe }}</div>
+                        </div>
+                        {% endif %}
+                        {% if research_digest and research_digest.available %}
+                        <div class="research-brief">
+                            <div class="research-brief-head">
+                                <span class="research-tag">研究简报</span>
+                                <span class="research-meta">最新 {{ research_digest.date or 'unknown' }}{% if research_digest.generated_at %} · {{ research_digest.generated_at }}{% endif %}</span>
+                            </div>
+                            <div class="research-brief-body">
+                                <div class="research-brief-title">策略评分复盘</div>
+                                <div class="research-brief-summary">{{ research_digest.strategy_summary }}</div>
+                                <div class="research-brief-detail">
+                                    <span>TOP：{{ research_digest.top_line or '暂无' }}</span>
+                                    <span>可开仓：{{ research_digest.entry_ready }}</span>
+                                    <span>观察级：{{ research_digest.observation_only }}</span>
+                                </div>
+                                <a class="research-brief-link" href="{{ research_digest.research_url }}" target="_blank" rel="noopener">打开研究简报</a>
+                            </div>
                         </div>
                         {% endif %}
                     </div>
@@ -2807,6 +2893,7 @@ def index():
     _enrich_ticker_descriptions(ai_selection.get("top3", []))
     ai_ranges = _ai_range_lookup(ai_selection)
     ai_selection_price_band = _ai_selection_price_band(ai_selection)
+    research_digest = _load_latest_research_digest()
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
@@ -3120,6 +3207,7 @@ def index():
         display_positions_hint=display_positions_hint,
         ai_selection=ai_selection,
         ai_selection_price_band=ai_selection_price_band,
+        research_digest=research_digest,
         ai_runtime=ai_runtime,
         selection_sync=selection_sync,
         startup_guard=startup_guard,

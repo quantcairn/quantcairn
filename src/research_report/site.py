@@ -60,6 +60,7 @@ def _et_now() -> datetime:
 def _report_digest(payload: dict[str, Any]) -> dict[str, Any]:
     top_cards = payload.get("top_cards") if isinstance(payload.get("top_cards"), list) else []
     quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
+    strategy_review = payload.get("strategy_review") if isinstance(payload.get("strategy_review"), dict) else {}
     selection_sync = payload.get("selection_sync") if isinstance(payload.get("selection_sync"), dict) else {}
     trade_activity = payload.get("trade_activity") if isinstance(payload.get("trade_activity"), dict) else {}
     summary = trade_activity.get("summary") if isinstance(trade_activity.get("summary"), dict) else {}
@@ -83,6 +84,10 @@ def _report_digest(payload: dict[str, Any]) -> dict[str, Any]:
         "selection_sync_mismatch_reason": str(selection_sync.get("mismatch_reason") or ""),
         "fallback_used": bool(quality.get("fallback_used", False)),
         "provider_fallback_used": bool(quality.get("provider_fallback_used", False)),
+        "strategy_success_count": int(strategy_review.get("success_count", 0) or 0),
+        "strategy_observation_correct_count": int(strategy_review.get("observation_correct_count", 0) or 0),
+        "strategy_failure_count": int(strategy_review.get("failure_count", 0) or 0),
+        "strategy_review_rows": strategy_review.get("rows") if isinstance(strategy_review.get("rows"), list) else [],
         "execution_count": int(summary.get("execution_count", 0) or 0),
         "buy_count": int(summary.get("buy_count", 0) or 0),
         "sell_count": int(summary.get("sell_count", 0) or 0),
@@ -103,6 +108,13 @@ def _brief_sentence(item: dict[str, Any]) -> str:
         f"观察级 {int(item.get('observation_only', 0) or 0)}",
         f"成交 {int(item.get('execution_count', 0) or 0)}",
     ]
+    if any(int(item.get(key, 0) or 0) for key in ("strategy_success_count", "strategy_observation_correct_count", "strategy_failure_count")):
+        parts.append(
+            "策略复盘 "
+            f"成功 {int(item.get('strategy_success_count', 0) or 0)} / "
+            f"观察正确 {int(item.get('strategy_observation_correct_count', 0) or 0)} / "
+            f"失败 {int(item.get('strategy_failure_count', 0) or 0)}"
+        )
     if item.get("selection_sync_ok"):
         parts.append("同步正常")
     else:
@@ -130,6 +142,13 @@ def _render_report_card(item: dict[str, Any], latest_date: str) -> str:
         f"买单：{int(item.get('buy_count', 0) or 0)}",
         f"卖单：{int(item.get('sell_count', 0) or 0)}",
     ]
+    if any(int(item.get(key, 0) or 0) for key in ("strategy_success_count", "strategy_observation_correct_count", "strategy_failure_count")):
+        bullets.append(
+            "策略复盘："
+            f"{int(item.get('strategy_success_count', 0) or 0)} / "
+            f"{int(item.get('strategy_observation_correct_count', 0) or 0)} / "
+            f"{int(item.get('strategy_failure_count', 0) or 0)}"
+        )
     if item.get("warnings"):
         bullets.append(f"警告：{len(item.get('warnings') or [])} 条")
 
@@ -171,6 +190,7 @@ def _render_report_card(item: dict[str, Any], latest_date: str) -> str:
           <span>同步：{'通过' if item.get('selection_sync_ok') else '不一致'}</span>
           <span>fallback：{'是' if item.get('fallback_used') else '否'}</span>
           <span>provider fallback：{'是' if item.get('provider_fallback_used') else '否'}</span>
+          <span>策略复盘：成功 {int(item.get('strategy_success_count', 0) or 0)} · 观察正确 {int(item.get('strategy_observation_correct_count', 0) or 0)} · 失败 {int(item.get('strategy_failure_count', 0) or 0)}</span>
         </div>
       </div>
       {warning_html}
@@ -559,4 +579,3 @@ def build_research_site(
     index_path = site_path / "index.html"
     index_path.write_text(_render_index(latest, reports), encoding="utf-8")
     return index_path
-
