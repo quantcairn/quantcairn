@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import BacktestResult, WalkForwardResult
+from .models import BacktestResult, StrategyComparisonResult, WalkForwardResult
 
 
 def _jsonable(value: Any) -> Any:
@@ -89,8 +89,51 @@ def write_walk_forward_artifacts(result: WalkForwardResult, output_dir: str | Pa
         json.dumps(_jsonable(result.aggregate_oos_metrics), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    (root / "configuration.json").write_text(
+        json.dumps(_jsonable({"strategy": result.strategy, "symbol": result.symbol}), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     (root / "warnings.json").write_text(json.dumps(_jsonable(result.warnings), indent=2, ensure_ascii=False), encoding="utf-8")
+    (root / "parameter_stability.json").write_text(
+        json.dumps(_jsonable(result.parameter_stability), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _write_csv(root / "parameter_candidates.csv", result.parameter_candidates or [])
+    _write_csv(root / "top_candidates.csv", _top_candidates_rows(result.parameter_candidates or []))
+    _write_csv(root / "parameter_sensitivity.csv", _parameter_sensitivity_rows(result.parameter_candidates or []))
     _write_csv(root / "stitched_oos_equity.csv", result.stitched_oos_equity)
+    _write_markdown_report(root / "report.md", _walk_forward_markdown(result))
+    return root
+
+
+def write_strategy_comparison_artifacts(result: StrategyComparisonResult, output_dir: str | Path) -> Path:
+    root = Path(output_dir) / result.run_id
+    root.mkdir(parents=True, exist_ok=True)
+    payload = result.to_dict()
+    payload["git_commit"] = _git_commit_hash()
+    payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+    payload = _jsonable(payload)
+    (root / "comparison_summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_csv(root / "strategy_metrics.csv", result.metrics)
+    _write_csv(root / "strategy_ranking.csv", result.ranking)
+    _write_csv(root / "parameter_candidates.csv", result.parameter_candidates or [])
+    (root / "parameter_stability.json").write_text(
+        json.dumps(_jsonable(result.parameter_stability), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (root / "warnings.json").write_text(json.dumps(_jsonable(result.warnings), indent=2, ensure_ascii=False), encoding="utf-8")
+    (root / "configuration.json").write_text(
+        json.dumps(_jsonable(result.configuration), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    for row in result.comparison:
+        version = str(row.get("version") or "unknown")
+        _write_csv(root / f"trades_{version}.csv", row.get("trades", []))
+        _write_csv(root / f"orders_{version}.csv", row.get("orders", []))
+        _write_csv(root / f"equity_{version}.csv", row.get("equity_curve", []))
+        _write_csv(root / f"drawdown_{version}.csv", row.get("drawdown_curve", []))
+        _write_csv(root / f"rejected_{version}.csv", row.get("rejected_signals", []))
+    _write_markdown_report(root / "report.md", _comparison_markdown(result))
     return root
 
 
@@ -105,3 +148,90 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _jsonable(row.get(key)) for key in columns})
+
+
+def _top_candidates_rows(parameter_candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not parameter_candidates:
+        return []
+    rows = sorted(
+        parameter_candidates,
+        key=lambda row: float(row.get("risk_adjusted_score") or 0.0),
+        reverse=True,
+    )
+    top_rows: list[dict[str, Any]] = []
+    for rank, row in enumerate(rows[:10], start=1):
+        top_rows.append({"rank": rank, **row})
+    return top_rows
+
+
+def _parameter_sensitivity_rows(parameter_candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, candidate in enumerate(parameter_candidates, start=1):
+        params = candidate.get("parameter_set") or {}
+        rows.append(
+            {
+                "candidate_index": index,
+                "parameter_key": "|".join(f"{key}={params[key]}" for key in sorted(params)),
+                "risk_adjusted_score": candidate.get("risk_adjusted_score"),
+                "trade_count": candidate.get("trade_count"),
+                "total_return": candidate.get("total_return"),
+                "max_drawdown": candidate.get("max_drawdown"),
+                "sharpe": candidate.get("sharpe"),
+                "calmar": candidate.get("calmar"),
+            }
+        )
+    return rows
+
+
+def _write_markdown_report(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+
+
+def _comparison_markdown(result: StrategyComparisonResult) -> str:
+    lines = [
+        f"# Strategy Comparison Report",
+        "",
+        f"- Symbol: {result.symbol}",
+        f"- Data start: {result.data_start}",
+        f"- Data end: {result.data_end}",
+        f"- Baseline: baseline",
+        "",
+        "## Risk-adjusted ranking",
+    ]
+    for row in result.ranking:
+        lines.append(
+            f"- {row.get('version')}: score={row.get('risk_adjusted_score')} trade_count={row.get('trade_count')} total_return={row.get('total_return')} max_drawdown={row.get('max_drawdown')}"
+        )
+    lines.extend(
+        [
+            "",
+            "## Warnings",
+        ]
+    )
+    if result.warnings:
+        lines.extend(f"- {warning}" for warning in result.warnings)
+    else:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def _walk_forward_markdown(result: WalkForwardResult) -> str:
+    lines = [
+        "# Walk-forward Report",
+        "",
+        f"- Symbol: {result.symbol}",
+        f"- Strategy: {result.strategy}",
+        f"- Windows: {len(result.windows)}",
+        f"- Window failures: {result.window_failure_count}",
+        f"- No-trade windows: {result.no_trade_window_count}",
+        "",
+        "## Parameter stability",
+    ]
+    for key, value in (result.parameter_stability or {}).items():
+        lines.append(f"- {key}: {value}")
+    lines.extend(["", "## Warnings"])
+    if result.warnings:
+        lines.extend(f"- {warning}" for warning in result.warnings)
+    else:
+        lines.append("- none")
+    return "\n".join(lines)

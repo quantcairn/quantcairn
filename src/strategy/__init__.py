@@ -5,6 +5,7 @@ from .exit_layers import ExitLayerManager
 from .trend_guard import TrendGuard
 from .trade_cost import TradeCostEstimator
 from .state_store import StrategyStateStore
+from .time_stop import TimeStop
 
 __all__ = [
     "DynamicRangeCalculator",
@@ -14,4 +15,5 @@ __all__ = [
     "TrendGuard",
     "TradeCostEstimator",
     "StrategyStateStore",
+    "TimeStop",
 ]

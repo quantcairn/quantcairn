@@ -17,9 +17,6 @@ def _normalize_existing_ids(existing_layers: Iterable[Any] | None) -> set[int]:
                 layer_id = int(raw_id)
             except (TypeError, ValueError):
                 continue
-            status = str(layer.get("status") or "").strip().lower()
-            if status in {"exited", "closed", "cancelled", "canceled"}:
-                continue
             existing_ids.add(layer_id)
         else:
             try:
@@ -127,7 +124,8 @@ class EntryLayerPlanner:
                 continue
             if layer_id in existing_ids:
                 continue
-            trigger_price = round(max(0.01, support - grid_width * 0.15 * index), 6)
+            trigger_offset = grid_width * 0.05 * max(0, (max_layers - index - 1))
+            trigger_price = round(max(0.01, support + trigger_offset), 6)
             if trigger_price <= 0:
                 continue
             layers.append(

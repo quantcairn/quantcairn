@@ -3,10 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from math import floor
+import tempfile
+from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from ..engine.position_sizing import determine_buy_quantity
-from ..strategy.dynamic_range import DynamicRangeCalculator
+from ..strategy import (
+    DynamicRangeCalculator,
+    EntryLayerPlanner,
+    ExitLayerManager,
+    InventoryAwareSizer,
+    StrategyStateStore,
+    TimeStop,
+    TradeCostEstimator,
+    TrendGuard,
+)
 from .data_feed import BacktestDataFeed
 from .execution import BacktestExecutionModel
 from .metrics import compute_backtest_metrics
@@ -115,9 +126,25 @@ class StrategyBacktester:
         effective_initial_cash = float(initial_cash if initial_cash is not None else self.initial_cash)
         params = dict(parameter_set or {})
         strategy = str(params.get("strategy") or self.strategy).strip().lower()
-        if strategy not in {"baseline", "a", "version_a"}:
+        if strategy not in {"baseline", "a", "version_a", "b", "version_b", "c", "version_c"}:
             raise ValueError(f"Unsupported strategy: {strategy}")
         allow_trade_after = self._coerce_trade_start_time(trade_start_time)
+        normalized_strategy = "a" if strategy in {"a", "version_a"} else ("b" if strategy in {"b", "version_b"} else ("c" if strategy in {"c", "version_c"} else "baseline"))
+        if normalized_strategy in {"b", "c"}:
+            result = self._run_layered_strategy(
+                bars_list,
+                symbol=symbol,
+                benchmark_bars=benchmark_bars,
+                trade_start_time=allow_trade_after,
+                output_dir=output_dir,
+                parameter_set=params,
+                initial_cash=effective_initial_cash,
+                strategy=normalized_strategy,
+            )
+            if output_dir:
+                write_backtest_artifacts(result, output_dir)
+            return result
+
         portfolio = BacktestPortfolio(initial_cash=effective_initial_cash)
         pending_orders: list[dict[str, Any]] = []
         trades: list[dict[str, Any]] = []
@@ -271,6 +298,409 @@ class StrategyBacktester:
             write_backtest_artifacts(result, output_dir)
         return result
 
+    def _run_layered_strategy(
+        self,
+        bars_list: Sequence[Bar],
+        *,
+        symbol: str,
+        benchmark_bars: Sequence[Bar] | None,
+        trade_start_time: datetime | None,
+        output_dir: str | None,
+        parameter_set: dict[str, Any],
+        initial_cash: float,
+        strategy: str,
+    ) -> BacktestResult:
+        portfolio = BacktestPortfolio(initial_cash=initial_cash)
+        pending_orders: list[dict[str, Any]] = []
+        trades: list[dict[str, Any]] = []
+        orders: list[dict[str, Any]] = []
+        rejected_signals: list[dict[str, Any]] = []
+        history: list[Bar] = []
+        warnings: list[str] = []
+        benchmark_lookup = {bar.timestamp: bar.close for bar in (benchmark_bars or []) if getattr(bar, "timestamp", None)}
+        trade_started = trade_start_time is None
+        layer_states: dict[int, dict[str, Any]] = {}
+        state_store_failed = False
+        state_store = StrategyStateStore(Path(output_dir) / "state") if output_dir else StrategyStateStore(Path(tempfile.mkdtemp(prefix="backtest_state_")))
+        trend_guard = TrendGuard()
+        inventory_sizer = InventoryAwareSizer()
+        entry_planner = EntryLayerPlanner()
+        exit_manager = ExitLayerManager()
+        time_stop = TimeStop()
+        cost_estimator = TradeCostEstimator()
+        max_layers = int(parameter_set.get("max_entry_layers") or 5)
+        max_position = int(parameter_set.get("max_position") or self.max_position or 300)
+        symbol_base = symbol.upper().split(".")[0]
+        leveraged_etf = bool(
+            parameter_set.get("leveraged_etf")
+            or symbol_base
+            in {"SOXS", "LABD", "DRIP", "YINN", "TQQQ", "SQQQ", "SOXL", "LABU", "BOIL", "KOLD", "UVXY", "SPXS", "SPXL", "FAS", "FAZ"}
+        )
+        for idx, bar in enumerate(bars_list):
+            last_trade_idx = len(trades)
+            self._process_pending_orders(
+                current_bar=bar,
+                pending_orders=pending_orders,
+                portfolio=portfolio,
+                orders=orders,
+                trades=trades,
+                rejected_signals=rejected_signals,
+            )
+            portfolio.mark_to_market({symbol: bar.close}, timestamp=bar.timestamp)
+            history.append(bar)
+            if not trade_started and trade_start_time is not None and bar.timestamp >= trade_start_time:
+                trade_started = True
+            self._sync_layer_state_from_trades(
+                layer_states,
+                trades[last_trade_idx:],
+                bar,
+            )
+
+            if not trade_started:
+                continue
+
+            range_snapshot = self._range_snapshot("b" if strategy == "b" else "c", history, bar)
+            if not range_snapshot.get("valid"):
+                rejected_signals.append(
+                    {
+                        "timestamp": bar.timestamp.isoformat(),
+                        "symbol": symbol,
+                        "reason": range_snapshot.get("invalid_reason") or "invalid_range",
+                        "strategy": strategy,
+                    }
+                )
+                continue
+
+            current_position = portfolio.position_quantity(symbol)
+            current_position_value = portfolio.position_value(symbol)
+            allowed_position_value = max_position * bar.close
+            pending_buy = portfolio.has_active_order(symbol, "BUY")
+            pending_sell = portfolio.has_active_order(symbol, "SELL")
+
+            trend_result = {
+                "regime": "RANGE",
+                "trend_score": 0.0,
+                "buy_allowed": True,
+                "sell_allowed": True,
+                "symbol_reduce_only": False,
+                "cooldown_until": None,
+                "trigger_reasons": [],
+            }
+            if strategy == "c":
+                benchmark_series = [benchmark_lookup.get(item.timestamp) for item in history if benchmark_lookup.get(item.timestamp) is not None]
+                trend_result = trend_guard.evaluate(
+                    timestamp=bar.timestamp,
+                    current_price=bar.close,
+                    closes=[item.close for item in history],
+                    highs=[item.high for item in history],
+                    lows=[item.low for item in history],
+                    benchmark_closes=benchmark_series,
+                    symbol=symbol,
+                )
+                if trend_result.get("regime") == "UNKNOWN":
+                    rejected_signals.append(
+                        {
+                            "timestamp": bar.timestamp.isoformat(),
+                            "symbol": symbol,
+                            "reason": "trend_guard_unknown",
+                            "strategy": strategy,
+                        }
+                    )
+
+            open_layers = [layer for layer in layer_states.values() if layer.get("status") == "filled" and layer.get("exit_status") not in {"exited", "closed"}]
+            time_stop_triggered = False
+            if strategy == "c" and open_layers:
+                for layer in open_layers:
+                    entry_index = layer.get("entry_index")
+                    entry_dt = self._coerce_trade_start_time(layer.get("entry_time"))
+                    time_stop_result = time_stop.evaluate(
+                        symbol=symbol,
+                        entry_time=entry_dt,
+                        current_time=bar.timestamp,
+                        holding_bars=idx - int(entry_index if entry_index is not None else idx),
+                        holding_minutes=int((bar.timestamp - entry_dt).total_seconds() // 60) if entry_dt else 0,
+                        leveraged_etf=leveraged_etf,
+                        configured_max_bars=int(parameter_set.get("time_stop_bars") or 20),
+                        configured_max_minutes=int(parameter_set.get("time_stop_minutes") or 240),
+                    )
+                    if time_stop_result.get("triggered"):
+                        time_stop_triggered = True
+                        break
+
+            exit_order_created = False
+            if current_position > 0 and not pending_sell:
+                exit_plan = exit_manager.plan_exits(
+                    filled_entry_layers=list(open_layers),
+                    current_price=bar.close,
+                    grid_width=float(range_snapshot.get("grid_width") or 0.0),
+                    current_broker_position=current_position,
+                    pending_sell_exists=pending_sell,
+                )
+                if exit_plan.get("allowed") and exit_plan.get("orders"):
+                    exit_order = dict(exit_plan["orders"][0])
+                    layer_id = int(exit_order.get("layer_id") or 0)
+                    layer = layer_states.get(layer_id)
+                    if layer and layer.get("status") == "filled":
+                        qty = min(int(exit_order.get("sell_quantity") or 0), current_position)
+                        if qty > 0:
+                            order = self._make_layer_order(
+                                bar=bar,
+                                symbol=symbol,
+                                side="SELL",
+                                quantity=qty,
+                                order_type="LIMIT",
+                                limit_price=float(exit_order.get("target_price") or bar.close),
+                                strategy=strategy,
+                                layer_id=layer_id,
+                                notes=exit_order.get("reason") or "layer_take_profit",
+                            )
+                            pending_orders.append(order)
+                            portfolio.register_order(order)
+                            orders.append(order)
+                            exit_order_created = True
+
+            buy_block_reason = "pending_buy_exists" if pending_buy else None
+
+            if not exit_order_created and buy_block_reason is None and (current_position <= 0 or current_position_value < allowed_position_value):
+                if strategy == "c":
+                    if not trend_result.get("buy_allowed", False) or trend_result.get("regime") == "UNKNOWN":
+                        rejected_signals.append(
+                            {
+                                "timestamp": bar.timestamp.isoformat(),
+                                "symbol": symbol,
+                                "reason": f"trend_guard_{str(trend_result.get('regime') or 'unknown').lower()}",
+                                "strategy": strategy,
+                            }
+                        )
+                        continue
+                    if state_store_failed:
+                        rejected_signals.append(
+                            {
+                                "timestamp": bar.timestamp.isoformat(),
+                                "symbol": symbol,
+                                "reason": "state_store_unavailable",
+                                "strategy": strategy,
+                            }
+                        )
+                        continue
+                    if time_stop_triggered:
+                        rejected_signals.append(
+                            {
+                                "timestamp": bar.timestamp.isoformat(),
+                                "symbol": symbol,
+                                "reason": "time_stop",
+                                "strategy": strategy,
+                            }
+                        )
+                        continue
+
+                planner_existing = [
+                    {"layer_id": layer_id, "status": layer.get("status")}
+                    for layer_id, layer in layer_states.items()
+                    if layer.get("status") in {"planned", "submitted", "filled", "exited"}
+                ]
+                total_target_quantity = determine_buy_quantity(
+                    current_price=bar.close,
+                    available_cash=float(portfolio.available_cash or 0.0),
+                    configured_size=int(self.fixed_size or 0),
+                    max_position=max_position,
+                    execution_price=bar.open,
+                    commission_per_share=self.commission_per_share,
+                )
+                if total_target_quantity <= 0:
+                    rejected_signals.append(
+                        {
+                            "timestamp": bar.timestamp.isoformat(),
+                            "symbol": symbol,
+                            "reason": "quantity_zero",
+                            "strategy": strategy,
+                        }
+                    )
+                    continue
+
+                if strategy == "c":
+                    inventory_result = inventory_sizer.adjust_quantity(
+                        base_quantity=total_target_quantity,
+                        current_position_value=current_position_value,
+                        allowed_position_value=allowed_position_value,
+                        available_cash=float(portfolio.available_cash or 0.0),
+                        current_price=bar.close,
+                        leveraged_etf=leveraged_etf,
+                        leveraged_etf_limit=float(parameter_set.get("leveraged_etf_limit") or 0.15),
+                        cash_reserve_ratio=float(parameter_set.get("cash_reserve_ratio") or 0.2),
+                    )
+                    if not inventory_result.get("allowed"):
+                        rejected_signals.append(
+                            {
+                                "timestamp": bar.timestamp.isoformat(),
+                                "symbol": symbol,
+                                "reason": str(inventory_result.get("reject_reason") or "inventory_limit"),
+                                "strategy": strategy,
+                            }
+                        )
+                        continue
+                    total_target_quantity = int(inventory_result.get("adjusted_quantity") or 0)
+
+                plan = entry_planner.plan_layers(
+                    support=float(range_snapshot.get("support") or 0.0),
+                    grid_width=float(range_snapshot.get("grid_width") or 0.0),
+                    total_target_quantity=total_target_quantity,
+                    max_layers=max_layers,
+                    existing_layers=planner_existing,
+                    pending_buy_exists=pending_buy,
+                    inventory_ratio=float(current_position_value / allowed_position_value) if allowed_position_value > 0 else 0.0,
+                    trend_buy_allowed=bool(trend_result.get("buy_allowed", True)),
+                )
+                if not plan.get("allowed") or not plan.get("layers"):
+                    rejected_signals.append(
+                        {
+                            "timestamp": bar.timestamp.isoformat(),
+                            "symbol": symbol,
+                            "reason": str(plan.get("reject_reason") or "no_layers_generated"),
+                            "strategy": strategy,
+                        }
+                    )
+                    continue
+
+                eligible_layers = [layer for layer in plan["layers"] if bar.close <= float(layer.get("trigger_price") or 0.0)]
+                if not eligible_layers:
+                    rejected_signals.append(
+                        {
+                            "timestamp": bar.timestamp.isoformat(),
+                            "symbol": symbol,
+                            "reason": "layer_trigger_not_reached",
+                            "strategy": strategy,
+                        }
+                    )
+                    continue
+                layer = sorted(eligible_layers, key=lambda item: int(item.get("layer_id") or 0))[0]
+                layer_id = int(layer.get("layer_id") or 0)
+                if layer_id in layer_states and layer_states[layer_id].get("status") in {"submitted", "filled"}:
+                    continue
+
+                buy_quantity = int(layer.get("target_quantity") or 0)
+                buy_limit_price = float(layer.get("trigger_price") or bar.close)
+                if strategy == "c":
+                    estimated_exit_price = float(range_snapshot.get("resistance") or (buy_limit_price + float(range_snapshot.get("grid_width") or 0.0)))
+                    cost_result = cost_estimator.estimate(
+                        entry_price=buy_limit_price,
+                        exit_price=estimated_exit_price,
+                        quantity=buy_quantity,
+                        commission_per_share=self.commission_per_share,
+                        platform_fee_per_trade=self.platform_fee_per_trade,
+                        spread_pct=self._spread_pct_from_bar(bar),
+                        slippage_pct=self.slippage_bps / 10000.0,
+                        available_cash=float(portfolio.available_cash or 0.0),
+                        minimum_net_profit=float(parameter_set.get("minimum_net_profit_pct") or 0.0),
+                        max_spread_profit_ratio=float(parameter_set.get("max_spread_profit_ratio") or 0.5),
+                    )
+                    if not cost_result.get("allowed"):
+                        rejected_signals.append(
+                            {
+                                "timestamp": bar.timestamp.isoformat(),
+                                "symbol": symbol,
+                                "reason": str(cost_result.get("reject_reason") or "cost_filter"),
+                                "strategy": strategy,
+                            }
+                        )
+                        continue
+
+                order = self._make_layer_order(
+                    bar=bar,
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=buy_quantity,
+                    order_type="MARKET",
+                    limit_price=buy_limit_price,
+                    strategy=strategy,
+                    layer_id=layer_id,
+                    notes=layer.get("reason") or "layered_entry_plan",
+                )
+                pending_orders.append(order)
+                portfolio.register_order(order)
+                orders.append(order)
+                layer_states[layer_id] = {
+                    "layer_id": layer_id,
+                    "trigger_price": buy_limit_price,
+                    "planned_quantity": buy_quantity,
+                    "filled_quantity": 0,
+                    "average_fill_price": 0.0,
+                    "exit_target": float(range_snapshot.get("resistance") or (buy_limit_price + float(range_snapshot.get("grid_width") or 0.0))),
+                    "stop_price": max(0.01, round(buy_limit_price - float(range_snapshot.get("grid_width") or 0.0), 6)),
+                    "status": "submitted",
+                    "reason": layer.get("reason") or "layered_entry_plan",
+                    "entry_time": None,
+                    "entry_index": idx,
+                    "exit_time": None,
+                    "exit_status": "",
+                    "exited_quantity": 0,
+                    "last_update": bar.timestamp.isoformat(),
+                }
+
+            try:
+                state_payload = self._layer_state_snapshot(
+                    symbol=symbol,
+                    strategy=strategy,
+                    range_snapshot=range_snapshot,
+                    layer_states=layer_states,
+                    portfolio=portfolio,
+                    trend_result=trend_result,
+                    current_bar=bar,
+                    allowed_position_value=allowed_position_value,
+                    state_store_failed=state_store_failed,
+                )
+                state_store.save(symbol, state_payload)
+            except Exception as exc:
+                state_store_failed = True
+                warnings.append(f"state_store_save_failed:{type(exc).__name__}")
+
+            self._sync_layer_state_from_trades(layer_states, trades[last_trade_idx:], bar)
+            if buy_block_reason is not None:
+                rejected_signals.append(
+                    {
+                        "timestamp": bar.timestamp.isoformat(),
+                        "symbol": symbol,
+                        "reason": buy_block_reason,
+                        "strategy": strategy,
+                    }
+                )
+
+        if bars_list:
+            portfolio.mark_to_market({symbol: bars_list[-1].close}, timestamp=bars_list[-1].timestamp)
+        summary = {
+            "symbol": symbol,
+            "strategy": strategy,
+            "bars": len(bars_list),
+            "filled_orders": len([t for t in trades if str(t.get("status") or "").upper() in {"FILLED", "PARTIALLY_FILLED"}]),
+            "rejected_signals": len(rejected_signals),
+            "ending_quantity": portfolio.position_quantity(symbol),
+        }
+        metrics = compute_backtest_metrics(
+            initial_cash=initial_cash,
+            equity_curve=portfolio.equity_curve,
+            trades=trades,
+            orders=orders,
+            rejected_signals=rejected_signals,
+        )
+        result = BacktestResult(
+            run_id=make_run_id(strategy, symbol, bars_list[0].timestamp.isoformat(), bars_list[-1].timestamp.isoformat()),
+            strategy=strategy,
+            symbol=symbol,
+            data_start=bars_list[0].timestamp.isoformat(),
+            data_end=bars_list[-1].timestamp.isoformat(),
+            configuration=self._configuration_dict(parameter_set, initial_cash=initial_cash),
+            summary=summary,
+            metrics=metrics,
+            trades=trades,
+            orders=orders,
+            equity_curve=portfolio.equity_curve,
+            drawdown_curve=portfolio.drawdown_curve,
+            rejected_signals=rejected_signals,
+            warnings=warnings,
+            parameter_set=parameter_set,
+        )
+        return result
+
     def _load_bars(self, bars: Sequence[Bar] | Iterable[Bar] | Any, symbol: str | None = None) -> list[Bar]:
         if isinstance(bars, list) and bars and isinstance(bars[0], Bar):
             return list(bars)
@@ -354,6 +784,107 @@ class StrategyBacktester:
         )
         return order.to_dict()
 
+    def _make_layer_order(
+        self,
+        *,
+        bar: Bar,
+        symbol: str,
+        side: str,
+        quantity: int,
+        order_type: str,
+        limit_price: float | None,
+        strategy: str,
+        layer_id: int,
+        notes: str,
+    ) -> dict[str, Any]:
+        order = self._make_order(
+            bar=bar,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type=order_type,
+            trigger_price=limit_price,
+            strategy=strategy,
+        )
+        order["limit_price"] = round(float(limit_price), 6) if limit_price is not None else None
+        order["layer_id"] = int(layer_id)
+        order["notes"] = str(notes or "")
+        return order
+
+    def _sync_layer_state_from_trades(self, layer_states: dict[int, dict[str, Any]], trades: list[dict[str, Any]], bar: Bar) -> None:
+        for trade in trades:
+            try:
+                layer_id = int(trade.get("layer_id") or 0)
+            except (TypeError, ValueError):
+                layer_id = 0
+            if layer_id <= 0 or layer_id not in layer_states:
+                continue
+            layer = layer_states[layer_id]
+            side = str(trade.get("side") or "").strip().upper()
+            filled_qty = int(trade.get("filled_quantity") or trade.get("quantity") or 0)
+            filled_price = float(trade.get("filled_price") or trade.get("price") or 0.0)
+            if side == "BUY":
+                layer["status"] = "filled"
+                layer["filled_quantity"] = int(filled_qty)
+                layer["average_fill_price"] = round(filled_price, 6)
+                layer["entry_time"] = trade.get("filled_at") or trade.get("submitted_at") or bar.timestamp.isoformat()
+                layer["entry_index"] = layer.get("entry_index") if layer.get("entry_index") is not None else 0
+                layer["exit_status"] = ""
+                layer["exited_quantity"] = 0
+            elif side == "SELL":
+                layer["exit_status"] = "exited"
+                layer["exit_time"] = trade.get("filled_at") or trade.get("submitted_at") or bar.timestamp.isoformat()
+                layer["exited_quantity"] = int(filled_qty)
+                layer["status"] = "exited"
+                layer["filled_quantity"] = max(0, int(layer.get("filled_quantity") or 0) - int(filled_qty))
+
+    def _spread_pct_from_bar(self, bar: Bar) -> float:
+        bid = getattr(bar, "bid", None)
+        ask = getattr(bar, "ask", None)
+        if bid in (None, "", 0) or ask in (None, "", 0) or bid <= 0 or ask <= 0:
+            return 0.0
+        midpoint = (float(bid) + float(ask)) / 2.0
+        if midpoint <= 0:
+            return 0.0
+        return max(0.0, (float(ask) - float(bid)) / midpoint)
+
+    def _layer_state_snapshot(
+        self,
+        *,
+        symbol: str,
+        strategy: str,
+        range_snapshot: dict[str, Any],
+        layer_states: dict[int, dict[str, Any]],
+        portfolio: BacktestPortfolio,
+        trend_result: dict[str, Any],
+        current_bar: Bar,
+        allowed_position_value: float,
+        state_store_failed: bool,
+    ) -> dict[str, Any]:
+        return {
+            "strategy_version": strategy,
+            "symbol": symbol,
+            "active_range": range_snapshot,
+            "range_timestamp": current_bar.timestamp.isoformat(),
+            "entry_layers": [layer for layer in layer_states.values()],
+            "exit_layers": [layer for layer in layer_states.values() if layer.get("status") == "exited"],
+            "realized_pnl": round(portfolio.realized_pnl, 6),
+            "unrealized_pnl": round(portfolio.unrealized_pnl, 6),
+            "inventory_ratio": round(
+                (portfolio.position_value(symbol) / allowed_position_value) if allowed_position_value > 0 else 0.0,
+                6,
+            ),
+            "trend_guard_state": trend_result,
+            "symbol_reduce_only": bool(trend_result.get("symbol_reduce_only")),
+            "last_buy_time": next((layer.get("entry_time") for layer in layer_states.values() if layer.get("status") == "filled"), None),
+            "last_sell_time": next((layer.get("exit_time") for layer in layer_states.values() if layer.get("exit_status") == "exited"), None),
+            "cooldown_until": trend_result.get("cooldown_until"),
+            "last_reconciliation_time": current_bar.timestamp.isoformat(),
+            "broker_position_snapshot": portfolio.snapshot(current_bar.timestamp),
+            "state_version": 1,
+            "state_store_failed": state_store_failed,
+        }
+
     def _process_pending_orders(
         self,
         *,
@@ -424,6 +955,11 @@ class StrategyBacktester:
             "support_buffer": self.support_buffer,
             "resistance_buffer": self.resistance_buffer,
             "warmup_bars": self.warmup_bars,
+            "max_entry_layers": int(params.get("max_entry_layers") or 5),
+            "minimum_net_profit_pct": float(params.get("minimum_net_profit_pct") or 0.0),
+            "max_spread_profit_ratio": float(params.get("max_spread_profit_ratio") or 0.5),
+            "time_stop_bars": int(params.get("time_stop_bars") or 20),
+            "time_stop_minutes": int(params.get("time_stop_minutes") or 240),
         }
 
 

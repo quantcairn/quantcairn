@@ -212,6 +212,8 @@ class WalkForwardResult:
     window_failure_count: int
     no_trade_window_count: int
     warnings: list[str] = field(default_factory=list)
+    parameter_candidates: list[dict[str, Any]] = field(default_factory=list)
+    parameter_sensitivity: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -221,7 +223,41 @@ class WalkForwardResult:
             "stitched_oos_equity": self.stitched_oos_equity,
             "aggregate_oos_metrics": self.aggregate_oos_metrics,
             "parameter_stability": self.parameter_stability,
+            "parameter_candidates": self.parameter_candidates,
+            "parameter_sensitivity": self.parameter_sensitivity,
             "window_failure_count": self.window_failure_count,
             "no_trade_window_count": self.no_trade_window_count,
             "warnings": self.warnings,
+        }
+
+
+@dataclass(slots=True)
+class StrategyComparisonResult:
+    run_id: str
+    symbol: str
+    data_start: str | None
+    data_end: str | None
+    comparison: list[dict[str, Any]]
+    summary: dict[str, Any]
+    metrics: list[dict[str, Any]]
+    ranking: list[dict[str, Any]]
+    parameter_candidates: list[dict[str, Any]] = field(default_factory=list)
+    parameter_stability: dict[str, Any] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    configuration: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "symbol": self.symbol,
+            "data_start": self.data_start,
+            "data_end": self.data_end,
+            "comparison": self.comparison,
+            "summary": self.summary,
+            "metrics": self.metrics,
+            "ranking": self.ranking,
+            "parameter_candidates": self.parameter_candidates,
+            "parameter_stability": self.parameter_stability,
+            "warnings": self.warnings,
+            "configuration": self.configuration,
         }

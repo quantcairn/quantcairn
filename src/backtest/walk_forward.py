@@ -25,6 +25,7 @@ class WalkForwardConfig:
     turnover_weight: float = 0.1
     instability_weight: float = 0.5
     no_trade_penalty: float = 1.0
+    max_candidates: int = 50
 
 
 @dataclass
@@ -41,12 +42,16 @@ class WalkForwardEvaluator:
         parameter_grid: list[dict[str, Any]] | None = None,
         initial_cash: float | None = None,
         output_dir: str | None = None,
+        max_candidates: int | None = None,
     ) -> WalkForwardResult:
         bars_list = self.backtester._load_bars(bars, symbol=symbol)
         if not bars_list:
             raise ValueError("No bars supplied")
         symbol = symbol or bars_list[0].symbol
         parameter_grid = parameter_grid or [{}]
+        max_candidates = int(max_candidates if max_candidates is not None else self.config.max_candidates)
+        if max_candidates > 0:
+            parameter_grid = list(parameter_grid)[:max_candidates]
         windows = self._build_windows(bars_list)
         window_results: list[WalkForwardWindowResult] = []
         stitched_oos_equity: list[dict[str, Any]] = []
@@ -54,12 +59,13 @@ class WalkForwardEvaluator:
         failure_count = 0
         no_trade_count = 0
         selection_counts: dict[str, int] = {}
+        candidate_records: list[dict[str, Any]] = []
 
         for window in windows:
             best_params: dict[str, Any] | None = None
             best_score = float("-inf")
             best_validation_result = None
-            for params in parameter_grid:
+            for candidate_index, params in enumerate(parameter_grid):
                 candidate_params = dict(params)
                 candidate_params.setdefault("strategy", strategy)
                 validation_result = self.backtester.run(
@@ -70,6 +76,20 @@ class WalkForwardEvaluator:
                     initial_cash=initial_cash or self.backtester.initial_cash,
                 )
                 score = self._score_result(validation_result.metrics)
+                candidate_records.append(
+                    {
+                        "window_start": window["train_start"].isoformat(),
+                        "window_end": window["test_end_dt"].isoformat(),
+                        "candidate_index": candidate_index,
+                        "parameter_key": self._param_key(candidate_params),
+                        "parameters": dict(candidate_params),
+                        "validation_score": round(score, 6),
+                        "validation_trade_count": int(validation_result.metrics.get("trade_count", 0) or 0),
+                        "validation_max_drawdown": float(validation_result.metrics.get("max_drawdown") or 0.0),
+                        "validation_sharpe": float(validation_result.metrics.get("sharpe") or 0.0),
+                        "validation_calmar": float(validation_result.metrics.get("calmar") or 0.0),
+                    }
+                )
                 if score > best_score:
                     best_score = score
                     best_params = dict(candidate_params)
@@ -103,7 +123,7 @@ class WalkForwardEvaluator:
                     train_range={"start": window["train_start"].isoformat(), "end": window["train_end"].isoformat()},
                     validation_range={"start": window["validation_start"].isoformat(), "end": window["validation_end_dt"].isoformat()},
                     test_range={"start": window["test_start"].isoformat(), "end": window["test_end_dt"].isoformat()},
-                    selected_parameters=best_params,
+                selected_parameters=best_params,
                     validation_score=round(best_score, 6),
                     test_metrics=test_result.metrics,
                     trade_count=int(test_result.metrics.get("trade_count", 0) or 0),
@@ -118,7 +138,14 @@ class WalkForwardEvaluator:
             "most_common_parameter_set": max(selection_counts.items(), key=lambda item: item[1])[0] if selection_counts else None,
             "most_common_frequency": max(selection_counts.values()) if selection_counts else 0,
             "instability_score": round(1.0 - (max(selection_counts.values()) / sum(selection_counts.values())), 6) if selection_counts else 1.0,
+            "isolated_optimum": bool(selection_counts and max(selection_counts.values()) == 1),
+            "regime_dependent": bool(len(selection_counts) > 2),
+            "too_few_trades": bool(no_trade_count > 0),
+            "high_turnover": bool((aggregate_metrics.get("turnover_mean") or 0.0) > 0.5),
+            "unstable_parameters": bool(selection_counts and (max(selection_counts.values()) / sum(selection_counts.values())) < 0.5),
+            "drawdown_sensitive": bool((aggregate_metrics.get("max_drawdown_max") or 0.0) > 0.2),
         }
+        parameter_sensitivity = self._parameter_sensitivity(candidate_records)
         result = WalkForwardResult(
             strategy=strategy,
             symbol=symbol,
@@ -126,6 +153,8 @@ class WalkForwardEvaluator:
             stitched_oos_equity=stitched_oos_equity,
             aggregate_oos_metrics=aggregate_metrics,
             parameter_stability=parameter_stability,
+            parameter_candidates=candidate_records,
+            parameter_sensitivity=parameter_sensitivity,
             window_failure_count=failure_count,
             no_trade_window_count=no_trade_count,
             warnings=warnings,
@@ -205,3 +234,24 @@ class WalkForwardEvaluator:
 
     def _param_key(self, params: dict[str, Any]) -> str:
         return "|".join(f"{key}={params[key]}" for key in sorted(params))
+
+    def _parameter_sensitivity(self, candidate_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in candidate_records:
+            grouped.setdefault(row["parameter_key"], []).append(row)
+        sensitivity: list[dict[str, Any]] = []
+        for key, rows in grouped.items():
+            sensitivity.append(
+                {
+                    "parameter_key": key,
+                    "candidate_count": len(rows),
+                    "mean_validation_score": round(mean(row["validation_score"] for row in rows), 6),
+                    "best_validation_score": round(max(row["validation_score"] for row in rows), 6),
+                    "mean_trade_count": round(mean(row["validation_trade_count"] for row in rows), 6),
+                    "mean_max_drawdown": round(mean(row["validation_max_drawdown"] for row in rows), 6),
+                    "mean_sharpe": round(mean(row["validation_sharpe"] for row in rows), 6),
+                    "mean_calmar": round(mean(row["validation_calmar"] for row in rows), 6),
+                }
+            )
+        sensitivity.sort(key=lambda row: row["mean_validation_score"], reverse=True)
+        return sensitivity

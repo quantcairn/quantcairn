@@ -221,6 +221,9 @@ def compute_backtest_metrics(
     blocked_by_inventory_count = sum(
         count for reason, count in rejected_reasons.items() if "inventory" in reason
     )
+    time_stop_count = sum(
+        count for reason, count in rejected_reasons.items() if "time_stop" in reason
+    )
     annualized_return = total_return
     if equity_curve and len(equity_curve) > 1 and total_return > -1.0:
         periods = max(1.0, float(len(equity_curve) - 1))
@@ -259,6 +262,7 @@ def compute_backtest_metrics(
         "blocked_by_trend_count": int(blocked_by_trend_count),
         "blocked_by_cost_count": int(blocked_by_cost_count),
         "blocked_by_inventory_count": int(blocked_by_inventory_count),
+        "time_stop_count": int(time_stop_count),
         "no_trade": len(trades) == 0,
         "equity_points": len(equity_curve),
         "annualization_factor": round(ann_factor, 6),
