@@ -71,6 +71,8 @@ def test_walk_forward_emits_parameter_stability_outputs(tmp_path):
     assert (root / "parameter_candidates.csv").exists()
     assert (root / "top_candidates.csv").exists()
     assert (root / "parameter_sensitivity.csv").exists()
+    assert (root / "blocked_reason_counts.csv").exists()
+    assert (root / "blocked_reason_by_window.csv").exists()
     assert result.parameter_candidates
     assert result.parameter_sensitivity
     assert "instability_score" in result.parameter_stability

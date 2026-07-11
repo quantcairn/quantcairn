@@ -126,11 +126,12 @@ class WalkForwardEvaluator:
                     train_range={"start": window["train_start"].isoformat(), "end": window["train_end"].isoformat()},
                     validation_range={"start": window["validation_start"].isoformat(), "end": window["validation_end_dt"].isoformat()},
                     test_range={"start": window["test_start"].isoformat(), "end": window["test_end_dt"].isoformat()},
-                selected_parameters=best_params,
+                    selected_parameters=best_params,
                     validation_score=round(best_score, 6),
                     test_metrics=test_result.metrics,
                     trade_count=int(test_result.metrics.get("trade_count", 0) or 0),
                     warnings=list(test_result.warnings),
+                    rejected_signals=list(test_result.rejected_signals),
                 )
             )
 

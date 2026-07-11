@@ -187,6 +187,7 @@ class WalkForwardWindowResult:
     test_metrics: dict[str, Any]
     trade_count: int
     warnings: list[str] = field(default_factory=list)
+    rejected_signals: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -198,6 +199,7 @@ class WalkForwardWindowResult:
             "test_metrics": self.test_metrics,
             "trade_count": self.trade_count,
             "warnings": self.warnings,
+            "rejected_signals": self.rejected_signals,
         }
 
 

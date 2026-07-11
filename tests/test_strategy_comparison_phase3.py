@@ -64,6 +64,8 @@ def test_comparison_outputs_ranking_and_artifacts(tmp_path):
     assert (artifact_root / "strategy_metrics.csv").exists()
     assert (artifact_root / "strategy_ranking.csv").exists()
     assert (artifact_root / "parameter_stability.json").exists()
+    assert (artifact_root / "blocked_reason_counts.csv").exists()
+    assert (artifact_root / "blocked_reason_by_strategy.csv").exists()
     assert (artifact_root / "report.md").exists()
 
 

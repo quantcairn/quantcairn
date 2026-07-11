@@ -102,6 +102,8 @@ def write_walk_forward_artifacts(result: WalkForwardResult, output_dir: str | Pa
     _write_csv(root / "top_candidates.csv", _top_candidates_rows(result.parameter_candidates or []))
     _write_csv(root / "parameter_sensitivity.csv", _parameter_sensitivity_rows(result.parameter_candidates or []))
     _write_csv(root / "stitched_oos_equity.csv", result.stitched_oos_equity)
+    _write_csv(root / "blocked_reason_counts.csv", _blocked_reason_counts_from_windows(result.windows))
+    _write_csv(root / "blocked_reason_by_window.csv", _blocked_reason_by_window(result.windows))
     _write_markdown_report(root / "report.md", _walk_forward_markdown(result))
     return root
 
@@ -133,6 +135,8 @@ def write_strategy_comparison_artifacts(result: StrategyComparisonResult, output
         _write_csv(root / f"equity_{version}.csv", row.get("equity_curve", []))
         _write_csv(root / f"drawdown_{version}.csv", row.get("drawdown_curve", []))
         _write_csv(root / f"rejected_{version}.csv", row.get("rejected_signals", []))
+    _write_csv(root / "blocked_reason_counts.csv", _blocked_reason_counts_from_comparison(result.comparison))
+    _write_csv(root / "blocked_reason_by_strategy.csv", _blocked_reason_by_strategy(result.comparison))
     _write_markdown_report(root / "report.md", _comparison_markdown(result))
     return root
 
@@ -187,8 +191,61 @@ def _write_markdown_report(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _blocked_reason_counts_from_windows(windows: list[Any]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for window in windows or []:
+        for item in getattr(window, "rejected_signals", None) or []:
+            reason = str(item.get("reason") or item.get("reject_reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+    return [{"reason": reason, "count": count} for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def _blocked_reason_counts_from_comparison(comparison_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in comparison_rows or []:
+        for item in row.get("rejected_signals") or []:
+            reason = str(item.get("reason") or item.get("reject_reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+    return [{"reason": reason, "count": count} for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def _blocked_reason_by_strategy(comparison_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in comparison_rows or []:
+        strategy = str(row.get("version") or row.get("strategy") or "unknown")
+        counts: dict[str, int] = {}
+        for item in row.get("rejected_signals") or []:
+            reason = str(item.get("reason") or item.get("reject_reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            rows.append({"strategy": strategy, "reason": reason, "count": count})
+    return rows
+
+
+def _blocked_reason_by_window(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, window in enumerate(windows, start=1):
+        counts: dict[str, int] = {}
+        for item in window.rejected_signals or []:
+            reason = str(item.get("reason") or item.get("reject_reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            rows.append(
+                {
+                    "window_index": index,
+                    "reason": reason,
+                    "count": count,
+                    "train_start": window.train_range.get("start"),
+                    "test_start": window.test_range.get("start"),
+                    "test_end": window.test_range.get("end"),
+                }
+            )
+    return rows
+
+
 def _comparison_markdown(result: StrategyComparisonResult) -> str:
     summary = result.summary or {}
+    blocked_reason_counts = _reason_counts_from_rows(result.comparison)
     lines = [
         f"# Strategy Comparison Report",
         "",
@@ -235,6 +292,11 @@ def _comparison_markdown(result: StrategyComparisonResult) -> str:
             "## Warnings",
         ]
     )
+    lines.extend(["", "## Blocked reasons"])
+    if blocked_reason_counts:
+        lines.extend(f"- {reason}: {count}" for reason, count in blocked_reason_counts)
+    else:
+        lines.append("- none")
     if result.warnings:
         lines.extend(f"- {warning}" for warning in result.warnings)
     else:
@@ -244,6 +306,7 @@ def _comparison_markdown(result: StrategyComparisonResult) -> str:
 
 def _walk_forward_markdown(result: WalkForwardResult) -> str:
     stability = result.parameter_stability or {}
+    blocked_reason_counts = _reason_counts_from_windows(result.windows)
     lines = [
         "# Walk-forward Report",
         "",
@@ -260,9 +323,32 @@ def _walk_forward_markdown(result: WalkForwardResult) -> str:
     ]
     for key, value in stability.items():
         lines.append(f"- {key}: {value}")
+    lines.extend(["", "## Blocked reasons"])
+    if blocked_reason_counts:
+        lines.extend(f"- {reason}: {count}" for reason, count in blocked_reason_counts)
+    else:
+        lines.append("- none")
     lines.extend(["", "## Warnings"])
     if result.warnings:
         lines.extend(f"- {warning}" for warning in result.warnings)
     else:
         lines.append("- none")
     return "\n".join(lines)
+
+
+def _reason_counts_from_rows(comparison_rows: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for row in comparison_rows or []:
+        for item in row.get("rejected_signals") or []:
+            reason = str(item.get("reason") or item.get("reject_reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _reason_counts_from_windows(windows: list[Any]) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for window in windows or []:
+        for item in getattr(window, "rejected_signals", None) or []:
+            reason = str(item.get("reason") or item.get("reject_reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
