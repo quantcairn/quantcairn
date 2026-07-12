@@ -59,7 +59,7 @@ def _evidence_status(
     minimum_trade_count_for_ranking: int,
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
-    trade_count = int(metrics.get("trade_count") or 0)
+    trade_count = int(metrics.get("fill_count") or metrics.get("trade_count") or 0)
     if benchmark_validation.status != "VALID":
         reasons.append(benchmark_validation.status.lower())
     if trade_count < minimum_trade_count_for_ranking:
@@ -67,6 +67,49 @@ def _evidence_status(
     if not reasons:
         return "ELIGIBLE", []
     return "INSUFFICIENT_EVIDENCE", reasons
+
+
+def _profitability_status(metrics: dict[str, Any]) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    total_return = float(metrics.get("total_return") or 0.0)
+    max_drawdown = float(metrics.get("max_drawdown") or 0.0)
+    closed_trade_count = int(metrics.get("closed_trade_count") or 0)
+    profit_factor = metrics.get("profit_factor")
+    reconciliation_status = str(metrics.get("reconciliation_status") or "UNKNOWN").upper()
+    if closed_trade_count <= 0:
+        reasons.append("no_closed_trades")
+    if total_return <= 0:
+        reasons.append("non_positive_return")
+    if profit_factor is not None and float(profit_factor) <= 1.0:
+        reasons.append("profit_factor_below_threshold")
+    if max_drawdown > 0.2:
+        reasons.append("drawdown_above_threshold")
+    if reconciliation_status != "OK":
+        reasons.append("reconciliation_failed")
+    if not reasons:
+        return "ELIGIBLE", []
+    return "INELIGIBLE", reasons
+
+
+def _deployment_status(
+    *,
+    evidence_status: str,
+    profitability_status: str,
+    benchmark_validation: BenchmarkValidation,
+    metrics: dict[str, Any],
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    if evidence_status != "ELIGIBLE":
+        reasons.append("evidence_not_eligible")
+    if profitability_status != "ELIGIBLE":
+        reasons.append("profitability_not_eligible")
+    if benchmark_validation.status != "VALID":
+        reasons.append("invalid_benchmark")
+    if str(metrics.get("reconciliation_status") or "UNKNOWN").upper() != "OK":
+        reasons.append("reconciliation_failed")
+    if not reasons:
+        return "ELIGIBLE", []
+    return "INELIGIBLE", reasons
 
 
 def _parameter_key(params: dict[str, Any]) -> str:
@@ -116,10 +159,26 @@ def compare_versions(
             benchmark_validation=benchmark_validation,
             minimum_trade_count_for_ranking=minimum_trade_count_for_ranking,
         )
+        profitability_status, profitability_reasons = _profitability_status(metrics)
+        deployment_status, deployment_reasons = _deployment_status(
+            evidence_status=evidence_status,
+            profitability_status=profitability_status,
+            benchmark_validation=benchmark_validation,
+            metrics=metrics,
+        )
         metric_row = {
             "version": normalized,
             "strategy": result.strategy,
+            "trade_count_definition": metrics.get("trade_count_definition"),
+            "order_count": metrics.get("order_count"),
+            "fill_count": metrics.get("fill_count"),
             "trade_count": int(metrics.get("trade_count", 0) or 0),
+            "round_trip_trade_count": metrics.get("round_trip_trade_count"),
+            "closed_trade_count": metrics.get("closed_trade_count"),
+            "open_position_count": metrics.get("open_position_count"),
+            "open_position_quantity": metrics.get("open_position_quantity"),
+            "winning_trade_count": metrics.get("winning_trade_count"),
+            "losing_trade_count": metrics.get("losing_trade_count"),
             "total_return": metrics.get("total_return"),
             "annualized_return": metrics.get("annualized_return"),
             "max_drawdown": metrics.get("max_drawdown"),
@@ -137,7 +196,17 @@ def compare_versions(
             "blocked_by_trend_count": metrics.get("blocked_by_trend_count"),
             "blocked_by_cost_count": metrics.get("blocked_by_cost_count"),
             "blocked_by_inventory_count": metrics.get("blocked_by_inventory_count"),
+            "time_stop_evaluation_count": metrics.get("time_stop_evaluation_count"),
+            "time_stop_signal_count": metrics.get("time_stop_signal_count"),
+            "time_stop_exit_count": metrics.get("time_stop_exit_count"),
+            "time_stop_blocked_count": metrics.get("time_stop_blocked_count"),
             "time_stop_count": metrics.get("time_stop_count"),
+            "profitability_status": profitability_status,
+            "profitability_reasons": profitability_reasons,
+            "deployment_status": deployment_status,
+            "deployment_reasons": deployment_reasons,
+            "reconciliation_status": metrics.get("reconciliation_status"),
+            "reconciliation_difference": metrics.get("reconciliation_difference"),
             "risk_adjusted_score": metrics.get("risk_adjusted_score"),
             "no_trade": metrics.get("no_trade"),
             "evidence_status": evidence_status,
@@ -176,6 +245,8 @@ def compare_versions(
     ranking = sorted(metric_rows, key=lambda row: (row.get("risk_adjusted_score") or float("-inf")), reverse=True)
     eligible_ranking = sorted(eligible_rows, key=lambda row: (row.get("risk_adjusted_score") or float("-inf")), reverse=True)
     insufficient_evidence_rows = [row for row in metric_rows if row.get("evidence_status") != "ELIGIBLE"]
+    profitability_rows = [row for row in metric_rows if row.get("profitability_status") == "ELIGIBLE"]
+    deployment_rows = [row for row in metric_rows if row.get("deployment_status") == "ELIGIBLE"]
     ranking_status = "ELIGIBLE" if benchmark_validation.status == "VALID" and eligible_ranking else "INSUFFICIENT_EVIDENCE"
     if benchmark_validation.status != "VALID":
         ranking_status = "INVALID_BENCHMARK"
@@ -185,16 +256,21 @@ def compare_versions(
         "best_version_all": ranking[0] if ranking else None,
         "risk_adjusted_ranking": [row["version"] for row in ranking],
         "eligible_ranking": [row["version"] for row in eligible_ranking],
+        "profitability_eligible_versions": [row["version"] for row in profitability_rows],
+        "deployment_eligible_versions": [row["version"] for row in deployment_rows],
         "insufficient_evidence_versions": [row["version"] for row in insufficient_evidence_rows],
         "benchmark_status": benchmark_validation.status,
         "benchmark_validation": benchmark_validation.to_dict(),
         "data_frequency": symbol_frequency,
         "benchmark_frequency": benchmark_validation.benchmark_frequency,
         "ranking_status": ranking_status,
+        "evidence_status": "ELIGIBLE" if not insufficient_evidence_rows and benchmark_validation.status == "VALID" else "INSUFFICIENT_EVIDENCE",
+        "profitability_status": "ELIGIBLE" if profitability_rows else "INELIGIBLE",
+        "deployment_status": "ELIGIBLE" if deployment_rows else "INELIGIBLE",
         "evidence_thresholds": {
             "minimum_trade_count_for_ranking": int(minimum_trade_count_for_ranking),
         },
-        "trade_count_warning": any(int(row.get("trade_count", 0) or 0) < minimum_trade_count_for_ranking for row in comparison_rows),
+        "trade_count_warning": any(int(row.get("fill_count", row.get("trade_count", 0)) or 0) < minimum_trade_count_for_ranking for row in comparison_rows),
         "no_trade_versions": [row["version"] for row in comparison_rows if row.get("no_trade")],
     }
     warnings.extend(

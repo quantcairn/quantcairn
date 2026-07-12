@@ -268,6 +268,7 @@ class StrategyBacktester:
 
         if bars_list:
             portfolio.mark_to_market({symbol: bars_list[-1].close}, timestamp=bars_list[-1].timestamp)
+        portfolio_snapshot = portfolio.snapshot(bars_list[-1].timestamp if bars_list else None)
 
         summary = {
             "symbol": symbol,
@@ -284,6 +285,7 @@ class StrategyBacktester:
             trades=trades,
             orders=orders,
             rejected_signals=rejected_signals,
+            portfolio_snapshot=portfolio_snapshot,
         )
         result = BacktestResult(
             run_id=make_run_id(strategy, symbol, bars_list[0].timestamp.isoformat(), bars_list[-1].timestamp.isoformat()),
@@ -337,6 +339,15 @@ class StrategyBacktester:
         exit_manager = ExitLayerManager()
         time_stop = TimeStop()
         cost_estimator = TradeCostEstimator()
+        strategy_counters: dict[str, int] = {
+            "time_stop_evaluation_count": 0,
+            "time_stop_signal_count": 0,
+            "time_stop_exit_count": 0,
+            "time_stop_blocked_count": 0,
+        }
+        time_stop_triggered_layers: set[int] = set()
+        time_stop_blocked_events: set[str] = set()
+        time_stop_event_id: str | None = None
         max_layers = int(parameter_set.get("max_entry_layers") or 5)
         max_position = int(parameter_set.get("max_position") or self.max_position or 300)
         symbol_base = symbol.upper().split(".")[0]
@@ -434,6 +445,7 @@ class StrategyBacktester:
             time_stop_triggered = False
             if strategy == "c" and open_layers:
                 for layer in open_layers:
+                    strategy_counters["time_stop_evaluation_count"] += 1
                     entry_index = layer.get("entry_index")
                     entry_dt = self._coerce_trade_start_time(layer.get("entry_time"))
                     time_stop_result = time_stop.evaluate(
@@ -448,6 +460,11 @@ class StrategyBacktester:
                     )
                     if time_stop_result.get("triggered"):
                         time_stop_triggered = True
+                        layer_id_for_event = int(layer.get("layer_id") or 0)
+                        if layer_id_for_event not in time_stop_triggered_layers:
+                            time_stop_triggered_layers.add(layer_id_for_event)
+                            time_stop_event_id = f"time_stop:{symbol}:{layer_id_for_event or idx}"
+                            strategy_counters["time_stop_signal_count"] += 1
                         break
 
             exit_order_created = False
@@ -507,11 +524,15 @@ class StrategyBacktester:
                         )
                         continue
                     if time_stop_triggered:
+                        if time_stop_event_id and time_stop_event_id not in time_stop_blocked_events:
+                            time_stop_blocked_events.add(time_stop_event_id)
+                            strategy_counters["time_stop_blocked_count"] += 1
                         rejected_signals.append(
                             {
                                 "timestamp": bar.timestamp.isoformat(),
                                 "symbol": symbol,
                                 "reason": "time_stop",
+                                "event_id": time_stop_event_id or f"time_stop:{symbol}:unknown",
                                 "strategy": strategy,
                             }
                         )
@@ -690,6 +711,7 @@ class StrategyBacktester:
 
         if bars_list:
             portfolio.mark_to_market({symbol: bars_list[-1].close}, timestamp=bars_list[-1].timestamp)
+        portfolio_snapshot = portfolio.snapshot(bars_list[-1].timestamp if bars_list else None)
         summary = {
             "symbol": symbol,
             "strategy": strategy,
@@ -705,6 +727,8 @@ class StrategyBacktester:
             trades=trades,
             orders=orders,
             rejected_signals=rejected_signals,
+            portfolio_snapshot=portfolio_snapshot,
+            strategy_counters=strategy_counters,
         )
         result = BacktestResult(
             run_id=make_run_id(strategy, symbol, bars_list[0].timestamp.isoformat(), bars_list[-1].timestamp.isoformat()),

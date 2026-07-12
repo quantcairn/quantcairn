@@ -35,6 +35,12 @@ def test_version_b_generates_layered_entries_and_exits():
     result = backtester.run(bars, symbol="SOXS.US")
 
     assert result.metrics["trade_count"] > 0
+    assert result.metrics["fill_count"] == result.metrics["trade_count"]
+    assert result.metrics["trade_count_definition"] == "fill_count"
+    assert result.metrics["closed_trade_count"] == 1
+    assert result.metrics["round_trip_trade_count"] == 1
+    assert result.metrics["win_rate"] == 1.0
+    assert result.metrics["profit_factor_status"] == "NO_LOSSES"
     assert any(trade["side"] == "BUY" and trade.get("layer_id") for trade in result.trades)
     assert any(trade["side"] == "SELL" and trade.get("layer_id") for trade in result.trades)
     buy_layers = [trade.get("layer_id") for trade in result.trades if trade["side"] == "BUY"]
@@ -94,6 +100,7 @@ def test_version_c_state_store_failure_blocks_new_buys(monkeypatch):
 
     buy_layers = [trade.get("layer_id") for trade in result.trades if trade["side"] == "BUY"]
     assert len(set(buy_layers)) <= 1
+    assert result.metrics["time_stop_signal_count"] <= 1
 
 
 def test_version_c_inventory_and_cost_filters_can_block_buys(monkeypatch):

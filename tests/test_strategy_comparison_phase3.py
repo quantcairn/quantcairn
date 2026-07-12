@@ -58,6 +58,11 @@ def test_comparison_outputs_ranking_and_artifacts(tmp_path):
     assert result.ranking
     assert result.ranking[0]["risk_adjusted_score"] >= result.ranking[-1]["risk_adjusted_score"]
     assert result.summary["risk_adjusted_ranking"]
+    assert "evidence_status" in result.summary
+    assert "profitability_status" in result.summary
+    assert "deployment_status" in result.summary
+    assert "profitability_eligible_versions" in result.summary
+    assert "deployment_eligible_versions" in result.summary
     assert result.parameter_stability["unique_parameter_sets"] >= 1
     artifact_root = tmp_path / result.run_id
     assert (artifact_root / "comparison_summary.json").exists()

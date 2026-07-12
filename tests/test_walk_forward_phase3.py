@@ -76,6 +76,9 @@ def test_walk_forward_emits_parameter_stability_outputs(tmp_path):
     assert result.parameter_candidates
     assert result.parameter_sensitivity
     assert "instability_score" in result.parameter_stability
+    assert "evidence_status" in result.parameter_stability
+    assert "profitability_status" in result.parameter_stability
+    assert "deployment_status" in result.parameter_stability
 
 
 def test_walk_forward_does_not_use_test_window_for_selection():
@@ -117,3 +120,5 @@ def test_walk_forward_reports_evidence_gate_fields():
     assert "evidence_thresholds" in result.parameter_stability
     assert "active_window_ratio" in result.parameter_stability
     assert "no_trade_window_ratio" in result.parameter_stability
+    assert "profitability_status" in result.parameter_stability
+    assert "deployment_status" in result.parameter_stability

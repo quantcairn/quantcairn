@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any, Iterable, Sequence
 
+from .benchmarking import validate_benchmark_alignment
 from .models import Bar, WalkForwardResult, WalkForwardWindowResult
 from .reporting import write_walk_forward_artifacts
 from .strategy_backtester import StrategyBacktester
@@ -43,6 +44,7 @@ class WalkForwardEvaluator:
         symbol: str | None = None,
         strategy: str = "a",
         parameter_grid: list[dict[str, Any]] | None = None,
+        benchmark_bars: Sequence[Bar] | None = None,
         initial_cash: float | None = None,
         output_dir: str | None = None,
         max_candidates: int | None = None,
@@ -52,13 +54,17 @@ class WalkForwardEvaluator:
             raise ValueError("No bars supplied")
         symbol = symbol or bars_list[0].symbol
         parameter_grid = parameter_grid or [{}]
+        warnings: list[str] = []
+        benchmark_validation = validate_benchmark_alignment(symbol, bars_list, benchmark_bars)
+        benchmark_bars_effective = benchmark_bars if benchmark_validation.status == "VALID" else None
+        if benchmark_validation.status != "VALID" and benchmark_bars:
+            warnings.append("invalid_benchmark")
         max_candidates = int(max_candidates if max_candidates is not None else self.config.max_candidates)
         if max_candidates > 0:
             parameter_grid = list(parameter_grid)[:max_candidates]
         windows = self._build_windows(bars_list)
         window_results: list[WalkForwardWindowResult] = []
         stitched_oos_equity: list[dict[str, Any]] = []
-        warnings: list[str] = []
         failure_count = 0
         no_trade_count = 0
         selection_counts: dict[str, int] = {}
@@ -74,6 +80,8 @@ class WalkForwardEvaluator:
                 validation_result = self.backtester.run(
                     bars_list[: window["validation_end"]],
                     symbol=symbol,
+                    benchmark_bars=benchmark_bars_effective,
+                    benchmark_status=benchmark_validation.status if benchmark_bars is not None else None,
                     trade_start_time=window["validation_start"],
                     parameter_set=candidate_params,
                     initial_cash=initial_cash or self.backtester.initial_cash,
@@ -106,6 +114,8 @@ class WalkForwardEvaluator:
             test_result = self.backtester.run(
                 bars_list[: window["test_end"]],
                 symbol=symbol,
+                benchmark_bars=benchmark_bars_effective,
+                benchmark_status=benchmark_validation.status if benchmark_bars is not None else None,
                 trade_start_time=window["test_start"],
                 parameter_set=best_params,
                 initial_cash=initial_cash or self.backtester.initial_cash,
@@ -141,7 +151,11 @@ class WalkForwardEvaluator:
         active_window_count = sum(1 for window in window_results if int(window.trade_count or 0) > 0)
         active_window_ratio = round(active_window_count / total_windows, 6) if total_windows else 0.0
         no_trade_window_ratio = round(no_trade_count / total_windows, 6) if total_windows else 0.0
+        positive_window_count = sum(1 for window in window_results if float(window.test_metrics.get("total_return") or 0.0) > 0)
+        positive_window_ratio = round(positive_window_count / total_windows, 6) if total_windows else 0.0
         evidence_reasons: list[str] = []
+        if benchmark_validation.status != "VALID" and benchmark_bars is not None:
+            evidence_reasons.append("invalid_benchmark")
         if total_trade_count < self.config.minimum_trade_count_for_ranking:
             evidence_reasons.append("trade_count_below_threshold")
         if active_window_ratio < self.config.minimum_active_windows_ratio:
@@ -149,6 +163,31 @@ class WalkForwardEvaluator:
         if no_trade_window_ratio > self.config.maximum_no_trade_window_ratio:
             evidence_reasons.append("no_trade_window_ratio_above_threshold")
         ranking_status = "ELIGIBLE" if not evidence_reasons else "INSUFFICIENT_EVIDENCE"
+        profitability_reasons: list[str] = []
+        aggregate_total_return_mean = float(aggregate_metrics.get("total_return_mean") or 0.0)
+        aggregate_profit_factor_mean = aggregate_metrics.get("profit_factor_mean")
+        aggregate_max_drawdown_max = float(aggregate_metrics.get("max_drawdown_max") or 0.0)
+        if aggregate_total_return_mean <= 0:
+            profitability_reasons.append("non_positive_aggregate_return")
+        if positive_window_ratio < 0.5:
+            profitability_reasons.append("positive_window_ratio_below_threshold")
+        if aggregate_profit_factor_mean is not None and float(aggregate_profit_factor_mean) <= 1.0:
+            profitability_reasons.append("profit_factor_below_threshold")
+        if aggregate_max_drawdown_max > 0.2:
+            profitability_reasons.append("drawdown_above_threshold")
+        if any(str(window.test_metrics.get("reconciliation_status") or "UNKNOWN").upper() != "OK" for window in window_results):
+            profitability_reasons.append("reconciliation_failed")
+        profitability_status = "ELIGIBLE" if not profitability_reasons else "INELIGIBLE"
+        deployment_reasons: list[str] = []
+        if ranking_status != "ELIGIBLE":
+            deployment_reasons.append("evidence_not_eligible")
+        if profitability_status != "ELIGIBLE":
+            deployment_reasons.append("profitability_not_eligible")
+        if benchmark_validation.status != "VALID":
+            deployment_reasons.append("invalid_benchmark")
+        if any(str(window.test_metrics.get("reconciliation_status") or "UNKNOWN").upper() != "OK" for window in window_results):
+            deployment_reasons.append("reconciliation_failed")
+        deployment_status = "ELIGIBLE" if not deployment_reasons else "INELIGIBLE"
         parameter_stability = {
             "unique_parameter_sets": len(selection_counts),
             "selection_counts": selection_counts,
@@ -165,8 +204,16 @@ class WalkForwardEvaluator:
             "active_window_count": active_window_count,
             "active_window_ratio": active_window_ratio,
             "no_trade_window_ratio": no_trade_window_ratio,
+            "positive_window_count": positive_window_count,
+            "positive_window_ratio": positive_window_ratio,
             "ranking_status": ranking_status,
+            "evidence_status": ranking_status,
+            "profitability_status": profitability_status,
+            "deployment_status": deployment_status,
+            "profitability_reasons": profitability_reasons,
+            "deployment_reasons": deployment_reasons,
             "evidence_reasons": evidence_reasons,
+            "benchmark_validation": benchmark_validation.to_dict(),
             "evidence_thresholds": {
                 "minimum_trade_count_for_ranking": int(self.config.minimum_trade_count_for_ranking),
                 "minimum_active_windows_ratio": float(self.config.minimum_active_windows_ratio),

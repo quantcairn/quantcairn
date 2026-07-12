@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime
 from math import exp, inf, log1p, sqrt
 from statistics import mean, pstdev
 from typing import Any, Sequence
+
+from .accounting import build_trade_accounting
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -105,32 +106,6 @@ def _holding_times(trades: list[dict[str, Any]]) -> list[float]:
     return holding
 
 
-def _trade_pnl_sequence(trades: list[dict[str, Any]]) -> list[float]:
-    pnl_by_symbol: dict[str, list[tuple[int, float]]] = defaultdict(list)
-    realized: list[float] = []
-    for trade in trades:
-        symbol = str(trade.get("symbol") or "").strip().upper()
-        side = str(trade.get("side") or "").strip().upper()
-        qty = int(trade.get("filled_quantity") or trade.get("quantity") or 0)
-        price = float(trade.get("filled_price") or trade.get("price") or 0.0)
-        if not symbol or qty <= 0 or price <= 0:
-            continue
-        if side == "BUY":
-            pnl_by_symbol[symbol].append((qty, price))
-        elif side == "SELL":
-            remaining = qty
-            while remaining > 0 and pnl_by_symbol[symbol]:
-                lot_qty, lot_price = pnl_by_symbol[symbol][0]
-                matched = min(remaining, lot_qty)
-                realized.append((price - lot_price) * matched)
-                if matched == lot_qty:
-                    pnl_by_symbol[symbol].pop(0)
-                else:
-                    pnl_by_symbol[symbol][0] = (lot_qty - matched, lot_price)
-                remaining -= matched
-    return realized
-
-
 def compute_backtest_metrics(
     *,
     initial_cash: float,
@@ -138,9 +113,12 @@ def compute_backtest_metrics(
     trades: list[dict[str, Any]],
     orders: list[dict[str, Any]] | None = None,
     rejected_signals: list[dict[str, Any]] | None = None,
+    portfolio_snapshot: dict[str, Any] | None = None,
+    strategy_counters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     orders = orders or []
     rejected_signals = rejected_signals or []
+    strategy_counters = strategy_counters or {}
     equities = []
     for point in equity_curve:
         try:
@@ -162,44 +140,38 @@ def compute_backtest_metrics(
         sharpe = (avg_return / std_return) * sqrt(ann_factor)
     if avg_return is not None and downside_std not in (None, 0):
         sortino = (avg_return / downside_std) * sqrt(ann_factor)
-    total_profit = 0.0
-    total_loss = 0.0
-    trade_pnls = _trade_pnl_sequence(trades)
-    win_pnls = [p for p in trade_pnls if p > 0]
-    loss_pnls = [p for p in trade_pnls if p < 0]
-    for pnl in trade_pnls:
-        if pnl > 0:
-            total_profit += pnl
-        elif pnl < 0:
-            total_loss += abs(pnl)
+    accounting = build_trade_accounting(
+        initial_cash=initial_cash,
+        trades=trades,
+        orders=orders,
+        portfolio_snapshot=portfolio_snapshot,
+        rejected_signals=rejected_signals,
+        strategy_counters=strategy_counters,
+    )
+    closed_trade_pnls = [float(pnl) for pnl in accounting.get("closed_trade_pnls") or []]
+    win_pnls = [p for p in closed_trade_pnls if p > 0]
+    loss_pnls = [p for p in closed_trade_pnls if p < 0]
+    total_profit = sum(win_pnls)
+    total_loss = sum(abs(p) for p in loss_pnls)
     profit_factor = None
     if total_loss > 0:
         profit_factor = total_profit / total_loss
-    elif total_profit > 0:
-        profit_factor = None
     avg_win = _safe_mean(win_pnls)
     avg_loss = _safe_mean(loss_pnls)
     payoff_ratio = None
     if avg_win is not None and avg_loss not in (None, 0):
         payoff_ratio = abs(avg_win / avg_loss)
-    win_rate = len(win_pnls) / len(trade_pnls) if trade_pnls else 0.0
+    win_rate = accounting.get("win_rate")
     average_holding_time = _safe_mean(_holding_times(trades))
     longest_losing_streak = 0
     current_streak = 0
-    for pnl in trade_pnls:
+    for pnl in closed_trade_pnls:
         if pnl < 0:
             current_streak += 1
             longest_losing_streak = max(longest_losing_streak, current_streak)
         else:
             current_streak = 0
-    turnover_notional = 0.0
-    for trade in trades:
-        try:
-            qty = abs(float(trade.get("filled_quantity") or trade.get("quantity") or 0))
-            price = abs(float(trade.get("filled_price") or trade.get("price") or 0))
-        except (TypeError, ValueError):
-            continue
-        turnover_notional += qty * price
+    turnover_notional = float(accounting.get("turnover_notional") or 0.0)
     average_equity = _safe_mean(equities) or float(initial_cash)
     turnover = turnover_notional / average_equity if average_equity > 0 else 0.0
     exposure = None
@@ -210,9 +182,7 @@ def compute_backtest_metrics(
     return_drawdown_ratio = None
     if max_dd > 0:
         return_drawdown_ratio = total_return / max_dd
-    rejected_reasons = defaultdict(int)
-    for item in rejected_signals:
-        rejected_reasons[str(item.get("reason") or item.get("reject_reason") or "unknown")] += 1
+    rejected_reasons = accounting.get("rejected_reason_counts") or {}
     blocked_by_trend_count = sum(
         count for reason, count in rejected_reasons.items() if "trend" in reason or "regime" in reason
     )
@@ -222,9 +192,7 @@ def compute_backtest_metrics(
     blocked_by_inventory_count = sum(
         count for reason, count in rejected_reasons.items() if "inventory" in reason
     )
-    time_stop_count = sum(
-        count for reason, count in rejected_reasons.items() if "time_stop" in reason
-    )
+    time_stop_count = int(accounting.get("time_stop_signal_count") or 0)
     annualized_return = total_return
     if equity_curve and len(equity_curve) > 1 and total_return > -1.0:
         periods = max(1.0, float(len(equity_curve) - 1))
@@ -236,14 +204,15 @@ def compute_backtest_metrics(
                 annualized_return = total_return
     return {
         "initial_cash": round(float(initial_cash), 6),
-        "ending_equity": round(ending_equity, 6),
+        **{k: v for k, v in accounting.items() if k not in {"turnover_notional", "rejected_reason_counts"}},
+        "ending_equity": round(float(accounting.get("ending_equity") or ending_equity), 6),
         "total_return": round(total_return, 6),
         "annualized_return": round(annualized_return, 6),
         "max_drawdown": round(max_dd, 6),
         "sharpe": _round_or_none(sharpe),
         "sortino": _round_or_none(sortino),
         "calmar": _round_or_none(total_return / max_dd if max_dd > 0 else None),
-        "win_rate": round(win_rate, 6),
+        "win_rate": round(win_rate, 6) if win_rate is not None else None,
         "profit_factor": _round_or_none(profit_factor),
         "average_win": _round_or_none(avg_win),
         "average_loss": _round_or_none(avg_loss),
@@ -252,20 +221,57 @@ def compute_backtest_metrics(
         "turnover": round(turnover, 6),
         "turnover_notional": round(turnover_notional, 6),
         "trade_count": len(trades),
+        "fill_count": int(accounting.get("fill_count") or len(trades)),
+        "order_count": int(accounting.get("order_count") or len(orders)),
+        "trade_count_definition": accounting.get("trade_count_definition") or "fill_count",
+        "round_trip_trade_count": int(accounting.get("round_trip_trade_count") or 0),
+        "closed_trade_count": int(accounting.get("closed_trade_count") or 0),
+        "open_position_count": int(accounting.get("open_position_count") or 0),
+        "open_position_quantity": int(accounting.get("open_position_quantity") or 0),
+        "winning_trade_count": int(accounting.get("winning_trade_count") or 0),
+        "losing_trade_count": int(accounting.get("losing_trade_count") or 0),
         "average_holding_time": _round_or_none(average_holding_time),
         "longest_losing_streak": int(longest_losing_streak),
         "return_drawdown_ratio": _round_or_none(return_drawdown_ratio),
         "total_commission": round(sum(float(t.get("commission") or 0.0) for t in trades), 6),
         "total_slippage": round(sum(float(t.get("slippage") or 0.0) for t in trades), 6),
-        "total_spread_cost": round(
-            sum(float(t.get("fees") or 0.0) for t in trades), 6
-        ),
-        "rejected_order_count": len(rejected_signals),
+        "total_spread_cost": round(sum(float(t.get("spread_cost") or 0.0) for t in trades), 6),
+        "total_fees": round(float(accounting.get("total_fees") or 0.0), 6),
+        "slippage_cost": round(float(accounting.get("slippage_cost") or 0.0), 6),
+        "spread_cost": round(float(accounting.get("spread_cost") or 0.0), 6),
+        "ending_cash": accounting.get("ending_cash"),
+        "position_market_value": accounting.get("position_market_value"),
+        "realized_pnl": accounting.get("realized_pnl"),
+        "unrealized_pnl": accounting.get("unrealized_pnl"),
+        "expected_ending_equity": accounting.get("expected_ending_equity"),
+        "reconciliation_difference": accounting.get("reconciliation_difference"),
+        "reconciliation_status": accounting.get("reconciliation_status"),
+        "reconciliation": {
+            "basis": "cash_plus_mark_to_market",
+            "initial_cash": round(float(initial_cash), 6),
+            "ending_cash": accounting.get("ending_cash"),
+            "position_market_value": accounting.get("position_market_value"),
+            "realized_pnl": accounting.get("realized_pnl"),
+            "unrealized_pnl": accounting.get("unrealized_pnl"),
+            "total_fees": round(float(accounting.get("total_fees") or 0.0), 6),
+            "slippage_cost": round(float(accounting.get("slippage_cost") or 0.0), 6),
+            "spread_cost": round(float(accounting.get("spread_cost") or 0.0), 6),
+            "ending_equity": round(float(accounting.get("ending_equity") or ending_equity), 6),
+            "expected_ending_equity": accounting.get("expected_ending_equity"),
+            "reconciliation_difference": accounting.get("reconciliation_difference"),
+            "reconciliation_status": accounting.get("reconciliation_status"),
+        },
+        "rejected_order_count": int(sum(int(count) for count in rejected_reasons.values())),
         "blocked_by_trend_count": int(blocked_by_trend_count),
         "blocked_by_cost_count": int(blocked_by_cost_count),
         "blocked_by_inventory_count": int(blocked_by_inventory_count),
+        "time_stop_evaluation_count": int(accounting.get("time_stop_evaluation_count") or 0),
+        "time_stop_signal_count": int(accounting.get("time_stop_signal_count") or 0),
+        "time_stop_exit_count": int(accounting.get("time_stop_exit_count") or 0),
+        "time_stop_blocked_count": int(accounting.get("time_stop_blocked_count") or 0),
         "time_stop_count": int(time_stop_count),
         "no_trade": len(trades) == 0,
         "equity_points": len(equity_curve),
         "annualization_factor": round(ann_factor, 6),
+        "layer_reconciliation": accounting.get("layer_reconciliation") or [],
     }

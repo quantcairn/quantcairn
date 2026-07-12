@@ -257,6 +257,9 @@ def _comparison_markdown(result: StrategyComparisonResult) -> str:
         f"- Baseline: baseline",
         f"- Benchmark status: {summary.get('benchmark_status')}",
         f"- Ranking status: {summary.get('ranking_status')}",
+        f"- Evidence status: {summary.get('evidence_status')}",
+        f"- Profitability status: {summary.get('profitability_status')}",
+        f"- Deployment status: {summary.get('deployment_status')}",
         "",
         "## Risk-adjusted ranking",
     ]
@@ -318,6 +321,9 @@ def _walk_forward_markdown(result: WalkForwardResult) -> str:
         f"- Active window ratio: {stability.get('active_window_ratio')}",
         f"- No-trade window ratio: {stability.get('no_trade_window_ratio')}",
         f"- Ranking status: {stability.get('ranking_status')}",
+        f"- Evidence status: {stability.get('evidence_status')}",
+        f"- Profitability status: {stability.get('profitability_status')}",
+        f"- Deployment status: {stability.get('deployment_status')}",
         "",
         "## Parameter stability",
     ]

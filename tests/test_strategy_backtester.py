@@ -87,4 +87,6 @@ def test_version_c_fails_closed_without_benchmark():
 
     assert result.summary["benchmark_status"] == "MISSING_BENCHMARK"
     assert result.metrics["trade_count"] == 0
+    assert result.metrics["closed_trade_count"] == 0
+    assert result.metrics["win_rate"] is None
     assert any("invalid_benchmark" in warning or "benchmark_missing" in warning for warning in result.warnings)
