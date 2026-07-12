@@ -15,7 +15,7 @@ from src.shadow import ShadowMarketDataSource, ShadowObserver, ShadowObservation
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run SOXS read-only shadow observation mode.")
+    parser = argparse.ArgumentParser(description="Run read-only shadow observation mode.")
     parser.add_argument("--output-dir", default=None, help="Shadow output directory")
     parser.add_argument("--symbol", default=None, help="Primary symbol, default SOXS.US")
     parser.add_argument(
@@ -24,6 +24,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Comma separated benchmark symbols, default SOXX.US,SMH.US",
     )
     parser.add_argument("--frequency", default=None, help="Bar frequency, default 15m")
+    parser.add_argument("--timeframe", default=None, help="Timeframe label, default 15m")
+    parser.add_argument("--strategy-version", default=None, help="Strategy version label, default baseline")
+    parser.add_argument("--strategy-family", default=None, help="Strategy family label, default from symbol catalog")
+    parser.add_argument("--risk-profile", default=None, help="Risk profile label, default from symbol catalog")
+    parser.add_argument("--symbol-class", default=None, help="Symbol class label, default from symbol catalog")
     parser.add_argument("--lookback-days", type=int, default=None, help="History warm-up days")
     parser.add_argument("--initial-cash", type=float, default=None, help="Simulated cash starting balance")
     parser.add_argument("--page-size", type=int, default=None)
@@ -35,15 +40,29 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _merge_runtime_config(args: argparse.Namespace) -> ShadowRuntimeConfig:
     config = ShadowRuntimeConfig.from_env()
+    symbol = str(args.symbol).strip().upper() if args.symbol else config.symbol
+    timeframe = str(args.timeframe or args.frequency or config.timeframe).strip().lower() or config.timeframe
+    strategy_family = str(args.strategy_family).strip() if args.strategy_family else config.strategy_family
+    strategy_version = str(args.strategy_version).strip() if args.strategy_version else config.strategy_version
+    risk_profile = str(args.risk_profile).strip().lower() if args.risk_profile else config.risk_profile
+    symbol_class = str(args.symbol_class).strip().lower() if args.symbol_class else config.symbol_class
     return ShadowRuntimeConfig(
         output_dir=Path(args.output_dir) if args.output_dir else config.output_dir,
-        symbol=str(args.symbol).strip().upper() if args.symbol else config.symbol,
+        symbol=symbol,
         benchmark_symbols=tuple(
             item.strip().upper() for item in str(args.benchmarks).split(",") if item.strip()
         )
         if args.benchmarks
         else config.benchmark_symbols,
-        frequency=str(args.frequency).strip() if args.frequency else config.frequency,
+        frequency=timeframe,
+        timeframe=timeframe,
+        strategy_version=strategy_version,
+        strategy_family=strategy_family,
+        risk_profile=risk_profile,
+        regular_session_only=config.regular_session_only,
+        shadow_enabled=config.shadow_enabled,
+        trading_enabled=config.trading_enabled,
+        symbol_class=symbol_class,
         lookback_days=int(args.lookback_days) if args.lookback_days is not None else config.lookback_days,
         initial_cash=float(args.initial_cash) if args.initial_cash is not None else config.initial_cash,
         page_size=int(args.page_size) if args.page_size is not None else config.page_size,
@@ -88,4 +107,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

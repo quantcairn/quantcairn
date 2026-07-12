@@ -22,6 +22,8 @@ from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 from src.research_report.site import build_research_site
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
+from src.shadow.config import ShadowRuntimeConfig
+from src.shadow.universe import default_shadow_output_directory, is_safe_shadow_output_directory, shadow_title_for
 from src.utils.market_calendar import is_us_market_trading_day
 
 app = Flask(__name__)
@@ -34,7 +36,7 @@ WEEKEND_PAPER_LIFECYCLE_PATH = LIFECYCLE_DIR / "weekend_paper_lifecycle.json"
 LONGBRIDGE_SANDBOX_LIFECYCLE_PATH = LIFECYCLE_DIR / "longbridge_sandbox_lifecycle.json"
 RUNTIME_DIR = Path(os.environ.get("SOXS_RUNTIME_DIR", "").strip() or (PROJECT_DIR / "runtime"))
 COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
-SHADOW_OBSERVER_DIR = PROJECT_DIR / "artifacts" / "shadow" / "soxs_15m"
+SHADOW_OBSERVER_DIR = default_shadow_output_directory("SOXS.US", "15m")
 
 TICKERS = [
     {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
@@ -935,7 +937,28 @@ def _load_shadow_csv_artifact(path: Path) -> tuple[str, list[dict[str, object]] 
 
 
 def _shadow_artifact_path(name: str) -> Path:
-    return SHADOW_OBSERVER_DIR / name
+    return _shadow_artifact_root() / name
+
+
+def _shadow_artifact_root() -> Path:
+    configured = str(_env("SOXS_SHADOW_OUTPUT_DIR", "") or "").strip()
+    if configured:
+        try:
+            candidate = Path(configured)
+            if is_safe_shadow_output_directory(candidate):
+                return candidate
+        except Exception:
+            pass
+    default_root = default_shadow_output_directory("SOXS.US", "15m")
+    if SHADOW_OBSERVER_DIR != default_root:
+        return SHADOW_OBSERVER_DIR
+    try:
+        runtime_config = ShadowRuntimeConfig.from_env()
+        if isinstance(runtime_config.output_dir, Path) and runtime_config.output_dir != default_root and is_safe_shadow_output_directory(runtime_config.output_dir):
+            return runtime_config.output_dir
+    except Exception:
+        pass
+    return SHADOW_OBSERVER_DIR
 
 
 def _shadow_datetime(value) -> datetime | None:
@@ -1071,6 +1094,17 @@ def _shadow_status_snapshot() -> dict[str, object]:
     simulated_drawdown = None
     simulated_equity = None
     open_simulated_positions = None
+    symbol = "SOXS.US"
+    timeframe = "15m"
+    strategy_family = ""
+    strategy_version = ""
+    symbol_class = ""
+    regular_session_only = True
+    shadow_enabled = True
+    trading_enabled = False
+    benchmark_symbols: list[str] = []
+    shadow_title = shadow_title_for(symbol, timeframe)
+    output_directory_name = _shadow_artifact_root().name
 
     if any(str(status).lower() == "invalid" for status in (statuses or {}).values()):
         return {
@@ -1081,6 +1115,17 @@ def _shadow_status_snapshot() -> dict[str, object]:
             "detail": "data_invalid",
             "mode": "READ-ONLY SHADOW",
             "mode_label": "READ-ONLY SHADOW",
+            "title": shadow_title,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "strategy_family": strategy_family,
+            "strategy_version": strategy_version,
+            "symbol_class": symbol_class,
+            "regular_session_only": regular_session_only,
+            "shadow_enabled": shadow_enabled,
+            "trading_enabled": trading_enabled,
+            "benchmark_symbols": benchmark_symbols,
+            "output_directory": output_directory_name,
             "quote_api_only": False,
             "trade_api_used": None,
             "trade_context_initialized": None,
@@ -1116,6 +1161,17 @@ def _shadow_status_snapshot() -> dict[str, object]:
         alignment_status = benchmark_status
         last_run_at = str((runtime or {}).get("last_run_at") or safety.get("generated_at") or "")
         latest_processed_bar_utc = str((runtime or {}).get("last_processed_timestamp_utc") or "")
+        symbol = str((runtime or {}).get("symbol") or (summary or {}).get("symbol") or symbol).strip().upper() or symbol
+        timeframe = str((runtime or {}).get("timeframe") or (summary or {}).get("timeframe") or (runtime or {}).get("frequency") or (summary or {}).get("frequency") or timeframe).strip().lower() or timeframe
+        strategy_family = str((runtime or {}).get("strategy_family") or (summary or {}).get("strategy_family") or strategy_family).strip()
+        strategy_version = str((runtime or {}).get("strategy_version") or (summary or {}).get("strategy_version") or strategy_version).strip()
+        symbol_class = str((runtime or {}).get("symbol_class") or (summary or {}).get("symbol_class") or symbol_class).strip()
+        regular_session_only = bool((runtime or {}).get("regular_session_only", regular_session_only))
+        shadow_enabled = bool((runtime or {}).get("shadow_enabled", shadow_enabled))
+        trading_enabled = bool((runtime or {}).get("trading_enabled", trading_enabled))
+        benchmark_symbols = list((runtime or {}).get("benchmark_symbols") or (summary or {}).get("benchmark_symbols") or benchmark_symbols)
+        shadow_title = str((runtime or {}).get("shadow_title") or (summary or {}).get("shadow_title") or shadow_title_for(symbol, timeframe))
+        output_directory_name = str((summary or {}).get("output_dir") or output_directory_name)
         if latest_processed_bar_utc:
             try:
                 ts = _shadow_datetime(latest_processed_bar_utc)
@@ -1205,6 +1261,17 @@ def _shadow_status_snapshot() -> dict[str, object]:
         "detail": status_detail,
         "mode": "READ-ONLY SHADOW",
         "mode_label": "READ-ONLY SHADOW",
+        "title": shadow_title,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "strategy_family": strategy_family,
+        "strategy_version": strategy_version,
+        "symbol_class": symbol_class,
+        "regular_session_only": regular_session_only,
+        "shadow_enabled": shadow_enabled,
+        "trading_enabled": trading_enabled,
+        "benchmark_symbols": benchmark_symbols,
+        "output_directory": output_directory_name,
         "quote_api_only": quote_api_only,
         "trade_api_used": trade_api_used,
         "trade_context_initialized": trade_context_initialized,
@@ -1242,6 +1309,17 @@ def _shadow_status_payload() -> dict[str, object]:
         "status_label": snapshot["state_label"],
         "detail": snapshot["detail"],
         "mode": snapshot["mode"],
+        "title": snapshot["title"],
+        "symbol": snapshot["symbol"],
+        "timeframe": snapshot["timeframe"],
+        "strategy_family": snapshot["strategy_family"],
+        "strategy_version": snapshot["strategy_version"],
+        "symbol_class": snapshot["symbol_class"],
+        "regular_session_only": snapshot["regular_session_only"],
+        "shadow_enabled": snapshot["shadow_enabled"],
+        "trading_enabled": snapshot["trading_enabled"],
+        "benchmark_symbols": snapshot["benchmark_symbols"],
+        "output_directory": snapshot["output_directory"],
         "quote_api_only": snapshot["quote_api_only"],
         "trade_api_used": snapshot["trade_api_used"],
         "trade_context_initialized": snapshot["trade_context_initialized"],
@@ -1277,6 +1355,12 @@ def _shadow_summary_payload() -> dict[str, object]:
         "status_label": snapshot["state_label"],
         "detail": snapshot["detail"],
         "mode": snapshot["mode"],
+        "title": snapshot["title"],
+        "symbol": snapshot["symbol"],
+        "timeframe": snapshot["timeframe"],
+        "strategy_family": snapshot["strategy_family"],
+        "strategy_version": snapshot["strategy_version"],
+        "symbol_class": snapshot["symbol_class"],
         "last_run_at": snapshot["last_run_at"],
         "latest_processed_bar_utc": snapshot["latest_processed_bar_utc"],
         "latest_processed_bar_et": snapshot["latest_processed_bar_et"],
@@ -1295,6 +1379,7 @@ def _shadow_blocked_reasons_payload() -> dict[str, object]:
         "ok": snapshot["state"] != "UNSAFE",
         "state": snapshot["state"],
         "status_label": snapshot["state_label"],
+        "title": snapshot["title"],
         "items": _shadow_blocked_top5(blocked_rows),
         "count": len(blocked_rows),
     }
@@ -1308,6 +1393,7 @@ def _shadow_equity_payload() -> dict[str, object]:
         "ok": snapshot["state"] != "UNSAFE",
         "state": snapshot["state"],
         "status_label": snapshot["state_label"],
+        "title": snapshot["title"],
         "items": equity_rows,
         "latest": latest,
         "count": len(equity_rows),
@@ -2818,7 +2904,7 @@ HTML = """<!DOCTYPE html>
                 <span class="system-status-detail" id="system-sandbox-time">报告：{{ system_status.lifecycle.longbridge_sandbox.generated_at or 'no data' }}</span>
             </div>
             <div class="system-status-card full shadow-observer-card {{ shadow_status_class }}" id="shadow-observer-card">
-                <span class="system-status-label">SOXS Shadow Observer</span>
+                <span class="system-status-label" id="shadow-title">{{ shadow_status.title or 'Shadow Observer' }}</span>
                 <span class="system-status-value" id="shadow-state">{{ shadow_status.state_label or 'STALE' }}</span>
                 <span class="system-status-detail" id="shadow-detail">{{ shadow_status.detail or 'no data' }}</span>
                 <div class="shadow-metrics-grid">
@@ -3816,6 +3902,7 @@ HTML = """<!DOCTYPE html>
             setText('headline-system-state-sub', `Reduce-Only ${system.global_reduce_only ? 'ON' : 'OFF'} · Live Order ${system.live_order_enabled ? 'ON' : 'OFF'}`);
 
             const shadow = payload.shadow || {};
+            setText('shadow-title', shadow.title || 'Shadow Observer');
             setText('shadow-state', shadow.status_label || shadow.state || 'STALE');
             setText('shadow-detail', shadow.detail || 'no data');
             setText('shadow-mode', shadow.mode || 'READ-ONLY SHADOW');

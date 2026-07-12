@@ -23,6 +23,7 @@ from .config import ShadowRuntimeConfig, ShadowSafetyConfig
 from .market_data import ShadowMarketBundle, ShadowMarketDataSource, ShadowMarketDataError
 from .models import ShadowBarSnapshot, ShadowOrder, ShadowTrade
 from .runtime import ShadowRuntimeStateStore
+from .universe import ShadowUniverseConfig
 
 
 UTC = timezone.utc
@@ -244,7 +245,10 @@ class ShadowObserver:
         self.time_stop = TimeStop()
 
     def _validate_or_raise(self) -> dict[str, Any]:
+        universe = self.runtime_config.resolve_universe()
+        universe_errors = universe.validate()
         errors = self.safety_config.validate()
+        errors.extend(universe_errors)
         audit = {
             "ok": not errors,
             "mode": "shadow",
@@ -254,22 +258,32 @@ class ShadowObserver:
             "symbol": self.runtime_config.symbol,
             "benchmark_symbols": list(self.runtime_config.benchmark_symbols),
             "frequency": self.runtime_config.frequency,
-            "output_dir": str(self.runtime_config.output_dir),
+            "output_dir": str(universe.output_dir),
+            "shadow_title": universe.display_name,
+            "symbol_class": universe.symbol_class,
+            "strategy_family": universe.strategy_family,
+            "strategy_version": universe.strategy_version,
+            "risk_profile": universe.risk_profile,
+            "regular_session_only": universe.regular_session_only,
+            "shadow_enabled": universe.shadow_enabled,
+            "trading_enabled": universe.trading_enabled,
             "safety": self.safety_config.to_audit_dict(),
             "errors": errors,
+            "universe": universe.to_dict(),
         }
         if errors:
             raise ShadowObservationError(", ".join(errors))
         return audit
 
     def run_once(self) -> dict[str, Any]:
-        output_dir = self.runtime_config.output_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        universe = self.runtime_config.resolve_universe()
         audit = self._validate_or_raise()
+        output_dir = universe.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
         bundle = self.market_source.fetch_bundle(
-            symbol=self.runtime_config.symbol,
-            benchmark_symbols=self.runtime_config.benchmark_symbols,
-            frequency=self.runtime_config.frequency,
+            symbol=universe.symbol,
+            benchmark_symbols=universe.benchmark_symbols,
+            frequency=universe.frequency,
             lookback_days=self.runtime_config.lookback_days,
         )
         if not bundle.symbol_bars:
@@ -631,8 +645,18 @@ class ShadowObserver:
         comparison_summary = {
             "symbol": bundle.symbol,
             "frequency": bundle.frequency,
+            "timeframe": universe.timeframe,
+            "shadow_title": universe.display_name,
+            "symbol_class": universe.symbol_class,
+            "strategy_family": universe.strategy_family,
+            "strategy_version": universe.strategy_version,
+            "regular_session_only": universe.regular_session_only,
+            "shadow_enabled": universe.shadow_enabled,
+            "trading_enabled": universe.trading_enabled,
+            "shadow_universe": universe.to_dict(),
             "lookback_days": self.runtime_config.lookback_days,
-            "output_dir": str(output_dir),
+            "output_dir": output_dir.name,
+            "output_dir_path": str(output_dir),
             "market_bundle": bundle.to_dict(),
             "benchmark_alignment": benchmark_alignment,
             "safety_audit": audit,
@@ -717,6 +741,15 @@ class ShadowObserver:
                 "mode": "shadow",
                 "symbol": bundle.symbol,
                 "frequency": bundle.frequency,
+                "timeframe": universe.timeframe,
+                "shadow_title": universe.display_name,
+                "symbol_class": universe.symbol_class,
+                "strategy_family": universe.strategy_family,
+                "strategy_version": universe.strategy_version,
+                "risk_profile": universe.risk_profile,
+                "regular_session_only": universe.regular_session_only,
+                "shadow_enabled": universe.shadow_enabled,
+                "trading_enabled": universe.trading_enabled,
                 "benchmark_symbols": list(bundle.benchmark_symbols),
                 "last_bundle": bundle.to_dict(),
                 "benchmark_sensitive": benchmark_sensitive,

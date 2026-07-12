@@ -10,6 +10,7 @@ import pytest
 
 from src.backtest.models import Bar
 from src.shadow import ShadowMarketDataSource, ShadowObserver, ShadowObservationError, ShadowRuntimeConfig, ShadowRuntimeStateStore, ShadowSafetyConfig
+import src.shadow.universe as shadow_universe
 
 
 def _bar(symbol: str, ts: datetime, base: float, index: int) -> Bar:
@@ -111,6 +112,14 @@ def _shadow_env(monkeypatch):
     monkeypatch.setenv("LONGBRIDGE_APP_SECRET", "secret")
     monkeypatch.setenv("LONGBRIDGE_ACCESS_TOKEN", "token")
 
+def _shadow_sandbox_root(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    shadow_root = project_dir / "artifacts" / "shadow"
+    shadow_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(shadow_universe, "PROJECT_DIR", project_dir)
+    monkeypatch.setattr(shadow_universe, "SHADOW_ROOT_DIR", shadow_root)
+    return project_dir, shadow_root
+
 
 def test_shadow_safety_config_fail_closed(monkeypatch):
     monkeypatch.delenv("SHADOW_MODE", raising=False)
@@ -129,8 +138,9 @@ def test_shadow_mode_uses_quote_only_and_writes_outputs(monkeypatch, tmp_path):
     pages = _prepare_pages()
     fake_module = _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
+    _shadow_sandbox_root(monkeypatch, tmp_path)
     runtime = ShadowRuntimeConfig(
-        output_dir=tmp_path / "shadow",
+        output_dir=Path("artifacts/shadow/test_shadow_runtime"),
         symbol="SOXS.US",
         benchmark_symbols=("SOXX.US", "SMH.US"),
         frequency="15m",
@@ -169,8 +179,9 @@ def test_shadow_restart_skips_duplicate_bars(monkeypatch, tmp_path):
     pages = _prepare_pages()
     _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
+    _shadow_sandbox_root(monkeypatch, tmp_path)
     runtime = ShadowRuntimeConfig(
-        output_dir=tmp_path / "shadow_restart",
+        output_dir=Path("artifacts/shadow/test_shadow_restart"),
         symbol="SOXS.US",
         benchmark_symbols=("SOXX.US", "SMH.US"),
         frequency="15m",
@@ -209,3 +220,21 @@ def test_shadow_config_refuses_invalid_flags(monkeypatch):
     config = ShadowSafetyConfig.from_env()
     errors = config.validate()
     assert any("TRADING_ENABLED" in error for error in errors)
+
+
+def test_shadow_runtime_config_derives_universe_metadata(monkeypatch):
+    monkeypatch.setenv("SOXS_SHADOW_SYMBOL", "AAPL")
+    monkeypatch.setenv("SOXS_SHADOW_BENCHMARKS", "QQQ.US,SPY.US")
+    monkeypatch.setenv("SOXS_SHADOW_TIMEFRAME", "15m")
+    monkeypatch.setenv("SOXS_SHADOW_STRATEGY_VERSION", "baseline")
+    monkeypatch.setenv("SOXS_SHADOW_STRATEGY_FAMILY", "equity_mean_reversion")
+    monkeypatch.setenv("SOXS_SHADOW_OUTPUT_DIR", "artifacts/shadow/aapl_15m")
+    monkeypatch.setenv("SOXS_SHADOW_ENABLED", "true")
+    monkeypatch.setenv("SOXS_TRADING_ENABLED", "false")
+    monkeypatch.setenv("SOXS_SHADOW_REGULAR_SESSION_ONLY", "true")
+    runtime = ShadowRuntimeConfig.from_env()
+    universe = runtime.resolve_universe()
+    assert runtime.symbol == "AAPL.US"
+    assert runtime.benchmark_symbols == ("QQQ.US", "SPY.US")
+    assert runtime.shadow_title == "AAPL Shadow Observer"
+    assert universe.validate() == []

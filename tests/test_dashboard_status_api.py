@@ -54,16 +54,19 @@ def _patch_status_basics(
     )
 
 
-def _write_shadow_artifacts(root: Path, *, safety_overrides=None, runtime_overrides=None, summary_overrides=None, blocked_rows=None, equity_rows=None, signals_rows=None, orders_rows=None, trades_rows=None, positions_rows=None, daily_rows=None):
+def _write_shadow_artifacts(root: Path, *, symbol="SOXS.US", benchmark_symbols=None, timeframe="15m", strategy_family="range_etf", strategy_version="baseline", symbol_class="inverse_etf", safety_overrides=None, runtime_overrides=None, summary_overrides=None, blocked_rows=None, equity_rows=None, signals_rows=None, orders_rows=None, trades_rows=None, positions_rows=None, daily_rows=None):
     root.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).replace(microsecond=0)
     et = now.astimezone(timezone.utc).replace(tzinfo=timezone.utc).isoformat()
+    benchmark_symbols = list(benchmark_symbols or (["SOXX.US", "SMH.US"] if symbol == "SOXS.US" else ["QQQ.US", "SPY.US"]))
     safety = {
         "ok": True,
         "mode": "shadow",
         "quote_api_only": True,
         "trade_api_used": False,
         "trade_context_initialized": False,
+        "symbol": symbol,
+        "benchmark_symbols": benchmark_symbols,
     }
     runtime = {
         "schema_version": 1,
@@ -73,8 +76,29 @@ def _write_shadow_artifacts(root: Path, *, safety_overrides=None, runtime_overri
         "last_processed_key": "abc",
         "processed_bar_count": 1,
         "last_run_at": now.isoformat(),
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "strategy_family": strategy_family,
+        "strategy_version": strategy_version,
+        "symbol_class": symbol_class,
+        "regular_session_only": True,
+        "shadow_enabled": True,
+        "trading_enabled": False,
+        "benchmark_symbols": benchmark_symbols,
+        "shadow_title": f"{symbol.split('.')[0]} Shadow Observer",
     }
     summary = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "strategy_family": strategy_family,
+        "strategy_version": strategy_version,
+        "symbol_class": symbol_class,
+        "regular_session_only": True,
+        "shadow_enabled": True,
+        "trading_enabled": False,
+        "benchmark_symbols": benchmark_symbols,
+        "shadow_title": f"{symbol.split('.')[0]} Shadow Observer",
+        "output_dir": root.name,
         "benchmark_alignment": {"status": "VALID"},
         "benchmark_sensitive": False,
         "eligible_ranking": [{"version": "version_c_soxx"}],
@@ -198,6 +222,9 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert payload["system"]["live_order_enabled"] is False
     assert payload["system"]["lifecycle"]["weekend_paper"]["status_label"] == "unavailable"
     assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
+    assert payload["shadow"]["title"] == "SOXS Shadow Observer"
+    assert payload["shadow"]["symbol"] == "SOXS.US"
+    assert payload["shadow"]["timeframe"] == "15m"
 
 
 def test_api_status_handles_offline_top_engine(monkeypatch):
@@ -483,3 +510,34 @@ def test_shadow_status_api_is_get_only_and_page_stays_read_only(monkeypatch, tmp
     assert "切换 Prod" not in html
     assert "切换 Paper" not in html
     assert "reset runtime_state" not in html.lower()
+
+
+def test_shadow_status_api_uses_dynamic_title_for_custom_symbol(monkeypatch, tmp_path):
+    shadow_root = tmp_path / "shadow_aapl"
+    _write_shadow_artifacts(
+        shadow_root,
+        symbol="AAPL.US",
+        benchmark_symbols=["QQQ.US", "SPY.US"],
+        timeframe="15m",
+        strategy_family="equity_mean_reversion",
+        strategy_version="baseline",
+        symbol_class="common_stock",
+    )
+    monkeypatch.setattr(dashboard, "SHADOW_OBSERVER_DIR", shadow_root)
+    monkeypatch.setattr(dashboard, "_fetch_live_account_summary", lambda: (_ for _ in ()).throw(AssertionError("broker should not be called")))
+    monkeypatch.setattr(dashboard, "_load_dashboard_config", lambda: SimpleNamespace(mode="paper", broker=SimpleNamespace(longbridge=SimpleNamespace(enabled=False, environment="prod", account_type="", allow_live_order=False))))
+    monkeypatch.setattr(dashboard, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "paper", "reduce_only": False, "new_entries_allowed": True, "risk_pause_reason": "", "decision_count": 0, "execution_count": 0, "buy_count": 0, "sell_count": 0, "order_qty": 0, "tickers": [], "latest_line": ""})
+    monkeypatch.setattr(dashboard, "_load_config_defaults", lambda name: {"ticker": name.replace(".yaml", ""), "initial_capital": 700.0, "support": 10.0, "resistance": 12.0})
+    monkeypatch.setattr(dashboard, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(dashboard, "_selection_sync_status", lambda: {"ok": True, "level": "green", "label": "已对齐", "detail": "当天配置已对齐（美东 2026-07-09）", "required_date": "2026-07-09", "state_date": "2026-07-09", "selection_state_symbols": ["AAPL"], "current_top_config_symbols": ["AAPL"], "state_top_config_symbols": ["AAPL"]})
+    monkeypatch.setattr(dashboard, "has_live_top_configs", lambda: False)
+
+    client = dashboard.app.test_client()
+    response = client.get("/api/status")
+    payload = response.get_json()
+    assert payload["shadow"]["title"] == "AAPL Shadow Observer"
+    assert payload["shadow"]["benchmark_symbols"] == ["QQQ.US", "SPY.US"]
+    html = client.get("/").data.decode("utf-8")
+    assert "AAPL Shadow Observer" in html
+    assert "SOXS Shadow Observer" not in html

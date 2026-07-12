@@ -9,6 +9,17 @@ from typing import Any
 
 from src.config.runtime_values import has_longbridge_runtime_credentials
 
+from .universe import (
+    ShadowUniverseConfig,
+    canonical_shadow_symbol,
+    default_benchmarks_for,
+    default_shadow_output_directory,
+    is_safe_shadow_output_directory,
+    shadow_title_for,
+    strategy_family_for,
+    symbol_class_for,
+)
+
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 FALSE_VALUES = {"0", "false", "no", "n", "off"}
@@ -80,6 +91,18 @@ def _parse_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(values) if values else default
 
 
+def _parse_optional_bool(name: str, default: bool) -> bool:
+    raw = _raw_env(name)
+    if not raw:
+        return bool(default)
+    lowered = raw.lower()
+    if lowered in TRUE_VALUES:
+        return True
+    if lowered in FALSE_VALUES:
+        return False
+    return bool(default)
+
+
 @dataclass(frozen=True)
 class ShadowSafetyConfig:
     shadow_mode: bool | None
@@ -133,6 +156,14 @@ class ShadowRuntimeConfig:
     symbol: str = "SOXS.US"
     benchmark_symbols: tuple[str, ...] = ("SOXX.US", "SMH.US")
     frequency: str = "15m"
+    timeframe: str = "15m"
+    strategy_version: str = "baseline"
+    strategy_family: str = "range_etf"
+    risk_profile: str = "strict"
+    regular_session_only: bool = True
+    shadow_enabled: bool = True
+    trading_enabled: bool = False
+    symbol_class: str = "inverse_etf"
     lookback_days: int = 120
     initial_cash: float = 10_000.0
     page_size: int = 1000
@@ -143,11 +174,29 @@ class ShadowRuntimeConfig:
 
     @classmethod
     def from_env(cls) -> "ShadowRuntimeConfig":
+        symbol = canonical_shadow_symbol(_raw_env("SOXS_SHADOW_SYMBOL") or "SOXS.US")
+        timeframe = (_raw_env("SOXS_SHADOW_TIMEFRAME") or _raw_env("SOXS_SHADOW_FREQUENCY") or "15m").strip().lower() or "15m"
+        explicit_benchmarks = _parse_csv("SOXS_SHADOW_BENCHMARKS", ())
+        benchmarks = explicit_benchmarks if explicit_benchmarks else default_benchmarks_for(symbol)
+        output_dir_value = _raw_env("SOXS_SHADOW_OUTPUT_DIR")
+        output_dir = Path(output_dir_value) if output_dir_value else default_shadow_output_directory(symbol, timeframe)
+        strategy_version = _raw_env("SOXS_SHADOW_STRATEGY_VERSION") or "baseline"
+        strategy_family = _raw_env("SOXS_SHADOW_STRATEGY_FAMILY") or strategy_family_for(symbol)
+        risk_profile = _raw_env("SOXS_SHADOW_RISK_PROFILE") or ""
+        symbol_class = _raw_env("SOXS_SHADOW_SYMBOL_CLASS") or symbol_class_for(symbol)
         return cls(
-            output_dir=Path(_raw_env("SOXS_SHADOW_OUTPUT_DIR") or "artifacts/shadow/soxs_15m"),
-            symbol=_raw_env("SOXS_SHADOW_SYMBOL") or "SOXS.US",
-            benchmark_symbols=_parse_csv("SOXS_SHADOW_BENCHMARKS", ("SOXX.US", "SMH.US")),
-            frequency=_raw_env("SOXS_SHADOW_FREQUENCY") or "15m",
+            output_dir=output_dir,
+            symbol=symbol,
+            benchmark_symbols=benchmarks,
+            frequency=timeframe,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+            strategy_family=strategy_family,
+            risk_profile=risk_profile or "strict",
+            regular_session_only=_parse_optional_bool("SOXS_SHADOW_REGULAR_SESSION_ONLY", True),
+            shadow_enabled=_parse_optional_bool("SOXS_SHADOW_ENABLED", True),
+            trading_enabled=_parse_optional_bool("SOXS_TRADING_ENABLED", False),
+            symbol_class=symbol_class,
             lookback_days=_parse_int("SOXS_SHADOW_LOOKBACK_DAYS", 120),
             initial_cash=_parse_float("SOXS_SHADOW_INITIAL_CASH", 10_000.0),
             page_size=_parse_int("SOXS_SHADOW_PAGE_SIZE", 1000),
@@ -159,3 +208,31 @@ class ShadowRuntimeConfig:
 
     def start_date(self) -> date:
         return date.today() - timedelta(days=max(1, self.lookback_days))
+
+    @property
+    def shadow_title(self) -> str:
+        return shadow_title_for(self.symbol, self.timeframe)
+
+    def resolve_universe(self) -> ShadowUniverseConfig:
+        benchmarks = self.benchmark_symbols
+        catalog_defaults = default_benchmarks_for(self.symbol)
+        if not benchmarks:
+            benchmarks = catalog_defaults
+        elif self.symbol != "SOXS.US" and benchmarks == ("SOXX.US", "SMH.US") and catalog_defaults:
+            benchmarks = catalog_defaults
+        resolved_output_dir = self.output_dir
+        if self.symbol != "SOXS.US" and Path(self.output_dir) == Path("artifacts/shadow/soxs_15m"):
+            resolved_output_dir = default_shadow_output_directory(self.symbol, self.timeframe)
+        return ShadowUniverseConfig.for_symbol(
+            self.symbol,
+            benchmarks=benchmarks,
+            timeframe=self.timeframe,
+            strategy_version=self.strategy_version,
+            strategy_family=self.strategy_family or None,
+            risk_profile=self.risk_profile or None,
+            regular_session_only=self.regular_session_only,
+            output_directory=resolved_output_dir,
+            shadow_enabled=self.shadow_enabled,
+            trading_enabled=self.trading_enabled,
+            symbol_class=self.symbol_class or None,
+        )
