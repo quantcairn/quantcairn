@@ -20,6 +20,7 @@ src/ai_selector/reports/*.json
 state/
 runtime/
 artifacts/backtests/
+data/market/
 site/
 .pytest_cache/
 config.local.yaml
