@@ -1,5 +1,6 @@
 """Combined dashboard aggregating the selected TOP3 trading engines."""
 import atexit
+import csv
 import inspect
 import json, os, signal, subprocess, threading, urllib.request
 import time
@@ -33,6 +34,7 @@ WEEKEND_PAPER_LIFECYCLE_PATH = LIFECYCLE_DIR / "weekend_paper_lifecycle.json"
 LONGBRIDGE_SANDBOX_LIFECYCLE_PATH = LIFECYCLE_DIR / "longbridge_sandbox_lifecycle.json"
 RUNTIME_DIR = Path(os.environ.get("SOXS_RUNTIME_DIR", "").strip() or (PROJECT_DIR / "runtime"))
 COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
+SHADOW_OBSERVER_DIR = PROJECT_DIR / "artifacts" / "shadow" / "soxs_15m"
 
 TICKERS = [
     {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
@@ -890,6 +892,426 @@ def _read_json_file(path: Path) -> dict[str, object] | None:
         return data if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+def _read_csv_file(path: Path) -> list[dict[str, object]] | None:
+    try:
+        if not path.exists():
+            return None
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = []
+            for row in reader:
+                if isinstance(row, dict):
+                    rows.append({str(k): v for k, v in row.items()})
+            return rows
+    except Exception:
+        return None
+
+
+def _load_shadow_json_artifact(path: Path) -> tuple[str, dict[str, object] | None]:
+    if not path.exists():
+        return "missing", None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return ("ok", data) if isinstance(data, dict) else ("invalid", None)
+    except Exception:
+        return "invalid", None
+
+
+def _load_shadow_csv_artifact(path: Path) -> tuple[str, list[dict[str, object]] | None]:
+    if not path.exists():
+        return "missing", None
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = []
+            for row in reader:
+                if isinstance(row, dict):
+                    rows.append({str(k): v for k, v in row.items()})
+        return "ok", rows
+    except Exception:
+        return "invalid", None
+
+
+def _shadow_artifact_path(name: str) -> Path:
+    return SHADOW_OBSERVER_DIR / name
+
+
+def _shadow_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(ZoneInfo("UTC"))
+
+
+def _shadow_rows_to_int(rows: list[dict[str, object]] | None) -> int:
+    return len(rows or [])
+
+
+def _shadow_load_artifacts() -> dict[str, object]:
+    safety_status, safety = _load_shadow_json_artifact(_shadow_artifact_path("safety_audit.json"))
+    runtime_status, runtime = _load_shadow_json_artifact(_shadow_artifact_path("runtime_state.json"))
+    summary_status, summary = _load_shadow_json_artifact(_shadow_artifact_path("comparison_summary.json"))
+    daily_status, daily = _load_shadow_csv_artifact(_shadow_artifact_path("daily_summary.csv"))
+    signals_status, signals = _load_shadow_csv_artifact(_shadow_artifact_path("shadow_signals.csv"))
+    orders_status, orders = _load_shadow_csv_artifact(_shadow_artifact_path("shadow_simulated_orders.csv"))
+    trades_status, trades = _load_shadow_csv_artifact(_shadow_artifact_path("shadow_simulated_trades.csv"))
+    positions_status, positions = _load_shadow_csv_artifact(_shadow_artifact_path("shadow_positions.csv"))
+    equity_status, equity = _load_shadow_csv_artifact(_shadow_artifact_path("shadow_equity.csv"))
+    blocked_status, blocked = _load_shadow_csv_artifact(_shadow_artifact_path("blocked_reason_counts.csv"))
+    return {
+        "statuses": {
+            "safety": safety_status,
+            "runtime": runtime_status,
+            "summary": summary_status,
+            "daily": daily_status,
+            "signals": signals_status,
+            "orders": orders_status,
+            "trades": trades_status,
+            "positions": positions_status,
+            "equity": equity_status,
+            "blocked": blocked_status,
+        },
+        "safety": safety,
+        "runtime": runtime,
+        "summary": summary,
+        "daily": daily,
+        "signals": signals,
+        "orders": orders,
+        "trades": trades,
+        "positions": positions,
+        "equity": equity,
+        "blocked": blocked,
+    }
+
+
+def _shadow_blocked_top5(blocked_rows: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for row in blocked_rows or []:
+        reason = str(row.get("reason") or row.get("blocked_reason") or "").strip()
+        if not reason:
+            continue
+        try:
+            count = int(float(row.get("count") or 0))
+        except Exception:
+            count = 0
+        items.append({"reason": reason, "count": count})
+    items.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("reason") or "")))
+    return items[:5]
+
+
+def _shadow_equity_series(equity_rows: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    series: list[dict[str, object]] = []
+    for row in equity_rows or []:
+        ts = _shadow_datetime(row.get("timestamp_utc") or row.get("timestamp"))
+        if ts is None:
+            continue
+        try:
+            equity_value = float(row.get("equity") or 0.0)
+        except Exception:
+            equity_value = 0.0
+        try:
+            cash_value = float(row.get("cash") or 0.0)
+        except Exception:
+            cash_value = 0.0
+        series.append(
+            {
+                "timestamp_utc": ts.isoformat(),
+                "timestamp_et": ts.astimezone(ZoneInfo("America/New_York")).isoformat(),
+                "equity": round(equity_value, 6),
+                "cash": round(cash_value, 6),
+                "version": row.get("version"),
+            }
+        )
+    series.sort(key=lambda item: str(item.get("timestamp_utc") or ""))
+    return series
+
+
+def _shadow_status_snapshot() -> dict[str, object]:
+    artifacts = _shadow_load_artifacts()
+    statuses = artifacts.get("statuses") if isinstance(artifacts.get("statuses"), dict) else {}
+    safety = artifacts["safety"]
+    runtime = artifacts["runtime"]
+    summary = artifacts["summary"]
+    blocked_rows = artifacts["blocked"]
+    equity_rows = artifacts["equity"]
+    signals_rows = artifacts["signals"]
+    orders_rows = artifacts["orders"]
+    trades_rows = artifacts["trades"]
+    positions_rows = artifacts["positions"]
+    daily_rows = artifacts["daily"]
+
+    state = "STALE"
+    safety_gate = "STALE"
+    status_detail = "shadow data unavailable"
+    safety_ok = False
+    quote_api_only = False
+    trade_api_used = None
+    trade_context_initialized = None
+    benchmark_status = "unavailable"
+    alignment_status = "unavailable"
+    last_run_at = None
+    latest_processed_bar_utc = None
+    latest_processed_bar_et = None
+    data_freshness = "unavailable"
+    benchmark_sensitive = None
+    active_windows = None
+    benchmark_symbol = None
+    simulated_return = None
+    simulated_drawdown = None
+    simulated_equity = None
+    open_simulated_positions = None
+
+    if any(str(status).lower() == "invalid" for status in (statuses or {}).values()):
+        return {
+            "available": False,
+            "state": "UNSAFE",
+            "state_label": "UNSAFE",
+            "safety_gate": "UNSAFE",
+            "detail": "data_invalid",
+            "mode": "READ-ONLY SHADOW",
+            "mode_label": "READ-ONLY SHADOW",
+            "quote_api_only": False,
+            "trade_api_used": None,
+            "trade_context_initialized": None,
+            "last_run_at": None,
+            "latest_processed_bar_utc": None,
+            "latest_processed_bar_et": None,
+            "data_freshness": "data_invalid",
+            "benchmark_status": "data_invalid",
+            "alignment_status": "data_invalid",
+            "signals_generated": 0,
+            "simulated_orders": 0,
+            "simulated_trades": 0,
+            "open_simulated_positions": 0,
+            "simulated_equity": None,
+            "simulated_return": None,
+            "simulated_drawdown": None,
+            "blocked_reason_top5": [],
+            "daily_summary_rows": 0,
+            "processed_bar_count": 0,
+            "benchmark_sensitive": False,
+            "benchmark_symbol": None,
+            "runtime_state": {},
+            "safety_audit": {},
+            "comparison_summary": {},
+        }
+
+    if isinstance(safety, dict):
+        safety_ok = bool(safety.get("ok"))
+        quote_api_only = bool(safety.get("quote_api_only"))
+        trade_api_used = bool(safety.get("trade_api_used"))
+        trade_context_initialized = bool(safety.get("trade_context_initialized"))
+        benchmark_status = str((summary or {}).get("benchmark_alignment", {}).get("status") or "unavailable")
+        alignment_status = benchmark_status
+        last_run_at = str((runtime or {}).get("last_run_at") or safety.get("generated_at") or "")
+        latest_processed_bar_utc = str((runtime or {}).get("last_processed_timestamp_utc") or "")
+        if latest_processed_bar_utc:
+            try:
+                ts = _shadow_datetime(latest_processed_bar_utc)
+            except Exception:
+                ts = None
+            if ts is not None:
+                latest_processed_bar_utc = ts.isoformat()
+                latest_processed_bar_et = ts.astimezone(ZoneInfo("America/New_York")).isoformat()
+                age_minutes = max(0.0, (datetime.now(ZoneInfo("UTC")) - ts).total_seconds() / 60.0)
+                if age_minutes <= 45.0:
+                    data_freshness = "fresh"
+                elif age_minutes <= 240.0:
+                    data_freshness = "stale"
+                else:
+                    data_freshness = "old"
+        summary_metrics = list((summary or {}).get("strategy_metrics") or [])
+        eligible_rank = list((summary or {}).get("eligible_ranking") or [])
+        strategy_rank = list((summary or {}).get("strategy_ranking") or [])
+        best_metric = eligible_rank[0] if eligible_rank else (strategy_rank[0] if strategy_rank else (summary_metrics[0] if summary_metrics else {}))
+        if isinstance(best_metric, dict):
+            best_version = str(best_metric.get("version") or "")
+            benchmark_symbol = str(best_metric.get("benchmark_symbol") or "")
+            try:
+                simulated_return = float(best_metric.get("total_return")) if best_metric.get("total_return") is not None else None
+            except Exception:
+                simulated_return = None
+            try:
+                simulated_drawdown = float(best_metric.get("max_drawdown")) if best_metric.get("max_drawdown") is not None else None
+            except Exception:
+                simulated_drawdown = None
+            try:
+                simulated_equity = float(best_metric.get("equity") or best_metric.get("ending_equity")) if (best_metric.get("equity") is not None or best_metric.get("ending_equity") is not None) else None
+            except Exception:
+                simulated_equity = None
+            try:
+                open_simulated_positions = int(best_metric.get("open_position_count") or 0)
+            except Exception:
+                open_simulated_positions = None
+            if best_version:
+                version_equity_rows = [row for row in (equity_rows or []) if str(row.get("version") or "") == best_version]
+                if version_equity_rows:
+                    last_equity_row = version_equity_rows[-1]
+                    try:
+                        simulated_equity = float(last_equity_row.get("equity") or 0.0)
+                    except Exception:
+                        simulated_equity = None
+        if not safety_ok or not quote_api_only or trade_api_used or trade_context_initialized:
+            state = "UNSAFE"
+            safety_gate = "UNSAFE"
+            status_detail = "安全审计失败"
+        elif any(str(status).lower() == "missing" for status in (statuses or {}).values()):
+            state = "STALE"
+            safety_gate = "STALE"
+            status_detail = "shadow artifacts unavailable"
+        elif benchmark_status not in {"VALID", "valid"}:
+            state = "UNSAFE"
+            safety_gate = "UNSAFE"
+            status_detail = "benchmark alignment invalid"
+        elif runtime is None or summary is None:
+            state = "STALE"
+            safety_gate = "STALE"
+            status_detail = "shadow artifacts unavailable"
+        elif data_freshness in {"stale", "old"}:
+            state = "STALE"
+            safety_gate = "STALE"
+            status_detail = f"shadow data {data_freshness}"
+        else:
+            state = "SAFE"
+            safety_gate = "SAFE"
+            status_detail = "read-only shadow observer healthy"
+
+        if isinstance(summary, dict):
+            benchmark_sensitive = bool(summary.get("benchmark_sensitive"))
+            active_windows = len(summary.get("eligible_ranking") or [])
+
+    if not isinstance(runtime, dict):
+        runtime = {}
+    processed_count = runtime.get("processed_bar_count")
+    if processed_count is None:
+        processed_count = len(signals_rows or [])
+
+    return {
+        "available": bool(safety) and bool(runtime) and bool(summary),
+        "state": state,
+        "state_label": state,
+        "safety_gate": safety_gate,
+        "detail": status_detail,
+        "mode": "READ-ONLY SHADOW",
+        "mode_label": "READ-ONLY SHADOW",
+        "quote_api_only": quote_api_only,
+        "trade_api_used": trade_api_used,
+        "trade_context_initialized": trade_context_initialized,
+        "last_run_at": last_run_at,
+        "latest_processed_bar_utc": latest_processed_bar_utc,
+        "latest_processed_bar_et": latest_processed_bar_et,
+        "data_freshness": data_freshness,
+        "benchmark_status": benchmark_status,
+        "alignment_status": alignment_status,
+        "signals_generated": len(signals_rows or []),
+        "simulated_orders": len(orders_rows or []),
+        "simulated_trades": len(trades_rows or []),
+        "open_simulated_positions": open_simulated_positions if open_simulated_positions is not None else sum(
+            1 for row in (positions_rows or []) if str(row.get("quantity") or "0").strip() not in {"", "0", "0.0"}
+        ),
+        "simulated_equity": simulated_equity,
+        "simulated_return": simulated_return,
+        "simulated_drawdown": simulated_drawdown,
+        "blocked_reason_top5": _shadow_blocked_top5(blocked_rows),
+        "daily_summary_rows": len(daily_rows or []),
+        "processed_bar_count": int(processed_count or 0),
+        "benchmark_sensitive": benchmark_sensitive,
+        "benchmark_symbol": benchmark_symbol,
+        "runtime_state": runtime if isinstance(runtime, dict) else {},
+        "safety_audit": safety if isinstance(safety, dict) else {},
+        "comparison_summary": summary if isinstance(summary, dict) else {},
+    }
+
+
+def _shadow_status_payload() -> dict[str, object]:
+    snapshot = _shadow_status_snapshot()
+    return {
+        "ok": snapshot["state"] != "UNSAFE",
+        "state": snapshot["state"],
+        "status_label": snapshot["state_label"],
+        "detail": snapshot["detail"],
+        "mode": snapshot["mode"],
+        "quote_api_only": snapshot["quote_api_only"],
+        "trade_api_used": snapshot["trade_api_used"],
+        "trade_context_initialized": snapshot["trade_context_initialized"],
+        "last_run_at": snapshot["last_run_at"],
+        "latest_processed_bar_utc": snapshot["latest_processed_bar_utc"],
+        "latest_processed_bar_et": snapshot["latest_processed_bar_et"],
+        "data_freshness": snapshot["data_freshness"],
+        "benchmark_status": snapshot["benchmark_status"],
+        "alignment_status": snapshot["alignment_status"],
+        "signals_generated": snapshot["signals_generated"],
+        "simulated_orders": snapshot["simulated_orders"],
+        "simulated_trades": snapshot["simulated_trades"],
+        "open_simulated_positions": snapshot["open_simulated_positions"],
+        "simulated_equity": snapshot["simulated_equity"],
+        "simulated_return": snapshot["simulated_return"],
+        "simulated_drawdown": snapshot["simulated_drawdown"],
+        "blocked_reason_top5": snapshot["blocked_reason_top5"],
+        "benchmark_sensitive": snapshot["benchmark_sensitive"],
+        "benchmark_symbol": snapshot["benchmark_symbol"],
+        "available": snapshot["available"],
+        "processed_bar_count": snapshot["processed_bar_count"],
+    }
+
+
+def _shadow_summary_payload() -> dict[str, object]:
+    snapshot = _shadow_status_snapshot()
+    runtime = snapshot.get("runtime_state") if isinstance(snapshot.get("runtime_state"), dict) else {}
+    daily_rows = _read_csv_file(_shadow_artifact_path("daily_summary.csv")) or []
+    latest_daily = daily_rows[-1] if daily_rows else {}
+    return {
+        "ok": snapshot["state"] != "UNSAFE",
+        "state": snapshot["state"],
+        "status_label": snapshot["state_label"],
+        "detail": snapshot["detail"],
+        "mode": snapshot["mode"],
+        "last_run_at": snapshot["last_run_at"],
+        "latest_processed_bar_utc": snapshot["latest_processed_bar_utc"],
+        "latest_processed_bar_et": snapshot["latest_processed_bar_et"],
+        "data_freshness": snapshot["data_freshness"],
+        "daily_summary_rows": snapshot["daily_summary_rows"],
+        "latest_daily_summary": latest_daily,
+        "processed_bar_count": snapshot["processed_bar_count"],
+        "runtime_state": runtime,
+    }
+
+
+def _shadow_blocked_reasons_payload() -> dict[str, object]:
+    snapshot = _shadow_status_snapshot()
+    blocked_rows = _read_csv_file(_shadow_artifact_path("blocked_reason_counts.csv")) or []
+    return {
+        "ok": snapshot["state"] != "UNSAFE",
+        "state": snapshot["state"],
+        "status_label": snapshot["state_label"],
+        "items": _shadow_blocked_top5(blocked_rows),
+        "count": len(blocked_rows),
+    }
+
+
+def _shadow_equity_payload() -> dict[str, object]:
+    snapshot = _shadow_status_snapshot()
+    equity_rows = _shadow_equity_series(_read_csv_file(_shadow_artifact_path("shadow_equity.csv")))
+    latest = equity_rows[-1] if equity_rows else {}
+    return {
+        "ok": snapshot["state"] != "UNSAFE",
+        "state": snapshot["state"],
+        "status_label": snapshot["state_label"],
+        "items": equity_rows,
+        "latest": latest,
+        "count": len(equity_rows),
+    }
 
 
 def _format_lifecycle_detail(report: dict[str, object], *, kind: str) -> str:
@@ -1914,6 +2336,66 @@ HTML = """<!DOCTYPE html>
         gap:6px;
     }
     .system-status-card.wide{grid-column:span 2}
+    .system-status-card.full{grid-column:1 / -1}
+    .shadow-observer-card.status-live{
+        border-color:rgba(52,211,153,.28);
+        box-shadow:0 0 0 1px rgba(52,211,153,.08), inset 0 1px 0 rgba(255,255,255,.02);
+    }
+    .shadow-observer-card.status-warn{
+        border-color:rgba(251,191,36,.28);
+        box-shadow:0 0 0 1px rgba(251,191,36,.08), inset 0 1px 0 rgba(255,255,255,.02);
+    }
+    .shadow-observer-card.status-offline{
+        border-color:rgba(251,113,133,.28);
+        box-shadow:0 0 0 1px rgba(251,113,133,.08), inset 0 1px 0 rgba(255,255,255,.02);
+    }
+    .shadow-metrics-grid{
+        display:grid;
+        grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:8px;
+        margin-top:6px;
+    }
+    .shadow-metric{
+        min-width:0;
+        padding:8px 10px;
+        border-radius:12px;
+        border:1px solid rgba(148,163,184,.12);
+        background:rgba(2,6,23,.28);
+        display:grid;
+        gap:4px;
+    }
+    .shadow-metric span{
+        font-size:11px;
+        letter-spacing:.08em;
+        text-transform:uppercase;
+        color:var(--muted);
+    }
+    .shadow-metric strong{
+        font-size:13px;
+        font-weight:800;
+        color:#eef4ff;
+        word-break:break-word;
+        font-variant-numeric:tabular-nums;
+    }
+    .shadow-blocked-top{
+        display:flex;
+        flex-wrap:wrap;
+        gap:6px;
+        margin-top:8px;
+    }
+    .shadow-chip{
+        display:inline-flex;
+        align-items:center;
+        gap:6px;
+        padding:6px 10px;
+        border-radius:999px;
+        border:1px solid rgba(125,211,252,.18);
+        background:rgba(125,211,252,.08);
+        color:#d7f0ff;
+        font-size:11px;
+        font-weight:700;
+        letter-spacing:.04em;
+    }
     .system-status-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .system-status-value{font-size:15px;font-weight:800;color:#fff;word-break:break-word}
     .system-status-detail{font-size:12px;color:var(--muted);line-height:1.45;word-break:break-word}
@@ -2174,7 +2656,7 @@ HTML = """<!DOCTYPE html>
         .headline-stats{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
         .headline-stat{padding:14px 15px}
         .headline-stat .value{font-size:24px}
-        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column,.audit-strip,.system-status-grid{grid-template-columns:1fr}
+        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column,.audit-strip,.system-status-grid,.shadow-metrics-grid{grid-template-columns:1fr}
         .viz-grid,.risk-grid{grid-template-columns:1fr}
         .hero-status-grid{grid-template-columns:1fr}
         .viz-card.wide{grid-column:span 1}
@@ -2334,6 +2816,85 @@ HTML = """<!DOCTYPE html>
                 <span class="system-status-value" id="system-sandbox-lifecycle">{{ system_status.lifecycle.longbridge_sandbox.status_label or 'unavailable' }}</span>
                 <span class="system-status-detail" id="system-sandbox-detail">{{ system_status.lifecycle.longbridge_sandbox.detail or 'no data' }}</span>
                 <span class="system-status-detail" id="system-sandbox-time">报告：{{ system_status.lifecycle.longbridge_sandbox.generated_at or 'no data' }}</span>
+            </div>
+            <div class="system-status-card full shadow-observer-card {{ shadow_status_class }}" id="shadow-observer-card">
+                <span class="system-status-label">SOXS Shadow Observer</span>
+                <span class="system-status-value" id="shadow-state">{{ shadow_status.state_label or 'STALE' }}</span>
+                <span class="system-status-detail" id="shadow-detail">{{ shadow_status.detail or 'no data' }}</span>
+                <div class="shadow-metrics-grid">
+                    <div class="shadow-metric">
+                        <span>Mode</span>
+                        <strong id="shadow-mode">{{ shadow_status.mode or 'READ-ONLY SHADOW' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Safety Gate</span>
+                        <strong id="shadow-safety-gate">{{ shadow_status.safety_gate or 'STALE' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Quote API Only</span>
+                        <strong id="shadow-quote-only">{{ 'true' if shadow_status.quote_api_only else 'false' if shadow_status.quote_api_only is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Trade API Used</span>
+                        <strong id="shadow-trade-api">{{ 'true' if shadow_status.trade_api_used else 'false' if shadow_status.trade_api_used is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>TradeContext Initialized</span>
+                        <strong id="shadow-trade-context">{{ 'true' if shadow_status.trade_context_initialized else 'false' if shadow_status.trade_context_initialized is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Last Run</span>
+                        <strong id="shadow-last-run">{{ shadow_status.last_run_at or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Latest Bar UTC</span>
+                        <strong id="shadow-latest-bar-utc">{{ shadow_status.latest_processed_bar_utc or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Latest Bar ET</span>
+                        <strong id="shadow-latest-bar-et">{{ shadow_status.latest_processed_bar_et or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Data Freshness</span>
+                        <strong id="shadow-data-freshness">{{ shadow_status.data_freshness or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Benchmark Status</span>
+                        <strong id="shadow-benchmark-status">{{ shadow_status.benchmark_status or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>SOXX / SMH Alignment</span>
+                        <strong id="shadow-alignment-status">{{ shadow_status.alignment_status or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Signals / Orders / Trades</span>
+                        <strong id="shadow-flow-counts">{{ shadow_status.signals_generated or 0 }} / {{ shadow_status.simulated_orders or 0 }} / {{ shadow_status.simulated_trades or 0 }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Open Simulated Positions</span>
+                        <strong id="shadow-open-positions">{{ shadow_status.open_simulated_positions if shadow_status.open_simulated_positions is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Simulated Equity</span>
+                        <strong id="shadow-equity">{{ "%.2f"|format(shadow_status.simulated_equity) if shadow_status.simulated_equity is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Simulated Return</span>
+                        <strong id="shadow-return">{{ "%+.2f"|format((shadow_status.simulated_return or 0) * 100) if shadow_status.simulated_return is not none else 'unavailable' }}{% if shadow_status.simulated_return is not none %}%{% endif %}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Simulated Drawdown</span>
+                        <strong id="shadow-drawdown">{{ "%+.2f"|format((shadow_status.simulated_drawdown or 0) * 100) if shadow_status.simulated_drawdown is not none else 'unavailable' }}{% if shadow_status.simulated_drawdown is not none %}%{% endif %}</strong>
+                    </div>
+                </div>
+                <div class="shadow-blocked-top" id="shadow-blocked-top">
+                    {% for item in shadow_status.blocked_reason_top5 or [] %}
+                    <span class="shadow-chip">{{ item.reason }} · {{ item.count }}</span>
+                    {% endfor %}
+                    {% if not shadow_status.blocked_reason_top5 %}
+                    <span class="system-status-detail">no data</span>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
@@ -3182,6 +3743,23 @@ HTML = """<!DOCTYPE html>
         node.className = className;
     }
 
+    function renderShadowBlockedReasons(items) {
+        const node = document.getElementById('shadow-blocked-top');
+        if (!node) {
+            return;
+        }
+        const rows = Array.isArray(items) ? items : [];
+        if (!rows.length) {
+            node.innerHTML = '<span class="system-status-detail">no data</span>';
+            return;
+        }
+        node.innerHTML = rows.map((item) => {
+            const reason = String(item && item.reason ? item.reason : 'unknown');
+            const count = Number(item && item.count ? item.count : 0);
+            return `<span class="shadow-chip">${reason} · ${count}</span>`;
+        }).join('');
+    }
+
     let statusRefreshPaused = false;
     const refreshToggle = document.getElementById('auto-refresh-toggle');
     if (refreshToggle) {
@@ -3236,6 +3814,32 @@ HTML = """<!DOCTYPE html>
             setText('headline-active-orders-sub', `PENDING ${summary.active_orders_pending ?? 0} · PARTIAL ${summary.active_orders_partial_filled ?? 0}`);
             setText('headline-system-state', system.broker_connected ? 'RUNNING' : 'DEGRADED');
             setText('headline-system-state-sub', `Reduce-Only ${system.global_reduce_only ? 'ON' : 'OFF'} · Live Order ${system.live_order_enabled ? 'ON' : 'OFF'}`);
+
+            const shadow = payload.shadow || {};
+            setText('shadow-state', shadow.status_label || shadow.state || 'STALE');
+            setText('shadow-detail', shadow.detail || 'no data');
+            setText('shadow-mode', shadow.mode || 'READ-ONLY SHADOW');
+            setText('shadow-safety-gate', shadow.safety_gate || 'STALE');
+            setText('shadow-quote-only', shadow.quote_api_only === true ? 'true' : shadow.quote_api_only === false ? 'false' : 'unavailable');
+            setText('shadow-trade-api', shadow.trade_api_used === true ? 'true' : shadow.trade_api_used === false ? 'false' : 'unavailable');
+            setText('shadow-trade-context', shadow.trade_context_initialized === true ? 'true' : shadow.trade_context_initialized === false ? 'false' : 'unavailable');
+            setText('shadow-last-run', shadow.last_run_at || 'unavailable');
+            setText('shadow-latest-bar-utc', shadow.latest_processed_bar_utc || 'unavailable');
+            setText('shadow-latest-bar-et', shadow.latest_processed_bar_et || 'unavailable');
+            setText('shadow-data-freshness', shadow.data_freshness || 'unavailable');
+            setText('shadow-benchmark-status', shadow.benchmark_status || 'unavailable');
+            setText('shadow-alignment-status', shadow.alignment_status || 'unavailable');
+            setText('shadow-flow-counts', `${shadow.signals_generated ?? 0} / ${shadow.simulated_orders ?? 0} / ${shadow.simulated_trades ?? 0}`);
+            setText('shadow-open-positions', shadow.open_simulated_positions != null ? String(shadow.open_simulated_positions) : 'unavailable');
+            setText('shadow-equity', shadow.simulated_equity != null ? formatMoney(shadow.simulated_equity) : 'unavailable');
+            setText('shadow-return', shadow.simulated_return != null ? `${(Number(shadow.simulated_return) * 100).toFixed(2)}%` : 'unavailable');
+            setText('shadow-drawdown', shadow.simulated_drawdown != null ? `${(Number(shadow.simulated_drawdown) * 100).toFixed(2)}%` : 'unavailable');
+            renderShadowBlockedReasons(shadow.blocked_reason_top5 || []);
+            const shadowCard = document.getElementById('shadow-observer-card');
+            if (shadowCard) {
+                const shadowState = String(shadow.state || shadow.status_label || 'STALE').toUpperCase();
+                shadowCard.className = `system-status-card full shadow-observer-card ${shadowState === 'SAFE' ? 'status-live' : shadowState === 'STALE' ? 'status-warn' : 'status-offline'}`;
+            }
 
             const modeLabel = String(payload.mode || 'paper').toLowerCase();
             const modeChip = document.getElementById('mode-pill');
@@ -3449,6 +4053,7 @@ def _api_status_payload() -> dict[str, object]:
         active_orders=active_orders,
         mode_override=dashboard_mode,
     )
+    shadow_status = _shadow_status_payload()
     return {
         "ok": True,
         "mode": dashboard_mode or "paper",
@@ -3490,6 +4095,7 @@ def _api_status_payload() -> dict[str, object]:
                 "total_trades": int(trade_audit.get("execution_count", 0) or 0),
             },
         },
+        "shadow": shadow_status,
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
         },
@@ -3511,6 +4117,38 @@ def api_chart(ticker):
         )
     except Exception:
         return jsonify({"ticker": _chart_ticker(ticker), "prices": [], "trades": []})
+
+
+@app.route("/api/shadow/status")
+def api_shadow_status():
+    try:
+        return jsonify(_shadow_status_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
+
+
+@app.route("/api/shadow/summary")
+def api_shadow_summary():
+    try:
+        return jsonify(_shadow_summary_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
+
+
+@app.route("/api/shadow/blocked-reasons")
+def api_shadow_blocked_reasons():
+    try:
+        return jsonify(_shadow_blocked_reasons_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "items": [], "count": 0, "error": str(exc)}), 200
+
+
+@app.route("/api/shadow/equity")
+def api_shadow_equity():
+    try:
+        return jsonify(_shadow_equity_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "items": [], "latest": {}, "count": 0, "error": str(exc)}), 200
 
 
 @app.route("/api/status")
@@ -3547,6 +4185,7 @@ def api_status():
                 "dashboard": {
                     "chart_api_available": True,
                 },
+                "shadow": _shadow_status_payload(),
                 "ai_selection": {
                     "price_band": {"min": 4.0, "max": 50.0, "defaulted": True},
                 },
@@ -4043,7 +4682,7 @@ def index():
     dashboard_execution_mode = _resolve_dashboard_execution_mode(trade_audit)
     runtime_account_mode = str(trade_audit.get("execution_mode") or "").strip().lower()
     effective_mode = runtime_account_mode if runtime_account_mode in {"paper", "sandbox", "live"} else runtime_mode
-    live_account = _fetch_live_account_summary()
+    live_account = _fetch_live_account_summary() if runtime_mode in {"sandbox", "live"} else None
     account_positions = _position_lookup(live_account)
     live_account_mode = str((live_account or {}).get("mode") or "").strip().lower()
     use_external_account_positions = bool(
@@ -4444,6 +5083,9 @@ def index():
         market_pill_class = "status-warn"
     else:
         market_pill_class = "status-offline"
+    shadow_status = _shadow_status_payload()
+    shadow_state = str(shadow_status.get("state") or "STALE").upper()
+    shadow_status_class = "status-live" if shadow_state == "SAFE" else "status-warn" if shadow_state == "STALE" else "status-offline"
 
     return render_template_string(HTML,
         cards=cards,
@@ -4497,6 +5139,8 @@ def index():
         runtime_state_class=runtime_state_class,
         runtime_state_detail=runtime_state_detail,
         market_pill_class=market_pill_class,
+        shadow_status=shadow_status,
+        shadow_status_class=shadow_status_class,
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
         equity_curve_bars=_build_equity_curve_bars(cards),

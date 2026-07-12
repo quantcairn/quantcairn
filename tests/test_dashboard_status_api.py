@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 VENV_SITE_PACKAGES = next(
     (path for path in (Path(__file__).resolve().parents[1] / ".venv" / "lib").glob("python*/site-packages") if path.exists()),
@@ -50,6 +52,98 @@ def _patch_status_basics(
             ),
         ),
     )
+
+
+def _write_shadow_artifacts(root: Path, *, safety_overrides=None, runtime_overrides=None, summary_overrides=None, blocked_rows=None, equity_rows=None, signals_rows=None, orders_rows=None, trades_rows=None, positions_rows=None, daily_rows=None):
+    root.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    et = now.astimezone(timezone.utc).replace(tzinfo=timezone.utc).isoformat()
+    safety = {
+        "ok": True,
+        "mode": "shadow",
+        "quote_api_only": True,
+        "trade_api_used": False,
+        "trade_context_initialized": False,
+    }
+    runtime = {
+        "schema_version": 1,
+        "state_version": 1,
+        "processed_bars": ["abc"],
+        "last_processed_timestamp_utc": now.isoformat(),
+        "last_processed_key": "abc",
+        "processed_bar_count": 1,
+        "last_run_at": now.isoformat(),
+    }
+    summary = {
+        "benchmark_alignment": {"status": "VALID"},
+        "benchmark_sensitive": False,
+        "eligible_ranking": [{"version": "version_c_soxx"}],
+        "strategy_ranking": [{"version": "version_c_soxx"}],
+        "strategy_metrics": [
+            {
+                "version": "version_c_soxx",
+                "benchmark_symbol": "SOXX.US",
+                "open_position_count": 0,
+                "total_return": 0.0123,
+                "max_drawdown": 0.0045,
+            }
+        ],
+    }
+    if safety_overrides:
+        safety.update(safety_overrides)
+    if runtime_overrides:
+        runtime.update(runtime_overrides)
+    if summary_overrides:
+        summary.update(summary_overrides)
+    (root / "safety_audit.json").write_text(json.dumps(safety), encoding="utf-8")
+    (root / "runtime_state.json").write_text(json.dumps(runtime), encoding="utf-8")
+    (root / "comparison_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (root / "blocked_reason_counts.csv").write_text("reason,count\ntrend_guard,2\ncost_filter,1\n", encoding="utf-8")
+    (root / "shadow_equity.csv").write_text(
+        "timestamp_utc,timestamp_et,equity,cash,version\n"
+        f"{now.isoformat()},{now.astimezone(timezone.utc).isoformat()},10012.5,9980.0,version_c_soxx\n",
+        encoding="utf-8",
+    )
+    (root / "shadow_signals.csv").write_text(f"timestamp_utc,version,signal\n{now.isoformat()},version_c_soxx,HOLD\n", encoding="utf-8")
+    (root / "shadow_simulated_orders.csv").write_text(f"timestamp_utc,version\n{now.isoformat()},version_c_soxx\n", encoding="utf-8")
+    (root / "shadow_simulated_trades.csv").write_text(f"timestamp_utc,version\n{now.isoformat()},version_c_soxx\n", encoding="utf-8")
+    (root / "shadow_positions.csv").write_text(f"timestamp_utc,version,quantity\n{now.isoformat()},version_c_soxx,0\n", encoding="utf-8")
+    (root / "daily_summary.csv").write_text("date,version,bars_received\n2026-07-10,version_c_soxx,26\n", encoding="utf-8")
+    if blocked_rows is not None:
+        rows = ["reason,count"] + [f"{item['reason']},{item['count']}" for item in blocked_rows]
+        (root / "blocked_reason_counts.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    if equity_rows is not None:
+        lines = ["timestamp_utc,timestamp_et,equity,cash,version"]
+        for row in equity_rows:
+            lines.append(
+                f"{row['timestamp_utc']},{row['timestamp_et']},{row['equity']},{row['cash']},{row.get('version','version_c_soxx')}"
+            )
+        (root / "shadow_equity.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if signals_rows is not None:
+        lines = ["timestamp_utc,version,signal"]
+        for row in signals_rows:
+            lines.append(f"{row['timestamp_utc']},{row.get('version','version_c_soxx')},{row.get('signal','HOLD')}")
+        (root / "shadow_signals.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if orders_rows is not None:
+        lines = ["timestamp_utc,version"]
+        for row in orders_rows:
+            lines.append(f"{row['timestamp_utc']},{row.get('version','version_c_soxx')}")
+        (root / "shadow_simulated_orders.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if trades_rows is not None:
+        lines = ["timestamp_utc,version"]
+        for row in trades_rows:
+            lines.append(f"{row['timestamp_utc']},{row.get('version','version_c_soxx')}")
+        (root / "shadow_simulated_trades.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if positions_rows is not None:
+        lines = ["timestamp_utc,version,quantity"]
+        for row in positions_rows:
+            lines.append(f"{row['timestamp_utc']},{row.get('version','version_c_soxx')},{row.get('quantity',0)}")
+        (root / "shadow_positions.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if daily_rows is not None:
+        lines = ["date,version,bars_received"]
+        for row in daily_rows:
+            lines.append(f"{row['date']},{row.get('version','version_c_soxx')},{row.get('bars_received',26)}")
+        (root / "daily_summary.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_api_status_returns_json_with_core_fields(monkeypatch):
@@ -271,3 +365,121 @@ def test_api_status_shows_sandbox_snapshot_without_paper_fallback(monkeypatch):
     assert payload["system"]["live_order_enabled"] is False
     assert payload["system"]["lifecycle"]["weekend_paper"]["status_label"] == "unavailable"
     assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
+
+
+def test_shadow_status_api_returns_safe_snapshot(monkeypatch, tmp_path):
+    shadow_root = tmp_path / "shadow"
+    _write_shadow_artifacts(shadow_root)
+    monkeypatch.setattr(dashboard, "SHADOW_OBSERVER_DIR", shadow_root)
+
+    client = dashboard.app.test_client()
+    response = client.get("/api/shadow/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["state"] == "SAFE"
+    assert payload["status_label"] == "SAFE"
+    assert payload["quote_api_only"] is True
+    assert payload["trade_api_used"] is False
+    assert payload["trade_context_initialized"] is False
+    assert payload["benchmark_status"] == "VALID"
+    assert payload["alignment_status"] == "VALID"
+    assert payload["signals_generated"] == 1
+    assert payload["simulated_orders"] == 1
+    assert payload["simulated_trades"] == 1
+    assert payload["open_simulated_positions"] == 0
+    assert payload["blocked_reason_top5"][0]["reason"] == "trend_guard"
+
+    summary = client.get("/api/shadow/summary")
+    assert summary.status_code == 200
+    summary_payload = summary.get_json()
+    assert summary_payload["state"] == "SAFE"
+    assert summary_payload["daily_summary_rows"] == 1
+
+    blocked = client.get("/api/shadow/blocked-reasons")
+    assert blocked.status_code == 200
+    blocked_payload = blocked.get_json()
+    assert blocked_payload["items"][0]["reason"] == "trend_guard"
+
+    equity = client.get("/api/shadow/equity")
+    assert equity.status_code == 200
+    equity_payload = equity.get_json()
+    assert equity_payload["latest"]["equity"] == 10012.5
+    assert str(tmp_path) not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_shadow_status_api_marks_unsafe_on_trade_api_or_context(monkeypatch, tmp_path):
+    shadow_root = tmp_path / "shadow"
+    _write_shadow_artifacts(
+        shadow_root,
+        safety_overrides={"trade_api_used": True, "trade_context_initialized": True},
+    )
+    monkeypatch.setattr(dashboard, "SHADOW_OBSERVER_DIR", shadow_root)
+
+    client = dashboard.app.test_client()
+    response = client.get("/api/shadow/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["state"] == "UNSAFE"
+    assert payload["status_label"] == "UNSAFE"
+    assert payload["detail"] == "安全审计失败"
+
+
+def test_shadow_status_api_handles_missing_files_and_invalid_json(monkeypatch, tmp_path):
+    shadow_root = tmp_path / "shadow_missing"
+    shadow_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(dashboard, "SHADOW_OBSERVER_DIR", shadow_root)
+
+    client = dashboard.app.test_client()
+    missing_response = client.get("/api/shadow/status")
+    assert missing_response.status_code == 200
+    missing_payload = missing_response.get_json()
+    assert missing_payload["state"] == "STALE"
+    assert missing_payload["status_label"] == "STALE"
+    assert missing_payload["detail"] == "shadow data unavailable"
+
+    (shadow_root / "safety_audit.json").write_text("{invalid", encoding="utf-8")
+    invalid_response = client.get("/api/shadow/status")
+    assert invalid_response.status_code == 200
+    invalid_payload = invalid_response.get_json()
+    assert invalid_payload["state"] == "UNSAFE"
+    assert invalid_payload["detail"] == "data_invalid"
+
+
+def test_shadow_status_api_is_get_only_and_page_stays_read_only(monkeypatch, tmp_path):
+    shadow_root = tmp_path / "shadow"
+    _write_shadow_artifacts(shadow_root)
+    monkeypatch.setattr(dashboard, "SHADOW_OBSERVER_DIR", shadow_root)
+    monkeypatch.setattr(dashboard, "_fetch_live_account_summary", lambda: (_ for _ in ()).throw(AssertionError("broker should not be called")))
+    monkeypatch.setattr(dashboard, "_load_dashboard_config", lambda: SimpleNamespace(mode="paper", broker=SimpleNamespace(longbridge=SimpleNamespace(enabled=False, environment="prod", account_type="", allow_live_order=False))))
+    monkeypatch.setattr(dashboard, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "paper", "reduce_only": False, "new_entries_allowed": True, "risk_pause_reason": "", "decision_count": 0, "execution_count": 0, "buy_count": 0, "sell_count": 0, "order_qty": 0, "tickers": [], "latest_line": ""})
+    monkeypatch.setattr(dashboard, "_load_config_defaults", lambda name: {"ticker": name.replace(".yaml", ""), "initial_capital": 700.0, "support": 10.0, "resistance": 12.0})
+    monkeypatch.setattr(dashboard, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(dashboard, "_selection_sync_status", lambda: {"ok": True, "level": "green", "label": "已对齐", "detail": "当天配置已对齐（美东 2026-07-09）", "required_date": "2026-07-09", "state_date": "2026-07-09", "selection_state_symbols": ["SOXS", "SOXS", "SOXS"], "current_top_config_symbols": ["SOXS", "SOXS", "SOXS"], "state_top_config_symbols": ["SOXS", "SOXS", "SOXS"]})
+    monkeypatch.setattr(dashboard, "has_live_top_configs", lambda: False)
+
+    methods = None
+    for rule in dashboard.app.url_map.iter_rules():
+        if rule.rule == "/api/shadow/status":
+            methods = rule.methods
+            break
+    assert methods is not None
+    assert "POST" not in methods
+
+    client = dashboard.app.test_client()
+    response = client.get("/api/status")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert "shadow" in payload
+    html = client.get("/").data.decode("utf-8")
+    assert "SOXS Shadow Observer" in html
+    assert "READ-ONLY SHADOW" in html
+    assert "提交订单" not in html
+    assert "一键实盘" not in html
+    assert "切换 Prod" not in html
+    assert "切换 Paper" not in html
+    assert "reset runtime_state" not in html.lower()
