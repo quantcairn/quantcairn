@@ -21,6 +21,7 @@ state/
 runtime/
 artifacts/backtests/
 artifacts/shadow/
+artifacts/candidates/
 data/market/
 site/
 .pytest_cache/

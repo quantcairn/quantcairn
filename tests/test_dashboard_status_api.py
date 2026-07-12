@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
+from src.candidate_validation import CandidateRecord, CandidateValidationStore
+
 VENV_SITE_PACKAGES = next(
     (path for path in (Path(__file__).resolve().parents[1] / ".venv" / "lib").glob("python*/site-packages") if path.exists()),
     None,
@@ -170,6 +172,28 @@ def _write_shadow_artifacts(root: Path, *, symbol="SOXS.US", benchmark_symbols=N
         (root / "daily_summary.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inverse_etf", benchmarks=None, strategy_family="range_etf", risk_profile="strict", timeframe="15m", ai_score=91.5, ai_reason="Strong range fit"):
+    store = CandidateValidationStore(root)
+    record = CandidateRecord.from_ai_candidate(
+        symbol=symbol,
+        selected_at="2026-07-10T21:32:41+08:00",
+        source="ai_selector",
+        ai_score=ai_score,
+        ai_reason=ai_reason,
+        asset_type=asset_type,
+        benchmarks=tuple(benchmarks or (["SOXX.US", "SMH.US"] if symbol == "SOXS.US" else ["QQQ.US", "SPY.US"])),
+        strategy_family=strategy_family,
+        risk_profile=risk_profile,
+        timeframe=timeframe,
+        market=symbol.split(".")[-1] if "." in symbol else "US",
+        metadata={"source": "dashboard_test"},
+    )
+    store.save_candidates([record])
+    return store
+
+
+
+
 def test_api_status_returns_json_with_core_fields(monkeypatch):
     _patch_status_basics(
         monkeypatch,
@@ -213,6 +237,9 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert len(payload["top_engines"]) == 3
     assert payload["ai_selection"]["price_band"]["min"] == 4.0
     assert payload["ai_selection"]["price_band"]["max"] == 50.0
+    assert payload["candidate_validation"]["state"] == "STALE"
+    assert payload["candidate_validation"]["status_label"] == "STALE"
+    assert payload["candidate_validation_api_available"] is True
     assert payload["system"]["mode"] == "PAPER"
     assert payload["system"]["broker_type"] == "PaperBroker"
     assert payload["system"]["broker_connection"] == "local memory"
@@ -394,6 +421,49 @@ def test_api_status_shows_sandbox_snapshot_without_paper_fallback(monkeypatch):
     assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
 
 
+def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    candidates_root = project_dir / "artifacts" / "candidates"
+    candidates_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
+    _write_candidate_artifacts(candidates_root, symbol="AAPL.US", asset_type="common_stock", benchmarks=["QQQ.US", "SPY.US"], strategy_family="equity_mean_reversion", risk_profile="balanced", timeframe="15m", ai_score=88.2, ai_reason="price near support")
+    monkeypatch.setattr(dashboard, "_fetch_live_account_summary", lambda: (_ for _ in ()).throw(AssertionError("broker should not be called")))
+    monkeypatch.setattr(dashboard, "_load_dashboard_config", lambda: SimpleNamespace(mode="paper", broker=SimpleNamespace(longbridge=SimpleNamespace(enabled=False, environment="prod", account_type="", allow_live_order=False))))
+    monkeypatch.setattr(dashboard, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "paper", "reduce_only": False, "new_entries_allowed": True, "risk_pause_reason": "", "decision_count": 0, "execution_count": 0, "buy_count": 0, "sell_count": 0, "order_qty": 0, "tickers": [], "latest_line": ""})
+    monkeypatch.setattr(dashboard, "_load_config_defaults", lambda name: {"ticker": name.replace(".yaml", ""), "initial_capital": 700.0, "support": 10.0, "resistance": 12.0})
+    monkeypatch.setattr(dashboard, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(dashboard, "_selection_sync_status", lambda: {"ok": True, "level": "green", "label": "已对齐", "detail": "当天配置已对齐（美东 2026-07-09）", "required_date": "2026-07-09", "state_date": "2026-07-09", "selection_state_symbols": ["AAPL"], "current_top_config_symbols": ["AAPL"], "state_top_config_symbols": ["AAPL"]})
+    monkeypatch.setattr(dashboard, "has_live_top_configs", lambda: False)
+
+    client = dashboard.app.test_client()
+    response = client.get("/api/candidates/status")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["state"] == "SAFE"
+    assert payload["status_label"] == "SAFE"
+    assert payload["candidate_count"] == 1
+    assert payload["latest_candidate"]["symbol"] == "AAPL.US"
+    assert payload["latest_candidate"]["validation_status"] == "AI_CANDIDATE"
+    assert payload["latest_candidate"]["trading_enabled"] is False
+    assert payload["latest_candidate"]["shadow_enabled"] is False
+    assert payload["latest_candidate"]["paper_enabled"] is False
+    assert payload["latest_candidate"]["live_enabled"] is False
+    assert payload["latest_candidate"]["deployment_status"] == "INELIGIBLE"
+    assert "APP_KEY" not in response.get_data(as_text=True)
+
+    api_status = client.get("/api/status").get_json()
+    assert api_status["candidate_validation"]["state"] == "SAFE"
+
+    html = client.get("/").data.decode("utf-8")
+    assert "AI Candidate Validation" in html
+    assert "AAPL.US" in html
+    assert "启动 Shadow" not in html
+    assert "批准 Paper" not in html
+    assert "批准实盘" not in html
+    assert "提交订单" not in html
+
+
 def test_shadow_status_api_returns_safe_snapshot(monkeypatch, tmp_path):
     shadow_root = tmp_path / "shadow"
     _write_shadow_artifacts(shadow_root)
@@ -505,11 +575,14 @@ def test_shadow_status_api_is_get_only_and_page_stays_read_only(monkeypatch, tmp
     html = client.get("/").data.decode("utf-8")
     assert "SOXS Shadow Observer" in html
     assert "READ-ONLY SHADOW" in html
+    assert "AI Candidate Validation" in html
     assert "提交订单" not in html
     assert "一键实盘" not in html
     assert "切换 Prod" not in html
     assert "切换 Paper" not in html
     assert "reset runtime_state" not in html.lower()
+    assert "批准 Paper" not in html
+    assert "批准实盘" not in html
 
 
 def test_shadow_status_api_uses_dynamic_title_for_custom_symbol(monkeypatch, tmp_path):

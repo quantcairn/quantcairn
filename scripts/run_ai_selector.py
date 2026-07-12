@@ -47,6 +47,7 @@ from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import resolve_price_band
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
+from src.candidate_validation import CandidateValidationStore
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -1132,6 +1133,19 @@ def _has_live_top_configs() -> bool:
         if str(config.get("mode") or "").strip().lower() == "live":
             return True
     return False
+
+
+def _publish_candidate_validation_records(summary: dict) -> None:
+    try:
+        store = CandidateValidationStore()
+        candidate_rows = list(summary.get("top10") or [])
+        if not candidate_rows:
+            candidate_rows = list(summary.get("top3") or [])
+        if not candidate_rows:
+            candidate_rows = list(summary.get("report") or [])
+        store.ingest_ai_selection_report(summary, candidate_rows)
+    except Exception as exc:
+        print(f"AI selection candidate validation warning: {exc}")
 
 
 def _notify_selection_result(summary: dict, selected: list[dict]) -> None:

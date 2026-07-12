@@ -24,6 +24,7 @@ from src.research_report.site import build_research_site
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
 from src.shadow.config import ShadowRuntimeConfig
 from src.shadow.universe import default_shadow_output_directory, is_safe_shadow_output_directory, shadow_title_for
+from src.candidate_validation import CandidateValidationStore, ValidationStatus
 from src.utils.market_calendar import is_us_market_trading_day
 
 app = Flask(__name__)
@@ -938,6 +939,126 @@ def _load_shadow_csv_artifact(path: Path) -> tuple[str, list[dict[str, object]] 
 
 def _shadow_artifact_path(name: str) -> Path:
     return _shadow_artifact_root() / name
+
+
+def _candidate_artifact_root() -> Path:
+    return PROJECT_DIR / "artifacts" / "candidates"
+
+
+def _candidate_artifact_path(name: str) -> Path:
+    return _candidate_artifact_root() / name
+
+
+def _candidate_validation_snapshot() -> dict[str, object]:
+    root = _candidate_artifact_root()
+    store = CandidateValidationStore(root)
+    candidates_path = store.candidates_path
+    history_path = store.history_path
+    summary_path = store.summary_path
+    if not any(path.exists() for path in (candidates_path, history_path, summary_path)):
+        return {
+            "available": False,
+            "state": "STALE",
+            "status_label": "STALE",
+            "detail": "candidate validation data unavailable",
+            "title": "AI Candidate Validation",
+            "candidate_count": 0,
+            "history_count": 0,
+            "latest_candidate": {},
+            "candidate_validation_rows": [],
+            "last_updated": None,
+            "status_issue": None,
+            "validation_status": "AI_CANDIDATE",
+        }
+    try:
+        candidates = store.load_latest_candidates()
+        history = store.load_latest_history()
+    except Exception as exc:
+        return {
+            "available": False,
+            "state": "UNSAFE",
+            "status_label": "UNSAFE",
+            "detail": "data_invalid",
+            "error": str(exc),
+            "title": "AI Candidate Validation",
+            "candidate_count": 0,
+            "history_count": 0,
+            "latest_candidate": {},
+            "candidate_validation_rows": [],
+            "last_updated": None,
+            "status_issue": "data_invalid",
+            "validation_status": "REJECTED",
+        }
+
+    if not candidates and not history:
+        return {
+            "available": False,
+            "state": "STALE",
+            "status_label": "STALE",
+            "detail": "candidate validation data unavailable",
+            "title": "AI Candidate Validation",
+            "candidate_count": 0,
+            "history_count": 0,
+            "latest_candidate": {},
+            "candidate_validation_rows": [],
+            "last_updated": None,
+            "status_issue": None,
+            "validation_status": "AI_CANDIDATE",
+        }
+
+    latest = candidates[0] if candidates else None
+    latest_updated = None
+    if latest is not None:
+        try:
+            latest_updated = datetime.fromisoformat(str(latest.updated_at).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).isoformat()
+        except Exception:
+            latest_updated = str(latest.updated_at or "")
+    now_utc = datetime.now(ZoneInfo("UTC"))
+    stale = False
+    if latest is not None:
+        try:
+            latest_utc = datetime.fromisoformat(str(latest.updated_at).replace("Z", "+00:00")).astimezone(ZoneInfo("UTC"))
+            stale = (now_utc - latest_utc).total_seconds() > 24 * 3600
+        except Exception:
+            stale = True
+    invalid_issue = None
+    for record in candidates:
+        if record.validation_status not in {item.value for item in ValidationStatus}:
+            invalid_issue = "invalid_validation_status"
+            break
+        if record.validation_status == ValidationStatus.REJECTED.value and not record.rejection_reason:
+            invalid_issue = "rejection_reason_missing"
+            break
+        if any(bool(getattr(record, flag, False)) for flag in ("trading_enabled", "shadow_enabled", "paper_enabled", "live_enabled")):
+            invalid_issue = "candidate_write_flag_enabled"
+            break
+        if record.asset_type and record.asset_type not in {"common_stock", "index_etf", "leveraged_etf", "inverse_etf"}:
+            invalid_issue = "invalid_asset_type"
+            break
+
+    state = "UNSAFE" if invalid_issue else "STALE" if stale else "SAFE"
+    detail = "data_invalid" if invalid_issue else ("candidate data stale" if stale else (latest.rejection_reason or "candidate validation ready" if latest else "candidate validation unavailable"))
+    if latest is None:
+        state = "STALE"
+        detail = "candidate validation data unavailable"
+    return {
+        "available": True,
+        "state": state,
+        "status_label": state,
+        "detail": detail,
+        "title": "AI Candidate Validation",
+        "candidate_count": len(candidates),
+        "history_count": len(history),
+        "latest_candidate": latest.to_dict() if latest is not None else {},
+        "candidate_validation_rows": [record.to_dict() for record in candidates[:5]],
+        "last_updated": latest_updated,
+        "status_issue": invalid_issue,
+        "validation_status": latest.validation_status if latest is not None else "AI_CANDIDATE",
+    }
+
+
+def _candidate_validation_payload() -> dict[str, object]:
+    return _candidate_validation_snapshot()
 
 
 def _shadow_artifact_root() -> Path:
@@ -2982,6 +3103,61 @@ HTML = """<!DOCTYPE html>
                     {% endif %}
                 </div>
             </div>
+            <div class="system-status-card full candidate-validation-card {{ candidate_status_class }}" id="candidate-validation-card">
+                <span class="system-status-label" id="candidate-title">{{ candidate_validation.title or 'AI Candidate Validation' }}</span>
+                <span class="system-status-value" id="candidate-state">{{ candidate_validation.status_label or 'STALE' }}</span>
+                <span class="system-status-detail" id="candidate-detail">{{ candidate_validation.detail or 'no data' }}</span>
+                <div class="shadow-metrics-grid">
+                    <div class="shadow-metric">
+                        <span>Symbol</span>
+                        <strong id="candidate-symbol">{{ candidate_validation.latest_candidate.symbol or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Asset Type</span>
+                        <strong id="candidate-asset-type">{{ candidate_validation.latest_candidate.asset_type or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>AI Score</span>
+                        <strong id="candidate-ai-score">{{ candidate_validation.latest_candidate.ai_score if candidate_validation.latest_candidate.ai_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Benchmarks</span>
+                        <strong id="candidate-benchmarks">{{ candidate_validation.latest_candidate.benchmarks|join(' / ') if candidate_validation.latest_candidate.benchmarks else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Strategy Family</span>
+                        <strong id="candidate-strategy-family">{{ candidate_validation.latest_candidate.strategy_family or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Validation Status</span>
+                        <strong id="candidate-validation-status">{{ candidate_validation.latest_candidate.validation_status or 'AI_CANDIDATE' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Evidence Status</span>
+                        <strong id="candidate-evidence-status">{{ candidate_validation.latest_candidate.evidence_status or 'INSUFFICIENT_EVIDENCE' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Profitability Status</span>
+                        <strong id="candidate-profitability-status">{{ candidate_validation.latest_candidate.profitability_status or 'INELIGIBLE' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Deployment Status</span>
+                        <strong id="candidate-deployment-status">{{ candidate_validation.latest_candidate.deployment_status or 'INELIGIBLE' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Rejection Reason</span>
+                        <strong id="candidate-rejection-reason">{{ candidate_validation.latest_candidate.rejection_reason or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Last Updated</span>
+                        <strong id="candidate-last-updated">{{ candidate_validation.last_updated or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Records</span>
+                        <strong id="candidate-record-count">{{ candidate_validation.candidate_count if candidate_validation.candidate_count is not none else 'unavailable' }}</strong>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     <div class="board-section">
@@ -3928,6 +4104,28 @@ HTML = """<!DOCTYPE html>
                 shadowCard.className = `system-status-card full shadow-observer-card ${shadowState === 'SAFE' ? 'status-live' : shadowState === 'STALE' ? 'status-warn' : 'status-offline'}`;
             }
 
+            const candidateValidation = payload.candidate_validation || {};
+            setText('candidate-title', candidateValidation.title || 'AI Candidate Validation');
+            setText('candidate-state', candidateValidation.status_label || candidateValidation.state || 'STALE');
+            setText('candidate-detail', candidateValidation.detail || 'no data');
+            setText('candidate-symbol', candidateValidation.latest_candidate && candidateValidation.latest_candidate.symbol ? candidateValidation.latest_candidate.symbol : 'unavailable');
+            setText('candidate-asset-type', candidateValidation.latest_candidate && candidateValidation.latest_candidate.asset_type ? candidateValidation.latest_candidate.asset_type : 'unavailable');
+            setText('candidate-ai-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.ai_score != null ? String(candidateValidation.latest_candidate.ai_score) : 'unavailable');
+            setText('candidate-benchmarks', candidateValidation.latest_candidate && Array.isArray(candidateValidation.latest_candidate.benchmarks) && candidateValidation.latest_candidate.benchmarks.length ? candidateValidation.latest_candidate.benchmarks.join(' / ') : 'unavailable');
+            setText('candidate-strategy-family', candidateValidation.latest_candidate && candidateValidation.latest_candidate.strategy_family ? candidateValidation.latest_candidate.strategy_family : 'unavailable');
+            setText('candidate-validation-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.validation_status ? candidateValidation.latest_candidate.validation_status : 'AI_CANDIDATE');
+            setText('candidate-evidence-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.evidence_status ? candidateValidation.latest_candidate.evidence_status : 'INSUFFICIENT_EVIDENCE');
+            setText('candidate-profitability-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.profitability_status ? candidateValidation.latest_candidate.profitability_status : 'INELIGIBLE');
+            setText('candidate-deployment-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.deployment_status ? candidateValidation.latest_candidate.deployment_status : 'INELIGIBLE');
+            setText('candidate-rejection-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.rejection_reason ? candidateValidation.latest_candidate.rejection_reason : 'unavailable');
+            setText('candidate-last-updated', candidateValidation.last_updated || 'unavailable');
+            setText('candidate-record-count', candidateValidation.candidate_count != null ? String(candidateValidation.candidate_count) : 'unavailable');
+            const candidateCard = document.getElementById('candidate-validation-card');
+            if (candidateCard) {
+                const candidateState = String(candidateValidation.state || candidateValidation.status_label || 'STALE').toUpperCase();
+                candidateCard.className = `system-status-card full candidate-validation-card ${candidateState === 'SAFE' ? 'status-live' : candidateState === 'STALE' ? 'status-warn' : 'status-offline'}`;
+            }
+
             const modeLabel = String(payload.mode || 'paper').toLowerCase();
             const modeChip = document.getElementById('mode-pill');
             if (modeChip) {
@@ -4141,6 +4339,7 @@ def _api_status_payload() -> dict[str, object]:
         mode_override=dashboard_mode,
     )
     shadow_status = _shadow_status_payload()
+    candidate_validation = _candidate_validation_payload()
     return {
         "ok": True,
         "mode": dashboard_mode or "paper",
@@ -4158,6 +4357,7 @@ def _api_status_payload() -> dict[str, object]:
             "reason": str((selection_sync or {}).get("mismatch_reason") or ""),
         },
         "top_engines": top_engines,
+        "candidate_validation_api_available": True,
         "risk": {
             "live_guard_ok": live_guard_ok,
             "fallback_live_allowed": fallback_live_allowed,
@@ -4165,6 +4365,7 @@ def _api_status_payload() -> dict[str, object]:
         },
         "dashboard": {
             "chart_api_available": True,
+            "candidate_validation_api_available": True,
             "summary": {
                 "cash": live_account.get("cash") if isinstance(live_account, dict) else None,
                 "equity": live_account.get("equity") if isinstance(live_account, dict) else None,
@@ -4183,6 +4384,7 @@ def _api_status_payload() -> dict[str, object]:
             },
         },
         "shadow": shadow_status,
+        "candidate_validation": candidate_validation,
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
         },
@@ -4204,6 +4406,14 @@ def api_chart(ticker):
         )
     except Exception:
         return jsonify({"ticker": _chart_ticker(ticker), "prices": [], "trades": []})
+
+
+@app.route("/api/candidates/status")
+def api_candidate_validation_status():
+    try:
+        return jsonify(_candidate_validation_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
 
 
 @app.route("/api/shadow/status")
@@ -4271,8 +4481,11 @@ def api_status():
                 },
                 "dashboard": {
                     "chart_api_available": True,
+                    "candidate_validation_api_available": True,
                 },
+                "candidate_validation_api_available": True,
                 "shadow": _shadow_status_payload(),
+                "candidate_validation": _candidate_validation_payload(),
                 "ai_selection": {
                     "price_band": {"min": 4.0, "max": 50.0, "defaulted": True},
                 },
@@ -5171,8 +5384,11 @@ def index():
     else:
         market_pill_class = "status-offline"
     shadow_status = _shadow_status_payload()
+    candidate_validation = _candidate_validation_payload()
     shadow_state = str(shadow_status.get("state") or "STALE").upper()
     shadow_status_class = "status-live" if shadow_state == "SAFE" else "status-warn" if shadow_state == "STALE" else "status-offline"
+    candidate_state = str(candidate_validation.get("state") or "STALE").upper()
+    candidate_status_class = "status-live" if candidate_state == "SAFE" else "status-warn" if candidate_state == "STALE" else "status-offline"
 
     return render_template_string(HTML,
         cards=cards,
@@ -5228,6 +5444,8 @@ def index():
         market_pill_class=market_pill_class,
         shadow_status=shadow_status,
         shadow_status_class=shadow_status_class,
+        candidate_validation=candidate_validation,
+        candidate_status_class=candidate_status_class,
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
         equity_curve_bars=_build_equity_curve_bars(cards),
