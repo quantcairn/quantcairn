@@ -158,6 +158,15 @@ class CandidateValidationStore:
         rows.sort(key=lambda item: (str(item.get("at") or ""), str(item.get("candidate_id") or "")), reverse=True)
         return rows
 
+    def get_candidate(self, candidate_id: str) -> CandidateRecord | None:
+        candidate_key = _safe_text(candidate_id)
+        if not candidate_key:
+            return None
+        for record in self.load_latest_candidates():
+            if record.candidate_id == candidate_key:
+                return record
+        return None
+
     def ingest_ai_selection_report(self, report: dict[str, Any], candidates: Iterable[dict[str, Any]] | None = None) -> list[CandidateRecord]:
         candidate_rows = list(candidates or [])
         if not candidate_rows and isinstance(report, dict):
@@ -240,6 +249,9 @@ class CandidateValidationStore:
             validation_status=normalized_status.value,
             rejection_reason=reason if normalized_status == ValidationStatus.REJECTED else candidate.rejection_reason,
         )
+        merged_metadata = dict(candidate.metadata or {})
+        merged_metadata.update(dict(metadata or {}))
+        updated.metadata = merged_metadata
         if evidence_status is not None:
             updated.evidence_status = self._coerce_evidence_status(evidence_status).value
         if profitability_status is not None:
