@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from collections import Counter, defaultdict
 from typing import Any, Sequence
 
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 from .benchmarking import BenchmarkValidation, benchmark_symbols_for, validate_benchmark_alignment
 from .data_feed import BacktestDataError, BacktestDataFeed, infer_bar_frequency
 from .models import Bar
+from src.utils.market_calendar import is_us_market_trading_day
+
+US_EASTERN = ZoneInfo("America/New_York")
 
 
 def _canonical_symbol(value: Any) -> str:
@@ -128,6 +133,135 @@ def _future_data_risk(symbol_bars: Sequence[Bar], benchmark_bars: Sequence[Bar])
     return False
 
 
+REGULAR_SESSION_SLOTS_15M = [
+    "09:30",
+    "09:45",
+    "10:00",
+    "10:15",
+    "10:30",
+    "10:45",
+    "11:00",
+    "11:15",
+    "11:30",
+    "11:45",
+    "12:00",
+    "12:15",
+    "12:30",
+    "12:45",
+    "13:00",
+    "13:15",
+    "13:30",
+    "13:45",
+    "14:00",
+    "14:15",
+    "14:30",
+    "14:45",
+    "15:00",
+    "15:15",
+    "15:30",
+    "15:45",
+]
+
+
+def _session_completeness_metrics(bars: Sequence[Bar], expected_frequency: str) -> dict[str, Any]:
+    frequency = str(expected_frequency or "").strip().lower()
+    if frequency != "15m" or not bars:
+        return {
+            "expected_session_bar_count": 0,
+            "actual_regular_bar_count": 0,
+            "complete_session_ratio": 0.0,
+            "partial_session_ratio": 0.0,
+            "missing_regular_slot_count": 0,
+            "missing_regular_slot_ratio": 0.0,
+            "first_regular_bar_distribution": {},
+            "last_regular_bar_distribution": {},
+            "systematic_missing_slots": [],
+            "session_completeness_status": "N/A",
+            "half_day_session_count": 0,
+            "complete_session_count": 0,
+            "partial_session_count": 0,
+            "trading_day_count": 0,
+        }
+
+    by_day: dict[date, list[str]] = defaultdict(list)
+    for bar in bars:
+        local = bar.timestamp.astimezone(US_EASTERN)
+        if not is_us_market_trading_day(local.date()):
+            continue
+        by_day[local.date()].append(local.strftime("%H:%M"))
+
+    if not by_day:
+        return {
+            "expected_session_bar_count": 26,
+            "actual_regular_bar_count": 0,
+            "complete_session_ratio": 0.0,
+            "partial_session_ratio": 0.0,
+            "missing_regular_slot_count": 0,
+            "missing_regular_slot_ratio": 1.0,
+            "first_regular_bar_distribution": {},
+            "last_regular_bar_distribution": {},
+            "systematic_missing_slots": REGULAR_SESSION_SLOTS_15M[:],
+            "session_completeness_status": "INVALID_SESSION_COVERAGE",
+            "half_day_session_count": 0,
+            "complete_session_count": 0,
+            "partial_session_count": 0,
+            "trading_day_count": 0,
+        }
+
+    first_distribution: Counter[str] = Counter()
+    last_distribution: Counter[str] = Counter()
+    missing_slot_counter: Counter[str] = Counter()
+    complete_session_count = 0
+    half_day_session_count = 0
+    partial_session_count = 0
+    total_missing = 0
+    for day, slots in by_day.items():
+        ordered_slots = sorted(slots)
+        first_distribution[ordered_slots[0]] += 1
+        last_distribution[ordered_slots[-1]] += 1
+        slot_set = set(ordered_slots)
+        missing = [slot for slot in REGULAR_SESSION_SLOTS_15M if slot not in slot_set]
+        total_missing += len(missing)
+        for slot in missing:
+            missing_slot_counter[slot] += 1
+        if not missing:
+            complete_session_count += 1
+        elif len(ordered_slots) <= 14 and ordered_slots[-1] <= "13:00":
+            half_day_session_count += 1
+        else:
+            partial_session_count += 1
+
+    trading_day_count = len(by_day)
+    systematic_missing_slots = [
+        slot for slot in REGULAR_SESSION_SLOTS_15M if missing_slot_counter.get(slot, 0) == trading_day_count and trading_day_count > 0
+    ]
+    if complete_session_count == trading_day_count:
+        completeness_status = "COMPLETE"
+    elif systematic_missing_slots:
+        completeness_status = "SYSTEMATIC_MISSING_SLOTS"
+    elif half_day_session_count > 0 or partial_session_count > 0:
+        completeness_status = "PARTIAL"
+    else:
+        completeness_status = "UNKNOWN"
+
+    return {
+        "expected_session_bar_count": 26,
+        "actual_regular_bar_count": int(len(bars)),
+        "complete_session_ratio": round(complete_session_count / trading_day_count, 6) if trading_day_count else 0.0,
+        "partial_session_ratio": round(partial_session_count / trading_day_count, 6) if trading_day_count else 0.0,
+        "missing_regular_slot_count": int(total_missing),
+        "missing_regular_slot_ratio": round(total_missing / max(trading_day_count * 26, 1), 6),
+        "first_regular_bar_distribution": dict(first_distribution),
+        "last_regular_bar_distribution": dict(last_distribution),
+        "systematic_missing_slots": systematic_missing_slots,
+        "session_completeness_status": completeness_status,
+        "half_day_session_count": half_day_session_count,
+        "complete_session_count": complete_session_count,
+        "partial_session_count": partial_session_count,
+        "trading_day_count": trading_day_count,
+    }
+
+
 @dataclass(slots=True)
 class DatasetValidationReport:
     symbol: str
@@ -147,14 +281,31 @@ class DatasetValidationReport:
     benchmark_overlap_ratio: float
     overlap_ratio: float
     missing_bar_ratio: float
+    expected_session_bar_count: int
+    actual_regular_bar_count: int
+    complete_session_ratio: float
+    partial_session_ratio: float
+    missing_regular_slot_count: int
+    missing_regular_slot_ratio: float
+    first_regular_bar_distribution: dict[str, int]
+    last_regular_bar_distribution: dict[str, int]
+    systematic_missing_slots: list[str]
+    session_completeness_status: str
+    half_day_session_count: int
+    complete_session_count: int
+    partial_session_count: int
+    trading_day_count: int
     duplicate_timestamp_count: int
     invalid_ohlc_count: int
+    missing_value_count: int
     future_data_risk: bool
     data_start: str | None
     data_end: str | None
     benchmark_start: str | None
     benchmark_end: str | None
     formal_backtest_eligible: bool
+    frequency_match: bool
+    eligible_for_backtest: bool
     fail_closed_reason: str | None
     messages: list[str] = field(default_factory=list)
     benchmark_validation: dict[str, Any] = field(default_factory=dict)
@@ -178,14 +329,31 @@ class DatasetValidationReport:
             "benchmark_overlap_ratio": self.benchmark_overlap_ratio,
             "overlap_ratio": self.overlap_ratio,
             "missing_bar_ratio": self.missing_bar_ratio,
+            "expected_session_bar_count": self.expected_session_bar_count,
+            "actual_regular_bar_count": self.actual_regular_bar_count,
+            "complete_session_ratio": self.complete_session_ratio,
+            "partial_session_ratio": self.partial_session_ratio,
+            "missing_regular_slot_count": self.missing_regular_slot_count,
+            "missing_regular_slot_ratio": self.missing_regular_slot_ratio,
+            "first_regular_bar_distribution": dict(self.first_regular_bar_distribution),
+            "last_regular_bar_distribution": dict(self.last_regular_bar_distribution),
+            "systematic_missing_slots": list(self.systematic_missing_slots),
+            "session_completeness_status": self.session_completeness_status,
+            "half_day_session_count": self.half_day_session_count,
+            "complete_session_count": self.complete_session_count,
+            "partial_session_count": self.partial_session_count,
+            "trading_day_count": self.trading_day_count,
             "duplicate_timestamp_count": self.duplicate_timestamp_count,
             "invalid_ohlc_count": self.invalid_ohlc_count,
+            "missing_value_count": self.missing_value_count,
             "future_data_risk": self.future_data_risk,
             "data_start": self.data_start,
             "data_end": self.data_end,
             "benchmark_start": self.benchmark_start,
             "benchmark_end": self.benchmark_end,
             "formal_backtest_eligible": self.formal_backtest_eligible,
+            "frequency_match": self.frequency_match,
+            "eligible_for_backtest": self.eligible_for_backtest,
             "fail_closed_reason": self.fail_closed_reason,
             "messages": list(self.messages),
             "benchmark_validation": dict(self.benchmark_validation),
@@ -229,14 +397,31 @@ def validate_backtest_dataset(
             benchmark_overlap_ratio=0.0,
             overlap_ratio=0.0,
             missing_bar_ratio=1.0,
+            expected_session_bar_count=26 if expected_frequency.lower() == "15m" else 0,
+            actual_regular_bar_count=0,
+            complete_session_ratio=0.0,
+            partial_session_ratio=0.0,
+            missing_regular_slot_count=0,
+            missing_regular_slot_ratio=0.0,
+            first_regular_bar_distribution={},
+            last_regular_bar_distribution={},
+            systematic_missing_slots=[],
+            session_completeness_status="INVALID_SESSION_COVERAGE" if expected_frequency.lower() == "15m" else "N/A",
+            half_day_session_count=0,
+            complete_session_count=0,
+            partial_session_count=0,
+            trading_day_count=0,
             duplicate_timestamp_count=0,
             invalid_ohlc_count=0,
+            missing_value_count=0,
             future_data_risk=False,
             data_start=None,
             data_end=None,
             benchmark_start=None,
             benchmark_end=None,
             formal_backtest_eligible=False,
+            frequency_match=False,
+            eligible_for_backtest=False,
             fail_closed_reason=detail or reason,
             messages=[detail or reason],
             benchmark_validation={
@@ -277,6 +462,7 @@ def validate_backtest_dataset(
     benchmark_timezone = _timezone_label(benchmark_bars[0].timestamp if benchmark_bars else None)
     duplicate_timestamp_count = 0
     invalid_ohlc_count = 0
+    missing_value_count = 0
 
     if symbol_raw is not None and not symbol_raw.empty:
         timestamp_column = _find_timestamp_column(symbol_raw)
@@ -284,6 +470,8 @@ def validate_backtest_dataset(
             timestamps = symbol_raw[timestamp_column].map(_parse_timestamp)
             duplicate_timestamp_count = int(timestamps.duplicated().sum())
         for _, row in symbol_raw.iterrows():
+            if any(pd.isna(row.get(field)) for field in ("open", "high", "low", "close", "volume")):
+                missing_value_count += 1
             try:
                 open_ = float(row.get("open"))
                 high = float(row.get("high"))
@@ -300,6 +488,9 @@ def validate_backtest_dataset(
         if benchmark_timestamp_column:
             benchmark_timestamps = benchmark_raw[benchmark_timestamp_column].map(_parse_timestamp)
             duplicate_timestamp_count += int(benchmark_timestamps.duplicated().sum())
+        for _, row in benchmark_raw.iterrows():
+            if any(pd.isna(row.get(field)) for field in ("open", "high", "low", "close", "volume")):
+                missing_value_count += 1
 
     overlap_count = benchmark_validation.shared_bars
     symbol_overlap_ratio = round(overlap_count / len(symbol_bars), 6) if symbol_bars else 0.0
@@ -307,6 +498,7 @@ def validate_backtest_dataset(
     overlap_ratio = round(overlap_count / max(len(symbol_bars), len(benchmark_bars), 1), 6)
     missing_bar_ratio = _calculate_missing_bar_ratio(symbol_bars, expected_frequency)
     future_data_risk = _future_data_risk(symbol_bars, benchmark_bars)
+    session_metrics = _session_completeness_metrics(symbol_bars, expected_frequency)
 
     if benchmark_csv is None or not benchmark_bars:
         messages.append("benchmark_missing")
@@ -327,6 +519,8 @@ def validate_backtest_dataset(
         messages.append("invalid_ohlc")
     if missing_bar_ratio > 0.2:
         messages.append("missing_bar_ratio_high")
+    if session_metrics["session_completeness_status"] == "SYSTEMATIC_MISSING_SLOTS":
+        messages.append("systematic_missing_regular_slots")
 
     formal_backtest_eligible = bool(
         benchmark_validation.status == "VALID"
@@ -336,7 +530,14 @@ def validate_backtest_dataset(
         and expected_frequency.lower() == symbol_frequency.lower()
         and duplicate_timestamp_count == 0
         and invalid_ohlc_count == 0
+        and (
+            expected_frequency.lower() != "15m"
+            or session_metrics["trading_day_count"] < 2
+            or session_metrics["session_completeness_status"] == "COMPLETE"
+        )
     )
+    frequency_match = bool(symbol_frequency == benchmark_frequency and expected_frequency.lower() == symbol_frequency.lower())
+    eligible_for_backtest = bool(formal_backtest_eligible and benchmark_validation.status == "VALID")
 
     fail_closed_reason = None
     if benchmark_validation.status != "VALID":
@@ -353,6 +554,12 @@ def validate_backtest_dataset(
         fail_closed_reason = "duplicate_timestamp"
     elif invalid_ohlc_count > 0:
         fail_closed_reason = "invalid_ohlc"
+    elif (
+        expected_frequency.lower() == "15m"
+        and session_metrics["trading_day_count"] >= 2
+        and session_metrics["session_completeness_status"] == "SYSTEMATIC_MISSING_SLOTS"
+    ):
+        fail_closed_reason = "invalid_session_coverage"
 
     return DatasetValidationReport(
         symbol=symbol_key,
@@ -372,14 +579,31 @@ def validate_backtest_dataset(
         benchmark_overlap_ratio=benchmark_overlap_ratio,
         overlap_ratio=overlap_ratio,
         missing_bar_ratio=round(missing_bar_ratio, 6),
+        expected_session_bar_count=session_metrics["expected_session_bar_count"],
+        actual_regular_bar_count=session_metrics["actual_regular_bar_count"],
+        complete_session_ratio=session_metrics["complete_session_ratio"],
+        partial_session_ratio=session_metrics["partial_session_ratio"],
+        missing_regular_slot_count=session_metrics["missing_regular_slot_count"],
+        missing_regular_slot_ratio=session_metrics["missing_regular_slot_ratio"],
+        first_regular_bar_distribution=session_metrics["first_regular_bar_distribution"],
+        last_regular_bar_distribution=session_metrics["last_regular_bar_distribution"],
+        systematic_missing_slots=session_metrics["systematic_missing_slots"],
+        session_completeness_status=session_metrics["session_completeness_status"],
+        half_day_session_count=session_metrics["half_day_session_count"],
+        complete_session_count=session_metrics["complete_session_count"],
+        partial_session_count=session_metrics["partial_session_count"],
+        trading_day_count=session_metrics["trading_day_count"],
         duplicate_timestamp_count=duplicate_timestamp_count,
         invalid_ohlc_count=invalid_ohlc_count,
+        missing_value_count=missing_value_count,
         future_data_risk=future_data_risk,
         data_start=symbol_bars[0].timestamp.isoformat() if symbol_bars else None,
         data_end=symbol_bars[-1].timestamp.isoformat() if symbol_bars else None,
         benchmark_start=benchmark_bars[0].timestamp.isoformat() if benchmark_bars else None,
         benchmark_end=benchmark_bars[-1].timestamp.isoformat() if benchmark_bars else None,
         formal_backtest_eligible=formal_backtest_eligible,
+        frequency_match=frequency_match,
+        eligible_for_backtest=eligible_for_backtest,
         fail_closed_reason=fail_closed_reason,
         messages=messages,
         benchmark_validation=benchmark_validation.to_dict(),

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 from src.backtest.dataset_validation import validate_backtest_dataset
 
@@ -28,6 +29,59 @@ def _frame(symbol: str, start: datetime, step: timedelta, rows: int, base: float
             }
         )
     return pd.DataFrame(data)
+
+
+def _session_frame(symbol: str, start: datetime, days: int, base: float, *, missing_slots: set[str] | None = None) -> pd.DataFrame:
+    missing_slots = set(missing_slots or set())
+    rows = []
+    slots = [
+        "09:30",
+        "09:45",
+        "10:00",
+        "10:15",
+        "10:30",
+        "10:45",
+        "11:00",
+        "11:15",
+        "11:30",
+        "11:45",
+        "12:00",
+        "12:15",
+        "12:30",
+        "12:45",
+        "13:00",
+        "13:15",
+        "13:30",
+        "13:45",
+        "14:00",
+        "14:15",
+        "14:30",
+        "14:45",
+        "15:00",
+        "15:15",
+        "15:30",
+        "15:45",
+    ]
+    for day_index in range(days):
+        day = start + timedelta(days=day_index)
+        for slot_index, slot in enumerate(slots):
+            if slot in missing_slots:
+                continue
+            hour, minute = map(int, slot.split(":"))
+            ts = day.replace(hour=hour, minute=minute)
+            price = base + day_index * 10 + slot_index * 0.1
+            rows.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "symbol": symbol,
+                    "open": price,
+                    "high": price + 0.2,
+                    "low": price - 0.2,
+                    "close": price + 0.05,
+                    "volume": 1000 + slot_index,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def test_validate_backtest_dataset_accepts_allowed_pair_and_matching_frequency(tmp_path):
@@ -158,3 +212,36 @@ def test_validate_backtest_dataset_cli_writes_json(tmp_path):
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["formal_backtest_eligible"] is True
     assert payload["benchmark_mapping_status"] == "VALID"
+
+
+def test_validate_backtest_dataset_detects_complete_and_systematically_missing_sessions(tmp_path):
+    start = datetime(2026, 7, 1, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+    symbol_csv = tmp_path / "soxs_15m.csv"
+    benchmark_csv = tmp_path / "smh_15m.csv"
+    _session_frame("SOXS.US", start, 5, 10.0).to_csv(symbol_csv, index=False)
+    _session_frame("SMH.US", start, 5, 100.0).to_csv(benchmark_csv, index=False)
+    complete = validate_backtest_dataset(
+        symbol_csv=symbol_csv,
+        benchmark_csv=benchmark_csv,
+        symbol="SOXS.US",
+        benchmark="SMH.US",
+        expected_frequency="15m",
+    )
+    assert complete.session_completeness_status == "COMPLETE"
+    assert complete.expected_session_bar_count == 26
+    assert complete.complete_session_ratio == 1.0
+    assert complete.systematic_missing_slots == []
+    assert complete.formal_backtest_eligible is True
+
+    missing_symbol_csv = tmp_path / "soxs_missing.csv"
+    _session_frame("SOXS.US", start, 5, 10.0, missing_slots={"09:30", "09:45", "10:00", "10:15", "10:30", "10:45", "11:00", "11:15", "11:30", "11:45"}).to_csv(missing_symbol_csv, index=False)
+    missing = validate_backtest_dataset(
+        symbol_csv=missing_symbol_csv,
+        benchmark_csv=benchmark_csv,
+        symbol="SOXS.US",
+        benchmark="SMH.US",
+        expected_frequency="15m",
+    )
+    assert missing.session_completeness_status == "SYSTEMATIC_MISSING_SLOTS"
+    assert "09:30" in missing.systematic_missing_slots
+    assert missing.formal_backtest_eligible is False

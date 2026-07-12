@@ -93,6 +93,16 @@ class BacktestDataFeed:
     def from_dataframe(self, frame: pd.DataFrame, symbol: str | None = None) -> list[Bar]:
         if frame is None or frame.empty:
             return []
+        frequency_columns = [column for column in ("frequency", "bar_frequency", "interval") if column in frame.columns]
+        if frequency_columns:
+            column = frequency_columns[0]
+            values = {
+                str(value).strip().lower()
+                for value in frame[column].dropna().astype(str).tolist()
+                if str(value).strip()
+            }
+            if len(values) > 1:
+                raise BacktestDataError("Daily and intraday bars cannot be mixed")
         records = frame.to_dict(orient="records")
         return self.from_sequence(records, symbol=symbol)
 
@@ -171,17 +181,14 @@ class BacktestDataFeed:
     def _validate_frequency_consistency(self, bars: list[Bar]) -> None:
         if len(bars) < 2:
             return
-        deltas = []
-        for previous, current in zip(bars, bars[1:]):
-            delta = current.timestamp - previous.timestamp
-            if delta.total_seconds() <= 0:
-                continue
-            deltas.append(delta)
-        if not deltas:
+        counts_by_date: dict[datetime.date, int] = {}
+        for bar in bars:
+            counts_by_date[bar.timestamp.date()] = counts_by_date.get(bar.timestamp.date(), 0) + 1
+        if not counts_by_date:
             return
-        has_intraday = any(delta < timedelta(days=1) for delta in deltas)
-        has_daily_or_longer = any(delta >= timedelta(days=1) for delta in deltas)
-        if has_intraday and has_daily_or_longer:
+        has_single_bar_day = any(count == 1 for count in counts_by_date.values())
+        has_multi_bar_day = any(count > 1 for count in counts_by_date.values())
+        if has_single_bar_day and has_multi_bar_day:
             raise BacktestDataError("Daily and intraday bars cannot be mixed")
 
     def infer_frequency(self, bars: Sequence[Bar] | Iterable[Bar] | None) -> str:
