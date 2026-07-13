@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from typing import Any, Iterable
 
+import pandas as pd
 from zoneinfo import ZoneInfo
 
 from src.data.fetcher import PriceFetcher
@@ -82,6 +83,14 @@ def _neutral_candidate_snapshot(symbol: str, session) -> dict[str, Any]:
         "freshness_status": "SAFE",
         "stale_reason": "",
         "avg_10d_volume": None,
+        "average_dollar_volume_20d": None,
+        "ma20": None,
+        "ma50": None,
+        "ma200": None,
+        "adx": None,
+        "relative_strength_vs_SPY": None,
+        "relative_strength_vs_spy": None,
+        "relative_strength_60d": None,
         "close_history": [],
         "returns": [],
         "recent_low": None,
@@ -187,6 +196,16 @@ def _daily_volume_history(candles: Iterable[Any]) -> list[int]:
     return volumes
 
 
+def _safe_mean(values: Iterable[float]) -> float | None:
+    series = pd.Series([float(value) for value in values if value is not None], dtype="float64")
+    if series.empty:
+        return None
+    mean = float(series.mean())
+    if pd.isna(mean):
+        return None
+    return round(mean, 4)
+
+
 def _select_stage(*, context: dict[str, Any], freshness_status: str, stale_reason: str) -> str:
     if freshness_status == "INVALID":
         return "INVALID"
@@ -286,6 +305,7 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
     benchmark_data_as_of: dict[str, str | None] = {}
     benchmark_change_pct: dict[str, float | None] = {}
     benchmark_volume: dict[str, int | None] = {}
+    benchmark_closes: dict[str, list[float]] = {}
     benchmark_alignment_ok = bool(benchmark_symbols)
     for benchmark_symbol in benchmark_symbols:
         bench_fetcher = PriceFetcher(benchmark_symbol, poll_interval=0)
@@ -303,6 +323,7 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         benchmark_data_as_of[benchmark_symbol] = bench_as_of
         benchmark_volume[benchmark_symbol] = _safe_int(getattr(bench_quote, "volume", None))
         bench_close = _daily_close_history(bench_daily)
+        benchmark_closes[benchmark_symbol] = list(bench_close)
         bench_price = _safe_float(getattr(bench_quote, "price", None))
         if bench_price is None and bench_close:
             bench_price = bench_close[-1]
@@ -344,6 +365,51 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         recent_volumes = _daily_volume_history(daily)[-10:]
         if recent_volumes:
             average_volume_10 = round(sum(recent_volumes) / len(recent_volumes), 4)
+    average_dollar_volume_20d = None
+    if closes and daily:
+        recent_close_vol_pairs: list[float] = []
+        daily_volumes = _daily_volume_history(daily)[-20:]
+        recent_closes = closes[-20:]
+        for close_value, volume_value in zip(recent_closes, daily_volumes):
+            if close_value > 0 and volume_value > 0:
+                recent_close_vol_pairs.append(float(close_value) * float(volume_value))
+        if recent_close_vol_pairs:
+            average_dollar_volume_20d = round(sum(recent_close_vol_pairs) / len(recent_close_vol_pairs), 4)
+
+    close_series = pd.Series(closes, dtype="float64") if closes else pd.Series(dtype="float64")
+    ma20 = _safe_mean(close_series.tail(20))
+    ma50 = _safe_mean(close_series.tail(50))
+    ma200 = _safe_mean(close_series.tail(200))
+    adx = None
+    try:
+        from ta.trend import ADXIndicator
+
+        if daily and len(close_series) >= 2:
+            highs = pd.Series([float(getattr(item, "high", 0.0) or 0.0) for item in daily], dtype="float64")
+            lows = pd.Series([float(getattr(item, "low", 0.0) or 0.0) for item in daily], dtype="float64")
+            window = min(14, len(close_series))
+            if window >= 2:
+                adx_series = ADXIndicator(highs, lows, close_series, window=window).adx()
+                if not adx_series.empty:
+                    adx = round(float(adx_series.iloc[-1]), 4)
+    except Exception:
+        adx = None
+
+    relative_strength_vs_spy = None
+    relative_strength_60d = None
+    benchmark_reference_symbol = "SPY.US" if "SPY.US" in benchmark_closes else (benchmark_symbols[0] if benchmark_symbols else None)
+    if benchmark_reference_symbol and closes and benchmark_closes.get(benchmark_reference_symbol):
+        bench_series = benchmark_closes.get(benchmark_reference_symbol) or []
+        lookback = min(len(closes), len(bench_series), 60)
+        if lookback >= 2:
+            symbol_start = closes[-lookback]
+            bench_start = bench_series[-lookback]
+            if symbol_start > 0 and bench_start > 0:
+                symbol_return = ((closes[-1] - symbol_start) / symbol_start) * 100.0
+                bench_return = ((bench_series[-1] - bench_start) / bench_start) * 100.0
+                relative_strength_vs_spy = round(symbol_return - bench_return, 4)
+                relative_strength_60d = relative_strength_vs_spy
+
     returns: list[float] = []
     for index in range(1, len(closes)):
         previous = closes[index - 1]
@@ -408,6 +474,14 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         "freshness_status": freshness_status,
         "stale_reason": "; ".join(dict.fromkeys(item for item in stale_reason_parts if item)) or "",
         "avg_10d_volume": average_volume_10,
+        "average_dollar_volume_20d": average_dollar_volume_20d,
+        "ma20": ma20,
+        "ma50": ma50,
+        "ma200": ma200,
+        "adx": adx,
+        "relative_strength_vs_SPY": relative_strength_vs_spy,
+        "relative_strength_vs_spy": relative_strength_vs_spy,
+        "relative_strength_60d": relative_strength_60d,
         "close_history": closes,
         "returns": returns,
         "recent_low": min(closes[-10:]) if closes else None,

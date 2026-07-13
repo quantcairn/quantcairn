@@ -13,6 +13,7 @@ from src.scoring.scorer import Scorer
 from src.news_agent.news_collector import NewsCollector
 from src.ai_selector.settings import load_runtime_settings
 from src.data.fetcher import PriceFetcher
+from src.ai_selector.candidate_ranking import score_candidate
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = PROJECT_DIR / "logs"
@@ -461,6 +462,7 @@ class AIStrategySelector:
         # 3. score
         live_requested = self._live_data_requested()
         scored = self._score_with_live_flag(symbols, news_map, live_enabled=live_requested)
+        scored = [score_candidate(item) for item in scored]
         data_mode = "live" if live_requested else "fallback"
         fallback_used = False
 
@@ -469,7 +471,7 @@ class AIStrategySelector:
             if fallback_scored:
                 fallback_used = True
                 existing = {item.get("ticker") for item in scored}
-                scored.extend(item for item in fallback_scored if item.get("ticker") not in existing)
+                scored.extend(score_candidate(item) for item in fallback_scored if item.get("ticker") not in existing)
                 scored.sort(key=lambda x: x.get("score", 0.0), reverse=True)
                 data_mode = "mixed" if existing else "fallback"
 
@@ -590,6 +592,7 @@ class AIStrategySelector:
                 candidate["score"] = float(round(final_score + sector_bonus, 2))
                 candidate["base_score"] = float(round(item.get("base_score", item.get("score", 0.0)), 2))
                 candidate["selection_penalty_reason"] = self._selection_penalty_reason(item, selected, penalty, max_corr)
+                candidate = score_candidate(candidate)
                 if candidate["score"] > best_score:
                     best_score = candidate["score"]
                     best_item = candidate
@@ -700,9 +703,16 @@ class AIStrategySelector:
                 "rank": idx,
                 "ticker": row.get("ticker"),
                 "score": float(round(row.get("score", 0.0), 2)),
+                "candidate_score": float(round(row.get("candidate_score", row.get("score", 0.0)), 2)),
+                "liquidity_score": float(round(row.get("liquidity_score", 0.0), 2)),
+                "trend_score": float(round(row.get("trend_score", row.get("trend_fit_score", 0.0)), 2)),
                 "volatility": float(round(row.get("volatility_score", 0.0), 2)),
                 "volume": float(round(row.get("volume_score", 0.0), 2)),
                 "trend_fit": float(round(row.get("trend_fit_score", 0.0), 2)),
+                "risk_score": float(round(row.get("risk_score", 0.0), 2)),
+                "strategy_fit_score": float(round(row.get("strategy_fit_score", 0.0), 2)),
+                "recommended_strategy": row.get("recommended_strategy"),
+                "score_reason": row.get("score_reason"),
                 "repeatability": float(round(row.get("repeatability_score", 0.0), 2)),
                 "drawdown": float(round(row.get("drawdown_safety_score", 0.0), 2)),
                 "correlation_penalty": float(round(row.get("correlation_penalty", 0.0), 2)),

@@ -185,6 +185,14 @@ class CandidateRecord:
     selected_at: str = ""
     source: str = "ai_selector"
     ai_score: float | None = None
+    candidate_score: float | None = None
+    liquidity_score: float | None = None
+    trend_score: float | None = None
+    volatility_score: float | None = None
+    risk_score: float | None = None
+    strategy_fit_score: float | None = None
+    recommended_strategy: str = ""
+    score_reason: str = ""
     ai_reason: str = ""
     asset_type: str = ""
     benchmarks: tuple[str, ...] = ()
@@ -210,6 +218,14 @@ class CandidateRecord:
         self.market = _normalize_text(self.market).upper() or _symbol_market(self.symbol)
         self.selected_at = _normalize_text(self.selected_at)
         self.source = _normalize_text(self.source) or "ai_selector"
+        self.candidate_score = self._coerce_float(self.candidate_score)
+        self.liquidity_score = self._coerce_float(self.liquidity_score)
+        self.trend_score = self._coerce_float(self.trend_score)
+        self.volatility_score = self._coerce_float(self.volatility_score)
+        self.risk_score = self._coerce_float(self.risk_score)
+        self.strategy_fit_score = self._coerce_float(self.strategy_fit_score)
+        self.recommended_strategy = _normalize_text(self.recommended_strategy)
+        self.score_reason = _normalize_text(self.score_reason)
         self.ai_reason = _normalize_text(self.ai_reason)
         self.asset_type = _normalize_text(self.asset_type).lower()
         self.benchmarks = _normalize_benchmarks(self.benchmarks)
@@ -242,6 +258,18 @@ class CandidateRecord:
         text = _normalize_text(value)
         return text or str(default.value)
 
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            if value is None:
+                return None
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number != number or number in {float("inf"), float("-inf")}:
+            return None
+        return round(number, 2)
+
     @classmethod
     def from_ai_candidate(
         cls,
@@ -250,6 +278,14 @@ class CandidateRecord:
         selected_at: str,
         source: str = "ai_selector",
         ai_score: float | None = None,
+        candidate_score: float | None = None,
+        liquidity_score: float | None = None,
+        trend_score: float | None = None,
+        volatility_score: float | None = None,
+        risk_score: float | None = None,
+        strategy_fit_score: float | None = None,
+        recommended_strategy: str = "",
+        score_reason: str = "",
         ai_reason: str = "",
         asset_type: str | None = None,
         benchmarks: tuple[str, ...] | list[str] | None = None,
@@ -271,6 +307,14 @@ class CandidateRecord:
             selected_at=_normalize_text(selected_at),
             source=source,
             ai_score=ai_score,
+            candidate_score=candidate_score,
+            liquidity_score=liquidity_score,
+            trend_score=trend_score,
+            volatility_score=volatility_score,
+            risk_score=risk_score,
+            strategy_fit_score=strategy_fit_score,
+            recommended_strategy=recommended_strategy,
+            score_reason=score_reason,
             ai_reason=ai_reason,
             asset_type=normalized_asset,
             benchmarks=normalized_benchmarks,
@@ -334,6 +378,14 @@ class CandidateRecord:
             "selected_at": self.selected_at,
             "source": self.source,
             "ai_score": self.ai_score,
+            "candidate_score": self.candidate_score,
+            "liquidity_score": self.liquidity_score,
+            "trend_score": self.trend_score,
+            "volatility_score": self.volatility_score,
+            "risk_score": self.risk_score,
+            "strategy_fit_score": self.strategy_fit_score,
+            "recommended_strategy": self.recommended_strategy,
+            "score_reason": self.score_reason,
             "ai_reason": self.ai_reason,
             "asset_type": self.asset_type,
             "benchmarks": list(self.benchmarks),
@@ -363,6 +415,14 @@ class CandidateRecord:
             selected_at=payload.get("selected_at") or "",
             source=payload.get("source") or "ai_selector",
             ai_score=payload.get("ai_score"),
+            candidate_score=payload.get("candidate_score"),
+            liquidity_score=payload.get("liquidity_score"),
+            trend_score=payload.get("trend_score"),
+            volatility_score=payload.get("volatility_score"),
+            risk_score=payload.get("risk_score"),
+            strategy_fit_score=payload.get("strategy_fit_score"),
+            recommended_strategy=payload.get("recommended_strategy") or "",
+            score_reason=payload.get("score_reason") or "",
             ai_reason=payload.get("ai_reason") or "",
             asset_type=payload.get("asset_type") or "",
             benchmarks=tuple(payload.get("benchmarks") or ()),
@@ -393,6 +453,14 @@ class CandidateRecord:
             "symbol": self.symbol,
             "market": self.market,
             "ai_score": self.ai_score,
+            "candidate_score": self.candidate_score,
+            "liquidity_score": self.liquidity_score,
+            "trend_score": self.trend_score,
+            "volatility_score": self.volatility_score,
+            "risk_score": self.risk_score,
+            "strategy_fit_score": self.strategy_fit_score,
+            "recommended_strategy": self.recommended_strategy,
+            "score_reason": self.score_reason,
             "ai_reason": self.ai_reason,
             "asset_type": self.asset_type,
             "benchmarks": "|".join(self.benchmarks),

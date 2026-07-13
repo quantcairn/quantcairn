@@ -87,12 +87,12 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
                 "top10": [
-                    {"ticker": "NVDA", "score": 91.5, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
-                    {"ticker": "MSFT", "score": 88.2, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
+                    {"ticker": "NVDA", "score": 91.5, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                    {"ticker": "MSFT", "score": 88.2, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
                 ],
                 "top5": [
-                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
-                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
+                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
                 ],
                 "top3": [],
                 "report": [],
@@ -159,13 +159,13 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
             "enabled": True,
             "top3": [],
             "top10": [
-                {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "stub", "source": "stub"},
-                {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "stub", "source": "stub"},
+                {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
             ],
             "preferred_symbols": ["NVDA", "MSFT"],
             "signal_map": {
-                "NVDA": {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "stub", "source": "stub"},
-                "MSFT": {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "stub", "source": "stub"},
+                "NVDA": {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                "MSFT": {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
             },
             "providers_used": ["openbb"],
             "providers_disabled": ["fmp"],
@@ -253,12 +253,12 @@ def test_run_ai_selector_writes_top_configs_when_market_stage_finalized():
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
                 "top10": [
-                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED"},
-                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED"},
+                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
                 ],
                 "top5": [
-                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED"},
-                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED"},
+                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "selection_stage": "FINALIZED", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
                 ],
                 "top3": [],
                 "report": [],
@@ -372,11 +372,11 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
 
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
-                "top10": [],
-                "top5": [
-                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
-                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0},
-                ],
+            "top10": [],
+            "top5": [
+                        {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                        {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+            ],
                 "top3": [],
                 "report": [],
                 "settings": {"selection_stage": "fast_preliminary"},

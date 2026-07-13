@@ -12,6 +12,7 @@ from .providers.finrobot_provider import FinRobotProvider
 from .providers.openbb_provider import OpenBBProvider
 from .providers.tradingagents_provider import TradingAgentsProvider
 from .market_context import build_candidate_market_snapshot
+from .candidate_ranking import score_candidate
 from .range_score import RangeFitnessScorer
 from .trade_filter import TradeEligibilityFilter
 from .scoring import combine_scores
@@ -158,17 +159,20 @@ class AISelector:
             range_result = self.range_scorer.calculate(ticker, market_data)
             ai_score = _coalesce_float(candidate.get("ai_score"), candidate.get("score"), default=50.0)
             range_score = _coalesce_float(range_result.get("range_score"), default=50.0)
-            final_score = round(0.6 * ai_score + 0.4 * range_score, 2)
             entry = dict(range_result.get("entry") or {})
+            candidate.update(range_result)
+            candidate["trade_market_data"] = market_data
+            candidate["ai_score"] = round(ai_score, 2)
+            candidate["entry"] = entry
+            candidate.setdefault("base_score", round(float(candidate.get("score", candidate.get("final_score", ai_score))), 2))
+            candidate = score_candidate(candidate)
+            final_score = float(candidate.get("candidate_score", candidate.get("score", candidate.get("final_score", 50.0))))
             entry_score = _coalesce_float(entry.get("entry_proximity_score"), default=50.0)
             if entry_enabled and entry_weight > 0.0:
                 final_score = round(final_score * (1.0 - entry_weight) + entry_score * entry_weight, 2)
-            candidate.update(range_result)
-            candidate["ai_score"] = round(ai_score, 2)
-            candidate["final_score"] = final_score
+            candidate["candidate_score"] = final_score
             candidate["score"] = final_score
-            candidate["entry"] = entry
-            candidate["trade_market_data"] = market_data
+            candidate["final_score"] = final_score
             scored.append(candidate)
         scored.sort(key=lambda item: (-float(item.get("final_score") or 0.0), item.get("ticker") or ""))
         return scored

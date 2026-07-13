@@ -20,6 +20,7 @@ from .models import (
     assert_transition_allowed,
     default_candidate_for_symbol,
 )
+from .performance_tracker import CandidatePerformanceTracker
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
 CANDIDATE_ROOT = PROJECT_DIR / "artifacts" / "candidates"
@@ -78,6 +79,14 @@ class CandidateValidationStore:
     def summary_path(self) -> Path:
         return self.root_dir / "candidate_validation_summary.csv"
 
+    @property
+    def performance_path(self) -> Path:
+        return self.root_dir / "candidate_performance.jsonl"
+
+    @property
+    def performance_summary_path(self) -> Path:
+        return self.root_dir / "candidate_performance_summary.csv"
+
     def _load_jsonl(self, path: Path) -> list[dict[str, Any]]:
         if not path.exists():
             return []
@@ -112,6 +121,14 @@ class CandidateValidationStore:
             "selected_at",
             "source",
             "ai_score",
+            "candidate_score",
+            "liquidity_score",
+            "trend_score",
+            "volatility_score",
+            "risk_score",
+            "strategy_fit_score",
+            "recommended_strategy",
+            "score_reason",
             "ai_reason",
             "asset_type",
             "benchmarks",
@@ -161,6 +178,12 @@ class CandidateValidationStore:
             )
         return _atomic_write_text(self.summary_path, "\n".join(lines) + "\n")
 
+    def _sync_candidate_performance(self, records: list[CandidateRecord]) -> None:
+        try:
+            CandidatePerformanceTracker(self.root_dir).sync(records)
+        except Exception:
+            pass
+
     def load_latest_candidates(self) -> list[CandidateRecord]:
         rows = self._load_jsonl(self.candidates_path)
         latest: dict[str, CandidateRecord] = {}
@@ -204,10 +227,18 @@ class CandidateValidationStore:
             symbol = raw.get("symbol") or raw.get("ticker") or ""
             ai_score = raw.get("ai_score")
             if ai_score is None:
+                ai_score = raw.get("base_score")
+            if ai_score is None:
                 ai_score = raw.get("final_score")
             if ai_score is None:
                 ai_score = raw.get("score")
+            candidate_score = raw.get("candidate_score")
+            if candidate_score is None:
+                candidate_score = raw.get("final_score")
+            if candidate_score is None:
+                candidate_score = raw.get("score")
             ai_reason = raw.get("ai_reason") or raw.get("reason") or raw.get("selection_penalty_reason") or ""
+            score_reason = raw.get("score_reason") or raw.get("ranking_reason") or raw.get("selection_penalty_reason") or ""
             market_context = raw.get("market_context") if isinstance(raw.get("market_context"), dict) else {}
             selection_stage = str(
                 raw.get("selection_stage")
@@ -247,6 +278,14 @@ class CandidateValidationStore:
                 selected_at=selected_at,
                 source=str(raw.get("source") or "ai_selector"),
                 ai_score=float(ai_score) if ai_score is not None else None,
+                candidate_score=float(candidate_score) if candidate_score is not None else None,
+                liquidity_score=raw.get("liquidity_score"),
+                trend_score=raw.get("trend_score") or raw.get("trend_fit_score"),
+                volatility_score=raw.get("volatility_score"),
+                risk_score=raw.get("risk_score") or raw.get("drawdown_safety_score"),
+                strategy_fit_score=raw.get("strategy_fit_score"),
+                recommended_strategy=str(raw.get("recommended_strategy") or ""),
+                score_reason=str(score_reason or ""),
                 ai_reason=str(ai_reason or ""),
                 asset_type=str(raw.get("asset_type") or raw.get("symbol_class") or "") or None,
                 benchmarks=tuple(raw.get("benchmarks") or raw.get("benchmark_symbols") or ()),
@@ -274,6 +313,7 @@ class CandidateValidationStore:
             self._append_jsonl(self.history_path, self._history_event(record, event_type="candidate_saved", previous_status=None, reason="created"))
         self._write_jsonl(self.candidates_path, [item.to_dict() for item in latest_map.values()])
         self._write_summary_csv(self._sorted_records(latest_map.values()))
+        self._sync_candidate_performance(self._sorted_records(latest_map.values()))
         return updates
 
     def transition(
@@ -315,6 +355,7 @@ class CandidateValidationStore:
         self._write_jsonl(self.candidates_path, [item.to_dict() for item in latest.values()])
         self._append_jsonl(self.history_path, self._history_event(updated, event_type="validation_transition", previous_status=previous_status, reason=reason, metadata=metadata or {}))
         self._write_summary_csv(self._sorted_records(latest.values()))
+        self._sync_candidate_performance(self._sorted_records(latest.values()))
         return updated
 
     def reject(self, candidate_id: str, reason: str, *, metadata: dict[str, Any] | None = None) -> CandidateRecord:
