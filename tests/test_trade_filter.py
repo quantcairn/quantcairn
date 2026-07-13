@@ -116,7 +116,7 @@ def test_rejects_price_out_of_range_for_fallback_pool_candidate():
     assert result["fallback_used"] is True
     assert result["rejected"][0]["ticker"] == "AAPL"
     assert result["rejected"][0]["reason"] == "price_out_of_range"
-    assert result["rejected"][0]["allowed_range"] == "$4.00-$50.00"
+    assert result["rejected"][0]["allowed_range"] == "$5.00-$200.00"
     assert result["rejected"][0]["price"] == 309.4
 
 
@@ -138,7 +138,7 @@ def test_rejects_price_below_minimum():
 
     assert result["accepted"] == []
     assert result["rejected"][0]["reason"] == "price_out_of_range"
-    assert result["rejected"][0]["allowed_range"] == "$4.00-$50.00"
+    assert result["rejected"][0]["allowed_range"] == "$5.00-$200.00"
 
 
 def test_fallback_pool_fills_top3_without_crashing():

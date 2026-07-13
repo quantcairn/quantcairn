@@ -88,8 +88,8 @@ def _patch_common(module, tmpdir: Path):
     module.REPORTS_DIR = tmpdir / "reports"
     module.load_local_ai_env = lambda: None
     module.load_runtime_settings = lambda: {
-        "min_price": 4.0,
-        "max_price": 50.0,
+        "min_price": 5.0,
+        "max_price": 300.0,
         "auto_refresh_minutes": 5,
         "max_symbols": 20,
     }
@@ -119,14 +119,14 @@ def _patch_common(module, tmpdir: Path):
             "__init__": lambda self, *args, **kwargs: None,
             "run_selection": lambda self, write_configs=True, symbols_override=None: {
                 "top10": [
-                    {"ticker": "BAC", "score": 80.0, "range_low": 56.0, "range_high": 62.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.8, "reason": "stub", "source": "stub"},
-                    {"ticker": "SOFI", "score": 70.0, "range_low": 12.0, "range_high": 15.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.7, "reason": "stub", "source": "stub"},
-                    {"ticker": "INTC", "score": 60.0, "range_low": 100.0, "range_high": 120.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.6, "reason": "stub", "source": "stub"},
+                    {"ticker": "BRK.A", "score": 80.0, "range_low": 550000.0, "range_high": 650000.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.8, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 900_000_000_000, "average_dollar_volume_20d": 300_000_000, "atr_20_percentage": 2.0},
+                    {"ticker": "SOFI", "score": 70.0, "range_low": 12.0, "range_high": 15.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.7, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 15_000_000_000, "average_dollar_volume_20d": 400_000_000, "atr_20_percentage": 4.0},
+                    {"ticker": "LOWVOL", "score": 60.0, "range_low": 100.0, "range_high": 120.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.6, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 10_000_000_000, "average_dollar_volume_20d": 1_000_000, "atr_20_percentage": 2.0},
                 ],
                 "top5": [
-                    {"ticker": "BAC", "score": 80.0, "range_low": 56.0, "range_high": 62.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.8, "reason": "stub", "source": "stub"},
-                    {"ticker": "SOFI", "score": 70.0, "range_low": 12.0, "range_high": 15.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.7, "reason": "stub", "source": "stub"},
-                    {"ticker": "INTC", "score": 60.0, "range_low": 100.0, "range_high": 120.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.6, "reason": "stub", "source": "stub"},
+                    {"ticker": "BRK.A", "score": 80.0, "range_low": 550000.0, "range_high": 650000.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.8, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 900_000_000_000, "average_dollar_volume_20d": 300_000_000, "atr_20_percentage": 2.0},
+                    {"ticker": "SOFI", "score": 70.0, "range_low": 12.0, "range_high": 15.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.7, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 15_000_000_000, "average_dollar_volume_20d": 400_000_000, "atr_20_percentage": 4.0},
+                    {"ticker": "LOWVOL", "score": 60.0, "range_low": 100.0, "range_high": 120.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.6, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 10_000_000_000, "average_dollar_volume_20d": 1_000_000, "atr_20_percentage": 2.0},
                 ],
                 "top3": [],
                 "report": [],
@@ -149,28 +149,27 @@ def _patch_common(module, tmpdir: Path):
     module._prioritize_ai_rank = lambda rows, signal_map: list(rows)
     module._split_selected_and_protected_positions = lambda candidates, positions, limit=3: (list(candidates)[:limit], [])
     module._live_candidate_price = lambda ticker: {
-        "BAC": 59.285,
+        "BRK.A": 600000.0,
         "SOFI": 13.72,
-        "INTC": 112.97,
+        "LOWVOL": 112.97,
     }.get(str(ticker).upper())
 
 
-def test_price_band_final_filter_rejects_out_of_range_candidates():
+def test_universe_filter_rejects_only_rule_violations():
     module = _load_module()
     candidates = [
-        {"ticker": "BAC", "current_price": 59.285},
-        {"ticker": "SOFI", "current_price": 13.72},
-        {"ticker": "INTC", "current_price": 112.97},
+        {"ticker": "AAPL", "current_price": 150.0, "asset_type": "common_stock", "market_cap": 3_000_000_000_000, "average_dollar_volume_20d": 8_000_000_000, "atr_20_percentage": 2.0},
+        {"ticker": "SOXS", "current_price": 20.0, "asset_type": "inverse_etf", "average_dollar_volume_20d": 50_000_000, "atr_20_percentage": 5.0},
+        {"ticker": "BRK.A", "current_price": 600000.0, "asset_type": "common_stock", "market_cap": 900_000_000_000, "average_dollar_volume_20d": 300_000_000, "atr_20_percentage": 2.0},
         {"ticker": "NONE"},
     ]
 
-    accepted, rejected = module._finalize_price_band(candidates, 4.0, 50.0)
+    accepted, rejected = module._finalize_universe_filter(candidates)
 
-    assert [item["ticker"] for item in accepted] == ["SOFI"]
-    assert {item["ticker"] for item in rejected} == {"BAC", "INTC", "NONE"}
-    assert rejected[0]["min_price"] == 4.0
-    assert rejected[0]["max_price"] == 50.0
-    assert any(item["reason"] == "price_missing" for item in rejected)
+    assert [item["ticker"] for item in accepted] == ["AAPL", "SOXS"]
+    rejected_by_ticker = {item["ticker"]: item for item in rejected}
+    assert "price_out_of_range" in rejected_by_ticker["BRK"]["rejection_reason"]
+    assert "price_missing" in rejected_by_ticker["NONE"]["rejection_reason"]
 
 
 def test_main_drops_out_of_band_tickers_before_writing_top_configs():
@@ -203,22 +202,23 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs():
 
         assert written_reports
         summary = written_reports[0]
-        assert summary["settings"]["min_price"] == 4.0
-        assert summary["settings"]["max_price"] == 50.0
-        assert summary["settings"]["price_band"] == {"min": 4.0, "max": 50.0}
+        assert summary["settings"]["min_price"] == 5.0
+        assert summary["settings"]["max_price"] == 300.0
+        assert summary["settings"]["price_band"] == {"min": 5.0, "max": 300.0}
+        assert "universe_filter" in summary["settings"]
         assert summary["selection_count"] == 1
         assert summary["top_n_filled"] is False
-        assert summary["quality_filter_report"]["removed_out_of_price_band"]
-        rejected_tickers = {item["ticker"] for item in summary["quality_filter_report"]["removed_out_of_price_band"]}
-        assert "BAC" in rejected_tickers
-        assert "INTC" in rejected_tickers
+        assert summary["quality_filter_report"]["removed_by_universe_filter"]
+        rejected_tickers = {item["ticker"] for item in summary["quality_filter_report"]["removed_by_universe_filter"]}
+        assert "BRK" in rejected_tickers
+        assert "LOWVOL" in rejected_tickers
 
         assert not (tmpdir / "configs" / "TOP1.yaml").exists()
         assert not (tmpdir / "configs" / "TOP2.yaml").exists()
         assert not (tmpdir / "configs" / "TOP3.yaml").exists()
 
 
-def test_combined_dashboard_defaults_price_band_display_when_report_missing_settings(monkeypatch):
+def test_combined_dashboard_shows_universe_filter_when_report_missing_price_settings(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
     monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
@@ -261,4 +261,5 @@ def test_combined_dashboard_defaults_price_band_display_when_report_missing_sett
     with combined.app.test_request_context("/"):
         html = combined.index()
 
-    assert "价格范围：$4.00 - $50.00 (default)" in html
+    assert "Universe筛选：普通股 $5-$200 / ETF $5-$300 / 杠杆与反向ETF $5-$100" in html
+    assert "价格范围：" not in html

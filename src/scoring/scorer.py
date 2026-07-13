@@ -13,6 +13,7 @@ from ta.volatility import AverageTrueRange
 
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.ai_selector.settings import get_float_setting
+from src.ai_selector.universe_filter import evaluate_universe_candidate, infer_asset_type
 
 
 class Scorer:
@@ -154,6 +155,25 @@ class Scorer:
         "DPST": "Leveraged Regional Banks ETF",
     }
 
+    FALLBACK_MARKET_CAP = {
+        "AAPL": 3_000_000_000_000,
+        "MSFT": 3_000_000_000_000,
+        "NVDA": 3_000_000_000_000,
+        "AMD": 250_000_000_000,
+        "TSLA": 900_000_000_000,
+        "META": 1_500_000_000_000,
+        "AVGO": 1_200_000_000_000,
+        "AMZN": 2_000_000_000_000,
+        "GOOGL": 2_000_000_000_000,
+        "NFLX": 500_000_000_000,
+        "QCOM": 180_000_000_000,
+        "UBER": 150_000_000_000,
+        "LYFT": 5_000_000_000,
+        "PLTR": 300_000_000_000,
+        "SOFI": 15_000_000_000,
+        "NIO": 10_000_000_000,
+    }
+
     def __init__(self):
         self.min_price = self._env_float("AI_SELECTOR_MIN_PRICE", get_float_setting("min_price", self.MIN_PRICE))
         self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", get_float_setting("max_price", self.MAX_PRICE))
@@ -161,6 +181,7 @@ class Scorer:
         self.score_workers = max(1, self._env_int("AI_SELECTOR_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
         self.min_spread_pct = self._env_float("AI_SELECTOR_MIN_SPREAD_PCT", self.DEFAULT_MIN_SPREAD_PCT)
         self.allow_proxy_market = os.environ.get("AI_SELECTOR_ALLOW_PROXY_MARKET", "0") == "1"
+        self._market_cap_cache: dict[str, float | None] = {}
 
     def _env_float(self, name: str, default: float) -> float:
         raw = os.environ.get(name)
@@ -397,6 +418,34 @@ class Scorer:
                 last_error = exc
         raise last_error
 
+    def _market_cap_for_symbol(self, symbol: str) -> float | None:
+        normalized = str(symbol or "").strip().upper().split(".")[0]
+        if normalized in self._market_cap_cache:
+            return self._market_cap_cache[normalized]
+        if normalized in self.FALLBACK_MARKET_CAP:
+            self._market_cap_cache[normalized] = float(self.FALLBACK_MARKET_CAP[normalized])
+            return self._market_cap_cache[normalized]
+        if infer_asset_type(normalized) != "common_stock":
+            self._market_cap_cache[normalized] = None
+            return None
+        try:
+            ticker = yf.Ticker(normalized)
+            fast_info = getattr(ticker, "fast_info", {}) or {}
+            value = None
+            if isinstance(fast_info, dict):
+                value = fast_info.get("market_cap") or fast_info.get("marketCap")
+            else:
+                value = getattr(fast_info, "market_cap", None) or getattr(fast_info, "marketCap", None)
+            if value is None:
+                info = getattr(ticker, "info", {}) or {}
+                if isinstance(info, dict):
+                    value = info.get("marketCap")
+            parsed = float(value) if value not in (None, "") else None
+            self._market_cap_cache[normalized] = parsed if parsed and parsed > 0 else None
+        except Exception:
+            self._market_cap_cache[normalized] = None
+        return self._market_cap_cache[normalized]
+
     def _fallback_profile_for_symbol(self, symbol: str) -> dict | None:
         profile = self.FALLBACK_PROFILES.get(symbol)
         if not profile:
@@ -488,13 +537,6 @@ class Scorer:
         avg_volume_20 = float(volume.rolling(20).mean().iloc[-1]) if len(volume) >= 20 else float(volume.mean())
         avg_volume_60 = float(volume.rolling(60).mean().iloc[-1]) if len(volume) >= 60 else float(volume.mean())
 
-        if last_close < self.min_price:
-            return None
-        if last_close > self.max_price:
-            return None
-        if avg_volume_20 < self.MIN_AVG_VOLUME:
-            return None
-
         sma20 = close.rolling(20).mean().iloc[-1]
         sma50 = close.rolling(50).mean().iloc[-1]
         sma200 = close.rolling(200).mean().iloc[-1] if len(df) >= 200 else np.nan
@@ -506,6 +548,20 @@ class Scorer:
         macd_hist = float(MACD(close).macd_diff().iloc[-1])
         atr = float(AverageTrueRange(high, low, close, window=14).average_true_range().iloc[-1])
         atr_pct = (atr / last_close * 100.0) if last_close else 0.0
+        average_dollar_volume_20d = avg_volume_20 * last_close
+        market_cap = self._market_cap_for_symbol(symbol)
+        universe_eval = evaluate_universe_candidate(
+            {
+                "ticker": symbol,
+                "current_price": last_close,
+                "asset_type": infer_asset_type(symbol),
+                "market_cap": market_cap,
+                "average_dollar_volume_20d": average_dollar_volume_20d,
+                "atr_20_percentage": atr_pct,
+            }
+        )
+        if universe_eval.rejected:
+            return None
 
         returns = close.pct_change().dropna()
         return_vol_pct = float(returns.rolling(20).std().iloc[-1] * 100.0) if len(returns) >= 20 else 0.0
@@ -580,6 +636,10 @@ class Scorer:
                 "stop_loss_pct": self._stop_loss_pct(atr_pct, max_drawdown_pct),
             },
             "size": self._position_size_hint(last_close, avg_volume_20),
+            "asset_type": universe_eval.asset_type,
+            "market_cap": universe_eval.market_cap,
+            "average_dollar_volume_20d": universe_eval.average_dollar_volume_20d,
+            "atr_20_percentage": universe_eval.atr_20_percentage,
             "data_source": "live",
             "metrics": {
                 "last_close": float(round(last_close, 4)),
@@ -612,11 +672,22 @@ class Scorer:
         support = float(profile["range_low"])
         resistance = float(profile["range_high"])
         price_mid = (support + resistance) / 2.0
-        if price_mid < self.min_price or price_mid > self.max_price:
+        band_pct = ((resistance - support) / price_mid * 100.0) if price_mid else 0.0
+        market_cap = self.FALLBACK_MARKET_CAP.get(str(symbol or "").strip().upper().split(".")[0])
+        universe_eval = evaluate_universe_candidate(
+            {
+                "ticker": symbol,
+                "current_price": price_mid,
+                "asset_type": infer_asset_type(symbol),
+                "market_cap": market_cap,
+                "average_dollar_volume_20d": float(profile["volume"]) * price_mid,
+                "atr_20_percentage": band_pct / 2.0,
+            }
+        )
+        if universe_eval.rejected:
             return None
         if ((resistance - support) / support * 100.0) < self.min_spread_pct:
             return None
-        band_pct = ((resistance - support) / price_mid * 100.0) if price_mid else 0.0
         news_score = self._news_score(list(news_items))
         volume_score = min(100.0, 35.0 + math.log10(max(float(profile["volume"]), 1.0) / 1_000_000.0 + 1.0) * 20.0)
         volatility_score = max(0.0, min(100.0, 55.0 + band_pct * 1.5))
@@ -649,6 +720,10 @@ class Scorer:
             "resistance_source": "fallback",
             "risk": {"stop_loss_pct": 1.5},
             "size": int(max(1, min(1000, profile["volume"] // 1000))),
+            "asset_type": universe_eval.asset_type,
+            "market_cap": universe_eval.market_cap,
+            "average_dollar_volume_20d": universe_eval.average_dollar_volume_20d,
+            "atr_20_percentage": universe_eval.atr_20_percentage,
             "data_source": "fallback",
             "avg_daily_volume_hint": int(profile["volume"]),
             "price_midpoint_hint": float(round(price_mid, 4)),

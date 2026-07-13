@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from .settings import DEFAULT_MAX_PRICE, DEFAULT_MIN_PRICE
+from .universe_filter import infer_asset_type, load_universe_rules
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
@@ -20,6 +21,10 @@ def _normalize_ticker(value: Any) -> str:
 
 
 def _price_band(ctx: dict[str, Any]) -> tuple[float, float]:
+    asset_type = infer_asset_type(str(ctx.get("ticker") or ""), ctx)
+    rule = load_universe_rules().get(asset_type)
+    if rule is not None:
+        return float(rule.price_min), float(rule.price_max)
     min_price = _safe_float(
         ctx.get("min_price"),
         _safe_float(os.environ.get("AI_SELECTOR_MIN_PRICE"), DEFAULT_MIN_PRICE) or DEFAULT_MIN_PRICE,
@@ -100,6 +105,7 @@ class TradeEligibilityFilter:
 
     def _context_for(self, ticker: str, candidate: dict[str, Any], market_data: dict[str, Any]) -> dict[str, Any]:
         ctx = {}
+        ctx["ticker"] = ticker
         raw_md = market_data.get(ticker, {})
         if isinstance(raw_md, dict):
             ctx.update(raw_md)
@@ -112,6 +118,8 @@ class TradeEligibilityFilter:
             "bid_ask_spread_pct",
             "regime",
             "data_age_seconds",
+            "asset_type",
+            "symbol_class",
         ):
             if key not in ctx or ctx.get(key) is None:
                 ctx[key] = candidate.get(key)

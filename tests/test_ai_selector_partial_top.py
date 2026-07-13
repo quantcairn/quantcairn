@@ -153,11 +153,41 @@ def _base_selector_result() -> dict:
 
 
 def _patch_common(module, tmpdir: Path):
+    original_universe_filter = module._finalize_universe_filter
+
+    def _finalize_universe_filter_with_test_metrics(candidates):
+        enriched = []
+        for raw in candidates or []:
+            item = dict(raw)
+            ticker = str(item.get("ticker") or "").strip().upper()
+            if item.get("current_price") is None:
+                price = module._live_candidate_price(ticker)
+                if price is None:
+                    low = item.get("range_low")
+                    high = item.get("range_high")
+                    if low and high and high > low:
+                        price = (float(low) + float(high)) / 2.0
+                if price is not None:
+                    item["current_price"] = price
+            if item.get("asset_type") is None:
+                if ticker in {"SOXS", "LABD", "DRIP", "SQQQ", "TZA", "FAZ", "YANG"}:
+                    item["asset_type"] = "inverse_etf"
+                elif ticker in {"YINN", "SOXL"}:
+                    item["asset_type"] = "leveraged_etf"
+                else:
+                    item["asset_type"] = "common_stock"
+            item.setdefault("average_dollar_volume_20d", 100_000_000)
+            item.setdefault("atr_20_percentage", 4.0)
+            if item["asset_type"] == "common_stock":
+                item.setdefault("market_cap", 10_000_000_000)
+            enriched.append(item)
+        return original_universe_filter(enriched)
+
     module.PROJECT_DIR = tmpdir
     module.REPORTS_DIR = tmpdir / "reports"
     module.load_local_ai_env = lambda: None
     module.load_runtime_settings = lambda: {
-        "min_price": 4.0,
+        "min_price": 10.0,
         "max_price": 50.0,
         "auto_refresh_minutes": 5,
         "max_symbols": 20,
@@ -203,6 +233,7 @@ def _patch_common(module, tmpdir: Path):
     module._prioritize_ai_rank = lambda rows, signal_map: list(rows)
     module._split_selected_and_protected_positions = lambda candidates, positions, limit=3: (list(candidates)[:limit], [])
     module._enforce_price_band = lambda candidates, min_price, max_price: (list(candidates), [])
+    module._finalize_universe_filter = _finalize_universe_filter_with_test_metrics
     module._live_candidate_price = lambda ticker: {
         "PLTR": 25.0,
         "AMD": 28.0,
@@ -233,7 +264,7 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
         written_reports: list[dict] = []
 
         def _row(ticker: str, score: float) -> dict:
-            price = {"SOXS": 4.5, "YINN": 25.0, "DRIP": 5.0}[ticker]
+            price = {"SOXS": 12.0, "YINN": 25.0, "DRIP": 11.0}[ticker]
             return {
                 "ticker": ticker,
                 "score": score,
@@ -263,7 +294,7 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
             config_writer.BASE = str(tmpdir)
             _patch_common(module, tmpdir)
             module._apply_composition_filter = original_composition_filter
-            module._live_candidate_price = lambda ticker: {"SOXS": 4.5, "YINN": 25.0, "DRIP": 5.0}.get(str(ticker).upper())
+            module._live_candidate_price = lambda ticker: {"SOXS": 12.0, "YINN": 25.0, "DRIP": 11.0}.get(str(ticker).upper())
             module._run_integrated_ai_selector = lambda: {
                 "enabled": True,
                 "top3": [],
@@ -411,12 +442,12 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
 
         assert written_reports
         summary = written_reports[0]
-        assert summary["selection_count"] == 2
+        assert summary["selection_count"] == 1
         assert summary["target_top_n"] == 3
         assert summary["top_n_filled"] is False
-        assert summary["missing_slots"] == 1
+        assert summary["missing_slots"] == 2
         assert summary["fallback_pool_used"] is False
-        assert summary["disabled_configs"] == ["TOP3.yaml"]
+        assert summary["disabled_configs"] == ["TOP2.yaml", "TOP3.yaml"]
         assert any(
             str(warning).startswith("top_n_not_filled")
             for warning in summary["quality_filter_report"]["composition_filter"]["warnings"]

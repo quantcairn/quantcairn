@@ -8,8 +8,8 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
 SETTINGS_PATH = STATE_DIR / "ai_selector_settings.json"
-DEFAULT_MIN_PRICE = 4.0
-DEFAULT_MAX_PRICE = 50.0
+DEFAULT_MIN_PRICE = 5.0
+DEFAULT_MAX_PRICE = 300.0
 
 
 def load_runtime_settings() -> dict:

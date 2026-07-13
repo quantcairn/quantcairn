@@ -46,6 +46,7 @@ from src.ai_selector.selector import write_selection_filter_log
 from src.ai_selector.selection_state import write_selection_state
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import resolve_price_band
+from src.ai_selector.universe_filter import filter_universe_candidates, load_universe_rules
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
@@ -80,6 +81,7 @@ ENTRY_PROXIMITY_WEIGHT = max(0.0, min(1.0, float(_AI_SELECTOR_FILE_CONFIG.get("e
 RANGE_SCORER = RangeFitnessScorer()
 TRADE_FILTER = TradeEligibilityFilter()
 COMPOSITION_FILTER = CompositionFilter()
+UNIVERSE_RULES = load_universe_rules()
 CONSERVATIVE_FALLBACK_POOL = [
     "SOFI",
     "PLTR",
@@ -556,6 +558,40 @@ def _finalize_price_band(candidates: list[dict], min_price: float, max_price: fl
     return accepted, rejected
 
 
+def _finalize_universe_filter(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
+    return filter_universe_candidates(candidates or [], rules=UNIVERSE_RULES)
+
+
+def _price_rejections_from_universe(rows: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    for row in rows or []:
+        reasons = list(row.get("rejection_reason") or [])
+        if "price_out_of_range" not in reasons and "price_missing" not in reasons:
+            continue
+        item = dict(row)
+        allowed = item.get("allowed_price_range") if isinstance(item.get("allowed_price_range"), dict) else {}
+        item["min_price"] = allowed.get("min")
+        item["max_price"] = allowed.get("max")
+        if item.get("min_price") is not None and item.get("max_price") is not None:
+            item["allowed_range"] = f"${float(item['min_price']):.2f}-${float(item['max_price']):.2f}"
+        result.append(item)
+    return result
+
+
+def _universe_settings_payload() -> dict:
+    payload: dict[str, dict] = {}
+    for asset_type, rule in UNIVERSE_RULES.items():
+        payload[asset_type] = {
+            "price_min": rule.price_min,
+            "price_max": rule.price_max,
+            "min_market_cap": rule.min_market_cap,
+            "min_average_dollar_volume": rule.min_average_dollar_volume,
+            "atr_20_pct_min": rule.atr_20_pct_min,
+            "atr_20_pct_max": rule.atr_20_pct_max,
+        }
+    return payload
+
+
 def _merge_rejected_rows(rows: list[dict]) -> list[dict]:
     merged: list[dict] = []
     seen: set[tuple[str, str, str]] = set()
@@ -883,6 +919,8 @@ def main():
     load_local_ai_env()
     runtime_settings = load_runtime_settings()
     min_price, max_price = resolve_price_band(runtime_settings)
+    universe_price_min = min(rule.price_min for rule in UNIVERSE_RULES.values())
+    universe_price_max = max(rule.price_max for rule in UNIVERSE_RULES.values())
     market_context = market_session_context(_et_now())
     os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
     os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
@@ -922,8 +960,9 @@ def main():
         integrated_ai.get("signal_map") or {},
         live_positions or [],
     ))
-    report_top10, report_price_band_rejected = _finalize_price_band(report_top10, min_price, max_price)
-    price_band_rejected_rows.extend(report_price_band_rejected)
+    report_top10, report_universe_rejected = _finalize_universe_filter(report_top10)
+    universe_rejected_rows: list[dict] = list(report_universe_rejected)
+    price_band_rejected_rows.extend(_price_rejections_from_universe(report_universe_rejected))
     candidate_pool = _annotate_with_ai_signals(list(report_top10 or []), integrated_ai.get("signal_map") or {})
     if integrated_ai.get("preferred_symbols"):
         candidate_pool = _prioritize_ai_rank(candidate_pool, integrated_ai.get("signal_map") or {})
@@ -933,14 +972,15 @@ def main():
         limit=min(sel.selection_size, TOP_COUNT),
     )
     selection_stage = str((out.get("settings") or {}).get("selection_stage") or "")
-    min_price, max_price = resolve_price_band(runtime_settings)
+    min_price, max_price = universe_price_min, universe_price_max
     fallback_pool_used = False
     trade_filter_report: dict = {"rejected": [], "fallback_used": False}
     fallback_trade_report: dict = {"rejected": [], "fallback_used": False}
     composition_filter_report: dict = {"rejected": [], "warnings": []}
 
-    selected, initial_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
-    price_band_rejected_rows.extend(initial_price_band_rejected)
+    selected, initial_universe_rejected = _finalize_universe_filter(selected)
+    universe_rejected_rows.extend(initial_universe_rejected)
+    price_band_rejected_rows.extend(_price_rejections_from_universe(initial_universe_rejected))
     selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
     selected = [_normalize_selection_metadata(item) for item in selected]
 
@@ -957,9 +997,11 @@ def main():
             fallback_candidates = _build_conservative_fallback_candidates(blocked_symbols)
             if fallback_candidates:
                 fallback_pool_used = True
-                fallback_price_band = f"${min_price:.2f}-${max_price:.2f}"
                 fallback_candidates = _apply_range_scores(fallback_candidates)
                 fallback_candidates, fallback_trade_report = _apply_trade_filter(fallback_candidates)
+                fallback_candidates, fallback_universe_rejected = _finalize_universe_filter(fallback_candidates)
+                universe_rejected_rows.extend(fallback_universe_rejected)
+                price_band_rejected_rows.extend(_price_rejections_from_universe(fallback_universe_rejected))
                 fallback_trade_report["rejected"] = list(fallback_trade_report.get("rejected") or [])
                 fallback_candidates, fallback_composition_report = _apply_composition_filter(fallback_candidates, top_n=TOP_COUNT)
                 composition_filter_report.setdefault("rejected", [])
@@ -976,31 +1018,6 @@ def main():
                     if not ticker or ticker in existing_tickers or len(selected) >= TOP_COUNT:
                         continue
                     item_price = _candidate_price(item)
-                    if item_price is None or item_price < min_price or item_price > max_price:
-                        reason = "price_missing" if item_price is None else "price_out_of_range"
-                        fallback_trade_report.setdefault("rejected", []).append(
-                            {
-                                "ticker": ticker,
-                                "reason": reason,
-                                "price": round(float(item_price), 4) if item_price is not None else None,
-                                "min_price": float(min_price),
-                                "max_price": float(max_price),
-                                "allowed_range": fallback_price_band,
-                                "source": "conservative_fallback_pool",
-                            }
-                        )
-                        price_band_rejected_rows.append(
-                            {
-                                "ticker": ticker,
-                                "reason": reason,
-                                "price": round(float(item_price), 4) if item_price is not None else None,
-                                "min_price": float(min_price),
-                                "max_price": float(max_price),
-                                "allowed_range": fallback_price_band,
-                                "source": "conservative_fallback_pool",
-                            }
-                        )
-                        continue
                     item["current_price"] = round(float(item_price), 4)
                     item["fallback_used"] = True
                     item["fallback_reason"] = "top_n_not_filled"
@@ -1032,8 +1049,9 @@ def main():
     composition_filter_report["rejected"].extend(list(final_composition_report.get("rejected") or []))
     composition_filter_report["warnings"].extend(list(final_composition_report.get("warnings") or []))
 
-    selected, final_price_band_rejected = _finalize_price_band(selected, min_price, max_price)
-    price_band_rejected_rows.extend(final_price_band_rejected)
+    selected, final_universe_rejected = _finalize_universe_filter(selected)
+    universe_rejected_rows.extend(final_universe_rejected)
+    price_band_rejected_rows.extend(_price_rejections_from_universe(final_universe_rejected))
     selected = [_normalize_entry_report_fields(_normalize_selection_metadata(item)) for item in selected]
     selected, low_quality_rejected = _filter_entry_quality(selected)
     report_top10 = [_normalize_entry_report_fields(item) for item in report_top10]
@@ -1047,6 +1065,7 @@ def main():
     ]
     quality_report["existing_real_positions_preserved"] = preserved_positions
     quality_report["removed_out_of_price_band"] = _merge_rejected_rows(price_band_rejected_rows)
+    quality_report["removed_by_universe_filter"] = _merge_rejected_rows(universe_rejected_rows)
     quality_report["trade_filter_passed"] = [bool(item.get("trade_filter_passed", False)) for item in selected]
     quality_report["reject_reason"] = [str(item.get("reject_reason") or "") for item in selected]
     trade_filter_rejected = list(trade_filter_report.get("rejected") or [])
@@ -1071,9 +1090,10 @@ def main():
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     out["settings"] = dict(out.get("settings") or {})
-    out["settings"]["min_price"] = float(min_price)
-    out["settings"]["max_price"] = float(max_price)
-    out["settings"]["price_band"] = {"min": float(min_price), "max": float(max_price)}
+    out["settings"]["min_price"] = float(universe_price_min)
+    out["settings"]["max_price"] = float(universe_price_max)
+    out["settings"]["price_band"] = {"min": float(universe_price_min), "max": float(universe_price_max)}
+    out["settings"]["universe_filter"] = _universe_settings_payload()
     out["settings"]["selection_stage"] = selection_stage
     out["settings"]["entry_proximity_enabled"] = bool(ENTRY_PROXIMITY_ENABLED)
     out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
