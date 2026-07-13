@@ -172,13 +172,21 @@ def _write_shadow_artifacts(root: Path, *, symbol="SOXS.US", benchmark_symbols=N
         (root / "daily_summary.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inverse_etf", benchmarks=None, strategy_family="range_etf", risk_profile="strict", timeframe="15m", ai_score=91.5, ai_reason="Strong range fit"):
+def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inverse_etf", benchmarks=None, strategy_family="range_etf", risk_profile="strict", timeframe="15m", ai_score=91.5, ai_reason="Strong range fit", candidate_score=94.2, liquidity_score=96.0, trend_score=90.0, volatility_score=82.0, risk_score=88.0, strategy_fit_score=97.0, recommended_strategy="trend_following", score_reason="liquidity:strong; trend:strong; volatility:fit; risk:clean; strategy_fit:match"):
     store = CandidateValidationStore(root)
     record = CandidateRecord.from_ai_candidate(
         symbol=symbol,
         selected_at="2026-07-10T21:32:41+08:00",
         source="ai_selector",
         ai_score=ai_score,
+        candidate_score=candidate_score,
+        liquidity_score=liquidity_score,
+        trend_score=trend_score,
+        volatility_score=volatility_score,
+        risk_score=risk_score,
+        strategy_fit_score=strategy_fit_score,
+        recommended_strategy=recommended_strategy,
+        score_reason=score_reason,
         ai_reason=ai_reason,
         asset_type=asset_type,
         benchmarks=tuple(benchmarks or (["SOXX.US", "SMH.US"] if symbol == "SOXS.US" else ["QQQ.US", "SPY.US"])),
@@ -235,8 +243,8 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert payload["risk"]["fallback_paper_allowed"] is True
     assert payload["dashboard"]["chart_api_available"] is True
     assert len(payload["top_engines"]) == 3
-    assert payload["ai_selection"]["price_band"]["min"] == 4.0
-    assert payload["ai_selection"]["price_band"]["max"] == 50.0
+    assert payload["ai_selection"]["price_band"]["min"] == 5.0
+    assert payload["ai_selection"]["price_band"]["max"] == 300.0
     assert payload["candidate_validation"]["state"] == "STALE"
     assert payload["candidate_validation"]["status_label"] == "STALE"
     assert payload["candidate_validation_api_available"] is True
@@ -281,6 +289,58 @@ def test_api_status_handles_offline_top_engine(monkeypatch):
     assert payload["top_engines"][1]["online"] is False
     assert payload["top_engines"][1]["signal"] == "OFFLINE"
     assert payload["top_engines"][1]["price"] is None
+
+
+def test_api_status_does_not_poll_disabled_top_slots(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    configs_dir = project_dir / "configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    (configs_dir / "TOP1.yaml").write_text("ticker: SOFI\nmode: paper\n", encoding="utf-8")
+
+    calls: list[int] = []
+
+    def _fake_fetch_status(port: int):
+        calls.append(port)
+        return {"mode": "paper", "price": 18.52, "last_signal": "HOLD", "halted": False} if port == 8091 else None
+
+    monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
+    monkeypatch.setattr(dashboard, "_fetch_status", _fake_fetch_status)
+    monkeypatch.setattr(
+        dashboard,
+        "_selection_sync_status",
+        lambda: {
+            "ok": True,
+            "state_date": "2026-07-13",
+            "required_date": "2026-07-13",
+            "selection_state_symbols": ["SOFI"],
+            "current_top_config_symbols": ["SOFI"],
+            "mismatch_reason": "",
+        },
+    )
+    monkeypatch.setattr(dashboard, "_load_ai_selection_report", lambda: {"fallback_used": False, "top3": [{"ticker": "SOFI"}], "settings": {}})
+    monkeypatch.setattr(dashboard, "_combined_process_count", lambda: 1)
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "paper", "execution_count": 0, "buy_count": 0, "sell_count": 0, "decision_count": 0})
+    monkeypatch.setattr(dashboard, "load_runtime_config", lambda: SimpleNamespace(allow_fallback_live_entries=False, allow_fallback_paper_entries=False))
+    monkeypatch.setattr(dashboard, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(dashboard, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"})
+    monkeypatch.setattr(
+        dashboard,
+        "_load_dashboard_config",
+        lambda: SimpleNamespace(
+            mode="paper",
+            broker=SimpleNamespace(longbridge=SimpleNamespace(enabled=False, environment="prod", allow_live_order=False)),
+        ),
+    )
+
+    response = dashboard.app.test_client().get("/api/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert calls == [8091]
+    assert payload["top_engines"][0]["configured"] is True
+    assert payload["top_engines"][1]["configured"] is False
+    assert payload["top_engines"][2]["configured"] is False
+    assert payload["top_modes"] == ["paper"]
 
 
 def test_api_status_reports_selection_mismatch_without_error(monkeypatch):
@@ -417,6 +477,9 @@ def test_api_status_shows_sandbox_snapshot_without_paper_fallback(monkeypatch):
     assert payload["system"]["data_source"] == "LongBridge sandbox snapshot"
     assert payload["system"]["account_source"] == "LongBridge sandbox account"
     assert payload["system"]["live_order_enabled"] is False
+    assert payload["mode_consistency"]["dashboard_mode"] == "sandbox"
+    assert payload["mode_consistency"]["top_modes"] == ["sandbox", "sandbox", "sandbox"]
+    assert payload["mode_consistency"]["mixed"] is False
     assert payload["system"]["lifecycle"]["weekend_paper"]["status_label"] == "unavailable"
     assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
 
@@ -426,7 +489,7 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     candidates_root = project_dir / "artifacts" / "candidates"
     candidates_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
-    _write_candidate_artifacts(candidates_root, symbol="AAPL.US", asset_type="common_stock", benchmarks=["QQQ.US", "SPY.US"], strategy_family="equity_mean_reversion", risk_profile="balanced", timeframe="15m", ai_score=88.2, ai_reason="price near support")
+    _write_candidate_artifacts(candidates_root, symbol="AAPL.US", asset_type="common_stock", benchmarks=["QQQ.US", "SPY.US"], strategy_family="equity_mean_reversion", risk_profile="balanced", timeframe="15m", ai_score=88.2, ai_reason="price near support", candidate_score=91.4, liquidity_score=93.0, trend_score=87.5, volatility_score=76.0, risk_score=84.0, strategy_fit_score=95.0, recommended_strategy="mean_reversion", score_reason="liquidity:strong; trend:range; volatility:fit; risk:clean; strategy_fit:match")
     monkeypatch.setattr(dashboard, "_fetch_live_account_summary", lambda: (_ for _ in ()).throw(AssertionError("broker should not be called")))
     monkeypatch.setattr(dashboard, "_load_dashboard_config", lambda: SimpleNamespace(mode="paper", broker=SimpleNamespace(longbridge=SimpleNamespace(enabled=False, environment="prod", account_type="", allow_live_order=False))))
     monkeypatch.setattr(dashboard, "_load_ai_selection_report", lambda: None)
@@ -450,18 +513,66 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     assert payload["latest_candidate"]["paper_enabled"] is False
     assert payload["latest_candidate"]["live_enabled"] is False
     assert payload["latest_candidate"]["deployment_status"] == "INELIGIBLE"
+    assert payload["latest_candidate"]["candidate_score"] == 91.4
+    assert payload["latest_candidate"]["liquidity_score"] == 93.0
+    assert payload["latest_candidate"]["trend_score"] == 87.5
+    assert payload["latest_candidate"]["volatility_score"] == 76.0
+    assert payload["latest_candidate"]["risk_score"] == 84.0
+    assert payload["latest_candidate"]["strategy_fit_score"] == 95.0
+    assert payload["latest_candidate"]["recommended_strategy"] == "mean_reversion"
+    assert payload["latest_candidate"]["score_reason"] == "liquidity:strong; trend:range; volatility:fit; risk:clean; strategy_fit:match"
+    assert payload["performance"]["title"] == "Candidate Ranking Performance"
+    assert payload["performance"]["candidate_count"] == 1
+    assert payload["performance"]["average_score"] == 91.4
+    assert payload["performance"]["high_score_threshold"] == 80.0
+    assert payload["performance"]["high_score_candidate_count"] == 1
+    assert payload["performance"]["high_score_success_rate"] == 0.0
+    assert len(payload["performance"]["score_bucket_distribution"]) == 4
+    assert payload["performance"]["score_bucket_distribution"][0]["score_bucket"] == "90-100"
+    assert payload["research_report"]["title"] == "AI Candidate Daily Research Report"
+    assert payload["research_report"]["candidate_count"] == 1
     assert "APP_KEY" not in response.get_data(as_text=True)
 
     api_status = client.get("/api/status").get_json()
     assert api_status["candidate_validation"]["state"] == "STALE"
+    assert api_status["candidate_validation"]["performance"]["candidate_count"] == 1
+    assert api_status["research_report"]["title"] == "AI Candidate Daily Research Report"
+    assert api_status["research_status"]["status_label"] == "unavailable"
+
+    research_status_response = client.get("/api/research/status")
+    assert research_status_response.status_code == 200
+    research_status_payload = research_status_response.get_json()
+    assert research_status_payload["status_label"] == "unavailable"
 
     html = client.get("/").data.decode("utf-8")
     assert "AI Candidate Validation" in html
     assert "AAPL.US" in html
+    assert "Candidate Score" in html
+    assert "Liquidity Score" in html
+    assert "Candidate Ranking Performance" in html
+    assert "AI Research Report" in html
+    assert "AI Research Scheduler" in html
+    assert "Last Research Run" in html
+    assert "Recommended Strategy" in html
+    assert "AI Ranking Reason" in html
     assert "启动 Shadow" not in html
     assert "批准 Paper" not in html
     assert "批准实盘" not in html
     assert "提交订单" not in html
+
+    performance_response = client.get("/api/candidates/performance")
+    assert performance_response.status_code == 200
+    performance_payload = performance_response.get_json()
+    assert performance_payload["title"] == "Candidate Ranking Performance"
+    assert performance_payload["candidate_count"] == 1
+    assert performance_payload["average_score"] == 91.4
+
+    research_response = client.get("/api/research/report")
+    assert research_response.status_code == 200
+    research_payload = research_response.get_json()
+    assert research_payload["title"] == "AI Candidate Daily Research Report"
+    assert research_payload["candidate_count"] == 1
+    assert research_payload["top_candidates"][0]["symbol"] == "AAPL.US"
 
 
 def test_shadow_status_api_returns_safe_snapshot(monkeypatch, tmp_path):

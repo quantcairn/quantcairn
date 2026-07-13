@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
+from src.ai_selector.universe_filter import load_universe_rules
 from src.ai_selector.selection_state import configured_top_count, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
@@ -21,10 +22,12 @@ from src.broker.paper_broker import PaperBroker
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 from src.research_report.site import build_research_site
+from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator
+from src.candidate_validation.research_scheduler import latest_research_status
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
 from src.shadow.config import ShadowRuntimeConfig
 from src.shadow.universe import default_shadow_output_directory, is_safe_shadow_output_directory, shadow_title_for
-from src.candidate_validation import CandidateValidationStore, ValidationStatus
+from src.candidate_validation import CandidatePerformanceTracker, CandidateValidationStore, ValidationStatus
 from src.utils.market_calendar import market_session_context
 
 app = Flask(__name__)
@@ -831,6 +834,43 @@ def _ai_selection_price_band(ai_selection: dict | None) -> dict[str, float | boo
     }
 
 
+def _ai_universe_filter_summary(ai_selection: dict | None = None) -> dict[str, object]:
+    settings = (ai_selection or {}).get("settings") if isinstance(ai_selection, dict) else {}
+    configured = settings.get("universe_filter") if isinstance(settings, dict) else None
+    rules = {}
+    if isinstance(configured, dict) and configured:
+        for asset_type, raw in configured.items():
+            if isinstance(raw, dict):
+                rules[str(asset_type)] = {
+                    "price_min": raw.get("price_min"),
+                    "price_max": raw.get("price_max"),
+                    "min_average_dollar_volume": raw.get("min_average_dollar_volume"),
+                    "min_market_cap": raw.get("min_market_cap"),
+                    "atr_20_pct_min": raw.get("atr_20_pct_min"),
+                    "atr_20_pct_max": raw.get("atr_20_pct_max"),
+                }
+    else:
+        rules = {
+            asset_type: {
+                "price_min": rule.price_min,
+                "price_max": rule.price_max,
+                "min_average_dollar_volume": rule.min_average_dollar_volume,
+                "min_market_cap": rule.min_market_cap,
+                "atr_20_pct_min": rule.atr_20_pct_min,
+                "atr_20_pct_max": rule.atr_20_pct_max,
+            }
+            for asset_type, rule in load_universe_rules().items()
+        }
+    return {
+        "rules": rules,
+        "source": "report" if isinstance(configured, dict) and configured else "config/universe.yaml",
+        "summary": (
+            "普通股 $5-$200 / ETF $5-$300 / 杠杆与反向ETF $5-$100；"
+            "先检查20日成交额，再检查价格、市值和ATR波动率。"
+        ),
+    }
+
+
 def _resolve_dashboard_config_path() -> Path | None:
     explicit = str(_env("SOXS_CONFIG", "") or "").strip()
     candidates = []
@@ -957,6 +997,117 @@ def _candidate_artifact_path(name: str) -> Path:
     return _candidate_artifact_root() / name
 
 
+def _research_artifact_root() -> Path:
+    return PROJECT_DIR / "artifacts" / "research" / "daily"
+
+
+def _research_status_snapshot() -> dict[str, object]:
+    try:
+        return latest_research_status(project_dir=PROJECT_DIR, research_root=_research_artifact_root())
+    except Exception as exc:
+        return {
+            "available": False,
+            "state": "STALE",
+            "status_label": "unavailable",
+            "detail": "research run unavailable",
+            "last_research_run": None,
+            "research_date": None,
+            "candidate_count": 0,
+            "report_status": "unavailable",
+            "output_dir": "artifacts/research/daily",
+            "audit_path": None,
+            "report_path": None,
+            "error": str(exc),
+        }
+
+
+def _candidate_performance_snapshot() -> dict[str, object]:
+    root = _candidate_artifact_root()
+    tracker = CandidatePerformanceTracker(root)
+    try:
+        records = tracker.load_records()
+        if not records:
+            candidates = CandidateValidationStore(root).load_latest_candidates()
+            if candidates:
+                return tracker.analyze(candidates)
+        return tracker.analyze(CandidateValidationStore(root).load_latest_candidates() or [])
+    except Exception as exc:
+        return {
+            "available": False,
+            "state": "STALE",
+            "status_label": "STALE",
+            "detail": "candidate performance unavailable",
+            "title": "Candidate Ranking Performance",
+            "candidate_count": 0,
+            "average_score": None,
+            "high_score_threshold": 80.0,
+            "high_score_candidate_count": 0,
+            "high_score_success_rate": None,
+            "score_bucket_distribution": [],
+            "performance_rows": [],
+            "last_updated": None,
+            "error": str(exc),
+        }
+
+
+def _candidate_research_report_snapshot() -> dict[str, object]:
+    try:
+        report = CandidateDailyResearchReportGenerator(
+            root_dir=PROJECT_DIR / "artifacts" / "research" / "daily",
+            candidate_root=_candidate_artifact_root(),
+        ).build()
+    except Exception as exc:
+        return {
+            "available": False,
+            "state": "STALE",
+            "status_label": "STALE",
+            "detail": "research report unavailable",
+            "title": "AI Candidate Daily Research Report",
+            "display_title": "AI Research Report",
+            "generated_at": None,
+            "candidate_count": 0,
+            "average_score": None,
+            "score_distribution": [],
+            "top_candidates": [],
+            "failure_analysis": {"statuses": {"DATA_INVALID": 0, "BACKTEST_FAILED": 0, "WALK_FORWARD_FAILED": 0}},
+            "error": str(exc),
+        }
+    performance = report.get("performance") or {}
+    return {
+        "available": True,
+        "state": "SAFE",
+        "status_label": "SAFE",
+        "detail": "daily research report ready",
+        "title": report.get("title") or "AI Candidate Daily Research Report",
+        "display_title": "AI Research Report",
+        "generated_at": report.get("generated_at"),
+        "candidate_count": report.get("candidate_count", 0),
+        "average_score": report.get("average_score"),
+        "score_distribution": report.get("score_distribution") or [],
+        "top_candidates": report.get("top_candidates") or [],
+        "failure_analysis": report.get("failure_analysis") or {"statuses": {}},
+        "high_score_success_rate": performance.get("high_score_success_rate"),
+        "high_score_threshold": performance.get("high_score_threshold", 80.0),
+        "performance": performance,
+    }
+
+
+def _research_status_payload() -> dict[str, object]:
+    return _research_status_snapshot() or {
+        "available": False,
+        "state": "STALE",
+        "status_label": "unavailable",
+        "detail": "research run unavailable",
+        "last_research_run": None,
+        "research_date": None,
+        "candidate_count": 0,
+        "report_status": "unavailable",
+        "output_dir": "artifacts/research/daily",
+        "audit_path": None,
+        "report_path": None,
+    }
+
+
 def _candidate_validation_snapshot() -> dict[str, object]:
     root = _candidate_artifact_root()
     store = CandidateValidationStore(root)
@@ -974,6 +1125,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             "history_count": 0,
             "latest_candidate": {},
             "candidate_validation_rows": [],
+            "performance": _candidate_performance_snapshot(),
+            "research_report": _candidate_research_report_snapshot(),
             "last_updated": None,
             "status_issue": None,
             "validation_status": "AI_CANDIDATE",
@@ -993,6 +1146,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             "history_count": 0,
             "latest_candidate": {},
             "candidate_validation_rows": [],
+            "performance": _candidate_performance_snapshot(),
+            "research_report": _candidate_research_report_snapshot(),
             "last_updated": None,
             "status_issue": "data_invalid",
             "validation_status": "REJECTED",
@@ -1009,6 +1164,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             "history_count": 0,
             "latest_candidate": {},
             "candidate_validation_rows": [],
+            "performance": _candidate_performance_snapshot(),
+            "research_report": _candidate_research_report_snapshot(),
             "last_updated": None,
             "status_issue": None,
             "validation_status": "AI_CANDIDATE",
@@ -1112,6 +1269,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             },
         } if latest is not None else {},
         "candidate_validation_rows": [record.to_dict() for record in candidates[:5]],
+        "performance": _candidate_performance_snapshot(),
+        "research_report": _candidate_research_report_snapshot(),
         "last_updated": latest_updated,
         "status_issue": invalid_issue,
         "validation_status": latest.validation_status if latest is not None else "AI_CANDIDATE",
@@ -1126,6 +1285,41 @@ def _candidate_validation_snapshot() -> dict[str, object]:
 
 def _candidate_validation_payload() -> dict[str, object]:
     return _candidate_validation_snapshot()
+
+
+def _candidate_performance_payload() -> dict[str, object]:
+    return _candidate_performance_snapshot() or {
+        "available": False,
+        "state": "STALE",
+        "status_label": "STALE",
+        "detail": "candidate performance unavailable",
+        "title": "Candidate Ranking Performance",
+        "candidate_count": 0,
+        "average_score": None,
+        "high_score_threshold": 80.0,
+        "high_score_candidate_count": 0,
+        "high_score_success_rate": None,
+        "score_bucket_distribution": [],
+        "performance_rows": [],
+        "last_updated": None,
+    }
+
+
+def _candidate_research_report_payload() -> dict[str, object]:
+    return _candidate_research_report_snapshot() or {
+        "available": False,
+        "state": "STALE",
+        "status_label": "STALE",
+        "detail": "research report unavailable",
+        "title": "AI Candidate Daily Research Report",
+        "display_title": "AI Research Report",
+        "generated_at": None,
+        "candidate_count": 0,
+        "average_score": None,
+        "score_distribution": [],
+        "top_candidates": [],
+        "failure_analysis": {"statuses": {"DATA_INVALID": 0, "BACKTEST_FAILED": 0, "WALK_FORWARD_FAILED": 0}},
+    }
 
 
 def _shadow_artifact_root() -> Path:
@@ -2030,6 +2224,9 @@ def _load_top_modes() -> list[str]:
     modes: list[str] = []
     for item in TICKERS:
         cfg_path = PROJECT_DIR / "configs" / item["config"]
+        if not cfg_path.exists():
+            modes.append("disabled")
+            continue
         try:
             data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
         except Exception:
@@ -2037,6 +2234,10 @@ def _load_top_modes() -> list[str]:
         mode = str(data.get("mode", "paper")).strip().lower() or "paper"
         modes.append(mode)
     return modes
+
+
+def _top_config_exists(config_name: str) -> bool:
+    return (PROJECT_DIR / "configs" / config_name).exists()
 
 
 def _load_top_ai_selector_flags() -> tuple[bool | None, bool | None]:
@@ -3042,6 +3243,11 @@ HTML = """<!DOCTYPE html>
                 <span class="system-status-value" id="system-broker-type">{{ system_status.broker_type or 'unavailable' }}</span>
                 <span class="system-status-detail" id="system-broker-connection">连接状态：{{ system_status.broker_connection or 'not connected' }}</span>
             </div>
+            <div class="system-status-card {{ 'status-warn' if mode_consistency.mixed else '' }}">
+                <span class="system-status-label">TOP 引擎模式</span>
+                <span class="system-status-value" id="system-top-engine-mode">{{ mode_consistency.label }}</span>
+                <span class="system-status-detail" id="system-top-engine-mode-detail">{{ mode_consistency.detail }}</span>
+            </div>
             <div class="system-status-card">
                 <span class="system-status-label">数据来源</span>
                 <span class="system-status-value" id="system-data-source">{{ system_status.data_source or 'no data' }}</span>
@@ -3088,6 +3294,29 @@ HTML = """<!DOCTYPE html>
                 <span class="system-status-value" id="system-sandbox-lifecycle">{{ system_status.lifecycle.longbridge_sandbox.status_label or 'unavailable' }}</span>
                 <span class="system-status-detail" id="system-sandbox-detail">{{ system_status.lifecycle.longbridge_sandbox.detail or 'no data' }}</span>
                 <span class="system-status-detail" id="system-sandbox-time">报告：{{ system_status.lifecycle.longbridge_sandbox.generated_at or 'no data' }}</span>
+            </div>
+            <div class="system-status-card wide research-status-card {{ 'status-live' if research_status.state == 'SAFE' else 'status-warn' if research_status.state == 'STALE' else 'status-offline' }}" id="research-status-card">
+                <span class="system-status-label" id="research-status-title">AI Research Scheduler</span>
+                <span class="system-status-value" id="research-status-state">{{ research_status.status_label or 'unavailable' }}</span>
+                <span class="system-status-detail" id="research-status-detail">{{ research_status.detail or 'no data' }}</span>
+                <div class="shadow-metrics-grid" style="margin-top: 8px;">
+                    <div class="shadow-metric">
+                        <span>Last Research Run</span>
+                        <strong id="research-status-last-run">{{ research_status.last_research_run or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Research Date</span>
+                        <strong id="research-status-date">{{ research_status.research_date or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Candidate Count</span>
+                        <strong id="research-status-candidate-count">{{ research_status.candidate_count if research_status.candidate_count is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Report Status</span>
+                        <strong id="research-status-report-status">{{ research_status.report_status or 'unavailable' }}</strong>
+                    </div>
+                </div>
             </div>
             <div class="system-status-card full shadow-observer-card {{ shadow_status_class }}" id="shadow-observer-card">
                 <span class="system-status-label" id="shadow-title">{{ shadow_status.title or 'Shadow Observer' }}</span>
@@ -3172,6 +3401,9 @@ HTML = """<!DOCTYPE html>
                 <span class="system-status-label" id="candidate-title">{{ candidate_validation.title or 'AI Candidate Validation' }}</span>
                 <span class="system-status-value" id="candidate-state">{{ candidate_validation.status_label or 'STALE' }}</span>
                 <span class="system-status-detail" id="candidate-detail">{{ candidate_validation.detail or 'no data' }}</span>
+                <div class="board-section-head" style="margin-top: 8px;">
+                    <span>Factor Scores</span>
+                </div>
                 <div class="shadow-metrics-grid">
                     <div class="shadow-metric">
                         <span>Symbol</span>
@@ -3186,12 +3418,44 @@ HTML = """<!DOCTYPE html>
                         <strong id="candidate-ai-score">{{ candidate_validation.latest_candidate.ai_score if candidate_validation.latest_candidate.ai_score is not none else 'unavailable' }}</strong>
                     </div>
                     <div class="shadow-metric">
+                        <span>Candidate Score</span>
+                        <strong id="candidate-candidate-score">{{ candidate_validation.latest_candidate.candidate_score if candidate_validation.latest_candidate.candidate_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
                         <span>Benchmarks</span>
                         <strong id="candidate-benchmarks">{{ candidate_validation.latest_candidate.benchmarks|join(' / ') if candidate_validation.latest_candidate.benchmarks else 'unavailable' }}</strong>
                     </div>
                     <div class="shadow-metric">
                         <span>Strategy Family</span>
                         <strong id="candidate-strategy-family">{{ candidate_validation.latest_candidate.strategy_family or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Liquidity Score</span>
+                        <strong id="candidate-liquidity-score">{{ candidate_validation.latest_candidate.liquidity_score if candidate_validation.latest_candidate.liquidity_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Trend Score</span>
+                        <strong id="candidate-trend-score">{{ candidate_validation.latest_candidate.trend_score if candidate_validation.latest_candidate.trend_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Volatility Score</span>
+                        <strong id="candidate-volatility-score">{{ candidate_validation.latest_candidate.volatility_score if candidate_validation.latest_candidate.volatility_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Risk Score</span>
+                        <strong id="candidate-risk-score">{{ candidate_validation.latest_candidate.risk_score if candidate_validation.latest_candidate.risk_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Strategy Fit</span>
+                        <strong id="candidate-strategy-fit-score">{{ candidate_validation.latest_candidate.strategy_fit_score if candidate_validation.latest_candidate.strategy_fit_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Recommended Strategy</span>
+                        <strong id="candidate-recommended-strategy">{{ candidate_validation.latest_candidate.recommended_strategy or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>AI Ranking Reason</span>
+                        <strong id="candidate-score-reason">{{ candidate_validation.latest_candidate.score_reason or 'unavailable' }}</strong>
                     </div>
                     <div class="shadow-metric">
                         <span>Validation Status</span>
@@ -3258,6 +3522,31 @@ HTML = """<!DOCTYPE html>
                         <strong id="candidate-record-count">{{ candidate_validation.candidate_count if candidate_validation.candidate_count is not none else 'unavailable' }}</strong>
                     </div>
                 </div>
+                <div class="board-section-head" style="margin-top: 12px;">
+                    <span>Candidate Ranking Performance</span>
+                </div>
+                <div class="shadow-metrics-grid">
+                    <div class="shadow-metric">
+                        <span>Average Score</span>
+                        <strong id="candidate-performance-average-score">{{ candidate_validation.performance.average_score if candidate_validation.performance and candidate_validation.performance.average_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>High Score Success Rate</span>
+                        <strong id="candidate-performance-high-score-rate">{{ candidate_validation.performance.high_score_success_rate if candidate_validation.performance and candidate_validation.performance.high_score_success_rate is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>Score Bucket Distribution</span>
+                        <strong id="candidate-performance-buckets">
+                            {% if candidate_validation.performance and candidate_validation.performance.score_bucket_distribution %}
+                                {% for bucket in candidate_validation.performance.score_bucket_distribution %}
+                                    {{ bucket.score_bucket }} · {{ bucket.candidate_count }} · {{ bucket.data_valid_rate if bucket.data_valid_rate is not none else 'n/a' }}% · {{ bucket.backtest_complete_rate if bucket.backtest_complete_rate is not none else 'n/a' }}% · {{ bucket.walk_forward_complete_rate if bucket.walk_forward_complete_rate is not none else 'n/a' }}%{% if not loop.last %}<br>{% endif %}
+                                {% endfor %}
+                            {% else %}
+                                unavailable
+                            {% endif %}
+                        </strong>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -3268,6 +3557,59 @@ HTML = """<!DOCTYPE html>
                 <p>上方看六张核心卡，下面看图表、风险、订单和审计时间线。全部数据都来自只读状态，不触发任何下单。</p>
             </div>
             <button class="pause-button" id="auto-refresh-toggle" type="button">⏸ 暂停自动刷新</button>
+        </div>
+        <div class="system-status-card full research-report-card {{ 'status-live' if research_report.state == 'SAFE' else 'status-warn' if research_report.state == 'STALE' else 'status-offline' }}" id="research-report-card">
+            <span class="system-status-label" id="research-report-title">{{ research_report.display_title or research_report.title or 'AI Research Report' }}</span>
+            <span class="system-status-value" id="research-report-state">{{ research_report.status_label or 'STALE' }}</span>
+            <span class="system-status-detail" id="research-report-detail">{{ research_report.detail or 'no data' }}</span>
+            <div class="board-section-head" style="margin-top: 8px;">
+                <span>Report Summary</span>
+            </div>
+            <div class="shadow-metrics-grid">
+                <div class="shadow-metric">
+                    <span>Candidate Count</span>
+                    <strong id="research-report-candidate-count">{{ research_report.candidate_count if research_report.candidate_count is not none else 'unavailable' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>Average Score</span>
+                    <strong id="research-report-average-score">{{ research_report.average_score if research_report.average_score is not none else 'unavailable' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>High Score Success Rate</span>
+                    <strong id="research-report-high-score-rate">{{ research_report.high_score_success_rate if research_report.high_score_success_rate is not none else 'unavailable' }}</strong>
+                </div>
+                <div class="shadow-metric full">
+                    <span>Score Distribution</span>
+                    <strong id="research-report-score-distribution">
+                        {% if research_report.score_distribution %}
+                            {% for bucket in research_report.score_distribution %}
+                                {{ bucket.score_bucket }} · {{ bucket.candidate_count }} · {{ bucket.data_valid_rate if bucket.data_valid_rate is not none else 'n/a' }}% · {{ bucket.backtest_complete_rate if bucket.backtest_complete_rate is not none else 'n/a' }}% · {{ bucket.walk_forward_complete_rate if bucket.walk_forward_complete_rate is not none else 'n/a' }}%{% if not loop.last %}<br>{% endif %}
+                            {% endfor %}
+                        {% else %}
+                            unavailable
+                        {% endif %}
+                    </strong>
+                </div>
+                <div class="shadow-metric full">
+                    <span>Top Candidates</span>
+                    <strong id="research-report-top-candidates">
+                        {% if research_report.top_candidates %}
+                            {% for item in research_report.top_candidates %}
+                                {{ item.symbol or item.candidate_id }} · {{ item.candidate_score if item.candidate_score is not none else 'unavailable' }} · {{ item.recommended_strategy or 'unavailable' }}{% if not loop.last %}<br>{% endif %}
+                            {% endfor %}
+                        {% else %}
+                            unavailable
+                        {% endif %}
+                    </strong>
+                </div>
+                <div class="shadow-metric full">
+                    <span>Failure Analysis</span>
+                    <strong id="research-report-failure-analysis">
+                        {% set failure_statuses = research_report.failure_analysis.statuses if research_report.failure_analysis and research_report.failure_analysis.statuses else {} %}
+                        DATA_INVALID {{ failure_statuses.get('DATA_INVALID', 0) }} · BACKTEST_FAILED {{ failure_statuses.get('BACKTEST_FAILED', 0) }} · WALK_FORWARD_FAILED {{ failure_statuses.get('WALK_FORWARD_FAILED', 0) }}
+                    </strong>
+                </div>
+            </div>
         </div>
         <div class="viz-grid">
             <div class="viz-card wide">
@@ -3530,7 +3872,7 @@ HTML = """<!DOCTYPE html>
                         {% if ai_selection and ai_selection.timestamp %}
                             最新选股时间：{{ ai_selection.timestamp }}
                             {% if ai_selection.settings %}
-                                · 价格范围：${{ "%.2f"|format(ai_selection_price_band.min) }} - ${{ "%.2f"|format(ai_selection_price_band.max) }}{% if ai_selection_price_band.defaulted %} (default){% endif %}
+                                · Universe筛选：{{ ai_universe_filter.summary }}
                                 · 自动刷新：{{ ai_selection.settings.auto_refresh_minutes or 0 }} 分钟
                                 · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
                                 · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
@@ -3578,16 +3920,15 @@ HTML = """<!DOCTYPE html>
                     </div>
                     <form class="settings-form" method="post" action="/ai-selector-settings">
                         <div class="settings-field">
-                            <label for="min_price">价格下限</label>
-                            <input id="min_price" name="min_price" type="number" min="1" max="500" step="0.01" value="{{ runtime_settings.min_price }}">
-                        </div>
-                        <div class="settings-field">
-                            <label for="max_price">价格上限</label>
-                            <input id="max_price" name="max_price" type="number" min="1" max="500" step="0.01" value="{{ runtime_settings.max_price }}">
-                        </div>
-                        <div class="settings-field">
                             <label for="auto_refresh_minutes">自动刷新间隔（分钟）</label>
                             <input id="auto_refresh_minutes" name="auto_refresh_minutes" type="number" min="1" max="1440" step="1" value="{{ runtime_settings.auto_refresh_minutes }}">
+                        </div>
+                        <div class="settings-field wide">
+                            <label>Universe 筛选规则</label>
+                            <div class="settings-static">
+                                {{ ai_universe_filter.summary }}
+                                <br>配置来源：{{ ai_universe_filter.source }}
+                            </div>
                         </div>
                         <button class="settings-button" type="submit" name="action" value="save">保存设置</button>
                         <button class="settings-button secondary" type="submit" name="action" value="rerun">立即重选</button>
@@ -3669,7 +4010,7 @@ HTML = """<!DOCTYPE html>
                         {% endif %}
                     </div>
                     <div class="selection-status">
-                        AI 运行状态：<span class="{{ ai_runtime.level }}">{{ ai_runtime.label }}</span> · {{ ai_runtime.detail }} · 当前优先扫描低价高流动性杠杆 / 反向 ETF 与 4-30 美元股票。
+                        AI 运行状态：<span class="{{ ai_runtime.level }}">{{ ai_runtime.label }}</span> · {{ ai_runtime.detail }} · 当前使用按资产类型、20日成交额、市值和ATR波动率的 Universe 筛选。
                     </div>
                     {% else %}
                     <div class="selector-empty">先运行一次 `scripts/run_ai_selector.py`，这里就会显示最新的 AI 区间选股结果。</div>
@@ -4151,6 +4492,9 @@ HTML = """<!DOCTYPE html>
             setText('system-last-updated', `最后更新时间：${system.last_updated || 'unavailable'}`);
             setText('system-broker-type', system.broker_type || 'unavailable');
             setText('system-broker-connection', `连接状态：${system.broker_connection || 'not connected'}`);
+            const modeConsistency = payload.mode_consistency || {};
+            setText('system-top-engine-mode', modeConsistency.mixed ? 'TOP 引擎模式不一致' : (Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? 'TOP 引擎模式一致' : '无启用 TOP 引擎'));
+            setText('system-top-engine-mode-detail', Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? `Dashboard: ${modeConsistency.dashboard_mode || payload.mode || 'unknown'} · TOP: ${modeConsistency.top_modes.join(', ')}` : '当前未生成 TOP 配置');
             setText('system-data-source', system.data_source || 'no data');
             setText('system-account-source', system.account_source || 'no data');
             setText('system-market-label', system.market_open_label || 'unavailable');
@@ -4212,8 +4556,16 @@ HTML = """<!DOCTYPE html>
             setText('candidate-symbol', candidateValidation.latest_candidate && candidateValidation.latest_candidate.symbol ? candidateValidation.latest_candidate.symbol : 'unavailable');
             setText('candidate-asset-type', candidateValidation.latest_candidate && candidateValidation.latest_candidate.asset_type ? candidateValidation.latest_candidate.asset_type : 'unavailable');
             setText('candidate-ai-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.ai_score != null ? String(candidateValidation.latest_candidate.ai_score) : 'unavailable');
+            setText('candidate-candidate-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.candidate_score != null ? String(candidateValidation.latest_candidate.candidate_score) : 'unavailable');
             setText('candidate-benchmarks', candidateValidation.latest_candidate && Array.isArray(candidateValidation.latest_candidate.benchmarks) && candidateValidation.latest_candidate.benchmarks.length ? candidateValidation.latest_candidate.benchmarks.join(' / ') : 'unavailable');
             setText('candidate-strategy-family', candidateValidation.latest_candidate && candidateValidation.latest_candidate.strategy_family ? candidateValidation.latest_candidate.strategy_family : 'unavailable');
+            setText('candidate-liquidity-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.liquidity_score != null ? String(candidateValidation.latest_candidate.liquidity_score) : 'unavailable');
+            setText('candidate-trend-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.trend_score != null ? String(candidateValidation.latest_candidate.trend_score) : 'unavailable');
+            setText('candidate-volatility-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.volatility_score != null ? String(candidateValidation.latest_candidate.volatility_score) : 'unavailable');
+            setText('candidate-risk-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.risk_score != null ? String(candidateValidation.latest_candidate.risk_score) : 'unavailable');
+            setText('candidate-strategy-fit-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.strategy_fit_score != null ? String(candidateValidation.latest_candidate.strategy_fit_score) : 'unavailable');
+            setText('candidate-recommended-strategy', candidateValidation.latest_candidate && candidateValidation.latest_candidate.recommended_strategy ? candidateValidation.latest_candidate.recommended_strategy : 'unavailable');
+            setText('candidate-score-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.score_reason ? candidateValidation.latest_candidate.score_reason : 'unavailable');
             setText('candidate-validation-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.validation_status ? candidateValidation.latest_candidate.validation_status : 'AI_CANDIDATE');
             setText('candidate-selection-stage', candidateValidation.latest_candidate && candidateValidation.latest_candidate.selection_stage ? candidateValidation.latest_candidate.selection_stage : (candidateValidation.selection_stage || 'PRELIMINARY'));
             setText('candidate-last-completed-session', candidateValidation.latest_candidate && candidateValidation.latest_candidate.last_completed_session ? candidateValidation.latest_candidate.last_completed_session : 'unavailable');
@@ -4230,10 +4582,68 @@ HTML = """<!DOCTYPE html>
             setText('candidate-rejection-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.rejection_reason ? candidateValidation.latest_candidate.rejection_reason : 'unavailable');
             setText('candidate-last-updated', candidateValidation.last_updated || 'unavailable');
             setText('candidate-record-count', candidateValidation.candidate_count != null ? String(candidateValidation.candidate_count) : 'unavailable');
+            const candidatePerformance = candidateValidation.performance || {};
+            setText('candidate-performance-average-score', candidatePerformance.average_score != null ? String(candidatePerformance.average_score) : 'unavailable');
+            setText('candidate-performance-high-score-rate', candidatePerformance.high_score_success_rate != null ? `${candidatePerformance.high_score_success_rate}%` : 'unavailable');
+            const bucketRows = Array.isArray(candidatePerformance.score_bucket_distribution) ? candidatePerformance.score_bucket_distribution : [];
+            const bucketText = bucketRows.length
+                ? bucketRows.map((bucket) => {
+                    const label = bucket.score_bucket || 'unknown';
+                    const count = bucket.candidate_count != null ? bucket.candidate_count : 0;
+                    const dataValidRate = bucket.data_valid_rate != null ? `${bucket.data_valid_rate}%` : 'n/a';
+                    const backtestCompleteRate = bucket.backtest_complete_rate != null ? `${bucket.backtest_complete_rate}%` : 'n/a';
+                    const walkForwardCompleteRate = bucket.walk_forward_complete_rate != null ? `${bucket.walk_forward_complete_rate}%` : 'n/a';
+                    return `${label} · ${count} · ${dataValidRate} · ${backtestCompleteRate} · ${walkForwardCompleteRate}`;
+                }).join(' | ')
+                : 'unavailable';
+            setText('candidate-performance-buckets', bucketText);
+            const researchReport = payload.research_report || candidateValidation.research_report || {};
+            setText('research-report-title', researchReport.display_title || researchReport.title || 'AI Research Report');
+            setText('research-report-state', researchReport.status_label || researchReport.state || 'STALE');
+            setText('research-report-detail', researchReport.detail || 'no data');
+            setText('research-report-candidate-count', researchReport.candidate_count != null ? String(researchReport.candidate_count) : 'unavailable');
+            setText('research-report-average-score', researchReport.average_score != null ? String(researchReport.average_score) : 'unavailable');
+            setText('research-report-high-score-rate', researchReport.high_score_success_rate != null ? `${researchReport.high_score_success_rate}%` : 'unavailable');
+            const researchDistribution = Array.isArray(researchReport.score_distribution) ? researchReport.score_distribution : [];
+            setText('research-report-score-distribution', researchDistribution.length ? researchDistribution.map((bucket) => {
+                const label = bucket.score_bucket || 'unknown';
+                const count = bucket.candidate_count != null ? bucket.candidate_count : 0;
+                const dataValidRate = bucket.data_valid_rate != null ? `${bucket.data_valid_rate}%` : 'n/a';
+                const backtestCompleteRate = bucket.backtest_complete_rate != null ? `${bucket.backtest_complete_rate}%` : 'n/a';
+                const walkForwardCompleteRate = bucket.walk_forward_complete_rate != null ? `${bucket.walk_forward_complete_rate}%` : 'n/a';
+                return `${label} · ${count} · ${dataValidRate} · ${backtestCompleteRate} · ${walkForwardCompleteRate}`;
+            }).join(' | ') : 'unavailable');
+            setText('research-report-top-candidates', Array.isArray(researchReport.top_candidates) && researchReport.top_candidates.length
+                ? researchReport.top_candidates.map((item) => {
+                    const symbol = item.symbol || item.candidate_id || 'unknown';
+                    const score = item.candidate_score != null ? item.candidate_score : 'unavailable';
+                    const strategy = item.recommended_strategy || 'unavailable';
+                    return `${symbol} · ${score} · ${strategy}`;
+                }).join(' | ')
+                : 'unavailable');
+            const researchFailure = researchReport.failure_analysis && researchReport.failure_analysis.statuses ? researchReport.failure_analysis.statuses : {};
+            setText('research-report-failure-analysis', `DATA_INVALID ${researchFailure.DATA_INVALID || 0} · BACKTEST_FAILED ${researchFailure.BACKTEST_FAILED || 0} · WALK_FORWARD_FAILED ${researchFailure.WALK_FORWARD_FAILED || 0}`);
             const candidateCard = document.getElementById('candidate-validation-card');
             if (candidateCard) {
                 const candidateState = String(candidateValidation.state || candidateValidation.status_label || 'STALE').toUpperCase();
                 candidateCard.className = `system-status-card full candidate-validation-card ${candidateState === 'SAFE' ? 'status-live' : candidateState === 'STALE' ? 'status-warn' : 'status-offline'}`;
+            }
+            const researchCard = document.getElementById('research-report-card');
+            if (researchCard) {
+                const researchState = String(researchReport.state || researchReport.status_label || 'STALE').toUpperCase();
+                researchCard.className = `system-status-card full research-report-card ${researchState === 'SAFE' ? 'status-live' : researchState === 'STALE' ? 'status-warn' : 'status-offline'}`;
+            }
+            const researchStatus = payload.research_status || {};
+            setText('research-status-state', researchStatus.status_label || researchStatus.state || 'unavailable');
+            setText('research-status-detail', researchStatus.detail || 'no data');
+            setText('research-status-last-run', researchStatus.last_research_run || 'unavailable');
+            setText('research-status-date', researchStatus.research_date || 'unavailable');
+            setText('research-status-candidate-count', researchStatus.candidate_count != null ? String(researchStatus.candidate_count) : 'unavailable');
+            setText('research-status-report-status', researchStatus.report_status || 'unavailable');
+            const researchStatusCard = document.getElementById('research-status-card');
+            if (researchStatusCard) {
+                const researchState = String(researchStatus.state || researchStatus.status_label || 'STALE').toUpperCase();
+                researchStatusCard.className = `system-status-card wide research-status-card ${researchState === 'SAFE' ? 'status-live' : researchState === 'STALE' ? 'status-warn' : 'status-offline'}`;
             }
 
             const modeLabel = String(payload.mode || 'paper').toLowerCase();
@@ -4340,17 +4750,19 @@ def _combined_process_count() -> int:
 
 def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | None) -> dict:
     port = int(item.get("port", 0) or 0)
-    status = _fetch_status(port) if port else None
+    configured = bool(ticker) or _top_config_exists(str(item.get("config") or ""))
+    status = _fetch_status(port) if configured and port else None
     if status is not None and not isinstance(status, dict):
         status = {}
     online = bool(status)
-    payload_mode = str((status or {}).get("mode") or mode or "unknown").strip().lower() or "unknown"
+    payload_mode = str((status or {}).get("mode") or mode or ("paper" if configured else "disabled")).strip().lower() or "unknown"
     signal = str((status or {}).get("last_signal") or (status or {}).get("signal") or ("OFFLINE" if not online else "HOLD")).strip().upper()
     price = (status or {}).get("price") if online else None
     halted = bool((status or {}).get("halted", False)) if online else False
     return {
         "rank": rank,
         "ticker": ticker if ticker else None,
+        "configured": configured,
         "port": port,
         "online": online,
         "mode": payload_mode,
@@ -4426,6 +4838,20 @@ def _api_status_payload() -> dict[str, object]:
     if not fallback_used:
         fallback_used = any(bool((item or {}).get("fallback_used")) for item in (ai_selection.get("top3") or []))
     live_guard_ok = not any(str(mode).strip().lower() == "live" for mode in top_modes) or bool((selection_sync or {}).get("ok"))
+    configured_top_modes = [
+        str(item.get("mode") or "").strip().lower()
+        for item in top_engines
+        if item.get("configured")
+    ]
+    distinct_top_modes = sorted({mode for mode in configured_top_modes if mode and mode != "disabled"})
+    mode_consistency = {
+        "dashboard_mode": dashboard_mode or "paper",
+        "top_modes": configured_top_modes,
+        "mixed": bool(distinct_top_modes and (dashboard_mode or "paper") not in distinct_top_modes),
+        "reason": "",
+    }
+    if mode_consistency["mixed"]:
+        mode_consistency["reason"] = "dashboard_mode_differs_from_top_engine_mode"
     fallback_live_allowed, fallback_paper_allowed = _fallback_runtime_flags()
     top_daily_pnl = 0.0
     top_unrealized_pnl = 0.0
@@ -4453,6 +4879,9 @@ def _api_status_payload() -> dict[str, object]:
     return {
         "ok": True,
         "mode": dashboard_mode or "paper",
+        "runtime_mode": dashboard_mode or "paper",
+        "top_modes": configured_top_modes,
+        "mode_consistency": mode_consistency,
         "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "combined": {
             "port": _COMBINED_PORT,
@@ -4495,6 +4924,8 @@ def _api_status_payload() -> dict[str, object]:
         },
         "shadow": shadow_status,
         "candidate_validation": candidate_validation,
+        "research_status": _research_status_payload(),
+        "research_report": _candidate_research_report_payload(),
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
         },
@@ -4522,6 +4953,30 @@ def api_chart(ticker):
 def api_candidate_validation_status():
     try:
         return jsonify(_candidate_validation_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
+
+
+@app.route("/api/candidates/performance")
+def api_candidate_performance():
+    try:
+        return jsonify(_candidate_performance_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
+
+
+@app.route("/api/research/report")
+def api_research_report():
+    try:
+        return jsonify(_candidate_research_report_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
+
+
+@app.route("/api/research/status")
+def api_research_status():
+    try:
+        return jsonify(_research_status_payload()), 200
     except Exception as exc:
         return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
 
@@ -4596,8 +5051,9 @@ def api_status():
                 "candidate_validation_api_available": True,
                 "shadow": _shadow_status_payload(),
                 "candidate_validation": _candidate_validation_payload(),
+                "research_status": _research_status_payload(),
                 "ai_selection": {
-                    "price_band": {"min": 4.0, "max": 50.0, "defaulted": True},
+                    "price_band": {"min": 5.0, "max": 300.0, "defaulted": True},
                 },
                 "system": _system_status_snapshot(
                     runtime_config=dashboard_config,
@@ -4616,6 +5072,7 @@ def _load_config_defaults(config_name):
     cfg_path = PROJECT_DIR / "configs" / config_name
     defaults = {
         "ticker": config_name.replace(".yaml", ""),
+        "configured": cfg_path.exists(),
         "initial_capital": 0.0,
         "support": 0.0,
         "resistance": 0.0,
@@ -5058,6 +5515,7 @@ def index():
     _enrich_ticker_descriptions(ai_selection.get("top3", []))
     ai_ranges = _ai_range_lookup(ai_selection)
     ai_selection_price_band = _ai_selection_price_band(ai_selection)
+    ai_universe_filter = _ai_universe_filter_summary(ai_selection)
     research_digest = _load_latest_research_digest()
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
@@ -5103,6 +5561,8 @@ def index():
     dashboard_status_by_symbol: dict[str, dict | None] = {}
     for item in TICKERS:
         defaults = _load_config_defaults(item["config"])
+        if defaults.get("configured") is False:
+            continue
         symbol = str(defaults["ticker"]).strip().upper()
         dashboard_status_by_symbol[symbol] = _fetch_status(item["port"])
     dashboard_active_symbols = _dashboard_active_symbols(ai_selection, selection_sync, live_account)
@@ -5129,12 +5589,64 @@ def index():
         [
             str(_load_config_defaults(t["config"]).get("ticker") or "").strip().upper()
             for t in TICKERS
+            if _load_config_defaults(t["config"]).get("configured") is not False
         ]
     )
     selected_tickers: set[str] = set()
 
     for t in TICKERS:
         defaults = _load_config_defaults(t["config"])
+        if defaults.get("configured") is False:
+            cards.append({
+                "name": t["name"],
+                "desc": f"{t['desc']} · 未生成配置",
+                "ticker": "",
+                "online": False,
+                "configured": False,
+                "price": 0,
+                "price_change": 0,
+                "day_high": 0,
+                "day_low": 0,
+                "bid": 0,
+                "ask": 0,
+                "vol_display": "0",
+                "support": 0,
+                "resistance": 0,
+                "spread_pct": 0,
+                "range_ready": False,
+                "range_source": "disabled",
+                "pos_pct": 50,
+                "sparkline": _build_sparkline([], 0),
+                "signal": "DISABLED",
+                "signal_cn": "未启用",
+                "signal_reason": "当前 AI 选股不足 3 个，未生成该 TOP 配置。",
+                "ai_range_low": None,
+                "ai_range_high": None,
+                "ai_suggested_range": "暂无",
+                "shares": 0,
+                "avg_entry_price": 0,
+                "current_price_for_position": 0,
+                "market_value": 0.0,
+                "initial_capital": 0.0,
+                "cash": 0.0,
+                "pnl": 0.0,
+                "pnl_pct": 0.0,
+                "hold_source": "未生成配置",
+                "reduce_only": False,
+                "equity": 0.0,
+                "trades": 0,
+                "win_rate": 0,
+                "wins": 0,
+                "losses": 0,
+                "best_trade": 0,
+                "worst_trade": 0,
+                "avg_pnl": 0,
+                "halted": False,
+                "trade_in_progress": False,
+                "chart_prices": [],
+                "chart_trades": [],
+            })
+            continue
         selected_tickers.add(str(defaults["ticker"]).strip().upper())
         d = dashboard_status_by_symbol.get(str(defaults["ticker"]).strip().upper()) or _fetch_status(t["port"])
 
@@ -5193,6 +5705,7 @@ def index():
                 "ticker": selected_ticker,
                 "desc": t["desc"],
                 "online": True,
+                "configured": True,
                 "price": price,
                 "price_change": d.get("change", 0),
                 "day_high": d.get("high_1m", price),
@@ -5281,6 +5794,7 @@ def index():
                 "name": defaults["ticker"], "desc": t["desc"],
                 "ticker": selected_ticker,
                 "online": False,
+                "configured": True,
                 "price": account_price,
                 "price_change": 0,
                 "day_high": account_price,
@@ -5381,6 +5895,7 @@ def index():
     active_symbols = " / ".join(
         card["name"].split("·", 1)[-1].strip() if "·" in card["name"] else str(card["name"]).strip()
         for card in cards
+        if card.get("configured", True)
     ) or "N/A"
     nearest_buy_trigger_name, nearest_buy_trigger = _nearest_trigger(
         cards,
@@ -5499,6 +6014,28 @@ def index():
     shadow_status_class = "status-live" if shadow_state == "SAFE" else "status-warn" if shadow_state == "STALE" else "status-offline"
     candidate_state = str(candidate_validation.get("state") or "STALE").upper()
     candidate_status_class = "status-live" if candidate_state == "SAFE" else "status-warn" if candidate_state == "STALE" else "status-offline"
+    top_modes = [
+        str(mode or "").strip().lower()
+        for mode in _load_top_modes()
+        if str(mode or "").strip().lower() not in {"", "disabled"}
+    ]
+    mode_consistency = {
+        "dashboard_mode": system_status.get("mode_key") or effective_mode or "paper",
+        "top_modes": top_modes,
+        "mixed": bool(top_modes and str(system_status.get("mode_key") or effective_mode or "paper").strip().lower() not in set(top_modes)),
+    }
+    mode_consistency["label"] = (
+        "TOP 引擎模式不一致"
+        if mode_consistency["mixed"]
+        else "TOP 引擎模式一致"
+        if top_modes
+        else "无启用 TOP 引擎"
+    )
+    mode_consistency["detail"] = (
+        f"Dashboard: {mode_consistency['dashboard_mode']} · TOP: {', '.join(top_modes)}"
+        if top_modes
+        else "当前未生成 TOP 配置"
+    )
 
     return render_template_string(HTML,
         cards=cards,
@@ -5514,11 +6051,14 @@ def index():
         display_positions_hint=display_positions_hint,
         ai_selection=ai_selection,
         ai_selection_price_band=ai_selection_price_band,
+        ai_universe_filter=ai_universe_filter,
         research_digest=research_digest,
+        research_report=_candidate_research_report_payload(),
         ai_runtime=ai_runtime,
         selection_sync=selection_sync,
         startup_guard=startup_guard,
         system_status=system_status,
+        mode_consistency=mode_consistency,
         active_orders_summary=active_orders_summary,
         runtime_settings={
             "min_price": float(resolve_price_band(runtime_settings or ai_selection.get("settings", {}))[0]),
@@ -5556,6 +6096,7 @@ def index():
         shadow_status_class=shadow_status_class,
         candidate_validation=candidate_validation,
         candidate_status_class=candidate_status_class,
+        research_status=_research_status_payload(),
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
         equity_curve_bars=_build_equity_curve_bars(cards),
@@ -5660,9 +6201,6 @@ def _run_ai_selector_now() -> None:
     settings = load_runtime_settings()
     env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
     env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
-    min_price, max_price = resolve_price_band(settings)
-    env.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
-    env.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
     env.setdefault("AI_SELECTOR_AUTO_REFRESH_MINUTES", str(settings.get("auto_refresh_minutes", 5)))
     python_bin = PROJECT_DIR / ".venv" / "bin" / "python"
     if not python_bin.exists():
@@ -5678,31 +6216,17 @@ def _run_ai_selector_now() -> None:
 
 @app.route("/ai-selector-settings", methods=["POST"])
 def update_ai_selector_settings():
-    raw_min_price = str(request.form.get("min_price", "")).strip()
-    raw_max_price = str(request.form.get("max_price", "")).strip()
     raw_auto_refresh_minutes = str(request.form.get("auto_refresh_minutes", "")).strip()
     action = str(request.form.get("action", "save")).strip().lower()
     settings = load_runtime_settings()
     try:
-        min_price = float(raw_min_price)
-    except (TypeError, ValueError):
-        min_price = float(resolve_price_band(settings)[0])
-    try:
-        max_price = float(raw_max_price)
-    except (TypeError, ValueError):
-        max_price = float(resolve_price_band(settings)[1])
-    try:
         auto_refresh_minutes = int(raw_auto_refresh_minutes)
     except (TypeError, ValueError):
         auto_refresh_minutes = int(settings.get("auto_refresh_minutes", 5) or 5)
-    min_price = min(500.0, max(1.0, min_price))
-    max_price = min(500.0, max(1.0, max_price))
-    if min_price > max_price:
-        min_price, max_price = max_price, min_price
-    min_price = round(min_price, 2)
     auto_refresh_minutes = max(1, min(1440, auto_refresh_minutes))
-    settings["max_price"] = round(max_price, 2)
-    settings["min_price"] = min_price
+    settings.pop("min_price", None)
+    settings.pop("max_price", None)
+    settings.pop("price_band", None)
     settings["auto_refresh_minutes"] = auto_refresh_minutes
     save_runtime_settings(settings)
     if action == "rerun":
