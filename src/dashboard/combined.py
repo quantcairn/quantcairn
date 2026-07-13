@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
-from src.ai_selector.selection_state import current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
+from src.ai_selector.selection_state import configured_top_count, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.broker.paper_broker import PaperBroker
@@ -25,7 +25,7 @@ from src.safety.trading_environment_guard import TradingEnvironmentGuard
 from src.shadow.config import ShadowRuntimeConfig
 from src.shadow.universe import default_shadow_output_directory, is_safe_shadow_output_directory, shadow_title_for
 from src.candidate_validation import CandidateValidationStore, ValidationStatus
-from src.utils.market_calendar import is_us_market_trading_day
+from src.utils.market_calendar import market_session_context
 
 app = Flask(__name__)
 
@@ -877,13 +877,21 @@ def _market_status_snapshot(now_et: datetime | None = None) -> dict[str, object]
         now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
     except Exception:
         now_et = datetime.utcnow()
-    trade_day = now_et.date()
-    open_now = bool(is_us_market_trading_day(trade_day) and (9, 30) <= (now_et.hour, now_et.minute) < (16, 0))
+    session = market_session_context(now_et)
+    open_now = bool(session.is_regular_session)
     return {
         "open": open_now,
         "label": "开盘中" if open_now else "已收盘",
         "detail": "US market open" if open_now else "US market closed",
-        "timestamp": now_et.isoformat(),
+        "timestamp": session.now_et.isoformat(),
+        "session_label": session.session_label,
+        "current_session": session.current_session.isoformat(),
+        "previous_completed_session": session.previous_completed_session.isoformat(),
+        "next_session": session.next_session.isoformat(),
+        "is_market_holiday": session.is_market_holiday,
+        "is_premarket": session.is_premarket,
+        "is_regular_session": session.is_regular_session,
+        "is_after_hours": session.is_after_hours,
     }
 
 
@@ -1007,20 +1015,35 @@ def _candidate_validation_snapshot() -> dict[str, object]:
         }
 
     latest = candidates[0] if candidates else None
+    latest_dict = latest.to_dict() if latest is not None else {}
+    latest_metadata = dict(latest_dict.get("metadata") or {}) if isinstance(latest_dict, dict) else {}
+    candidate_stage = str(
+        latest_dict.get("selection_stage")
+        or latest_metadata.get("selection_stage")
+        or latest_metadata.get("market_selection_stage")
+        or ""
+    ).strip().upper()
+    freshness_status = str(
+        latest_dict.get("freshness_status")
+        or latest_metadata.get("freshness_status")
+        or ""
+    ).strip().upper()
+    stale_reason = str(
+        latest_dict.get("stale_reason")
+        or latest_metadata.get("stale_reason")
+        or ""
+    ).strip()
+    daily_data_status = str(
+        latest_dict.get("daily_data_status")
+        or latest_metadata.get("daily_data_status")
+        or ""
+    ).strip().upper()
     latest_updated = None
     if latest is not None:
         try:
             latest_updated = datetime.fromisoformat(str(latest.updated_at).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).isoformat()
         except Exception:
             latest_updated = str(latest.updated_at or "")
-    now_utc = datetime.now(ZoneInfo("UTC"))
-    stale = False
-    if latest is not None:
-        try:
-            latest_utc = datetime.fromisoformat(str(latest.updated_at).replace("Z", "+00:00")).astimezone(ZoneInfo("UTC"))
-            stale = (now_utc - latest_utc).total_seconds() > 24 * 3600
-        except Exception:
-            stale = True
     invalid_issue = None
     for record in candidates:
         if record.validation_status not in {item.value for item in ValidationStatus}:
@@ -1036,8 +1059,27 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             invalid_issue = "invalid_asset_type"
             break
 
-    state = "UNSAFE" if invalid_issue else "STALE" if stale else "SAFE"
-    detail = "data_invalid" if invalid_issue else ("candidate data stale" if stale else (latest.rejection_reason or "candidate validation ready" if latest else "candidate validation unavailable"))
+    is_stale = False
+    if latest is not None:
+        freshness_inputs = {
+            "freshness_status": freshness_status,
+            "daily_data_status": daily_data_status,
+            "selection_stage": candidate_stage,
+            "stale_reason": stale_reason,
+        }
+        if freshness_inputs["freshness_status"] == "STALE":
+            is_stale = True
+        elif freshness_inputs["daily_data_status"] == "STALE":
+            is_stale = True
+        elif freshness_inputs["selection_stage"] == "STALE":
+            is_stale = True
+        elif freshness_inputs["selection_stage"] == "INVALID":
+            invalid_issue = invalid_issue or "candidate_selection_invalid"
+            is_stale = False
+        elif not freshness_inputs["freshness_status"] and not freshness_inputs["daily_data_status"]:
+            is_stale = True
+    state = "UNSAFE" if invalid_issue else "STALE" if is_stale else "SAFE"
+    detail = "data_invalid" if invalid_issue else ("candidate data stale" if is_stale else (latest.rejection_reason or "candidate validation ready" if latest else "candidate validation unavailable"))
     if latest is None:
         state = "STALE"
         detail = "candidate validation data unavailable"
@@ -1049,11 +1091,36 @@ def _candidate_validation_snapshot() -> dict[str, object]:
         "title": "AI Candidate Validation",
         "candidate_count": len(candidates),
         "history_count": len(history),
-        "latest_candidate": latest.to_dict() if latest is not None else {},
+        "latest_candidate": {
+            **latest_dict,
+            **{
+                "selection_stage": candidate_stage or latest_dict.get("validation_status") or "AI_CANDIDATE",
+                "freshness_status": freshness_status or "SAFE",
+                "stale_reason": stale_reason,
+                "daily_data_status": daily_data_status or "",
+                "last_completed_session": latest_metadata.get("last_completed_session") or latest_dict.get("last_completed_session") or "",
+                "daily_data_as_of": latest_metadata.get("daily_data_as_of") or latest_dict.get("daily_data_as_of") or "",
+                "premarket_snapshot_at": latest_metadata.get("premarket_snapshot_at") or latest_dict.get("premarket_snapshot_at") or "",
+                "current_session": latest_metadata.get("current_session") or latest_dict.get("current_session") or "",
+                "previous_completed_session": latest_metadata.get("previous_completed_session") or latest_dict.get("previous_completed_session") or "",
+                "next_session": latest_metadata.get("next_session") or latest_dict.get("next_session") or "",
+                "is_market_holiday": bool(latest_metadata.get("is_market_holiday", latest_dict.get("is_market_holiday", False))),
+                "is_premarket": bool(latest_metadata.get("is_premarket", latest_dict.get("is_premarket", False))),
+                "is_regular_session": bool(latest_metadata.get("is_regular_session", latest_dict.get("is_regular_session", False))),
+                "is_after_hours": bool(latest_metadata.get("is_after_hours", latest_dict.get("is_after_hours", False))),
+                "trading_eligible": bool(latest_metadata.get("trading_eligible", latest_dict.get("trading_eligible", False))),
+            },
+        } if latest is not None else {},
         "candidate_validation_rows": [record.to_dict() for record in candidates[:5]],
         "last_updated": latest_updated,
         "status_issue": invalid_issue,
         "validation_status": latest.validation_status if latest is not None else "AI_CANDIDATE",
+        "selection_stage": candidate_stage or "PRELIMINARY",
+        "freshness_status": freshness_status or "SAFE",
+        "stale_reason": stale_reason,
+        "last_completed_session": latest_metadata.get("last_completed_session") or "",
+        "daily_data_as_of": latest_metadata.get("daily_data_as_of") or "",
+        "premarket_snapshot_at": latest_metadata.get("premarket_snapshot_at") or "",
     }
 
 
@@ -1777,9 +1844,7 @@ def _enrich_ticker_descriptions(top3_list: list) -> list:
 
 def _current_et_date() -> str:
     try:
-        from zoneinfo import ZoneInfo
-
-        return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        return market_session_context(datetime.now(ZoneInfo("America/New_York"))).current_session.isoformat()
     except Exception:
         return datetime.utcnow().date().isoformat()
 
@@ -3133,6 +3198,42 @@ HTML = """<!DOCTYPE html>
                         <strong id="candidate-validation-status">{{ candidate_validation.latest_candidate.validation_status or 'AI_CANDIDATE' }}</strong>
                     </div>
                     <div class="shadow-metric">
+                        <span>Selection Stage</span>
+                        <strong id="candidate-selection-stage">{{ candidate_validation.latest_candidate.selection_stage or candidate_validation.selection_stage or 'PRELIMINARY' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Last Completed Session</span>
+                        <strong id="candidate-last-completed-session">{{ candidate_validation.latest_candidate.last_completed_session or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Daily Data As Of</span>
+                        <strong id="candidate-daily-data-as-of">{{ candidate_validation.latest_candidate.daily_data_as_of or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Premarket Snapshot At</span>
+                        <strong id="candidate-premarket-snapshot-at">{{ candidate_validation.latest_candidate.premarket_snapshot_at or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Premarket Change</span>
+                        <strong id="candidate-premarket-change">{{ candidate_validation.latest_candidate.premarket_change_pct if candidate_validation.latest_candidate.premarket_change_pct is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Gap</span>
+                        <strong id="candidate-gap-pct">{{ candidate_validation.latest_candidate.gap_pct if candidate_validation.latest_candidate.gap_pct is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Premarket Volume</span>
+                        <strong id="candidate-premarket-volume">{{ candidate_validation.latest_candidate.premarket_volume if candidate_validation.latest_candidate.premarket_volume is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Data Freshness</span>
+                        <strong id="candidate-freshness-status">{{ candidate_validation.latest_candidate.freshness_status or candidate_validation.status_label or 'STALE' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Stale Reason</span>
+                        <strong id="candidate-stale-reason">{{ candidate_validation.latest_candidate.stale_reason or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
                         <span>Evidence Status</span>
                         <strong id="candidate-evidence-status">{{ candidate_validation.latest_candidate.evidence_status or 'INSUFFICIENT_EVIDENCE' }}</strong>
                     </div>
@@ -4114,6 +4215,15 @@ HTML = """<!DOCTYPE html>
             setText('candidate-benchmarks', candidateValidation.latest_candidate && Array.isArray(candidateValidation.latest_candidate.benchmarks) && candidateValidation.latest_candidate.benchmarks.length ? candidateValidation.latest_candidate.benchmarks.join(' / ') : 'unavailable');
             setText('candidate-strategy-family', candidateValidation.latest_candidate && candidateValidation.latest_candidate.strategy_family ? candidateValidation.latest_candidate.strategy_family : 'unavailable');
             setText('candidate-validation-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.validation_status ? candidateValidation.latest_candidate.validation_status : 'AI_CANDIDATE');
+            setText('candidate-selection-stage', candidateValidation.latest_candidate && candidateValidation.latest_candidate.selection_stage ? candidateValidation.latest_candidate.selection_stage : (candidateValidation.selection_stage || 'PRELIMINARY'));
+            setText('candidate-last-completed-session', candidateValidation.latest_candidate && candidateValidation.latest_candidate.last_completed_session ? candidateValidation.latest_candidate.last_completed_session : 'unavailable');
+            setText('candidate-daily-data-as-of', candidateValidation.latest_candidate && candidateValidation.latest_candidate.daily_data_as_of ? candidateValidation.latest_candidate.daily_data_as_of : 'unavailable');
+            setText('candidate-premarket-snapshot-at', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_snapshot_at ? candidateValidation.latest_candidate.premarket_snapshot_at : 'unavailable');
+            setText('candidate-premarket-change', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_change_pct != null ? String(candidateValidation.latest_candidate.premarket_change_pct) : 'unavailable');
+            setText('candidate-gap-pct', candidateValidation.latest_candidate && candidateValidation.latest_candidate.gap_pct != null ? String(candidateValidation.latest_candidate.gap_pct) : 'unavailable');
+            setText('candidate-premarket-volume', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_volume != null ? String(candidateValidation.latest_candidate.premarket_volume) : 'unavailable');
+            setText('candidate-freshness-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.freshness_status ? candidateValidation.latest_candidate.freshness_status : (candidateValidation.status_label || 'STALE'));
+            setText('candidate-stale-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.stale_reason ? candidateValidation.latest_candidate.stale_reason : 'unavailable');
             setText('candidate-evidence-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.evidence_status ? candidateValidation.latest_candidate.evidence_status : 'INSUFFICIENT_EVIDENCE');
             setText('candidate-profitability-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.profitability_status ? candidateValidation.latest_candidate.profitability_status : 'INELIGIBLE');
             setText('candidate-deployment-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.deployment_status ? candidateValidation.latest_candidate.deployment_status : 'INELIGIBLE');

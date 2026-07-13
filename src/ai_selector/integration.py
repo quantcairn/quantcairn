@@ -11,6 +11,7 @@ from .composition_filter import CompositionFilter
 from .providers.finrobot_provider import FinRobotProvider
 from .providers.openbb_provider import OpenBBProvider
 from .providers.tradingagents_provider import TradingAgentsProvider
+from .market_context import build_candidate_market_snapshot
 from .range_score import RangeFitnessScorer
 from .trade_filter import TradeEligibilityFilter
 from .scoring import combine_scores
@@ -239,46 +240,10 @@ class AISelector:
         if not ticker:
             return {}
         try:
-            from src.data.fetcher import PriceFetcher
-
-            fetcher = PriceFetcher(ticker, poll_interval=0)
-            quote = fetcher.get_quote()
-            ohlcv = fetcher.get_ohlcv(period="1mo", interval="1d")
+            return build_candidate_market_snapshot(ticker)
         except Exception as exc:
             logger.debug("range market snapshot failed for %s: %s", ticker, exc)
             return {}
-
-        closes = [float(getattr(item, "close", 0.0) or 0.0) for item in ohlcv or [] if float(getattr(item, "close", 0.0) or 0.0) > 0]
-        volumes = [float(getattr(item, "volume", 0.0) or 0.0) for item in ohlcv or [] if float(getattr(item, "volume", 0.0) or 0.0) > 0]
-        current_price = float(getattr(quote, "price", 0.0) or 0.0) if quote is not None else 0.0
-        if current_price <= 0 and closes:
-            current_price = closes[-1]
-        spread_pct = None
-        bid = float(getattr(quote, "bid", 0.0) or 0.0) if quote is not None else 0.0
-        ask = float(getattr(quote, "ask", 0.0) or 0.0) if quote is not None else 0.0
-        if current_price > 0 and bid > 0 and ask > 0 and ask >= bid:
-            spread_pct = ((ask - bid) / current_price) * 100.0
-        return {
-            "current_price": current_price or None,
-            "avg_10d_volume": (sum(volumes[-10:]) / len(volumes[-10:])) if volumes[-10:] else None,
-            "spread_pct": spread_pct,
-            "bid": bid or None,
-            "ask": ask or None,
-            "close_history": closes,
-            "returns": [
-                ((closes[i] - closes[i - 1]) / closes[i - 1])
-                for i in range(1, len(closes))
-                if closes[i - 1] > 0
-            ],
-            "recent_low": min(closes[-10:]) if closes else None,
-            "recent_high": max(closes[-10:]) if closes else None,
-            "three_day_change_pct": (
-                ((closes[-1] - closes[-4]) / closes[-4]) * 100.0
-                if len(closes) >= 4 and closes[-4] > 0
-                else None
-            ),
-            "price": current_price or None,
-        }
 
     def _write_report(self, ranked: list[dict]) -> None:
         top3 = ranked[: min(3, len(ranked))]

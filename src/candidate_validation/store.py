@@ -129,6 +129,27 @@ class CandidateValidationStore:
             "rejection_reason",
             "created_at",
             "updated_at",
+            "selection_stage",
+            "last_completed_session",
+            "daily_data_as_of",
+            "premarket_snapshot_at",
+            "freshness_status",
+            "stale_reason",
+            "trading_eligible",
+            "current_session",
+            "previous_completed_session",
+            "next_session",
+            "is_market_holiday",
+            "is_premarket",
+            "is_regular_session",
+            "is_after_hours",
+            "quote_age_seconds",
+            "benchmark_data_as_of",
+            "premarket_change_pct",
+            "gap_pct",
+            "premarket_volume",
+            "spread_pct",
+            "daily_data_status",
         ]
         lines = [",".join(columns)]
         for record in records:
@@ -187,10 +208,39 @@ class CandidateValidationStore:
             if ai_score is None:
                 ai_score = raw.get("score")
             ai_reason = raw.get("ai_reason") or raw.get("reason") or raw.get("selection_penalty_reason") or ""
+            market_context = raw.get("market_context") if isinstance(raw.get("market_context"), dict) else {}
+            selection_stage = str(
+                raw.get("selection_stage")
+                or market_context.get("selection_stage")
+                or (report.get("settings") or {}).get("selection_stage")
+                or ""
+            )
             metadata = {
                 "fallback_used": bool(raw.get("fallback_used", False)),
-                "selection_stage": str((report.get("settings") or {}).get("selection_stage") or ""),
+                "settings_selection_stage": str((report.get("settings") or {}).get("selection_stage") or ""),
+                "selection_stage": selection_stage,
+                "market_selection_stage": selection_stage,
                 "top_n": int((report.get("settings") or {}).get("top_n") or len(candidate_rows) or 0),
+                "daily_data_as_of": str(raw.get("daily_data_as_of") or report.get("daily_data_as_of") or market_context.get("daily_data_as_of") or ""),
+                "premarket_snapshot_at": str(raw.get("premarket_snapshot_at") or report.get("premarket_snapshot_at") or market_context.get("premarket_snapshot_at") or ""),
+                "last_completed_session": str(raw.get("last_completed_session") or report.get("last_completed_session") or market_context.get("last_completed_session") or ""),
+                "freshness_status": str(raw.get("freshness_status") or report.get("freshness_status") or market_context.get("freshness_status") or ""),
+                "stale_reason": str(raw.get("stale_reason") or report.get("stale_reason") or market_context.get("stale_reason") or ""),
+                "trading_eligible": bool(raw.get("trading_eligible", report.get("trading_eligible", False))),
+                "current_session": str(raw.get("current_session") or market_context.get("current_session") or ""),
+                "previous_completed_session": str(raw.get("previous_completed_session") or market_context.get("previous_completed_session") or ""),
+                "next_session": str(raw.get("next_session") or market_context.get("next_session") or ""),
+                "is_market_holiday": bool(raw.get("is_market_holiday", market_context.get("is_market_holiday", False))),
+                "is_premarket": bool(raw.get("is_premarket", market_context.get("is_premarket", False))),
+                "is_regular_session": bool(raw.get("is_regular_session", market_context.get("is_regular_session", False))),
+                "is_after_hours": bool(raw.get("is_after_hours", market_context.get("is_after_hours", False))),
+                "quote_age_seconds": raw.get("quote_age_seconds") if raw.get("quote_age_seconds") is not None else report.get("quote_age_seconds") or market_context.get("quote_age_seconds"),
+                "benchmark_data_as_of": raw.get("benchmark_data_as_of") or report.get("benchmark_data_as_of") or market_context.get("benchmark_data_as_of") or {},
+                "premarket_change_pct": raw.get("premarket_change_pct") or report.get("premarket_change_pct") or market_context.get("premarket_change_pct"),
+                "gap_pct": raw.get("gap_pct") or report.get("gap_pct") or market_context.get("gap_pct"),
+                "premarket_volume": raw.get("premarket_volume") or report.get("premarket_volume") or market_context.get("premarket_volume"),
+                "spread_pct": raw.get("spread_pct") or report.get("spread_pct") or market_context.get("spread_pct"),
+                "daily_data_status": raw.get("daily_data_status") or report.get("daily_data_status") or market_context.get("daily_data_status") or "",
             }
             record = CandidateRecord.from_ai_candidate(
                 symbol=symbol,

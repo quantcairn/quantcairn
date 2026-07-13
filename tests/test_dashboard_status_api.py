@@ -440,8 +440,8 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     response = client.get("/api/candidates/status")
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["state"] == "SAFE"
-    assert payload["status_label"] == "SAFE"
+    assert payload["state"] == "STALE"
+    assert payload["status_label"] == "STALE"
     assert payload["candidate_count"] == 1
     assert payload["latest_candidate"]["symbol"] == "AAPL.US"
     assert payload["latest_candidate"]["validation_status"] == "AI_CANDIDATE"
@@ -453,7 +453,7 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     assert "APP_KEY" not in response.get_data(as_text=True)
 
     api_status = client.get("/api/status").get_json()
-    assert api_status["candidate_validation"]["state"] == "SAFE"
+    assert api_status["candidate_validation"]["state"] == "STALE"
 
     html = client.get("/").data.decode("utf-8")
     assert "AI Candidate Validation" in html

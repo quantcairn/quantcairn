@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from src.config.runtime_values import has_longbridge_runtime_credentials
 from src.portfolio.risk_allocator import RiskAllocator
+from src.utils.market_calendar import market_session_context
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
@@ -68,7 +69,8 @@ def _global_reduce_only_enabled() -> bool:
 
 def _selection_date() -> str:
     try:
-        return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        return market_session_context(now_et).current_session.isoformat()
     except Exception:
         return datetime.utcnow().date().isoformat()
 
@@ -330,3 +332,17 @@ def write_top_configs(top_items):
             os.remove(path)
         except FileNotFoundError:
             pass
+
+
+def clear_top_configs(max_slots: int = 5) -> list[str]:
+    removed: list[str] = []
+    for i in range(1, max(0, int(max_slots)) + 1):
+        path = os.path.join(BASE, f"configs/TOP{i}.yaml")
+        try:
+            os.remove(path)
+            removed.append(path)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            logger.warning("Failed to remove stale TOP config: %s", path, exc_info=True)
+    return removed

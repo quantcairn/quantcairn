@@ -213,12 +213,7 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs():
         assert "BAC" in rejected_tickers
         assert "INTC" in rejected_tickers
 
-        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
-        assert top1["ticker"] == "SOFI"
-        assert top1["selection"]["selection_date"] == summary["selection_date"]
-        assert top1["selection"]["trade_filter_passed"] in {True, False}
-        assert top1["selection"]["reject_reason"] == ""
-        assert top1["selection"]["fallback_used"] is False
+        assert not (tmpdir / "configs" / "TOP1.yaml").exists()
         assert not (tmpdir / "configs" / "TOP2.yaml").exists()
         assert not (tmpdir / "configs" / "TOP3.yaml").exists()
 

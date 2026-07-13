@@ -387,6 +387,7 @@ class CandidateRecord:
         return shadow_title_for(self.symbol, self.timeframe)
 
     def summary_row(self) -> dict[str, Any]:
+        metadata = dict(self.metadata or {})
         return {
             "candidate_id": self.candidate_id,
             "symbol": self.symbol,
@@ -406,6 +407,27 @@ class CandidateRecord:
             "selected_at": self.selected_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "selection_stage": metadata.get("selection_stage") or metadata.get("market_selection_stage") or "",
+            "last_completed_session": metadata.get("last_completed_session") or "",
+            "daily_data_as_of": metadata.get("daily_data_as_of") or "",
+            "premarket_snapshot_at": metadata.get("premarket_snapshot_at") or "",
+            "freshness_status": metadata.get("freshness_status") or "",
+            "stale_reason": metadata.get("stale_reason") or "",
+            "trading_eligible": metadata.get("trading_eligible"),
+            "current_session": metadata.get("current_session") or "",
+            "previous_completed_session": metadata.get("previous_completed_session") or "",
+            "next_session": metadata.get("next_session") or "",
+            "is_market_holiday": metadata.get("is_market_holiday"),
+            "is_premarket": metadata.get("is_premarket"),
+            "is_regular_session": metadata.get("is_regular_session"),
+            "is_after_hours": metadata.get("is_after_hours"),
+            "quote_age_seconds": metadata.get("quote_age_seconds"),
+            "benchmark_data_as_of": metadata.get("benchmark_data_as_of") or {},
+            "premarket_change_pct": metadata.get("premarket_change_pct"),
+            "gap_pct": metadata.get("gap_pct"),
+            "premarket_volume": metadata.get("premarket_volume"),
+            "spread_pct": metadata.get("spread_pct"),
+            "daily_data_status": metadata.get("daily_data_status") or "",
         }
 
 

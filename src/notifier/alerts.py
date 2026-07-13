@@ -436,6 +436,12 @@ def _ticker_line(top_config: dict, rank: int) -> str:
 def _build_ai_selection_message(selection_report: dict, top_configs: list | None = None) -> tuple[str, str]:
     report = dict(selection_report or {})
     date_str = str(report.get("selection_date") or report.get("date") or datetime.now().date().isoformat())
+    selection_stage = str(report.get("selection_stage") or report.get("market_selection_stage") or report.get("settings", {}).get("selection_stage") or "").strip().upper()
+    last_completed_session = str(report.get("last_completed_session") or report.get("previous_completed_session") or "")
+    daily_data_as_of = str(report.get("daily_data_as_of") or "")
+    premarket_snapshot_at = str(report.get("premarket_snapshot_at") or "")
+    freshness_status = str(report.get("freshness_status") or "").strip().upper()
+    stale_reason = str(report.get("stale_reason") or "").strip()
     raw_top_items = list(top_configs or report.get("top3") or report.get("top5") or [])
     top_items = [
         _merge_top_item_with_report(dict(item or {}), report, rank)
@@ -456,10 +462,23 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     lines = [
         f"日期：{date_str}",
         f"状态：{status}",
+        f"阶段：{selection_stage or 'UNKNOWN'}",
         f"TOP数量：{selection_count}/{target_top_n}",
         f"fallback：{fallback_text}",
         "",
     ]
+    if last_completed_session:
+        lines.append(f"上一完整交易日：{last_completed_session}")
+    if daily_data_as_of:
+        lines.append(f"日线截至：{daily_data_as_of}")
+    if premarket_snapshot_at:
+        lines.append(f"盘前快照：{premarket_snapshot_at}")
+    if freshness_status:
+        lines.append(f"新鲜度：{freshness_status}")
+    if stale_reason:
+        lines.append(f"原因：{stale_reason}")
+    if last_completed_session or daily_data_as_of or premarket_snapshot_at or freshness_status or stale_reason:
+        lines.append("")
 
     for rank in range(1, target_top_n + 1):
         if rank <= len(top_items):

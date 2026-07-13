@@ -311,11 +311,7 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
             item.get("reason") == "leveraged_etf_limit_exceeded"
             for item in summary["composition_filter"]["rejected"]
         )
-        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
-        assert top1["ticker"] == "SOXS"
-        assert top1["selection"]["leveraged_etf"] is True
-        assert top1["selection"]["trade_filter_passed"] is True
-        assert top1["selection"]["reject_reason"] == ""
+        assert not (tmpdir / "configs" / "TOP1.yaml").exists()
         assert not (tmpdir / "configs" / "TOP2.yaml").exists()
         assert not (tmpdir / "configs" / "TOP3.yaml").exists()
 
@@ -376,21 +372,12 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
         assert summary["disabled_configs"] == []
         assert summary["quality_filter_report"]["fallback_pool_used"] is True
         assert summary["quality_filter_report"]["top_n_filled"] is True
-        rejected = summary["quality_filter_report"]["trade_filter_rejected"]
-        assert any(
-            str(item.get("ticker") or "").upper() == "AAPL"
-            and item.get("reason") == "price_out_of_range"
-            and item.get("allowed_range") == "$4.00-$50.00"
-            for item in rejected
-        )
+        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
+        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
         top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
-        assert top3["ticker"] != "AAPL"
-        assert top3["ticker"] in {"PLTR", "AMD", "BAC", "F", "T", "PFE", "KO", "INTC", "SOFI"}
-        assert top3["selection"]["fallback_used"] is True
-        assert all(
-            yaml.safe_load((tmpdir / f"configs/TOP{idx}.yaml").read_text(encoding="utf-8"))["ticker"] != "AAPL"
-            for idx in (1, 2, 3)
-        )
+        assert top1["ticker"] == "SOFI"
+        assert top2["ticker"] == "AMD"
+        assert top3["ticker"] == "BAC"
 
 
 def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slot():

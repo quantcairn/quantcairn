@@ -31,6 +31,7 @@ from src.ai_selector.composition_filter import (
 from src.ai_selector.selector import AIStrategySelector
 from src.ai_selector.range_score import RangeFitnessScorer
 from src.ai_selector.trade_filter import TradeEligibilityFilter
+from src.utils.market_calendar import market_session_context
 from datetime import datetime
 import os
 import json
@@ -98,7 +99,7 @@ def _et_now() -> datetime:
 
 
 def _selection_date() -> str:
-    return _et_now().date().isoformat()
+    return market_session_context(_et_now()).current_session.isoformat()
 
 
 def _truthy_env(name: str) -> bool:
@@ -212,6 +213,62 @@ def _annotate_with_ai_signals(rows: list[dict], signal_map: dict[str, dict]) -> 
             item["confidence"] = float(ai_signal.get("confidence") or item.get("confidence") or 0.0)
             item["reason"] = str(ai_signal.get("reason") or item.get("reason") or "")
             item["source"] = str(ai_signal.get("source") or item.get("source") or "ai_selector")
+            for key, value in ai_signal.items():
+                if key == "ticker":
+                    continue
+                item.setdefault(key, value)
+                if key in {
+                    "current_session",
+                    "previous_completed_session",
+                    "next_session",
+                    "last_completed_session",
+                    "is_market_holiday",
+                    "is_premarket",
+                    "is_regular_session",
+                    "is_after_hours",
+                    "market_open",
+                    "market_session_label",
+                    "market_session_status",
+                    "market_session_reason",
+                    "daily_data_as_of",
+                    "daily_data_status",
+                    "premarket_snapshot_at",
+                    "quote_timestamp",
+                    "quote_age_seconds",
+                    "premarket_last_price",
+                    "premarket_change_pct",
+                    "premarket_change_pct_from_previous_close",
+                    "premarket_volume",
+                    "premarket_dollar_volume",
+                    "bid",
+                    "ask",
+                    "spread_pct",
+                    "gap_pct",
+                    "benchmark_symbols",
+                    "benchmark_data_as_of",
+                    "benchmark_change_pct",
+                    "benchmark_volume",
+                    "benchmark_alignment_status",
+                    "benchmark_status",
+                    "selection_stage",
+                    "freshness_status",
+                    "stale_reason",
+                    "generated_at",
+                    "finalized_at",
+                    "trading_eligible",
+                    "shadow_enabled",
+                    "paper_enabled",
+                    "live_enabled",
+                    "premarket_snapshot_available",
+                    "avg_10d_volume",
+                    "close_history",
+                    "returns",
+                    "recent_low",
+                    "recent_high",
+                    "three_day_change_pct",
+                    "asset_type",
+                }:
+                    item[key] = value
         annotated.append(item)
     return annotated
 
@@ -276,6 +333,15 @@ def _trade_market_data(item: dict) -> dict:
         "price_change_5d": item.get("price_change_5d") or item.get("day_change_pct"),
         "avg_volume": item.get("avg_volume") or item.get("avg_10d_volume") or item.get("volume"),
         "bid_ask_spread_pct": item.get("bid_ask_spread_pct") or item.get("spread_pct_live") or item.get("spread_pct"),
+        "premarket_change_pct": item.get("premarket_change_pct") or item.get("gap_pct"),
+        "gap_pct": item.get("gap_pct") or item.get("premarket_change_pct"),
+        "premarket_volume": item.get("premarket_volume") or item.get("volume"),
+        "spread_pct": item.get("spread_pct") or item.get("bid_ask_spread_pct"),
+        "quote_age_seconds": item.get("quote_age_seconds"),
+        "daily_data_as_of": item.get("daily_data_as_of"),
+        "benchmark_data_as_of": item.get("benchmark_data_as_of"),
+        "selection_stage": item.get("selection_stage"),
+        "trading_eligible": item.get("trading_eligible"),
         "regime": item.get("regime") or "NORMAL",
         "data_age_seconds": item.get("data_age_seconds") or 0,
         "current_price": item.get("current_price") or item.get("price_midpoint_hint"),
@@ -817,6 +883,7 @@ def main():
     load_local_ai_env()
     runtime_settings = load_runtime_settings()
     min_price, max_price = resolve_price_band(runtime_settings)
+    market_context = market_session_context(_et_now())
     os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
     os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
     os.environ.setdefault(
@@ -1011,13 +1078,23 @@ def main():
     out["settings"]["entry_proximity_enabled"] = bool(ENTRY_PROXIMITY_ENABLED)
     out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
     write_selection_filter_log(quality_report)
-    if not selected:
-        print("AI selection produced no tradable symbols; aborting without updating TOP configs.")
-        sys.exit(1)
-    if selected:
+    summary_top3_source = list(selected or report_top10[:TOP_COUNT])
+    market_stage = str(
+        summary_top3_source[0].get("selection_stage")
+        if summary_top3_source and isinstance(summary_top3_source[0], dict) and summary_top3_source[0].get("selection_stage")
+        else (out.get("settings") or {}).get("selection_stage")
+        or market_context.to_dict().get("session_label", "PRELIMINARY")
+    ).strip().upper()
+    if market_stage == "FAST_PRELIMINARY":
+        market_stage = "PRELIMINARY"
+    elif market_stage in {"QUALITY_REFINED", "QUALITY_BACKFILLED", "QUALITY_TIMED_OUT_BACKFILLED"}:
+        market_stage = "FINALIZED"
+    if market_stage not in {"PRELIMINARY", "PREMARKET_REFRESHED", "FINALIZED", "STALE", "INVALID"}:
+        market_stage = "PRELIMINARY"
+    if selected and market_stage == "FINALIZED":
         from src.ai_selector.config_writer import write_top_configs
         for item in selected:
-            item["selection_date"] = _selection_date()
+            item["selection_date"] = market_context.current_session.isoformat()
             item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
             item.update(_normalize_selection_metadata(item))
             item["fallback_used"] = bool(item.get("fallback_used", False))
@@ -1038,6 +1115,21 @@ def main():
                 {"rank": idx, "ticker": row.get("ticker"), "score": row.get("score")}
                 for idx, row in enumerate(selected, start=1)
             ]
+    else:
+        out["top5"] = list(summary_top3_source)
+        out["top3"] = list(summary_top3_source)
+        formatter = getattr(sel, "_format_report_rows", None)
+        if callable(formatter):
+            out["report"] = formatter(summary_top3_source)
+        else:
+            out["report"] = [
+                {"rank": idx, "ticker": row.get("ticker"), "score": row.get("score")}
+                for idx, row in enumerate(summary_top3_source, start=1)
+            ]
+        import src.ai_selector.config_writer as config_writer_module
+        clear_top_configs = getattr(config_writer_module, "clear_top_configs", None)
+        if callable(clear_top_configs):
+            clear_top_configs()
     timestamp = datetime.now().isoformat()
     print(f"AI selection completed at {timestamp}")
     print("Top10:")
@@ -1056,18 +1148,24 @@ def main():
     ) or bool(trade_filter_report.get("fallback_used", False))
     out["settings"]["fallback_used"] = report_fallback_used
 
+    top3_summary = [_normalize_entry_report_fields(item) for item in list(selected or summary_top3_source)]
+    first_item = top3_summary[0] if top3_summary else {}
+    current_session = market_context.current_session.isoformat()
     summary = {
         'timestamp': timestamp,
         'generated_at': timestamp,
-        'selection_date': _selection_date(),
+        'selection_date': current_session,
+        'selection_stage': market_stage,
+        'market_context': market_context.to_dict(),
         'providers_used': providers_used,
         'providers_disabled': providers_disabled,
         'fmp_enabled': fmp_enabled,
         'provider_fallback_used': bool(integrated_ai.get("provider_fallback_used", False)),
         'top10': out.get('top10', []),
         'top5': list(selected),
-        'top3': [_normalize_entry_report_fields(item) for item in selected],
+        'top3': top3_summary,
         'selection_count': len(selected),
+        'candidate_count': len(top3_summary),
         'target_top_n': TOP_COUNT,
         'top_n_filled': len(selected) >= TOP_COUNT,
         'missing_slots': max(0, TOP_COUNT - len(selected)),
@@ -1099,23 +1197,42 @@ def main():
             'rejected': list(composition_filter_report.get("rejected") or []),
             'warnings': list(composition_filter_report.get("warnings") or []),
         },
+        'last_completed_session': market_context.previous_completed_session.isoformat(),
+        'daily_data_as_of': first_item.get("daily_data_as_of"),
+        'daily_data_status': first_item.get("daily_data_status"),
+        'premarket_snapshot_at': first_item.get("premarket_snapshot_at"),
+        'premarket_change_pct': first_item.get("premarket_change_pct"),
+        'gap_pct': first_item.get("gap_pct"),
+        'premarket_volume': first_item.get("premarket_volume"),
+        'spread_pct': first_item.get("spread_pct"),
+        'quote_age_seconds': first_item.get("quote_age_seconds"),
+        'benchmark_data_as_of': first_item.get("benchmark_data_as_of"),
+        'freshness_status': first_item.get("freshness_status"),
+        'stale_reason': first_item.get("stale_reason"),
+        'trading_eligible': False,
+        'shadow_enabled': False,
+        'paper_enabled': False,
+        'live_enabled': False,
+        'finalized_at': first_item.get("finalized_at"),
     }
 
     latest_report_path, _ = _write_reports(summary)
     write_selection_state(
-        et_date=_et_now().date().isoformat(),
+        et_date=current_session,
         generated_at=timestamp,
         selected_symbols=[str(item.get("ticker") or "").strip().upper() for item in selected],
         report_path=str(latest_report_path),
     )
 
-    final_top_configs = _load_final_top_configs(TOP_COUNT)
-    _notify_selection_result(summary, final_top_configs or selected)
+    _publish_candidate_validation_records(summary)
+    notification_rows = selected or summary_top3_source
+    _notify_selection_result(summary, notification_rows)
 
-    restart_code = _restart_top_engines()
-    if restart_code != 0:
-        print(f"TOP restart failed with exit code {restart_code}.")
-        sys.exit(restart_code)
+    if selected and market_stage == "FINALIZED":
+        restart_code = _restart_top_engines()
+        if restart_code != 0:
+            print(f"TOP restart failed with exit code {restart_code}.")
+            sys.exit(restart_code)
 
     if str((summary.get("settings") or {}).get("selection_stage") or "") == "fast_preliminary":
         _spawn_background_refinement(timestamp)
