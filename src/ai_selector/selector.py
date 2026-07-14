@@ -719,6 +719,12 @@ class AIStrategySelector:
                 "diversity_bonus": float(round(row.get("diversity_bonus", 0.0), 2)),
                 "suggested_range": row.get("suggested_range"),
                 "sector": row.get("sector"),
+                "data_mode": row.get("data_mode") or row.get("data_source") or "",
+                "data_freshness": row.get("data_freshness") or row.get("freshness_status") or "",
+                "data_status": row.get("data_status") or row.get("freshness_status") or "",
+                "scoring_eligible": row.get("scoring_eligible"),
+                "scoring_block_reason": row.get("scoring_block_reason") or "",
+                "missing_fields": list(row.get("missing_fields") or []),
                 "entry": {
                     "entry_proximity_score": float(round(float(entry_score), 2)),
                     "good_for_entry_now": bool(entry.get("good_for_entry_now", row.get("good_for_entry_now", False))),

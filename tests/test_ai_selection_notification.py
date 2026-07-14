@@ -111,6 +111,71 @@ def _sample_report_with_rich_top3() -> dict:
     return report
 
 
+def _sample_report_with_semantics() -> dict:
+    report = _sample_report(fallback_used=True, selection_count=1)
+    report.update(
+        {
+            "execution_status": "COMPLETED",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "top_n_complete": False,
+            "top_n_missing_count": 2,
+            "warnings_structured": [
+                {
+                    "warning_code": "top_n_not_filled",
+                    "stage": "FINALIZED",
+                    "requested_count": 3,
+                    "selected_count": 1,
+                    "missing_count": 2,
+                    "symbols": ["SOXS"],
+                    "details": "final TOP still below requested count",
+                },
+                {
+                    "warning_code": "top_n_not_filled",
+                    "stage": "FINALIZED",
+                    "requested_count": 3,
+                    "selected_count": 1,
+                    "missing_count": 2,
+                    "symbols": ["SOXS"],
+                    "details": "final TOP still below requested count",
+                },
+            ],
+            "provider_audit": {"tradingagents": {"attempted": 1, "fallback_used": 1, "mock_used": 0}},
+        }
+    )
+    report["top3"] = [
+        {
+            "ticker": "SOXS",
+            "ai_score": 82.58,
+            "range_score": 71.11,
+            "final_score": 77.99,
+            "confidence": 0.58,
+            "reason": "first pick",
+            "source": "selector_core",
+            "leveraged_etf": True,
+            "trade_filter_passed": True,
+            "fallback_used": True,
+            "candidate_fallback": True,
+            "fallback_sources": ["tradingagents"],
+            "mock_used": False,
+            "mock_sources": [],
+            "data_status": "VALID",
+            "current_validation_status": "AI_CANDIDATE",
+            "trade_admission_status": "NOT_TRADABLE",
+            "selection_date": "2026-07-09",
+            "allocation": {
+                "target_capital": 4920,
+                "target_shares": 1000,
+                "weight": 0.15,
+                "atr_pct": 0.05,
+                "risk_pct": 1.0,
+                "reason": "risk_adjusted_allocation",
+            },
+        }
+    ]
+    return report
+
+
 def test_ai_selection_message_includes_top3():
     title, body = alerts._build_ai_selection_message(
         _sample_report(),
@@ -217,6 +282,31 @@ def test_ai_selection_message_merges_report_fields_when_yaml_sparse():
     assert "仓位：$4920 / 1000股" in body
     assert "TOP2：SOFI" in body
     assert "TOP3：DRIP" in body
+
+
+def test_ai_selection_message_shows_execution_and_result_semantics():
+    _, body = alerts._build_ai_selection_message(
+        _sample_report_with_semantics(),
+        [
+            {
+                "ticker": "SOXS",
+                "selection": {
+                    "selection_date": "2026-07-09",
+                    "score": 77.99,
+                    "reason": "first pick",
+                },
+            }
+        ],
+    )
+
+    assert "执行：COMPLETED" in body
+    assert "结果：DEGRADED" in body
+    assert "研究准入：RESEARCH_ONLY" in body
+    assert "状态：AI_CANDIDATE / NOT_TRADABLE" in body
+    assert "数据：VALID · candidate_fallback=是 · mock=否" in body
+    assert "fallback来源：TRADINGAGENTS" in body
+    assert "TOP3：未生成 / disabled" in body
+    assert "原因：top_n_not_filled" in body
 
 
 def test_notify_ai_selection_without_telegram_does_not_raise(monkeypatch):

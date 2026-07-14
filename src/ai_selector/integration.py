@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from .config import AISelectorRuntimeConfig, load_runtime_config
 from .composition_filter import CompositionFilter
+from .data_sufficiency import evaluate_data_sufficiency
 from .providers.finrobot_provider import FinRobotProvider
 from .providers.openbb_provider import OpenBBProvider
 from .providers.tradingagents_provider import TradingAgentsProvider
@@ -50,6 +52,8 @@ class AISelector:
         self.composition_filter = CompositionFilter()
         self.last_top10: list[dict] = []
         self.last_run_metadata: dict[str, object] = {}
+        self.last_provider_audit: dict[str, dict[str, object]] = {}
+        self.last_provider_outputs: dict[str, dict[str, dict[str, object]]] = {}
 
     def get_signals(self) -> list:
         if not self.config.enabled:
@@ -77,6 +81,8 @@ class AISelector:
             else:
                 providers_disabled.append("fmp")
                 logger.warning("FMP disabled: missing FMP_API_KEY or SOXS_FMP_ENABLED=0")
+            self.last_provider_audit = {}
+            self.last_provider_outputs = {}
             ta_result = self._safe_analyze(self.tradingagents_provider, analyzed_universe, "tradingagents")
             fr_result = self._safe_analyze(self.finrobot_provider, analyzed_universe, "finrobot")
             ob_result = (
@@ -112,6 +118,7 @@ class AISelector:
                 "fmp_enabled": False,
                 "provider_fallback_used": True,
                 "fallback_used": True,
+                "provider_audit": {},
             }
             return []
 
@@ -125,6 +132,7 @@ class AISelector:
             "fmp_enabled": bool(self.config.fmp_enabled),
             "provider_fallback_used": provider_fallback_used,
             "fallback_used": provider_fallback_used,
+            "provider_audit": dict(self.last_provider_audit),
             "range_score_enabled": True,
             "entry_proximity_enabled": bool(getattr(self.config, "entry_proximity_enabled", True)),
             "entry_proximity_weight": float(getattr(self.config, "entry_proximity_weight", 0.0) or 0.0),
@@ -141,11 +149,91 @@ class AISelector:
         top_n = min(max(1, self.config.top_n), len(self.last_top10))
         return self.last_top10[:top_n]
 
+    def _build_provider_audit(
+        self,
+        label: str,
+        tickers: list[str],
+        result: dict[str, dict[str, object]],
+        *,
+        elapsed_seconds: float,
+        error: Exception | None = None,
+    ) -> dict[str, object]:
+        rows = [dict(value) for value in (result or {}).values() if isinstance(value, dict)]
+        contributor_fields: set[str] = set()
+        for row in rows:
+            for key, value in row.items():
+                if key == "ticker" or value is None:
+                    continue
+                contributor_fields.add(str(key))
+        timeout_hits = 0
+        fallback_hits = 0
+        mock_hits = 0
+        success_hits = 0
+        for row in rows:
+            text = " ".join(
+                str(row.get(key) or "")
+                for key in ("reason", "source", "error_message", "error_code")
+            ).lower()
+            is_timeout = "timeout" in text
+            is_mock = "mock" in text or str(row.get("source") or "").lower().endswith("_mock")
+            is_fallback = bool(row.get("fallback")) or is_mock
+            has_scores = any(
+                row.get(key) is not None
+                for key in (
+                    "technical_score",
+                    "news_score",
+                    "sentiment_score",
+                    "fundamental_score",
+                    "risk_score",
+                    "confidence",
+                )
+            )
+            if is_timeout:
+                timeout_hits += 1
+            if is_fallback:
+                fallback_hits += 1
+            if is_mock:
+                mock_hits += 1
+            if has_scores and not is_fallback:
+                success_hits += 1
+        return {
+            "provider_name": label,
+            "attempted": len(tickers),
+            "success": success_hits,
+            "failure": max(0, len(tickers) - success_hits),
+            "timed_out": timeout_hits,
+            "empty_response": int(not rows),
+            "fallback_used": fallback_hits,
+            "mock_used": mock_hits,
+            "elapsed_seconds": round(float(elapsed_seconds), 3),
+            "error_code": type(error).__name__ if error is not None else "",
+            "error_message": str(error) if error is not None else "",
+            "contributed_fields": sorted(contributor_fields),
+            "contributor_count": len(contributor_fields),
+        }
+
     def _safe_analyze(self, provider, tickers: list[str], label: str) -> dict:
+        started = time.perf_counter()
         try:
-            return dict(provider.analyze(tickers) or {})
+            result = dict(provider.analyze(tickers) or {})
+            self.last_provider_outputs[label] = result
+            self.last_provider_audit[label] = self._build_provider_audit(
+                label,
+                list(tickers or []),
+                result,
+                elapsed_seconds=time.perf_counter() - started,
+            )
+            return result
         except Exception as exc:
             logger.warning("%s provider failed, falling back to neutral data: %s", label, exc)
+            self.last_provider_outputs[label] = {}
+            self.last_provider_audit[label] = self._build_provider_audit(
+                label,
+                list(tickers or []),
+                {},
+                elapsed_seconds=time.perf_counter() - started,
+                error=exc,
+            )
             return {}
 
     def _apply_range_scores(self, ranked: list[dict]) -> list[dict]:
@@ -162,9 +250,23 @@ class AISelector:
             entry = dict(range_result.get("entry") or {})
             candidate.update(range_result)
             candidate["trade_market_data"] = market_data
+            candidate["market_data"] = dict(market_data or {})
             candidate["ai_score"] = round(ai_score, 2)
             candidate["entry"] = entry
             candidate.setdefault("base_score", round(float(candidate.get("score", candidate.get("final_score", ai_score))), 2))
+            sufficiency = evaluate_data_sufficiency(
+                candidate,
+                strict_quote=False,
+                strict_history=False,
+                strict_benchmark=True,
+            )
+            candidate["data_mode"] = sufficiency.data_mode
+            candidate["data_freshness"] = sufficiency.data_freshness
+            candidate["data_status"] = sufficiency.data_status
+            candidate["scoring_eligible"] = sufficiency.scoring_eligible
+            candidate["scoring_block_reason"] = sufficiency.scoring_block_reason
+            candidate["missing_fields"] = list(sufficiency.missing_fields)
+            candidate["data_sufficiency"] = sufficiency.to_dict()
             candidate = score_candidate(candidate)
             final_score = float(candidate.get("candidate_score", candidate.get("score", candidate.get("final_score", 50.0))))
             entry_score = _coalesce_float(entry.get("entry_proximity_score"), default=50.0)

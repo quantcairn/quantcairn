@@ -194,11 +194,13 @@ def _run_integrated_ai_selector() -> dict:
         "top10": list(top10 or []),
         "preferred_symbols": preferred_symbols,
         "signal_map": signal_map,
+        "provider_outputs": dict(selector.last_provider_outputs or {}),
         "providers_used": list(metadata.get("providers_used") or []),
         "providers_disabled": list(metadata.get("providers_disabled") or []),
         "fmp_enabled": bool(metadata.get("fmp_enabled", False)),
         "provider_fallback_used": bool(metadata.get("provider_fallback_used", False)),
         "fallback_used": bool(metadata.get("fallback_used", False)),
+        "provider_audit": dict(metadata.get("provider_audit") or {}),
     }
 
 
@@ -628,6 +630,310 @@ def _normalize_entry_report_fields(item: dict) -> dict:
     normalized["dist_to_support"] = entry_payload["dist_to_support"]
     normalized["dist_to_resistance"] = entry_payload["dist_to_resistance"]
     return normalized
+
+
+def _warning_stage_for_selection(selection_stage: str) -> str:
+    stage = str(selection_stage or "").strip().upper()
+    if stage in {"FINALIZED", "PRELIMINARY", "REFINED"}:
+        return stage
+    if stage in {"QUALITY_REFINED", "QUALITY_BACKFILLED"}:
+        return "REFINED"
+    if stage in {"QUALITY_TIMED_OUT_BACKFILLED", "FAST_PRELIMINARY"}:
+        return "PRELIMINARY"
+    return "FINALIZED"
+
+
+def _normalize_warning_record(
+    warning: dict | str,
+    *,
+    stage: str,
+    requested_count: int | None = None,
+    selected_count: int | None = None,
+    missing_count: int | None = None,
+    symbols: list[str] | None = None,
+    details: str = "",
+) -> dict:
+    if isinstance(warning, dict):
+        record = dict(warning)
+    else:
+        text = str(warning or "").strip()
+        code = text.split(":", 1)[0] if ":" in text else text or "warning"
+        record = {
+            "warning_code": code,
+            "details": text,
+        }
+    record["warning_code"] = str(record.get("warning_code") or record.get("code") or "warning").strip()
+    record["stage"] = str(record.get("stage") or stage or "FINALIZED").strip().upper()
+    if requested_count is not None and record.get("requested_count") is None:
+        record["requested_count"] = int(requested_count)
+    if selected_count is not None and record.get("selected_count") is None:
+        record["selected_count"] = int(selected_count)
+    if missing_count is not None and record.get("missing_count") is None:
+        record["missing_count"] = int(missing_count)
+    if symbols is not None and record.get("symbols") is None:
+        record["symbols"] = [str(item).strip().upper() for item in symbols if str(item).strip()]
+    if details and not record.get("details"):
+        record["details"] = details
+    record.setdefault("details", "")
+    record.setdefault("requested_count", requested_count if requested_count is not None else None)
+    record.setdefault("selected_count", selected_count if selected_count is not None else None)
+    record.setdefault("missing_count", missing_count if missing_count is not None else None)
+    record.setdefault("symbols", [str(item).strip().upper() for item in symbols or [] if str(item).strip()])
+    return record
+
+
+def _dedupe_warning_records(records: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple] = set()
+    for record in records or []:
+        normalized = _normalize_warning_record(record, stage=record.get("stage") if isinstance(record, dict) else "FINALIZED")
+        key = (
+            normalized.get("warning_code"),
+            normalized.get("stage"),
+            normalized.get("requested_count"),
+            normalized.get("selected_count"),
+            normalized.get("missing_count"),
+            tuple(normalized.get("symbols") or []),
+            normalized.get("details"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    return merged
+
+
+def _format_warning_record(record: dict) -> str:
+    code = str(record.get("warning_code") or "warning").strip()
+    stage = str(record.get("stage") or "FINALIZED").strip().upper()
+    parts = [f"{code}", f"stage={stage}"]
+    if record.get("requested_count") is not None:
+        parts.append(f"requested={record.get('requested_count')}")
+    if record.get("selected_count") is not None:
+        parts.append(f"selected={record.get('selected_count')}")
+    if record.get("missing_count") is not None:
+        parts.append(f"missing={record.get('missing_count')}")
+    if record.get("symbols"):
+        parts.append(f"symbols={'/'.join(record.get('symbols') or [])}")
+    details = str(record.get("details") or "").strip()
+    if details:
+        parts.append(details)
+    return "; ".join(parts)
+
+
+def _build_provider_audit_summary(provider_audit: dict[str, dict], provider_outputs: dict[str, dict]) -> dict:
+    summary: dict[str, object] = {
+        "provider_attempts": 0,
+        "provider_successes": 0,
+        "provider_failures": 0,
+        "provider_timeouts": 0,
+        "provider_empty_responses": 0,
+        "provider_fallbacks": 0,
+        "provider_mocks": 0,
+        "provider_contributors": [],
+        "records": [],
+    }
+    contributors: set[str] = set()
+    for provider_name, record in sorted((provider_audit or {}).items()):
+        provider_record = dict(record or {})
+        provider_record.setdefault("provider_name", provider_name)
+        provider_outputs_for_provider = dict(provider_outputs.get(provider_name) or {})
+        provider_record["attempted"] = int(provider_record.get("attempted", len(provider_outputs_for_provider) or 0) or 0)
+        provider_record["success"] = int(provider_record.get("success", 0) or 0)
+        provider_record["failure"] = int(provider_record.get("failure", max(0, provider_record["attempted"] - provider_record["success"])) or 0)
+        provider_record["timed_out"] = int(provider_record.get("timed_out", 0) or 0)
+        provider_record["empty_response"] = int(provider_record.get("empty_response", 0) or 0)
+        provider_record["fallback_used"] = int(provider_record.get("fallback_used", 0) or 0)
+        provider_record["mock_used"] = int(provider_record.get("mock_used", 0) or 0)
+        provider_record["contributed_fields"] = list(provider_record.get("contributed_fields") or [])
+        summary["provider_attempts"] += provider_record["attempted"]
+        summary["provider_successes"] += provider_record["success"]
+        summary["provider_failures"] += provider_record["failure"]
+        summary["provider_timeouts"] += provider_record["timed_out"]
+        summary["provider_empty_responses"] += provider_record["empty_response"]
+        summary["provider_fallbacks"] += provider_record["fallback_used"]
+        summary["provider_mocks"] += provider_record["mock_used"]
+        contributors.update(provider_record["contributed_fields"])
+        summary["records"].append(provider_record)
+    summary["provider_contributors"] = sorted(contributors)
+    return summary
+
+
+def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None = None) -> dict[str, object]:
+    top_items = list(summary.get("top3") or summary.get("top5") or [])
+    top_count = int(summary.get("target_top_n") or 3)
+    selected_count = int(summary.get("selection_count") or len(top_items) or 0)
+    missing_count = max(0, top_count - selected_count)
+    provider_outputs = dict(summary.get("provider_outputs") or {})
+    warnings = _dedupe_warning_records(
+        [
+            *list((summary.get("quality_filter_report") or {}).get("warning_records") or []),
+            *list((summary.get("quality_filter_report") or {}).get("warnings_structured") or []),
+            *list((summary.get("composition_filter") or {}).get("warning_records") or []),
+            *list((summary.get("composition_filter") or {}).get("warnings_structured") or []),
+        ]
+    )
+    top_n_warning = None
+    if missing_count > 0:
+        top_n_warning = _normalize_warning_record(
+            {
+                "warning_code": "top_n_not_filled",
+                "stage": "FINALIZED",
+                "requested_count": top_count,
+                "selected_count": selected_count,
+                "missing_count": missing_count,
+                "symbols": [str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+                "details": "final TOP still below requested count",
+            },
+            stage="FINALIZED",
+            requested_count=top_count,
+            selected_count=selected_count,
+            missing_count=missing_count,
+            symbols=[str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+            details="final TOP still below requested count",
+        )
+        warnings = [item for item in warnings if item.get("warning_code") != "top_n_not_filled"]
+        warnings.append(top_n_warning)
+
+    provider_audit_summary = _build_provider_audit_summary(provider_audit or {}, provider_outputs)
+    fallback_used = bool(summary.get("fallback_used", False)) or bool(summary.get("provider_fallback_used", False))
+    mock_used = bool(provider_audit_summary.get("provider_mocks", 0))
+    timed_out = bool((summary.get("quality_filter_report") or {}).get("timed_out", False))
+    invalid_candidates = []
+    degraded_reasons: set[str] = set()
+    for item in top_items:
+        candidate = dict(item or {})
+        candidate_fallback = bool(candidate.get("fallback_used") or candidate.get("quality_backfill") or candidate.get("fallback_history_incomplete") or candidate.get("data_status") in {"STALE", "INVALID"} or candidate.get("scoring_eligible") is False)
+        fallback_sources: list[str] = []
+        mock_sources: list[str] = []
+        ticker = _normalize_ticker(candidate.get("ticker"))
+        for provider_name, provider_rows in (provider_outputs := dict(summary.get("provider_outputs") or {})).items():
+            provider_row = dict(provider_rows.get(ticker) or {}) if isinstance(provider_rows, dict) else {}
+            if not provider_row:
+                continue
+            text = " ".join(str(provider_row.get(key) or "") for key in ("reason", "source", "error_message", "error_code")).lower()
+            is_mock = "mock" in text or str(provider_row.get("source") or "").lower().endswith("_mock")
+            is_fallback = bool(provider_row.get("fallback")) or is_mock
+            if is_fallback:
+                fallback_sources.append(provider_name)
+                candidate_fallback = True
+            if is_mock:
+                mock_sources.append(provider_name)
+        candidate["candidate_fallback"] = bool(candidate_fallback)
+        candidate["fallback_sources"] = sorted(set(fallback_sources))
+        candidate["mock_used"] = bool(mock_sources)
+        candidate["mock_sources"] = sorted(set(mock_sources))
+        candidate["degraded"] = bool(candidate["candidate_fallback"] or candidate["mock_used"] or candidate.get("data_status") in {"STALE", "INVALID"})
+        if candidate["candidate_fallback"]:
+            degraded_reasons.add("fallback_used")
+        if candidate["mock_used"]:
+            degraded_reasons.add("mock_used")
+        if candidate.get("data_status") == "STALE":
+            degraded_reasons.add("stale_data")
+        if candidate.get("data_status") == "INVALID":
+            invalid_candidates.append(ticker)
+            degraded_reasons.add("invalid_data")
+        candidate["degradation_reasons"] = sorted(
+            set(
+                [
+                    *(["fallback_used"] if candidate["candidate_fallback"] else []),
+                    *(["mock_used"] if candidate["mock_used"] else []),
+                    *(["stale_data"] if candidate.get("data_status") == "STALE" else []),
+                    *(["invalid_data"] if candidate.get("data_status") == "INVALID" else []),
+                ]
+            )
+        )
+        item.update(candidate)
+    result_quality = "COMPLETE"
+    if invalid_candidates:
+        result_quality = "INVALID"
+    elif fallback_used or mock_used or timed_out or missing_count > 0 or bool(degraded_reasons):
+        result_quality = "DEGRADED"
+    research_admission = "RESEARCH_READY"
+    if result_quality == "DEGRADED":
+        research_admission = "RESEARCH_ONLY"
+    elif result_quality == "INVALID":
+        research_admission = "BLOCKED"
+    execution_status = "COMPLETED"
+    if invalid_candidates and not top_items:
+        execution_status = "FAILED"
+    return {
+        "execution_status": execution_status,
+        "result_quality": result_quality,
+        "research_admission": research_admission,
+        "selected_top_n": selected_count,
+        "requested_top_n": top_count,
+        "top_n_complete": selected_count >= top_count,
+        "top_n_missing_count": missing_count,
+        "top_n_shortfall_reason": "top_n_not_filled" if missing_count > 0 else "",
+        "top_n_warning": top_n_warning,
+        "warnings_structured": warnings,
+        "warnings": [_format_warning_record(item) for item in warnings],
+        "provider_audit": provider_audit_summary,
+        "provider_outputs": provider_outputs,
+        "fallback_used": fallback_used,
+        "mock_used": mock_used,
+        "degraded": result_quality != "COMPLETE",
+        "degradation_reasons": sorted(degraded_reasons),
+        "invalid_candidates": invalid_candidates,
+    }
+
+
+def _enrich_selection_rows(
+    rows: list[dict],
+    *,
+    provider_outputs: dict[str, dict] | None = None,
+) -> list[dict]:
+    enriched: list[dict] = []
+    provider_outputs = dict(provider_outputs or {})
+    for raw in rows or []:
+        item = dict(raw or {})
+        ticker = _normalize_ticker(item.get("ticker"))
+        candidate_fallback = bool(
+            item.get("fallback_used")
+            or item.get("quality_backfill")
+            or item.get("fallback_history_incomplete")
+            or item.get("data_status") in {"STALE", "INVALID"}
+            or item.get("scoring_eligible") is False
+        )
+        fallback_sources: list[str] = []
+        mock_sources: list[str] = []
+        for provider_name, provider_rows in provider_outputs.items():
+            provider_row = dict(provider_rows.get(ticker) or {}) if isinstance(provider_rows, dict) else {}
+            if not provider_row:
+                continue
+            text = " ".join(
+                str(provider_row.get(key) or "")
+                for key in ("reason", "source", "error_message", "error_code")
+            ).lower()
+            is_mock = "mock" in text or str(provider_row.get("source") or "").lower().endswith("_mock")
+            is_fallback = bool(provider_row.get("fallback")) or is_mock
+            if is_fallback:
+                fallback_sources.append(provider_name)
+                candidate_fallback = True
+            if is_mock:
+                mock_sources.append(provider_name)
+        item["candidate_fallback"] = bool(candidate_fallback)
+        item["fallback_sources"] = sorted(set(fallback_sources))
+        item["mock_used"] = bool(mock_sources)
+        item["mock_sources"] = sorted(set(mock_sources))
+        item["degraded"] = bool(item["candidate_fallback"] or item["mock_used"] or item.get("data_status") in {"STALE", "INVALID"})
+        item["degradation_reasons"] = sorted(
+            set(
+                [
+                    *(["fallback_used"] if item["candidate_fallback"] else []),
+                    *(["mock_used"] if item["mock_used"] else []),
+                    *(["stale_data"] if item.get("data_status") == "STALE" else []),
+                    *(["invalid_data"] if item.get("data_status") == "INVALID" else []),
+                ]
+            )
+        )
+        item["current_validation_status"] = str(item.get("validation_status") or item.get("current_validation_status") or "AI_CANDIDATE")
+        item["trade_admission_status"] = "NOT_TRADABLE"
+        if item["current_validation_status"] in {"PAPER_ELIGIBLE", "LIVE_ELIGIBLE"}:
+            item["trade_admission_status"] = item["current_validation_status"]
+        enriched.append(item)
+    return enriched
 
 
 def _filter_entry_quality(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -1235,6 +1541,15 @@ def main():
         'live_enabled': False,
         'finalized_at': first_item.get("finalized_at"),
     }
+    summary["provider_outputs"] = dict(integrated_ai.get("provider_outputs") or {})
+    outcome = _selection_outcome(summary, provider_audit=integrated_ai.get("provider_audit") or {})
+    summary.update(outcome)
+    summary["top10"] = _enrich_selection_rows(list(summary.get("top10") or []), provider_outputs=summary["provider_outputs"])
+    summary["top5"] = _enrich_selection_rows(list(summary.get("top5") or []), provider_outputs=summary["provider_outputs"])
+    summary["top3"] = _enrich_selection_rows(list(summary.get("top3") or []), provider_outputs=summary["provider_outputs"])
+    if summary.get("warnings_structured"):
+        summary["warnings_structured"] = _dedupe_warning_records(list(summary.get("warnings_structured") or []))
+        summary["warnings"] = [_format_warning_record(item) for item in summary["warnings_structured"]]
 
     latest_report_path, _ = _write_reports(summary)
     write_selection_state(

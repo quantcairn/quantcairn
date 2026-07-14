@@ -71,6 +71,18 @@ def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
     return "\n".join(lines)
 
 
+def _load_ai_selection_report(project_dir: Path | None = None) -> dict[str, Any]:
+    project_root = Path(project_dir or PROJECT_DIR)
+    path = project_root / "reports" / "ai_selection_latest.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 @dataclass(slots=True)
 class CandidateDailyResearchReportGenerator:
     root_dir: Path = RESEARCH_ROOT
@@ -126,9 +138,22 @@ class CandidateDailyResearchReportGenerator:
                     "recommended_strategy": item.get("recommended_strategy"),
                     "score_reason": item.get("score_reason"),
                     "validation_status": item.get("validation_status"),
+                    "current_validation_status": item.get("current_validation_status") or item.get("validation_status"),
+                    "trade_admission_status": item.get("trade_admission_status"),
                     "backtest_status": item.get("metadata", {}).get("backtest_status") if isinstance(item.get("metadata"), dict) else None,
                     "walk_forward_status": item.get("metadata", {}).get("walk_forward_status") if isinstance(item.get("metadata"), dict) else None,
                     "shadow_status": item.get("metadata", {}).get("shadow_status") if isinstance(item.get("metadata"), dict) else None,
+                    "candidate_fallback": bool(item.get("candidate_fallback", False)),
+                    "fallback_sources": list(item.get("fallback_sources") or []),
+                    "mock_used": bool(item.get("mock_used", False)),
+                    "mock_sources": list(item.get("mock_sources") or []),
+                    "degraded": bool(item.get("degraded", False)),
+                    "degradation_reasons": list(item.get("degradation_reasons") or []),
+                    "data_mode": item.get("data_mode"),
+                    "data_freshness": item.get("data_freshness"),
+                    "data_status": item.get("data_status"),
+                    "scoring_eligible": bool(item.get("scoring_eligible", False)),
+                    "scoring_block_reason": item.get("scoring_block_reason") or "",
                 }
             )
         return result
@@ -148,6 +173,7 @@ class CandidateDailyResearchReportGenerator:
     def build(self) -> dict[str, Any]:
         candidates = self._load_candidates()
         performance = self._load_performance()
+        ai_report = _load_ai_selection_report()
         top_candidates = self._top_candidates(candidates)
         failure_analysis = self._failure_analysis(candidates)
         score_distribution = performance.get("score_bucket_distribution") or []
@@ -165,6 +191,16 @@ class CandidateDailyResearchReportGenerator:
         ]
         candidate_count = len(candidates)
         average_score = performance.get("average_score")
+        fallback_used = bool(ai_report.get("fallback_used", False))
+        execution_status = str(
+            ai_report.get("execution_status") or ("COMPLETED" if fallback_used else "COMPLETED")
+        ).strip().upper()
+        result_quality = str(
+            ai_report.get("result_quality") or ("DEGRADED" if fallback_used else "COMPLETE")
+        ).strip().upper()
+        research_admission = str(
+            ai_report.get("research_admission") or ("RESEARCH_ONLY" if fallback_used else "RESEARCH_READY")
+        ).strip().upper()
         report = {
             "title": "AI Candidate Daily Research Report",
             "generated_at": _utc_now_iso(),
@@ -174,6 +210,17 @@ class CandidateDailyResearchReportGenerator:
             "top_candidates": top_candidates,
             "performance": performance,
             "failure_analysis": failure_analysis,
+            "selection_execution_status": execution_status,
+            "selection_result_quality": result_quality,
+            "selection_research_admission": research_admission,
+            "selection_stage": str(ai_report.get("selection_stage") or "").strip().upper(),
+            "selection_top_n_complete": bool(ai_report.get("top_n_complete", False)),
+            "selection_top_n_missing_count": int(ai_report.get("top_n_missing_count") or 0),
+            "selection_fallback_used": bool(ai_report.get("fallback_used", False)),
+            "selection_provider_audit": ai_report.get("provider_audit") or {},
+            "selection_provider_outputs": ai_report.get("provider_outputs") or {},
+            "selection_warnings_structured": list(ai_report.get("warnings_structured") or []),
+            "selection_warnings": list(ai_report.get("warnings") or []),
             "source": {
                 "candidate_store": str((CandidateValidationStore(self.candidate_root).candidates_path) if self.candidate_root is not None else CandidateValidationStore().candidates_path),
                 "performance_store": str((CandidatePerformanceTracker(self.candidate_root).performance_path) if self.candidate_root is not None else CandidatePerformanceTracker().performance_path),
@@ -193,6 +240,9 @@ class CandidateDailyResearchReportGenerator:
             f"- Generated At: {report.get('generated_at') or 'unavailable'}",
             f"- Candidate Count: {report.get('candidate_count') or 0}",
             f"- Average Score: {report.get('average_score') if report.get('average_score') is not None else 'unavailable'}",
+            f"- Selection Execution: {report.get('selection_execution_status') or 'COMPLETED'}",
+            f"- Result Quality: {report.get('selection_result_quality') or 'COMPLETE'}",
+            f"- Research Admission: {report.get('selection_research_admission') or 'RESEARCH_READY'}",
             "",
             "## 今日候选统计",
             "",
@@ -201,6 +251,9 @@ class CandidateDailyResearchReportGenerator:
                 [
                     ["candidate_count", report.get("candidate_count")],
                     ["average_score", report.get("average_score")],
+                    ["selection_execution_status", report.get("selection_execution_status")],
+                    ["selection_result_quality", report.get("selection_result_quality")],
+                    ["selection_research_admission", report.get("selection_research_admission")],
                     ["score_distribution", "see below"],
                 ],
             ),
@@ -224,7 +277,7 @@ class CandidateDailyResearchReportGenerator:
             "## Top Candidates",
             "",
             _markdown_table(
-                ["candidate_id", "symbol", "candidate_score", "recommended_strategy", "validation_status", "backtest_status", "walk_forward_status", "shadow_status", "score_reason"],
+                ["candidate_id", "symbol", "candidate_score", "recommended_strategy", "validation_status", "backtest_status", "walk_forward_status", "shadow_status", "score_reason", "trade_admission_status", "fallback/mock"],
                 [
                     [
                         item.get("candidate_id"),
@@ -236,6 +289,8 @@ class CandidateDailyResearchReportGenerator:
                         item.get("walk_forward_status"),
                         item.get("shadow_status"),
                         item.get("score_reason"),
+                        item.get("trade_admission_status"),
+                        f"{'fallback' if item.get('candidate_fallback') else 'direct'} / {'mock' if item.get('mock_used') else 'real'}",
                     ]
                     for item in top_candidates
                 ],
@@ -271,6 +326,21 @@ class CandidateDailyResearchReportGenerator:
                 _markdown_table(
                     ["status", "count"],
                     [[status, failure_statuses.get(status, 0)] for status in ("DATA_INVALID", "BACKTEST_FAILED", "WALK_FORWARD_FAILED")],
+                ),
+                "",
+                "## Selection Execution",
+                "",
+                _markdown_table(
+                    ["metric", "value"],
+                    [
+                        ["execution_status", report.get("selection_execution_status")],
+                        ["result_quality", report.get("selection_result_quality")],
+                        ["research_admission", report.get("selection_research_admission")],
+                        ["selection_stage", report.get("selection_stage")],
+                        ["fallback_used", report.get("selection_fallback_used")],
+                        ["top_n_complete", report.get("selection_top_n_complete")],
+                        ["top_n_missing_count", report.get("selection_top_n_missing_count")],
+                    ],
                 ),
                 "",
                 "## 说明",

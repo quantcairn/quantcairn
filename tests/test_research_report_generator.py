@@ -291,6 +291,10 @@ def test_generate_daily_research_report_writes_html_md_json(tmp_path):
     assert report["strategy_review"]["rows"][0]["review_result"] == "选股成功"
     assert report["strategy_review"]["rows"][1]["review_result"] == "观察正确"
     assert report["strategy_review"]["rows"][2]["review_result"] == "观察正确"
+    assert report["selection_execution_status"] == "COMPLETED"
+    assert report["selection_result_quality"] == "DEGRADED"
+    assert report["selection_research_admission"] == "RESEARCH_ONLY"
+    assert report["selection_top_n_missing_count"] >= 0
     assert report["decision_summary"]["buy_blocked_count"] == 2
     assert report["decision_summary"]["risk_block_reason_counts"]["fallback_used_blocked"] == 1
     assert report["decision_summary"]["risk_block_reason_counts"]["insufficient buying power"] == 1

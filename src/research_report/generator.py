@@ -71,6 +71,12 @@ def _load_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _load_ai_selection_report(project_dir: Path | None = None) -> dict[str, Any]:
+    if project_dir is not None:
+        return _load_json(Path(project_dir) / "reports" / "ai_selection_latest.json")
+    return _load_json(DEFAULT_AI_REPORT_PATH)
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -152,10 +158,6 @@ def _coerce_selection_entry(item: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("dist_to_support", item.get("dist_to_support"))
     payload.setdefault("dist_to_resistance", item.get("dist_to_resistance"))
     return payload
-
-
-def _load_ai_selection_report(project_dir: Path) -> dict[str, Any]:
-    return _load_json(project_dir / "reports" / "ai_selection_latest.json")
 
 
 def _load_selection_state(project_dir: Path) -> dict[str, Any]:
@@ -451,11 +453,24 @@ def _merge_top_card(top: dict[str, Any], market: dict[str, Any], positions: list
         "confidence": top.get("confidence"),
         "trade_filter_passed": bool(top.get("trade_filter_passed", False)),
         "fallback_used": bool(top.get("fallback_used", False)),
+        "candidate_fallback": bool(top.get("candidate_fallback", False)),
+        "fallback_sources": list(top.get("fallback_sources") or []),
+        "mock_used": bool(top.get("mock_used", False)),
+        "mock_sources": list(top.get("mock_sources") or []),
+        "degraded": bool(top.get("degraded", False)),
+        "degradation_reasons": list(top.get("degradation_reasons") or []),
         "leveraged_etf": bool(top.get("leveraged_etf", False)),
         "composition_filter_passed": bool(top.get("composition_filter_passed", True)),
         "composition_reject_reason": str(top.get("composition_reject_reason") or ""),
         "protected_position": bool(top.get("protected_position", False)),
         "reduce_only": bool(top.get("reduce_only", False)),
+        "current_validation_status": str(top.get("current_validation_status") or top.get("validation_status") or ""),
+        "trade_admission_status": str(top.get("trade_admission_status") or ""),
+        "data_mode": str(top.get("data_mode") or ""),
+        "data_freshness": str(top.get("data_freshness") or ""),
+        "data_status": str(top.get("data_status") or ""),
+        "scoring_eligible": bool(top.get("scoring_eligible", False)),
+        "scoring_block_reason": str(top.get("scoring_block_reason") or ""),
         "entry": entry,
         "allocation": dict(top.get("allocation") or {}),
         "portfolio": dict(top.get("portfolio") or {}),
@@ -545,6 +560,17 @@ def _quality_summary(top_cards: list[dict[str, Any]], ai_report: dict[str, Any])
         "top_quality_counts": dict(quality_counts),
         "fallback_used": bool(ai_report.get("fallback_used", False)),
         "provider_fallback_used": bool(ai_report.get("provider_fallback_used", False)),
+        "execution_status": str(ai_report.get("execution_status") or "").strip().upper(),
+        "result_quality": str(ai_report.get("result_quality") or "").strip().upper(),
+        "research_admission": str(ai_report.get("research_admission") or "").strip().upper(),
+        "selected_top_n": int(ai_report.get("selected_top_n") or 0),
+        "requested_top_n": int(ai_report.get("requested_top_n") or 0),
+        "top_n_complete": bool(ai_report.get("top_n_complete", False)),
+        "top_n_missing_count": int(ai_report.get("top_n_missing_count") or 0),
+        "provider_audit": ai_report.get("provider_audit") or {},
+        "provider_outputs": ai_report.get("provider_outputs") or {},
+        "warnings_structured": list(ai_report.get("warnings_structured") or []),
+        "warnings": list(ai_report.get("warnings") or []),
         "price_band": {
             "min": _safe_float((ai_report.get("settings") or {}).get("min_price"), FALLBACK_PRICE_BAND[0]),
             "max": _safe_float((ai_report.get("settings") or {}).get("max_price"), FALLBACK_PRICE_BAND[1]),
@@ -842,13 +868,16 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- 选股同步：`{'通过' if report.get('selection_sync', {}).get('ok') else '不一致'}`")
     lines.append(f"- 价格范围：`{_fmt_money((report.get('quality') or {}).get('price_band', {}).get('min'))} - {_fmt_money((report.get('quality') or {}).get('price_band', {}).get('max'))}`")
     lines.append(f"- fallback_used：`{_fmt_bool((report.get('quality') or {}).get('fallback_used'))}`")
+    lines.append(f"- 执行状态：`{report.get('selection_execution_status') or 'COMPLETED'}`")
+    lines.append(f"- 结果质量：`{report.get('selection_result_quality') or 'COMPLETE'}`")
+    lines.append(f"- 研究准入：`{report.get('selection_research_admission') or 'RESEARCH_READY'}`")
     lines.append("")
     lines.append("## 结论摘要")
     for note in report.get("summary_notes") or []:
         lines.append(f"- {note}")
     lines.append("")
     lines.append("## TOP 研究视图")
-    headers = ["Rank", "Ticker", "Entry", "Final", "AI", "Range", "Price", "RangePos", "观察/开仓", "成交方向"]
+    headers = ["Rank", "Ticker", "Entry", "Final", "AI", "Range", "Price", "RangePos", "观察/开仓", "成交方向", "状态", "Fallback/Mock"]
     rows = []
     for card in report.get("top_cards") or []:
         market = card.get("market") or {}
@@ -864,6 +893,8 @@ def _render_markdown(report: dict[str, Any]) -> str:
             _fmt_num(entry.get("range_position")),
             "可开仓" if card.get("entry_ready") else "观察",
             "杠杆/反向ETF" if card.get("leveraged_etf") else "普通标的",
+            f"{card.get('trade_admission_status') or 'NOT_TRADABLE'}",
+            f"{'fallback' if card.get('candidate_fallback') else 'direct'} / {'mock' if card.get('mock_used') else 'real'}",
         ])
     lines.append(_render_markdown_table(headers, rows) if rows else "- 暂无 TOP 数据")
     lines.append("")
@@ -1423,6 +1454,16 @@ def _build_report_payload(
     quality = _quality_summary(top3_cards, ai_report)
     decision_summary = _trade_decision_summary(project_dir, report_day, trade_summary)
     strategy_review = _strategy_review_summary(project_dir, report_day, top3_cards, trade_activity)
+    fallback_used = bool(ai_report.get("fallback_used", False))
+    execution_status = str(
+        ai_report.get("execution_status") or ("COMPLETED" if fallback_used else "COMPLETED")
+    ).strip().upper()
+    result_quality = str(
+        ai_report.get("result_quality") or ("DEGRADED" if fallback_used else "COMPLETE")
+    ).strip().upper()
+    research_admission = str(
+        ai_report.get("research_admission") or ("RESEARCH_ONLY" if fallback_used else "RESEARCH_READY")
+    ).strip().upper()
     report = {
         "date": report_day.isoformat(),
         "generated_at": _et_now().isoformat(),
@@ -1452,6 +1493,17 @@ def _build_report_payload(
         "selection_sync": selection_sync,
         "selection_state": selection_state,
         "ai_selection": ai_report,
+        "selection_execution_status": execution_status,
+        "selection_result_quality": result_quality,
+        "selection_research_admission": research_admission,
+        "selection_stage": str(ai_report.get("selection_stage") or "").strip().upper(),
+        "selection_top_n_complete": bool(ai_report.get("top_n_complete", False)),
+        "selection_top_n_missing_count": int(ai_report.get("top_n_missing_count") or 0),
+        "selection_fallback_used": bool(ai_report.get("fallback_used", False)),
+        "selection_provider_audit": ai_report.get("provider_audit") or {},
+        "selection_provider_outputs": ai_report.get("provider_outputs") or {},
+        "selection_warnings_structured": list(ai_report.get("warnings_structured") or []),
+        "selection_warnings": list(ai_report.get("warnings") or []),
         "top_configs": top_configs,
         "top_cards": top3_cards,
         "quality": quality,

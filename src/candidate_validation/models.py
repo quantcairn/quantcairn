@@ -177,6 +177,19 @@ def _default_risk_profile(symbol: str, asset_type: str | None = None) -> str:
     return ""
 
 
+def _trade_admission_status(validation_status: str) -> str:
+    status = _normalize_text(validation_status).upper()
+    if status in {ValidationStatus.PAPER_ELIGIBLE.value, ValidationStatus.LIVE_ELIGIBLE.value}:
+        return status
+    if status in {
+        ValidationStatus.PAPER_INELIGIBLE.value,
+        ValidationStatus.LIVE_INELIGIBLE.value,
+        ValidationStatus.REJECTED.value,
+    }:
+        return "NOT_TRADABLE"
+    return "NOT_TRADABLE"
+
+
 @dataclass(slots=True)
 class CandidateRecord:
     candidate_id: str
@@ -193,6 +206,18 @@ class CandidateRecord:
     strategy_fit_score: float | None = None
     recommended_strategy: str = ""
     score_reason: str = ""
+    data_mode: str = ""
+    data_freshness: str = ""
+    data_status: str = ""
+    scoring_eligible: bool = False
+    scoring_block_reason: str = ""
+    missing_fields: tuple[str, ...] = ()
+    candidate_fallback: bool = False
+    fallback_sources: tuple[str, ...] = ()
+    mock_used: bool = False
+    mock_sources: tuple[str, ...] = ()
+    degraded: bool = False
+    degradation_reasons: tuple[str, ...] = ()
     ai_reason: str = ""
     asset_type: str = ""
     benchmarks: tuple[str, ...] = ()
@@ -226,6 +251,34 @@ class CandidateRecord:
         self.strategy_fit_score = self._coerce_float(self.strategy_fit_score)
         self.recommended_strategy = _normalize_text(self.recommended_strategy)
         self.score_reason = _normalize_text(self.score_reason)
+        self.data_mode = _normalize_text(self.data_mode).lower()
+        self.data_freshness = _normalize_text(self.data_freshness).lower()
+        self.data_status = _normalize_text(self.data_status).upper()
+        self.scoring_eligible = bool(self.scoring_eligible)
+        self.scoring_block_reason = _normalize_text(self.scoring_block_reason)
+        if isinstance(self.missing_fields, (list, tuple, set, frozenset)):
+            self.missing_fields = tuple(_normalize_text(item) for item in self.missing_fields if _normalize_text(item))
+        else:
+            text = _normalize_text(self.missing_fields)
+            self.missing_fields = (text,) if text else ()
+        self.candidate_fallback = bool(self.candidate_fallback)
+        self.fallback_sources = tuple(
+            _normalize_text(item)
+            for item in self.fallback_sources
+            if _normalize_text(item)
+        ) if isinstance(self.fallback_sources, (list, tuple, set, frozenset)) else ((_normalize_text(self.fallback_sources),) if _normalize_text(self.fallback_sources) else ())
+        self.mock_used = bool(self.mock_used)
+        self.mock_sources = tuple(
+            _normalize_text(item)
+            for item in self.mock_sources
+            if _normalize_text(item)
+        ) if isinstance(self.mock_sources, (list, tuple, set, frozenset)) else ((_normalize_text(self.mock_sources),) if _normalize_text(self.mock_sources) else ())
+        self.degraded = bool(self.degraded)
+        self.degradation_reasons = tuple(
+            _normalize_text(item)
+            for item in self.degradation_reasons
+            if _normalize_text(item)
+        ) if isinstance(self.degradation_reasons, (list, tuple, set, frozenset)) else ((_normalize_text(self.degradation_reasons),) if _normalize_text(self.degradation_reasons) else ())
         self.ai_reason = _normalize_text(self.ai_reason)
         self.asset_type = _normalize_text(self.asset_type).lower()
         self.benchmarks = _normalize_benchmarks(self.benchmarks)
@@ -286,6 +339,18 @@ class CandidateRecord:
         strategy_fit_score: float | None = None,
         recommended_strategy: str = "",
         score_reason: str = "",
+        data_mode: str = "",
+        data_freshness: str = "",
+        data_status: str = "",
+        scoring_eligible: bool = False,
+        scoring_block_reason: str = "",
+        missing_fields: tuple[str, ...] | list[str] | None = None,
+        candidate_fallback: bool = False,
+        fallback_sources: tuple[str, ...] | list[str] | None = None,
+        mock_used: bool = False,
+        mock_sources: tuple[str, ...] | list[str] | None = None,
+        degraded: bool = False,
+        degradation_reasons: tuple[str, ...] | list[str] | None = None,
         ai_reason: str = "",
         asset_type: str | None = None,
         benchmarks: tuple[str, ...] | list[str] | None = None,
@@ -315,6 +380,18 @@ class CandidateRecord:
             strategy_fit_score=strategy_fit_score,
             recommended_strategy=recommended_strategy,
             score_reason=score_reason,
+            data_mode=data_mode,
+            data_freshness=data_freshness,
+            data_status=data_status,
+            scoring_eligible=scoring_eligible,
+            scoring_block_reason=scoring_block_reason,
+            missing_fields=tuple(missing_fields or ()),
+            candidate_fallback=candidate_fallback,
+            fallback_sources=tuple(fallback_sources or ()),
+            mock_used=mock_used,
+            mock_sources=tuple(mock_sources or ()),
+            degraded=degraded,
+            degradation_reasons=tuple(degradation_reasons or ()),
             ai_reason=ai_reason,
             asset_type=normalized_asset,
             benchmarks=normalized_benchmarks,
@@ -386,6 +463,18 @@ class CandidateRecord:
             "strategy_fit_score": self.strategy_fit_score,
             "recommended_strategy": self.recommended_strategy,
             "score_reason": self.score_reason,
+            "data_mode": self.data_mode,
+            "data_freshness": self.data_freshness,
+            "data_status": self.data_status,
+            "scoring_eligible": self.scoring_eligible,
+            "scoring_block_reason": self.scoring_block_reason,
+            "missing_fields": list(self.missing_fields),
+            "candidate_fallback": self.candidate_fallback,
+            "fallback_sources": list(self.fallback_sources),
+            "mock_used": self.mock_used,
+            "mock_sources": list(self.mock_sources),
+            "degraded": self.degraded,
+            "degradation_reasons": list(self.degradation_reasons),
             "ai_reason": self.ai_reason,
             "asset_type": self.asset_type,
             "benchmarks": list(self.benchmarks),
@@ -393,6 +482,8 @@ class CandidateRecord:
             "risk_profile": self.risk_profile,
             "timeframe": self.timeframe,
             "validation_status": self.validation_status,
+            "current_validation_status": self.validation_status,
+            "trade_admission_status": _trade_admission_status(self.validation_status),
             "evidence_status": self.evidence_status,
             "profitability_status": self.profitability_status,
             "deployment_status": self.deployment_status,
@@ -423,6 +514,18 @@ class CandidateRecord:
             strategy_fit_score=payload.get("strategy_fit_score"),
             recommended_strategy=payload.get("recommended_strategy") or "",
             score_reason=payload.get("score_reason") or "",
+            data_mode=payload.get("data_mode") or "",
+            data_freshness=payload.get("data_freshness") or "",
+            data_status=payload.get("data_status") or "",
+            scoring_eligible=bool(payload.get("scoring_eligible", False)),
+            scoring_block_reason=payload.get("scoring_block_reason") or "",
+            missing_fields=tuple(payload.get("missing_fields") or ()),
+            candidate_fallback=bool(payload.get("candidate_fallback", False)),
+            fallback_sources=tuple(payload.get("fallback_sources") or ()),
+            mock_used=bool(payload.get("mock_used", False)),
+            mock_sources=tuple(payload.get("mock_sources") or ()),
+            degraded=bool(payload.get("degraded", False)),
+            degradation_reasons=tuple(payload.get("degradation_reasons") or ()),
             ai_reason=payload.get("ai_reason") or "",
             asset_type=payload.get("asset_type") or "",
             benchmarks=tuple(payload.get("benchmarks") or ()),
@@ -448,6 +551,7 @@ class CandidateRecord:
 
     def summary_row(self) -> dict[str, Any]:
         metadata = dict(self.metadata or {})
+        current_validation_status = self.validation_status
         return {
             "candidate_id": self.candidate_id,
             "symbol": self.symbol,
@@ -461,6 +565,18 @@ class CandidateRecord:
             "strategy_fit_score": self.strategy_fit_score,
             "recommended_strategy": self.recommended_strategy,
             "score_reason": self.score_reason,
+            "data_mode": self.data_mode or metadata.get("data_mode") or "",
+            "data_freshness": self.data_freshness or metadata.get("data_freshness") or "",
+            "data_status": self.data_status or metadata.get("data_status") or "",
+            "scoring_eligible": bool(self.scoring_eligible if self.data_status or self.data_mode or self.scoring_block_reason else metadata.get("scoring_eligible", False)),
+            "scoring_block_reason": self.scoring_block_reason or metadata.get("scoring_block_reason") or "",
+            "missing_fields": list(self.missing_fields or metadata.get("missing_fields") or []),
+            "candidate_fallback": bool(self.candidate_fallback or metadata.get("candidate_fallback", False)),
+            "fallback_sources": list(self.fallback_sources or metadata.get("fallback_sources") or []),
+            "mock_used": bool(self.mock_used or metadata.get("mock_used", False)),
+            "mock_sources": list(self.mock_sources or metadata.get("mock_sources") or []),
+            "degraded": bool(self.degraded or metadata.get("degraded", False)),
+            "degradation_reasons": list(self.degradation_reasons or metadata.get("degradation_reasons") or []),
             "ai_reason": self.ai_reason,
             "asset_type": self.asset_type,
             "benchmarks": "|".join(self.benchmarks),
@@ -468,6 +584,8 @@ class CandidateRecord:
             "risk_profile": self.risk_profile,
             "timeframe": self.timeframe,
             "validation_status": self.validation_status,
+            "current_validation_status": current_validation_status,
+            "trade_admission_status": _trade_admission_status(current_validation_status),
             "evidence_status": self.evidence_status,
             "profitability_status": self.profitability_status,
             "deployment_status": self.deployment_status,
@@ -496,6 +614,18 @@ class CandidateRecord:
             "premarket_volume": metadata.get("premarket_volume"),
             "spread_pct": metadata.get("spread_pct"),
             "daily_data_status": metadata.get("daily_data_status") or "",
+            "data_mode": metadata.get("data_mode") or "",
+            "data_freshness": metadata.get("data_freshness") or "",
+            "data_status": metadata.get("data_status") or "",
+            "scoring_eligible": metadata.get("scoring_eligible"),
+            "scoring_block_reason": metadata.get("scoring_block_reason") or "",
+            "missing_fields": metadata.get("missing_fields") or [],
+            "candidate_fallback": metadata.get("candidate_fallback", False),
+            "fallback_sources": metadata.get("fallback_sources") or [],
+            "mock_used": metadata.get("mock_used", False),
+            "mock_sources": metadata.get("mock_sources") or [],
+            "degraded": metadata.get("degraded", False),
+            "degradation_reasons": metadata.get("degradation_reasons") or [],
         }
 
 

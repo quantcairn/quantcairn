@@ -346,6 +346,19 @@ def _merge_top_item_with_report(top_item: dict, selection_report: dict, rank: in
         "leveraged_etf",
         "trade_filter_passed",
         "fallback_used",
+        "candidate_fallback",
+        "fallback_sources",
+        "mock_used",
+        "mock_sources",
+        "degraded",
+        "degradation_reasons",
+        "data_mode",
+        "data_freshness",
+        "data_status",
+        "scoring_eligible",
+        "scoring_block_reason",
+        "current_validation_status",
+        "trade_admission_status",
         "current_price",
         "size",
         "selection_penalty_reason",
@@ -372,6 +385,19 @@ def _merge_top_item_with_report(top_item: dict, selection_report: dict, rank: in
         "leveraged_etf",
         "trade_filter_passed",
         "fallback_used",
+        "candidate_fallback",
+        "fallback_sources",
+        "mock_used",
+        "mock_sources",
+        "degraded",
+        "degradation_reasons",
+        "data_mode",
+        "data_freshness",
+        "data_status",
+        "scoring_eligible",
+        "scoring_block_reason",
+        "current_validation_status",
+        "trade_admission_status",
         "reject_reason",
         "composition_filter_passed",
         "composition_reject_reason",
@@ -405,6 +431,13 @@ def _ticker_line(top_config: dict, rank: int) -> str:
     leveraged = bool(_first_non_empty(selection.get("leveraged_etf"), top_config.get("leveraged_etf"), default=False))
     filter_passed = bool(_first_non_empty(selection.get("trade_filter_passed"), top_config.get("trade_filter_passed"), default=False))
     fallback_used = bool(_first_non_empty(selection.get("fallback_used"), top_config.get("fallback_used"), default=False))
+    candidate_fallback = bool(_first_non_empty(selection.get("candidate_fallback"), top_config.get("candidate_fallback"), default=False))
+    mock_used = bool(_first_non_empty(selection.get("mock_used"), top_config.get("mock_used"), default=False))
+    data_status = str(_first_non_empty(selection.get("data_status"), top_config.get("data_status"), default="")).strip().upper()
+    validation_status = str(_first_non_empty(selection.get("current_validation_status"), top_config.get("current_validation_status"), top_config.get("validation_status"), default="")).strip().upper()
+    trade_admission_status = str(_first_non_empty(selection.get("trade_admission_status"), top_config.get("trade_admission_status"), default="")).strip().upper()
+    fallback_sources = _first_non_empty(selection.get("fallback_sources"), top_config.get("fallback_sources"), default=[])
+    mock_sources = _first_non_empty(selection.get("mock_sources"), top_config.get("mock_sources"), default=[])
     reason = _truncate_reason(
         _first_non_empty(
             selection.get("reason"),
@@ -422,15 +455,24 @@ def _ticker_line(top_config: dict, rank: int) -> str:
     filter_text = "通过" if filter_passed else "未通过"
     kind = "杠杆/反向ETF" if leveraged else "普通标的"
     fallback_text = "是" if fallback_used else "否"
-    return (
-        f"TOP{rank}：{ticker}\n"
-        f"分数：final {final_score} / AI {ai_score} / Range {range_score}\n"
-        f"类型：{kind}\n"
-        f"仓位：${target_capital:.0f} / {target_shares}股\n"
-        f"过滤：{filter_text}\n"
-        f"fallback：{fallback_text}\n"
-        f"理由：{reason or '无'}"
-    )
+    fallback_source_text = "/".join(str(item).strip().upper() for item in (fallback_sources or []) if str(item).strip())
+    mock_source_text = "/".join(str(item).strip().upper() for item in (mock_sources or []) if str(item).strip())
+    lines = [
+        f"TOP{rank}：{ticker}",
+        f"分数：final {final_score} / AI {ai_score} / Range {range_score}",
+        f"类型：{kind}",
+        f"仓位：${target_capital:.0f} / {target_shares}股",
+        f"过滤：{filter_text}",
+        f"fallback：{fallback_text}",
+        f"状态：{validation_status or 'AI_CANDIDATE'} / {trade_admission_status or 'NOT_TRADABLE'}",
+        f"数据：{data_status or 'UNKNOWN'} · candidate_fallback={'是' if candidate_fallback else '否'} · mock={'是' if mock_used else '否'}",
+    ]
+    if fallback_source_text:
+        lines.append(f"fallback来源：{fallback_source_text}")
+    if mock_source_text:
+        lines.append(f"mock来源：{mock_source_text}")
+    lines.append(f"理由：{reason or '无'}")
+    return "\n".join(lines)
 
 
 def _build_ai_selection_message(selection_report: dict, top_configs: list | None = None) -> tuple[str, str]:
@@ -450,13 +492,60 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     target_top_n = int(report.get("target_top_n") or 3)
     selection_count = int(report.get("selection_count") or len(top_items))
     fallback_used = bool(report.get("fallback_used", False))
+    execution_status = str(report.get("execution_status") or "").strip().upper()
+    result_quality = str(report.get("result_quality") or "").strip().upper()
+    research_admission = str(report.get("research_admission") or "").strip().upper()
     providers_used = ", ".join(report.get("providers_used") or []) or "无"
     providers_disabled = ", ".join(report.get("providers_disabled") or []) or "无"
     warnings = list(report.get("warnings") or [])
     quality_report = dict(report.get("quality_filter_report") or {})
     warnings.extend(quality_report.get("warnings") or [])
     warnings.extend((report.get("composition_filter") or {}).get("warnings") or [])
-    warnings = [str(item) for item in warnings if str(item).strip()]
+    warnings = list(dict.fromkeys(str(item) for item in warnings if str(item).strip()))
+    if not execution_status:
+        execution_status = "COMPLETED" if top_items else "FAILED"
+    if not result_quality:
+        result_quality = "DEGRADED" if fallback_used else "COMPLETE"
+    if not research_admission:
+        research_admission = "RESEARCH_ONLY" if result_quality == "DEGRADED" else ("BLOCKED" if result_quality == "INVALID" else "RESEARCH_READY")
+    structured_warnings = list(report.get("warnings_structured") or quality_report.get("warnings_structured") or [])
+    if structured_warnings:
+        unique_warnings = []
+        seen = set()
+        for item in structured_warnings:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("warning_code") or item.get("code") or "warning"),
+                str(item.get("stage") or "").strip().upper(),
+                item.get("requested_count"),
+                item.get("selected_count"),
+                item.get("missing_count"),
+                tuple(item.get("symbols") or []),
+                str(item.get("details") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_warnings.append(item)
+        warnings = []
+        for item in unique_warnings:
+            parts = [str(item.get("warning_code") or item.get("code") or "warning")]
+            stage = str(item.get("stage") or "").strip().upper() or "FINALIZED"
+            parts.append(f"stage={stage}")
+            if item.get("requested_count") is not None:
+                parts.append(f"requested={item.get('requested_count')}")
+            if item.get("selected_count") is not None:
+                parts.append(f"selected={item.get('selected_count')}")
+            if item.get("missing_count") is not None:
+                parts.append(f"missing={item.get('missing_count')}")
+            symbols = item.get("symbols") or []
+            if symbols:
+                parts.append(f"symbols={'/'.join(str(sym).strip().upper() for sym in symbols if str(sym).strip())}")
+            details = str(item.get("details") or "").strip()
+            if details:
+                parts.append(details)
+            warnings.append(" | ".join(parts))
     status = "成功" if top_items else "失败"
     fallback_text = "true" if fallback_used else "false"
     lines = [
@@ -465,6 +554,9 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         f"阶段：{selection_stage or 'UNKNOWN'}",
         f"TOP数量：{selection_count}/{target_top_n}",
         f"fallback：{fallback_text}",
+        f"执行：{execution_status or 'COMPLETED'}",
+        f"结果：{result_quality or ('DEGRADED' if fallback_used else 'COMPLETE')}",
+        f"研究准入：{research_admission or ('RESEARCH_ONLY' if fallback_used else 'RESEARCH_READY')}",
         "",
     ]
     if last_completed_session:
@@ -516,14 +608,14 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
         webhook_url=webhook_url,
         trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
         telegram_bot_token=(
-            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN")
-            or notification_cfg.get("ai_selector_telegram_bot_token", "")
+            notification_cfg.get("ai_selector_telegram_bot_token", "")
+            or os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN")
             or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
             or notification_cfg.get("telegram_bot_token", "")
         ),
         telegram_chat_id=(
-            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID")
-            or notification_cfg.get("ai_selector_telegram_chat_id", "")
+            notification_cfg.get("ai_selector_telegram_chat_id", "")
+            or os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID")
             or os.environ.get("SOXS_TELEGRAM_CHAT_ID")
             or notification_cfg.get("telegram_chat_id", "")
         ),

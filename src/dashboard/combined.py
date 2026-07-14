@@ -1086,6 +1086,17 @@ def _candidate_research_report_snapshot() -> dict[str, object]:
         "score_distribution": report.get("score_distribution") or [],
         "top_candidates": report.get("top_candidates") or [],
         "failure_analysis": report.get("failure_analysis") or {"statuses": {}},
+        "selection_execution_status": report.get("selection_execution_status") or "COMPLETED",
+        "selection_result_quality": report.get("selection_result_quality") or "COMPLETE",
+        "selection_research_admission": report.get("selection_research_admission") or "RESEARCH_READY",
+        "selection_stage": report.get("selection_stage") or "FINALIZED",
+        "selection_top_n_complete": bool(report.get("selection_top_n_complete", False)),
+        "selection_top_n_missing_count": int(report.get("selection_top_n_missing_count") or 0),
+        "selection_fallback_used": bool(report.get("selection_fallback_used", False)),
+        "selection_provider_audit": report.get("selection_provider_audit") or {},
+        "selection_provider_outputs": report.get("selection_provider_outputs") or {},
+        "selection_warnings_structured": list(report.get("selection_warnings_structured") or []),
+        "selection_warnings": list(report.get("selection_warnings") or []),
         "high_score_success_rate": performance.get("high_score_success_rate"),
         "high_score_threshold": performance.get("high_score_threshold", 80.0),
         "performance": performance,
@@ -1249,10 +1260,10 @@ def _candidate_validation_snapshot() -> dict[str, object]:
         "candidate_count": len(candidates),
         "history_count": len(history),
         "latest_candidate": {
-            **latest_dict,
-            **{
-                "selection_stage": candidate_stage or latest_dict.get("validation_status") or "AI_CANDIDATE",
-                "freshness_status": freshness_status or "SAFE",
+                **latest_dict,
+                **{
+                    "selection_stage": candidate_stage or latest_dict.get("validation_status") or "AI_CANDIDATE",
+                    "freshness_status": freshness_status or "SAFE",
                 "stale_reason": stale_reason,
                 "daily_data_status": daily_data_status or "",
                 "last_completed_session": latest_metadata.get("last_completed_session") or latest_dict.get("last_completed_session") or "",
@@ -1266,6 +1277,20 @@ def _candidate_validation_snapshot() -> dict[str, object]:
                 "is_regular_session": bool(latest_metadata.get("is_regular_session", latest_dict.get("is_regular_session", False))),
                 "is_after_hours": bool(latest_metadata.get("is_after_hours", latest_dict.get("is_after_hours", False))),
                 "trading_eligible": bool(latest_metadata.get("trading_eligible", latest_dict.get("trading_eligible", False))),
+                "data_mode": latest_metadata.get("data_mode") or latest_dict.get("data_mode") or "",
+                "data_freshness": latest_metadata.get("data_freshness") or latest_dict.get("data_freshness") or "",
+                "data_status": latest_metadata.get("data_status") or latest_dict.get("data_status") or "",
+                "scoring_eligible": bool(latest_metadata.get("scoring_eligible", latest_dict.get("scoring_eligible", False))),
+                "scoring_block_reason": latest_metadata.get("scoring_block_reason") or latest_dict.get("scoring_block_reason") or "",
+                "missing_fields": latest_metadata.get("missing_fields") or latest_dict.get("missing_fields") or [],
+                "candidate_fallback": bool(latest_metadata.get("candidate_fallback", latest_dict.get("candidate_fallback", False))),
+                "fallback_sources": latest_metadata.get("fallback_sources") or latest_dict.get("fallback_sources") or [],
+                "mock_used": bool(latest_metadata.get("mock_used", latest_dict.get("mock_used", False))),
+                "mock_sources": latest_metadata.get("mock_sources") or latest_dict.get("mock_sources") or [],
+                "degraded": bool(latest_metadata.get("degraded", latest_dict.get("degraded", False))),
+                "degradation_reasons": latest_metadata.get("degradation_reasons") or latest_dict.get("degradation_reasons") or [],
+                "current_validation_status": latest_metadata.get("current_validation_status") or latest_dict.get("current_validation_status") or latest_dict.get("validation_status") or "AI_CANDIDATE",
+                "trade_admission_status": latest_metadata.get("trade_admission_status") or latest_dict.get("trade_admission_status") or "NOT_TRADABLE",
             },
         } if latest is not None else {},
         "candidate_validation_rows": [record.to_dict() for record in candidates[:5]],
@@ -1280,6 +1305,20 @@ def _candidate_validation_snapshot() -> dict[str, object]:
         "last_completed_session": latest_metadata.get("last_completed_session") or "",
         "daily_data_as_of": latest_metadata.get("daily_data_as_of") or "",
         "premarket_snapshot_at": latest_metadata.get("premarket_snapshot_at") or "",
+        "data_mode": latest_metadata.get("data_mode") or "",
+        "data_freshness": latest_metadata.get("data_freshness") or "",
+        "data_status": latest_metadata.get("data_status") or "",
+        "scoring_eligible": bool(latest_metadata.get("scoring_eligible", False)),
+        "scoring_block_reason": latest_metadata.get("scoring_block_reason") or "",
+        "missing_fields": latest_metadata.get("missing_fields") or [],
+        "candidate_fallback": bool(latest_metadata.get("candidate_fallback", False)),
+        "fallback_sources": latest_metadata.get("fallback_sources") or [],
+        "mock_used": bool(latest_metadata.get("mock_used", False)),
+        "mock_sources": latest_metadata.get("mock_sources") or [],
+        "degraded": bool(latest_metadata.get("degraded", False)),
+        "degradation_reasons": latest_metadata.get("degradation_reasons") or [],
+        "current_validation_status": latest_metadata.get("current_validation_status") or latest_dict.get("validation_status") or "AI_CANDIDATE",
+        "trade_admission_status": latest_metadata.get("trade_admission_status") or "NOT_TRADABLE",
     }
 
 
@@ -3494,6 +3533,22 @@ HTML = """<!DOCTYPE html>
                         <strong id="candidate-freshness-status">{{ candidate_validation.latest_candidate.freshness_status or candidate_validation.status_label or 'STALE' }}</strong>
                     </div>
                     <div class="shadow-metric">
+                        <span>Data Mode</span>
+                        <strong id="candidate-data-mode">{{ candidate_validation.latest_candidate.data_mode or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Data Status</span>
+                        <strong id="candidate-data-status">{{ candidate_validation.latest_candidate.data_status or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Scoring Eligible</span>
+                        <strong id="candidate-scoring-eligible">{{ 'YES' if candidate_validation.latest_candidate.scoring_eligible else 'NO' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>Scoring Block Reason</span>
+                        <strong id="candidate-scoring-block-reason">{{ candidate_validation.latest_candidate.scoring_block_reason or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
                         <span>Stale Reason</span>
                         <strong id="candidate-stale-reason">{{ candidate_validation.latest_candidate.stale_reason or 'unavailable' }}</strong>
                     </div>
@@ -3573,6 +3628,18 @@ HTML = """<!DOCTYPE html>
                 <div class="shadow-metric">
                     <span>Average Score</span>
                     <strong id="research-report-average-score">{{ research_report.average_score if research_report.average_score is not none else 'unavailable' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>Execution Status</span>
+                    <strong id="research-report-execution-status">{{ research_report.selection_execution_status or 'COMPLETED' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>Result Quality</span>
+                    <strong id="research-report-result-quality">{{ research_report.selection_result_quality or 'COMPLETE' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>Research Admission</span>
+                    <strong id="research-report-research-admission">{{ research_report.selection_research_admission or 'RESEARCH_READY' }}</strong>
                 </div>
                 <div class="shadow-metric">
                     <span>High Score Success Rate</span>
@@ -3878,6 +3945,9 @@ HTML = """<!DOCTYPE html>
                                 · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
                                 · 启动阶段：{{ ai_selection.settings.selection_stage or 'unknown' }}
                                 {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
+                                {% if ai_selection.execution_status %} · 执行：{{ ai_selection.execution_status }}{% endif %}
+                                {% if ai_selection.result_quality %} · 结果：{{ ai_selection.result_quality }}{% endif %}
+                                {% if ai_selection.research_admission %} · 研究准入：{{ ai_selection.research_admission }}{% endif %}
                             {% endif %}
                             {% if ai_selection.protected_positions %}
                                 · 保护持仓：{{ ai_selection.protected_positions | map(attribute='ticker') | join(' / ') }}
@@ -3908,6 +3978,11 @@ HTML = """<!DOCTYPE html>
                             <div class="research-brief-body">
                                 <div class="research-brief-title">策略评分复盘</div>
                                 <div class="research-brief-summary">{{ research_digest.strategy_summary }}</div>
+                                <div class="research-brief-summary">
+                                    执行 {{ research_report.selection_execution_status or 'COMPLETED' }} ·
+                                    结果 {{ research_report.selection_result_quality or 'COMPLETE' }} ·
+                                    准入 {{ research_report.selection_research_admission or 'RESEARCH_READY' }}
+                                </div>
                                 <div class="research-brief-detail">
                                     <span>TOP：{{ research_digest.top_line or '暂无' }}</span>
                                     <span>可开仓：{{ research_digest.entry_ready }}</span>
@@ -4575,6 +4650,10 @@ HTML = """<!DOCTYPE html>
             setText('candidate-gap-pct', candidateValidation.latest_candidate && candidateValidation.latest_candidate.gap_pct != null ? String(candidateValidation.latest_candidate.gap_pct) : 'unavailable');
             setText('candidate-premarket-volume', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_volume != null ? String(candidateValidation.latest_candidate.premarket_volume) : 'unavailable');
             setText('candidate-freshness-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.freshness_status ? candidateValidation.latest_candidate.freshness_status : (candidateValidation.status_label || 'STALE'));
+            setText('candidate-data-mode', candidateValidation.latest_candidate && candidateValidation.latest_candidate.data_mode ? candidateValidation.latest_candidate.data_mode : 'unavailable');
+            setText('candidate-data-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.data_status ? candidateValidation.latest_candidate.data_status : 'unavailable');
+            setText('candidate-scoring-eligible', candidateValidation.latest_candidate && candidateValidation.latest_candidate.scoring_eligible ? 'YES' : 'NO');
+            setText('candidate-scoring-block-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.scoring_block_reason ? candidateValidation.latest_candidate.scoring_block_reason : 'unavailable');
             setText('candidate-stale-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.stale_reason ? candidateValidation.latest_candidate.stale_reason : 'unavailable');
             setText('candidate-evidence-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.evidence_status ? candidateValidation.latest_candidate.evidence_status : 'INSUFFICIENT_EVIDENCE');
             setText('candidate-profitability-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.profitability_status ? candidateValidation.latest_candidate.profitability_status : 'INELIGIBLE');
@@ -4928,6 +5007,17 @@ def _api_status_payload() -> dict[str, object]:
         "research_report": _candidate_research_report_payload(),
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
+            "execution_status": str(ai_selection.get("execution_status") or "").strip().upper() or "COMPLETED",
+            "result_quality": str(ai_selection.get("result_quality") or "").strip().upper() or "COMPLETE",
+            "research_admission": str(ai_selection.get("research_admission") or "").strip().upper() or "RESEARCH_READY",
+            "selection_stage": str(ai_selection.get("selection_stage") or "").strip().upper() or "FINALIZED",
+            "fallback_used": bool(ai_selection.get("fallback_used", False)),
+            "provider_fallback_used": bool(ai_selection.get("provider_fallback_used", False)),
+            "top_n_complete": bool(ai_selection.get("top_n_complete", False)),
+            "top_n_missing_count": int(ai_selection.get("top_n_missing_count") or 0),
+            "warnings_structured": list(ai_selection.get("warnings_structured") or []),
+            "provider_audit": ai_selection.get("provider_audit") or {},
+            "top3": list(ai_selection.get("top3") or []),
         },
         "system": system_status,
     }
