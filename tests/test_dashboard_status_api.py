@@ -172,7 +172,7 @@ def _write_shadow_artifacts(root: Path, *, symbol="SOXS.US", benchmark_symbols=N
         (root / "daily_summary.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inverse_etf", benchmarks=None, strategy_family="range_etf", risk_profile="strict", timeframe="15m", ai_score=91.5, ai_reason="Strong range fit", candidate_score=94.2, liquidity_score=96.0, trend_score=90.0, volatility_score=82.0, risk_score=88.0, strategy_fit_score=97.0, recommended_strategy="trend_following", score_reason="liquidity:strong; trend:strong; volatility:fit; risk:clean; strategy_fit:match"):
+def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inverse_etf", benchmarks=None, strategy_family="range_etf", risk_profile="strict", timeframe="15m", ai_score=91.5, ai_reason="Strong range fit", candidate_score=94.2, liquidity_score=96.0, trend_score=90.0, volatility_score=82.0, risk_score=88.0, strategy_fit_score=97.0, recommended_strategy="trend_following", score_reason="liquidity:strong; trend:strong; volatility:fit; risk:clean; strategy_fit:match", trade_filter_passed=True):
     store = CandidateValidationStore(root)
     record = CandidateRecord.from_ai_candidate(
         symbol=symbol,
@@ -202,6 +202,7 @@ def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inve
             "scoring_eligible": True,
             "scoring_block_reason": "",
             "missing_fields": [],
+            "trade_filter_passed": trade_filter_passed,
         },
     )
     store.save_candidates([record])
@@ -241,7 +242,8 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
                     "requested_count": 3,
                     "selected_count": 1,
                     "missing_count": 2,
-                    "symbols": ["SOFI"],
+                    "selected_symbols": ["SOFI"],
+                    "missing_slots": ["TOP2", "TOP3"],
                     "details": "final TOP still below requested count",
                 },
                 {
@@ -250,21 +252,57 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
                     "requested_count": 3,
                     "selected_count": 1,
                     "missing_count": 2,
-                    "symbols": ["SOFI"],
+                    "selected_symbols": ["SOFI"],
+                    "missing_slots": ["TOP2", "TOP3"],
                     "details": "final TOP still below requested count",
                 },
             ],
-            "provider_audit": {"tradingagents": {"attempted": 3, "fallback_used": 1, "mock_used": 0}},
-            "provider_outputs": {"tradingagents": {"SOFI": {"ticker": "SOFI", "fallback": True, "source": "tradingagents"}}},
+            "provider_audit": {
+                "tradingagents": {
+                    "provider_name": "tradingagents",
+                    "attempted": 3,
+                    "success": 0,
+                    "failure": 3,
+                    "timed_out": 1,
+                    "fallback_used": 1,
+                    "mock_used": 1,
+                    "contributed_fields": ["score", "reason"],
+                },
+                "finrobot": {
+                    "provider_name": "finrobot",
+                    "attempted": 3,
+                    "success": 2,
+                    "failure": 1,
+                    "timed_out": 0,
+                    "fallback_used": 1,
+                    "mock_used": 1,
+                    "contributed_fields": ["score", "reason"],
+                },
+                "openbb": {
+                    "provider_name": "openbb",
+                    "attempted": 3,
+                    "success": 3,
+                    "failure": 0,
+                    "timed_out": 0,
+                    "fallback_used": 0,
+                    "mock_used": 0,
+                    "contributed_fields": ["score", "reason"],
+                },
+            },
+            "provider_outputs": {
+                "tradingagents": {"SOFI": {"ticker": "SOFI", "fallback": True, "source": "tradingagents_mock"}},
+                "finrobot": {"SOFI": {"ticker": "SOFI", "fallback": True, "source": "finrobot_mock"}},
+                "openbb": {"SOFI": {"ticker": "SOFI", "fallback": False, "source": "openbb"}},
+            },
             "top3": [
                 {
                     "ticker": "SOFI",
                     "fallback_used": True,
                     "candidate_fallback": True,
-                    "fallback_sources": ["tradingagents"],
-                    "mock_used": False,
-                    "mock_sources": [],
-                    "data_status": "VALID",
+                    "fallback_sources": ["tradingagents", "finrobot"],
+                    "mock_used": True,
+                    "mock_sources": ["tradingagents", "finrobot"],
+                    "data_status": "INVALID",
                     "current_validation_status": "AI_CANDIDATE",
                     "trade_admission_status": "NOT_TRADABLE",
                 }
@@ -293,6 +331,14 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert payload["ai_selection"]["top_n_complete"] is False
     assert payload["ai_selection"]["top_n_missing_count"] == 2
     assert len(payload["ai_selection"]["warnings_structured"]) == 2
+    assert payload["ai_selection"]["provider_audit_sections"]["attempted"] == "finrobot / openbb / tradingagents"
+    assert payload["ai_selection"]["provider_audit_sections"]["success"] == "finrobot / openbb"
+    assert payload["ai_selection"]["provider_audit_sections"]["failure"] == "无"
+    assert payload["ai_selection"]["provider_audit_sections"]["timeout"] == "tradingagents"
+    assert payload["ai_selection"]["provider_audit_sections"]["fallback"] == "finrobot / tradingagents"
+    assert payload["ai_selection"]["provider_audit_sections"]["mock"] == "finrobot / tradingagents"
+    assert payload["ai_selection"]["provider_audit_sections"]["contributor"] == "finrobot (mock) / openbb / tradingagents (mock)"
+    assert "本次结果仅供研究" in payload["ai_selection"]["research_admission_notice"]
     assert payload["ai_selection"]["top3"][0]["candidate_fallback"] is True
     assert payload["ai_selection"]["top3"][0]["trade_admission_status"] == "NOT_TRADABLE"
     assert payload["risk"]["fallback_live_allowed"] is False
@@ -579,6 +625,7 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     assert payload["latest_candidate"]["score_reason"] == "liquidity:strong; trend:range; volatility:fit; risk:clean; strategy_fit:match"
     assert payload["latest_candidate"]["data_mode"] == "live"
     assert payload["latest_candidate"]["data_status"] == "VALID"
+    assert payload["latest_candidate"]["trade_filter_passed"] is True
     assert payload["latest_candidate"]["scoring_eligible"] is True
     assert payload["latest_candidate"]["scoring_block_reason"] == ""
     assert payload["performance"]["title"] == "Candidate Ranking Performance"
@@ -609,8 +656,10 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     assert "AAPL.US" in html
     assert "Candidate Score" in html
     assert "Data Mode" in html
-    assert "Data Status" in html
+    assert "Universe Filter" in html
+    assert "Data Sufficiency" in html
     assert "Scoring Eligible" in html
+    assert "Trade Admission" in html
     assert "Scoring Block Reason" in html
     assert "Liquidity Score" in html
     assert "Candidate Ranking Performance" in html
@@ -619,6 +668,10 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     assert "Last Research Run" in html
     assert "Recommended Strategy" in html
     assert "AI Ranking Reason" in html
+    assert "Provider 尝试" in html
+    assert "Provider 成功" in html
+    assert "Provider 超时" in html
+    assert "候选可进入独立数据验证" in html
     assert "启动 Shadow" not in html
     assert "批准 Paper" not in html
     assert "批准实盘" not in html

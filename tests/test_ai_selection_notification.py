@@ -41,6 +41,43 @@ def _sample_report(*, fallback_used: bool = False, selection_count: int = 3) -> 
         "providers_disabled": ["FMP"],
         "quality_filter_report": {"warnings": ["TradingAgents timeout"]},
         "composition_filter": {"warnings": ["leveraged_etf_limit_reached"]},
+        "provider_audit": {
+        "tradingagents": {
+            "provider_name": "tradingagents",
+            "attempted": 3,
+            "success": 0,
+            "failure": 3,
+            "timed_out": 1,
+            "fallback_used": 1,
+            "mock_used": 1,
+            "contributed_fields": ["score", "reason"],
+        },
+            "finrobot": {
+                "provider_name": "finrobot",
+                "attempted": 3,
+                "success": 2,
+                "failure": 1,
+                "timed_out": 0,
+                "fallback_used": 1,
+                "mock_used": 1,
+                "contributed_fields": ["score", "reason"],
+            },
+            "openbb": {
+                "provider_name": "openbb",
+                "attempted": 3,
+                "success": 3,
+                "failure": 0,
+                "timed_out": 0,
+                "fallback_used": 0,
+                "mock_used": 0,
+                "contributed_fields": ["score", "reason"],
+            },
+        },
+        "provider_outputs": {
+            "tradingagents": {"SOXS": {"source": "tradingagents_mock", "reason": "timeout mock fallback"}},
+            "finrobot": {"SOXS": {"source": "finrobot_mock", "reason": "mock data"}},
+            "openbb": {"SOXS": {"source": "openbb", "reason": "real data"}},
+        },
     }
 
 
@@ -190,7 +227,11 @@ def test_ai_selection_message_includes_top3():
     assert "TOP1：SOXS" in body
     assert "TOP2：AAPL" in body
     assert "TOP3：SOFI" in body
-    assert "Provider：使用：TradingAgents, FinRobot, OpenBB" in body
+    assert "状态：成功" not in body
+    assert "执行状态：" in body
+    assert "结果质量：" in body
+    assert "研究准入：" in body
+    assert "Provider 尝试：" in body
     assert "类型：杠杆/反向ETF" in body
     assert "仓位：$" in body
 
@@ -206,6 +247,8 @@ def test_ai_selection_message_handles_only_top2():
 
     assert "TOP数量：2/3" in body
     assert "TOP3：未生成 / disabled" in body
+    assert "selected_symbols=SOXS,SOFI" in body
+    assert "missing_slots=TOP3" in body
     assert "原因：top_n_not_filled" in body
 
 
@@ -219,8 +262,11 @@ def test_ai_selection_message_warns_on_fallback():
         ],
     )
 
-    assert "fallback：true" in body
-    assert "不建议直接 live" in body
+    assert "执行状态：已完成 (COMPLETED)" in body
+    assert "结果质量：降级 (DEGRADED)" in body
+    assert "研究准入：仅研究 (RESEARCH_ONLY)" in body
+    assert "注意：本次结果仅供研究" in body
+    assert "不建议直接 live" not in body
 
 
 def test_ai_selection_message_uses_top_level_fields_when_selection_missing():
@@ -299,14 +345,54 @@ def test_ai_selection_message_shows_execution_and_result_semantics():
         ],
     )
 
-    assert "执行：COMPLETED" in body
-    assert "结果：DEGRADED" in body
-    assert "研究准入：RESEARCH_ONLY" in body
-    assert "状态：AI_CANDIDATE / NOT_TRADABLE" in body
+    assert "执行状态：已完成 (COMPLETED)" in body
+    assert "结果质量：降级 (DEGRADED)" in body
+    assert "研究准入：仅研究 (RESEARCH_ONLY)" in body
+    assert "状态：AI_CANDIDATE" in body
+    assert "NOT_TRADABLE" in body
     assert "数据：VALID · candidate_fallback=是 · mock=否" in body
     assert "fallback来源：TRADINGAGENTS" in body
     assert "TOP3：未生成 / disabled" in body
     assert "原因：top_n_not_filled" in body
+    assert "Provider 尝试：" in body
+    assert "Provider 成功：" in body
+    assert "Provider 超时：" in body
+    assert "Provider Mock：" in body
+    assert "注意：本次结果仅供研究" in body
+
+
+def test_ai_selection_message_renders_provider_audit_sections():
+    report = _sample_report(fallback_used=True)
+    _, body = alerts._build_ai_selection_message(
+        report,
+        [
+            {
+                "ticker": "SOFI",
+                "selection": {
+                    "selection_date": "2026-07-09",
+                    "score": 59.9,
+                    "reason": "fallback mock",
+                },
+                "candidate_fallback": True,
+                "mock_used": True,
+                "fallback_sources": ["finrobot", "tradingagents"],
+                "mock_sources": ["finrobot", "tradingagents"],
+                "data_status": "INVALID",
+                "current_validation_status": "AI_CANDIDATE",
+                "trade_admission_status": "NOT_TRADABLE",
+            }
+        ],
+    )
+
+    assert "fallback：是" in body
+    assert "mock=是" in body
+    assert "fallback来源：FINROBOT / TRADINGAGENTS" in body
+    assert "mock来源：FINROBOT / TRADINGAGENTS" in body
+    assert "Provider 尝试：finrobot / openbb / tradingagents" in body
+    assert "Provider 成功：finrobot / openbb" in body
+    assert "Provider 超时：tradingagents" in body
+    assert "Provider Mock：finrobot / tradingagents" in body
+    assert "Provider 实际贡献：" in body
 
 
 def test_notify_ai_selection_without_telegram_does_not_raise(monkeypatch):

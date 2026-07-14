@@ -211,6 +211,7 @@ class CandidateRecord:
     data_status: str = ""
     scoring_eligible: bool = False
     scoring_block_reason: str = ""
+    trade_filter_passed: bool = False
     missing_fields: tuple[str, ...] = ()
     candidate_fallback: bool = False
     fallback_sources: tuple[str, ...] = ()
@@ -256,6 +257,7 @@ class CandidateRecord:
         self.data_status = _normalize_text(self.data_status).upper()
         self.scoring_eligible = bool(self.scoring_eligible)
         self.scoring_block_reason = _normalize_text(self.scoring_block_reason)
+        self.trade_filter_passed = bool(self.trade_filter_passed)
         if isinstance(self.missing_fields, (list, tuple, set, frozenset)):
             self.missing_fields = tuple(_normalize_text(item) for item in self.missing_fields if _normalize_text(item))
         else:
@@ -344,6 +346,7 @@ class CandidateRecord:
         data_status: str = "",
         scoring_eligible: bool = False,
         scoring_block_reason: str = "",
+        trade_filter_passed: bool = False,
         missing_fields: tuple[str, ...] | list[str] | None = None,
         candidate_fallback: bool = False,
         fallback_sources: tuple[str, ...] | list[str] | None = None,
@@ -385,6 +388,7 @@ class CandidateRecord:
             data_status=data_status,
             scoring_eligible=scoring_eligible,
             scoring_block_reason=scoring_block_reason,
+            trade_filter_passed=trade_filter_passed,
             missing_fields=tuple(missing_fields or ()),
             candidate_fallback=candidate_fallback,
             fallback_sources=tuple(fallback_sources or ()),
@@ -468,6 +472,7 @@ class CandidateRecord:
             "data_status": self.data_status,
             "scoring_eligible": self.scoring_eligible,
             "scoring_block_reason": self.scoring_block_reason,
+            "trade_filter_passed": self.trade_filter_passed if "trade_filter_passed" in self.metadata else bool(self.trade_filter_passed or self.scoring_eligible),
             "missing_fields": list(self.missing_fields),
             "candidate_fallback": self.candidate_fallback,
             "fallback_sources": list(self.fallback_sources),
@@ -519,6 +524,7 @@ class CandidateRecord:
             data_status=payload.get("data_status") or "",
             scoring_eligible=bool(payload.get("scoring_eligible", False)),
             scoring_block_reason=payload.get("scoring_block_reason") or "",
+            trade_filter_passed=bool(payload.get("trade_filter_passed", payload.get("scoring_eligible", False))),
             missing_fields=tuple(payload.get("missing_fields") or ()),
             candidate_fallback=bool(payload.get("candidate_fallback", False)),
             fallback_sources=tuple(payload.get("fallback_sources") or ()),
@@ -570,6 +576,7 @@ class CandidateRecord:
             "data_status": self.data_status or metadata.get("data_status") or "",
             "scoring_eligible": bool(self.scoring_eligible if self.data_status or self.data_mode or self.scoring_block_reason else metadata.get("scoring_eligible", False)),
             "scoring_block_reason": self.scoring_block_reason or metadata.get("scoring_block_reason") or "",
+            "trade_filter_passed": bool(self.trade_filter_passed if "trade_filter_passed" in metadata else metadata.get("trade_filter_passed", self.scoring_eligible)),
             "missing_fields": list(self.missing_fields or metadata.get("missing_fields") or []),
             "candidate_fallback": bool(self.candidate_fallback or metadata.get("candidate_fallback", False)),
             "fallback_sources": list(self.fallback_sources or metadata.get("fallback_sources") or []),

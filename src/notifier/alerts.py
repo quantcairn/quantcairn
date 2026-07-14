@@ -312,6 +312,96 @@ def _first_non_empty(*values: object, default: object = "") -> object:
     return default
 
 
+def _normalize_provider_name(name: object) -> str:
+    text = str(name or "").strip()
+    return text
+
+
+def build_provider_audit_sections(
+    provider_audit: dict[str, dict] | None,
+    provider_outputs: dict[str, dict] | None,
+) -> dict[str, str]:
+    records = []
+    for provider_name, record in sorted((provider_audit or {}).items()):
+        provider_record = dict(record or {})
+        provider_record["provider_name"] = _normalize_provider_name(provider_record.get("provider_name") or provider_name)
+        records.append(provider_record)
+
+    if not records and provider_outputs:
+        for provider_name in sorted(provider_outputs):
+            records.append({"provider_name": _normalize_provider_name(provider_name)})
+
+    attempted: list[str] = []
+    success: list[str] = []
+    failure: list[str] = []
+    timeout: list[str] = []
+    fallback: list[str] = []
+    mock: list[str] = []
+    contributors: list[str] = []
+
+    for record in records:
+        name = _normalize_provider_name(record.get("provider_name"))
+        if not name:
+            continue
+        attempted_hits = int(record.get("attempted") or 0)
+        success_hits = int(record.get("success") or 0)
+        timeout_hits = int(record.get("timed_out") or 0)
+        fallback_hits = int(record.get("fallback_used") or 0)
+        mock_hits = int(record.get("mock_used") or 0)
+        contributed_fields = list(record.get("contributed_fields") or [])
+
+        if attempted_hits > 0:
+            attempted.append(name)
+        if success_hits > 0 and timeout_hits <= 0:
+            success.append(name)
+        elif attempted_hits > 0 and timeout_hits <= 0 and fallback_hits <= 0 and mock_hits <= 0:
+            failure.append(name)
+        if timeout_hits > 0:
+            timeout.append(name)
+        if fallback_hits > 0:
+            fallback.append(name)
+        if mock_hits > 0:
+            mock.append(name)
+        if contributed_fields:
+            suffix = " (mock)" if mock_hits > 0 else ""
+            contributors.append(f"{name}{suffix}")
+
+    def _join(values: list[str]) -> str:
+        unique = list(dict.fromkeys(item for item in values if item))
+        return " / ".join(unique) if unique else "无"
+
+    return {
+        "attempted": _join(attempted),
+        "success": _join(success),
+        "failure": _join(failure),
+        "timeout": _join(timeout),
+        "fallback": _join(fallback),
+        "mock": _join(mock),
+        "contributor": _join(contributors),
+    }
+
+
+def build_research_admission_notice(
+    execution_status: str | None,
+    result_quality: str | None,
+    research_admission: str | None,
+    mock_used: bool,
+    data_status: str | None,
+) -> str:
+    execution = str(execution_status or "").strip().upper() or "COMPLETED"
+    quality = str(result_quality or "").strip().upper() or "COMPLETE"
+    admission = str(research_admission or "").strip().upper() or "RESEARCH_READY"
+    if admission == "BLOCKED" or quality == "INVALID":
+        return "本次流程已完成，但结果数据无效或包含不可接受的降级数据。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
+    if admission == "RESEARCH_ONLY" or quality == "DEGRADED" or mock_used:
+        return "本次结果仅供研究，必须通过独立真实数据验证后，才可进入 Backtest 或 Paper。不得直接进入 Live。"
+    if admission == "RESEARCH_READY":
+        return "候选可进入独立数据验证，不代表具备交易资格。"
+    if execution == "FAILED":
+        return "本次流程已完成，但执行失败或结果不可用。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
+    return "候选可进入独立数据验证，不代表具备交易资格。"
+
+
 def _selection_report_top_items(selection_report: dict) -> list[dict]:
     report = dict(selection_report or {})
     items = list(report.get("top3") or report.get("top5") or [])
@@ -452,19 +542,24 @@ def _ticker_line(top_config: dict, rank: int) -> str:
     target_capital = float(_first_non_empty(allocation.get("target_capital"), top_config.get("target_capital"), default=0.0) or 0.0)
     if target_capital <= 0 and current_price > 0 and target_shares > 0:
         target_capital = current_price * target_shares
-    filter_text = "通过" if filter_passed else "未通过"
+    universe_filter_text = "通过" if filter_passed else "拒绝"
+    data_sufficiency_text = "通过" if data_status == "VALID" else "失败"
+    scoring_eligible_text = "是" if bool(_first_non_empty(selection.get("scoring_eligible"), top_config.get("scoring_eligible"), default=False)) else "否"
     kind = "杠杆/反向ETF" if leveraged else "普通标的"
-    fallback_text = "是" if fallback_used else "否"
-    fallback_source_text = "/".join(str(item).strip().upper() for item in (fallback_sources or []) if str(item).strip())
-    mock_source_text = "/".join(str(item).strip().upper() for item in (mock_sources or []) if str(item).strip())
+    fallback_text = "是" if candidate_fallback else "否"
+    fallback_source_text = " / ".join(str(item).strip().upper() for item in (fallback_sources or []) if str(item).strip())
+    mock_source_text = " / ".join(str(item).strip().upper() for item in (mock_sources or []) if str(item).strip())
     lines = [
         f"TOP{rank}：{ticker}",
         f"分数：final {final_score} / AI {ai_score} / Range {range_score}",
         f"类型：{kind}",
         f"仓位：${target_capital:.0f} / {target_shares}股",
-        f"过滤：{filter_text}",
+        f"Universe Filter：{universe_filter_text}",
+        f"Data Sufficiency：{data_sufficiency_text}",
+        f"Scoring Eligible：{scoring_eligible_text}",
+        f"Trade Admission：{trade_admission_status or 'NOT_TRADABLE'}",
         f"fallback：{fallback_text}",
-        f"状态：{validation_status or 'AI_CANDIDATE'} / {trade_admission_status or 'NOT_TRADABLE'}",
+        f"状态：{validation_status or 'AI_CANDIDATE'}",
         f"数据：{data_status or 'UNKNOWN'} · candidate_fallback={'是' if candidate_fallback else '否'} · mock={'是' if mock_used else '否'}",
     ]
     if fallback_source_text:
@@ -495,8 +590,10 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     execution_status = str(report.get("execution_status") or "").strip().upper()
     result_quality = str(report.get("result_quality") or "").strip().upper()
     research_admission = str(report.get("research_admission") or "").strip().upper()
-    providers_used = ", ".join(report.get("providers_used") or []) or "无"
-    providers_disabled = ", ".join(report.get("providers_disabled") or []) or "无"
+    provider_audit_sections = build_provider_audit_sections(
+        dict(report.get("provider_audit") or {}),
+        dict(report.get("provider_outputs") or {}),
+    )
     warnings = list(report.get("warnings") or [])
     quality_report = dict(report.get("quality_filter_report") or {})
     warnings.extend(quality_report.get("warnings") or [])
@@ -509,6 +606,23 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     if not research_admission:
         research_admission = "RESEARCH_ONLY" if result_quality == "DEGRADED" else ("BLOCKED" if result_quality == "INVALID" else "RESEARCH_READY")
     structured_warnings = list(report.get("warnings_structured") or quality_report.get("warnings_structured") or [])
+    if selection_count < target_top_n and not any(
+        str(item.get("warning_code") or item.get("code") or "").strip().lower() == "top_n_not_filled"
+        for item in structured_warnings
+        if isinstance(item, dict)
+    ):
+        structured_warnings.append(
+            {
+                "warning_code": "top_n_not_filled",
+                "stage": "FINALIZED",
+                "requested_count": target_top_n,
+                "selected_count": selection_count,
+                "missing_count": max(0, target_top_n - selection_count),
+                "selected_symbols": [str(item.get("ticker") or "").strip().upper() for item in top_items if str(item.get("ticker") or "").strip()],
+                "missing_slots": [f"TOP{i}" for i in range(selection_count + 1, target_top_n + 1)],
+                "details": "final TOP still below requested count",
+            }
+        )
     if structured_warnings:
         unique_warnings = []
         seen = set()
@@ -521,7 +635,8 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
                 item.get("requested_count"),
                 item.get("selected_count"),
                 item.get("missing_count"),
-                tuple(item.get("symbols") or []),
+                tuple(item.get("selected_symbols") or item.get("symbols") or []),
+                tuple(item.get("missing_slots") or []),
                 str(item.get("details") or ""),
             )
             if key in seen:
@@ -539,24 +654,42 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
                 parts.append(f"selected={item.get('selected_count')}")
             if item.get("missing_count") is not None:
                 parts.append(f"missing={item.get('missing_count')}")
-            symbols = item.get("symbols") or []
-            if symbols:
-                parts.append(f"symbols={'/'.join(str(sym).strip().upper() for sym in symbols if str(sym).strip())}")
+            selected_symbols = item.get("selected_symbols") or item.get("symbols") or []
+            if selected_symbols:
+                parts.append(f"selected_symbols={','.join(str(sym).strip().upper() for sym in selected_symbols if str(sym).strip())}")
+            missing_slots = item.get("missing_slots") or []
+            if not missing_slots and item.get("warning_code") == "top_n_not_filled":
+                try:
+                    selected_count = int(item.get("selected_count") or 0)
+                    requested_count = int(item.get("requested_count") or 0)
+                except Exception:
+                    selected_count = 0
+                    requested_count = 0
+                if requested_count > selected_count >= 0:
+                    missing_slots = [f"TOP{i}" for i in range(selected_count + 1, requested_count + 1)]
+            if missing_slots:
+                parts.append(f"missing_slots={','.join(str(slot).strip().upper() for slot in missing_slots if str(slot).strip())}")
             details = str(item.get("details") or "").strip()
             if details:
                 parts.append(details)
             warnings.append(" | ".join(parts))
-    status = "成功" if top_items else "失败"
-    fallback_text = "true" if fallback_used else "false"
+    execution_text = "已完成" if execution_status != "FAILED" else "已失败"
+    result_text = {"COMPLETE": "完整", "DEGRADED": "降级", "INVALID": "无效"}.get(result_quality, result_quality or "未知")
+    admission_text = {"RESEARCH_READY": "已就绪", "RESEARCH_ONLY": "仅研究", "BLOCKED": "已阻止"}.get(research_admission, research_admission or "未知")
+    notice = build_research_admission_notice(
+        execution_status,
+        result_quality,
+        research_admission,
+        bool(report.get("mock_used", False)),
+        report.get("data_status") or (top_items[0].get("data_status") if top_items else ""),
+    )
     lines = [
         f"日期：{date_str}",
-        f"状态：{status}",
         f"阶段：{selection_stage or 'UNKNOWN'}",
         f"TOP数量：{selection_count}/{target_top_n}",
-        f"fallback：{fallback_text}",
-        f"执行：{execution_status or 'COMPLETED'}",
-        f"结果：{result_quality or ('DEGRADED' if fallback_used else 'COMPLETE')}",
-        f"研究准入：{research_admission or ('RESEARCH_ONLY' if fallback_used else 'RESEARCH_READY')}",
+        f"执行状态：{execution_text} ({execution_status or 'COMPLETED'})",
+        f"结果质量：{result_text} ({result_quality or ('DEGRADED' if fallback_used else 'COMPLETE')})",
+        f"研究准入：{admission_text} ({research_admission or ('RESEARCH_ONLY' if fallback_used else 'RESEARCH_READY')})",
         "",
     ]
     if last_completed_session:
@@ -582,15 +715,19 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
 
     lines.extend(
         [
-            f"Provider：使用：{providers_used}",
-            f"禁用：{providers_disabled}",
+            f"Provider 尝试：{provider_audit_sections['attempted']}",
+            f"Provider 成功：{provider_audit_sections['success']}",
+            f"Provider 失败：{provider_audit_sections['failure']}",
+            f"Provider 超时：{provider_audit_sections['timeout']}",
+            f"Provider Fallback：{provider_audit_sections['fallback']}",
+            f"Provider Mock：{provider_audit_sections['mock']}",
+            f"Provider 实际贡献：{provider_audit_sections['contributor']}",
         ]
     )
     if warnings:
         lines.append("警告：")
         lines.extend([f"- {item}" for item in warnings[:6]])
-    if fallback_used:
-        lines.append("注意：本次包含 fallback/mock 数据，仅建议 paper 验证，不建议直接 live。")
+    lines.append(f"注意：{notice}")
     return "【AI 选股完成】", "\n".join(lines).strip()
 
 

@@ -25,6 +25,7 @@ from src.research_report.site import build_research_site
 from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator
 from src.candidate_validation.research_scheduler import latest_research_status
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
+from src.notifier.alerts import build_provider_audit_sections, build_research_admission_notice
 from src.shadow.config import ShadowRuntimeConfig
 from src.shadow.universe import default_shadow_output_directory, is_safe_shadow_output_directory, shadow_title_for
 from src.candidate_validation import CandidatePerformanceTracker, CandidateValidationStore, ValidationStatus
@@ -1282,6 +1283,7 @@ def _candidate_validation_snapshot() -> dict[str, object]:
                 "data_status": latest_metadata.get("data_status") or latest_dict.get("data_status") or "",
                 "scoring_eligible": bool(latest_metadata.get("scoring_eligible", latest_dict.get("scoring_eligible", False))),
                 "scoring_block_reason": latest_metadata.get("scoring_block_reason") or latest_dict.get("scoring_block_reason") or "",
+                "trade_filter_passed": bool(latest_metadata.get("trade_filter_passed", latest_dict.get("trade_filter_passed", latest_dict.get("scoring_eligible", False)))),
                 "missing_fields": latest_metadata.get("missing_fields") or latest_dict.get("missing_fields") or [],
                 "candidate_fallback": bool(latest_metadata.get("candidate_fallback", latest_dict.get("candidate_fallback", False))),
                 "fallback_sources": latest_metadata.get("fallback_sources") or latest_dict.get("fallback_sources") or [],
@@ -1310,6 +1312,7 @@ def _candidate_validation_snapshot() -> dict[str, object]:
         "data_status": latest_metadata.get("data_status") or "",
         "scoring_eligible": bool(latest_metadata.get("scoring_eligible", False)),
         "scoring_block_reason": latest_metadata.get("scoring_block_reason") or "",
+        "trade_filter_passed": bool(latest_metadata.get("trade_filter_passed", latest_dict.get("trade_filter_passed", False))),
         "missing_fields": latest_metadata.get("missing_fields") or [],
         "candidate_fallback": bool(latest_metadata.get("candidate_fallback", False)),
         "fallback_sources": latest_metadata.get("fallback_sources") or [],
@@ -3537,12 +3540,20 @@ HTML = """<!DOCTYPE html>
                         <strong id="candidate-data-mode">{{ candidate_validation.latest_candidate.data_mode or 'unavailable' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Data Status</span>
-                        <strong id="candidate-data-status">{{ candidate_validation.latest_candidate.data_status or 'unavailable' }}</strong>
+                        <span>Universe Filter</span>
+                        <strong id="candidate-universe-filter">{{ '通过' if candidate_validation.latest_candidate.trade_filter_passed else '拒绝' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Data Sufficiency</span>
+                        <strong id="candidate-data-sufficiency">{{ '通过' if candidate_validation.latest_candidate.data_status == 'VALID' else '失败' }}</strong>
                     </div>
                     <div class="shadow-metric">
                         <span>Scoring Eligible</span>
                         <strong id="candidate-scoring-eligible">{{ 'YES' if candidate_validation.latest_candidate.scoring_eligible else 'NO' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Trade Admission</span>
+                        <strong id="candidate-trade-admission">{{ candidate_validation.latest_candidate.trade_admission_status or 'NOT_TRADABLE' }}</strong>
                     </div>
                     <div class="shadow-metric full">
                         <span>Scoring Block Reason</span>
@@ -3945,10 +3956,18 @@ HTML = """<!DOCTYPE html>
                                 · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
                                 · 启动阶段：{{ ai_selection.settings.selection_stage or 'unknown' }}
                                 {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
-                                {% if ai_selection.execution_status %} · 执行：{{ ai_selection.execution_status }}{% endif %}
-                                {% if ai_selection.result_quality %} · 结果：{{ ai_selection.result_quality }}{% endif %}
-                                {% if ai_selection.research_admission %} · 研究准入：{{ ai_selection.research_admission }}{% endif %}
+                                {% if ai_selection.execution_status %} · <span id="ai-selection-execution-status">执行状态：{{ ai_selection.execution_status }}</span>{% endif %}
+                                {% if ai_selection.result_quality %} · <span id="ai-selection-result-quality">结果质量：{{ ai_selection.result_quality }}</span>{% endif %}
+                                {% if ai_selection.research_admission %} · <span id="ai-selection-research-admission">研究准入：{{ ai_selection.research_admission }}</span>{% endif %}
                             {% endif %}
+                            <div style="margin-top:8px;line-height:1.5" id="ai-selection-research-notice">提示：{{ ai_selection.research_admission_notice or '候选可进入独立数据验证，不代表具备交易资格。' }}</div>
+                            <div style="margin-top:8px;line-height:1.5" id="ai-selection-provider-attempted">Provider 尝试：{{ ai_selection.provider_audit_sections.attempted if ai_selection.provider_audit_sections else '无' }}</div>
+                            <div style="line-height:1.5" id="ai-selection-provider-success">Provider 成功：{{ ai_selection.provider_audit_sections.success if ai_selection.provider_audit_sections else '无' }}</div>
+                            <div style="line-height:1.5" id="ai-selection-provider-failure">Provider 失败：{{ ai_selection.provider_audit_sections.failure if ai_selection.provider_audit_sections else '无' }}</div>
+                            <div style="line-height:1.5" id="ai-selection-provider-timeout">Provider 超时：{{ ai_selection.provider_audit_sections.timeout if ai_selection.provider_audit_sections else '无' }}</div>
+                            <div style="line-height:1.5" id="ai-selection-provider-fallback">Provider Fallback：{{ ai_selection.provider_audit_sections.fallback if ai_selection.provider_audit_sections else '无' }}</div>
+                            <div style="line-height:1.5" id="ai-selection-provider-mock">Provider Mock：{{ ai_selection.provider_audit_sections.mock if ai_selection.provider_audit_sections else '无' }}</div>
+                            <div style="line-height:1.5" id="ai-selection-provider-contributor">Provider 实际贡献：{{ ai_selection.provider_audit_sections.contributor if ai_selection.provider_audit_sections else '无' }}</div>
                             {% if ai_selection.protected_positions %}
                                 · 保护持仓：{{ ai_selection.protected_positions | map(attribute='ticker') | join(' / ') }}
                             {% endif %}
@@ -4651,8 +4670,10 @@ HTML = """<!DOCTYPE html>
             setText('candidate-premarket-volume', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_volume != null ? String(candidateValidation.latest_candidate.premarket_volume) : 'unavailable');
             setText('candidate-freshness-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.freshness_status ? candidateValidation.latest_candidate.freshness_status : (candidateValidation.status_label || 'STALE'));
             setText('candidate-data-mode', candidateValidation.latest_candidate && candidateValidation.latest_candidate.data_mode ? candidateValidation.latest_candidate.data_mode : 'unavailable');
-            setText('candidate-data-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.data_status ? candidateValidation.latest_candidate.data_status : 'unavailable');
+            setText('candidate-universe-filter', candidateValidation.latest_candidate && candidateValidation.latest_candidate.trade_filter_passed ? '通过' : '拒绝');
+            setText('candidate-data-sufficiency', candidateValidation.latest_candidate && candidateValidation.latest_candidate.data_status === 'VALID' ? '通过' : '失败');
             setText('candidate-scoring-eligible', candidateValidation.latest_candidate && candidateValidation.latest_candidate.scoring_eligible ? 'YES' : 'NO');
+            setText('candidate-trade-admission', candidateValidation.latest_candidate && candidateValidation.latest_candidate.trade_admission_status ? candidateValidation.latest_candidate.trade_admission_status : 'NOT_TRADABLE');
             setText('candidate-scoring-block-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.scoring_block_reason ? candidateValidation.latest_candidate.scoring_block_reason : 'unavailable');
             setText('candidate-stale-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.stale_reason ? candidateValidation.latest_candidate.stale_reason : 'unavailable');
             setText('candidate-evidence-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.evidence_status ? candidateValidation.latest_candidate.evidence_status : 'INSUFFICIENT_EVIDENCE');
@@ -4748,6 +4769,20 @@ HTML = """<!DOCTYPE html>
                 systemChip.className = `pill ${system.broker_connected ? 'status-live' : 'status-offline'}`;
                 systemChip.innerHTML = `<strong>${system.mode || 'UNKNOWN'}</strong> · ${system.broker_connection || 'not connected'}`;
             }
+
+            const aiSelection = payload.ai_selection || {};
+            setText('ai-selection-execution-status', aiSelection.execution_status ? `执行状态：${aiSelection.execution_status}` : '执行状态：COMPLETED');
+            setText('ai-selection-result-quality', aiSelection.result_quality ? `结果质量：${aiSelection.result_quality}` : '结果质量：COMPLETE');
+            setText('ai-selection-research-admission', aiSelection.research_admission ? `研究准入：${aiSelection.research_admission}` : '研究准入：RESEARCH_READY');
+            setText('ai-selection-research-notice', aiSelection.research_admission_notice || '候选可进入独立数据验证，不代表具备交易资格。');
+            const providerSections = aiSelection.provider_audit_sections || {};
+            setText('ai-selection-provider-attempted', `Provider 尝试：${providerSections.attempted || '无'}`);
+            setText('ai-selection-provider-success', `Provider 成功：${providerSections.success || '无'}`);
+            setText('ai-selection-provider-failure', `Provider 失败：${providerSections.failure || '无'}`);
+            setText('ai-selection-provider-timeout', `Provider 超时：${providerSections.timeout || '无'}`);
+            setText('ai-selection-provider-fallback', `Provider Fallback：${providerSections.fallback || '无'}`);
+            setText('ai-selection-provider-mock', `Provider Mock：${providerSections.mock || '无'}`);
+            setText('ai-selection-provider-contributor', `Provider 实际贡献：${providerSections.contributor || '无'}`);
         } catch (error) {
             // Keep last known data on failures.
         }
@@ -4955,6 +4990,9 @@ def _api_status_payload() -> dict[str, object]:
     )
     shadow_status = _shadow_status_payload()
     candidate_validation = _candidate_validation_payload()
+    ai_selection_top3 = list(ai_selection.get("top3") or [])
+    ai_selection_data_status = str(ai_selection.get("data_status") or "")
+    ai_selection_notice_status = str((ai_selection_top3[0].get("data_status") if ai_selection_top3 else ai_selection_data_status) or "")
     return {
         "ok": True,
         "mode": dashboard_mode or "paper",
@@ -5010,6 +5048,13 @@ def _api_status_payload() -> dict[str, object]:
             "execution_status": str(ai_selection.get("execution_status") or "").strip().upper() or "COMPLETED",
             "result_quality": str(ai_selection.get("result_quality") or "").strip().upper() or "COMPLETE",
             "research_admission": str(ai_selection.get("research_admission") or "").strip().upper() or "RESEARCH_READY",
+            "research_admission_notice": build_research_admission_notice(
+                str(ai_selection.get("execution_status") or "").strip().upper() or "COMPLETED",
+                str(ai_selection.get("result_quality") or "").strip().upper() or "COMPLETE",
+                str(ai_selection.get("research_admission") or "").strip().upper() or "RESEARCH_READY",
+                bool(ai_selection.get("mock_used", False)),
+                ai_selection_notice_status,
+            ),
             "selection_stage": str(ai_selection.get("selection_stage") or "").strip().upper() or "FINALIZED",
             "fallback_used": bool(ai_selection.get("fallback_used", False)),
             "provider_fallback_used": bool(ai_selection.get("provider_fallback_used", False)),
@@ -5017,6 +5062,10 @@ def _api_status_payload() -> dict[str, object]:
             "top_n_missing_count": int(ai_selection.get("top_n_missing_count") or 0),
             "warnings_structured": list(ai_selection.get("warnings_structured") or []),
             "provider_audit": ai_selection.get("provider_audit") or {},
+            "provider_audit_sections": build_provider_audit_sections(
+                dict(ai_selection.get("provider_audit") or {}),
+                dict(ai_selection.get("provider_outputs") or {}),
+            ),
             "top3": list(ai_selection.get("top3") or []),
         },
         "system": system_status,

@@ -650,7 +650,8 @@ def _normalize_warning_record(
     requested_count: int | None = None,
     selected_count: int | None = None,
     missing_count: int | None = None,
-    symbols: list[str] | None = None,
+    selected_symbols: list[str] | None = None,
+    missing_slots: list[str] | None = None,
     details: str = "",
 ) -> dict:
     if isinstance(warning, dict):
@@ -670,15 +671,18 @@ def _normalize_warning_record(
         record["selected_count"] = int(selected_count)
     if missing_count is not None and record.get("missing_count") is None:
         record["missing_count"] = int(missing_count)
-    if symbols is not None and record.get("symbols") is None:
-        record["symbols"] = [str(item).strip().upper() for item in symbols if str(item).strip()]
+    if selected_symbols is not None and record.get("selected_symbols") is None:
+        record["selected_symbols"] = [str(item).strip().upper() for item in selected_symbols if str(item).strip()]
+    if missing_slots is not None and record.get("missing_slots") is None:
+        record["missing_slots"] = [str(item).strip().upper() for item in missing_slots if str(item).strip()]
     if details and not record.get("details"):
         record["details"] = details
     record.setdefault("details", "")
     record.setdefault("requested_count", requested_count if requested_count is not None else None)
     record.setdefault("selected_count", selected_count if selected_count is not None else None)
     record.setdefault("missing_count", missing_count if missing_count is not None else None)
-    record.setdefault("symbols", [str(item).strip().upper() for item in symbols or [] if str(item).strip()])
+    record.setdefault("selected_symbols", [str(item).strip().upper() for item in selected_symbols or [] if str(item).strip()])
+    record.setdefault("missing_slots", [str(item).strip().upper() for item in missing_slots or [] if str(item).strip()])
     return record
 
 
@@ -693,7 +697,8 @@ def _dedupe_warning_records(records: list[dict]) -> list[dict]:
             normalized.get("requested_count"),
             normalized.get("selected_count"),
             normalized.get("missing_count"),
-            tuple(normalized.get("symbols") or []),
+            tuple(normalized.get("selected_symbols") or normalized.get("symbols") or []),
+            tuple(normalized.get("missing_slots") or []),
             normalized.get("details"),
         )
         if key in seen:
@@ -713,8 +718,12 @@ def _format_warning_record(record: dict) -> str:
         parts.append(f"selected={record.get('selected_count')}")
     if record.get("missing_count") is not None:
         parts.append(f"missing={record.get('missing_count')}")
-    if record.get("symbols"):
-        parts.append(f"symbols={'/'.join(record.get('symbols') or [])}")
+    selected_symbols = record.get("selected_symbols") or record.get("symbols") or []
+    if selected_symbols:
+        parts.append(f"selected_symbols={','.join(selected_symbols)}")
+    missing_slots = record.get("missing_slots") or []
+    if missing_slots:
+        parts.append(f"missing_slots={','.join(missing_slots)}")
     details = str(record.get("details") or "").strip()
     if details:
         parts.append(details)
@@ -782,14 +791,16 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
                 "requested_count": top_count,
                 "selected_count": selected_count,
                 "missing_count": missing_count,
-                "symbols": [str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+                "selected_symbols": [str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+                "missing_slots": [f"TOP{i}" for i in range(selected_count + 1, top_count + 1)],
                 "details": "final TOP still below requested count",
             },
             stage="FINALIZED",
             requested_count=top_count,
             selected_count=selected_count,
             missing_count=missing_count,
-            symbols=[str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+            selected_symbols=[str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+            missing_slots=[f"TOP{i}" for i in range(selected_count + 1, top_count + 1)],
             details="final TOP still below requested count",
         )
         warnings = [item for item in warnings if item.get("warning_code") != "top_n_not_filled"]

@@ -297,6 +297,7 @@ class CandidateValidationStore:
                 "data_status": raw.get("data_status") or report.get("data_status") or market_context.get("data_status") or "",
                 "scoring_eligible": bool(raw.get("scoring_eligible", report.get("scoring_eligible", market_context.get("scoring_eligible", False)))),
                 "scoring_block_reason": raw.get("scoring_block_reason") or report.get("scoring_block_reason") or market_context.get("scoring_block_reason") or "",
+                "trade_filter_passed": bool(raw.get("trade_filter_passed", report.get("trade_filter_passed", market_context.get("trade_filter_passed", False)))),
                 "missing_fields": list(raw.get("missing_fields") or report.get("missing_fields") or market_context.get("missing_fields") or []),
             }
             record = CandidateRecord.from_ai_candidate(
@@ -317,6 +318,7 @@ class CandidateValidationStore:
                 data_status=str(raw.get("data_status") or report.get("data_status") or market_context.get("data_status") or ""),
                 scoring_eligible=bool(raw.get("scoring_eligible", report.get("scoring_eligible", market_context.get("scoring_eligible", False)))),
                 scoring_block_reason=str(raw.get("scoring_block_reason") or report.get("scoring_block_reason") or market_context.get("scoring_block_reason") or ""),
+                trade_filter_passed=bool(raw.get("trade_filter_passed", report.get("trade_filter_passed", market_context.get("trade_filter_passed", False)))),
                 missing_fields=tuple(raw.get("missing_fields") or report.get("missing_fields") or market_context.get("missing_fields") or ()),
                 candidate_fallback=bool(raw.get("candidate_fallback", report.get("candidate_fallback", market_context.get("candidate_fallback", False)))),
                 fallback_sources=tuple(raw.get("fallback_sources") or report.get("fallback_sources") or market_context.get("fallback_sources") or ()),
