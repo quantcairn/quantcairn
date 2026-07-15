@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from scripts.test_longbridge_sandbox_connection import probe_sandbox
+from scripts.check_longbridge_sandbox_connection import probe_sandbox
 from src.config.loader import AppConfig, BrokerConfig, LongBridgeConfig
 from src.broker.base import OrderSide, OrderType, OrderStatus
 

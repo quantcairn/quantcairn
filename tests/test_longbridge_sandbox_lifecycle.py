@@ -4,7 +4,7 @@ from decimal import Decimal
 from enum import Enum
 from types import SimpleNamespace
 
-from scripts.test_longbridge_sandbox_lifecycle import (
+from scripts.check_longbridge_sandbox_lifecycle import (
     _build_test_limit_price,
     _build_sell_limit_price,
     _jsonable,
@@ -270,7 +270,7 @@ def test_order_mapping_keeps_limit_price_from_raw_price_fields():
 
 
 def test_lifecycle_happy_path(monkeypatch):
-    monkeypatch.setattr("scripts.test_longbridge_sandbox_lifecycle.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.check_longbridge_sandbox_lifecycle.time.sleep", lambda *_args, **_kwargs: None)
     fake_broker = FakeLifecycleBroker(start_qty=0)
     report = run_lifecycle_test(
         config=_sandbox_config(),

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scripts.test_weekend_paper_lifecycle import run_weekend_paper_lifecycle
+from scripts.check_weekend_paper_lifecycle import run_weekend_paper_lifecycle
 
 
 def test_weekend_paper_lifecycle_is_fully_offline(tmp_path):
