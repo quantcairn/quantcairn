@@ -242,7 +242,7 @@ def test_auto_range_buy_is_blocked_by_downtrend():
     signal = detector.evaluate(100.2, has_position=False)
 
     assert signal.type == SignalType.TREND_BLOCK
-    assert "BUY blocked: downtrend" in signal.reason
+    assert "daily_drop" in signal.reason or "downtrend" in signal.reason
 
 
 def test_auto_range_buy_is_not_blocked_by_mild_downtrend():

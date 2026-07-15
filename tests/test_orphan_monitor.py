@@ -247,10 +247,16 @@ def test_offline_assigned_process_becomes_orphan_after_three_failures():
     monitor = OrphanPositionMonitor(broker=broker)
     monitor._startup_at = 0
     monitor._is_top_process_active = lambda _port: False
+    import src.engine.orphan_monitor as module
 
-    assert "PLTR" not in monitor.scan_orphans([pos])
-    assert "PLTR" not in monitor.scan_orphans([pos])
-    assert "PLTR" in monitor.scan_orphans([pos])
+    original = module._load_configured_assignments
+    module._load_configured_assignments = lambda: {8091: "PLTR"}
+    try:
+        assert "PLTR" not in monitor.scan_orphans([pos])
+        assert "PLTR" not in monitor.scan_orphans([pos])
+        assert "PLTR" in monitor.scan_orphans([pos])
+    finally:
+        module._load_configured_assignments = original
 
 
 def test_market_hours_check_prevents_execution_outside_regular_hours():

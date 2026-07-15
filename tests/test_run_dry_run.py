@@ -47,8 +47,9 @@ range:
 def test_ai_selector_does_not_run_on_market_holiday():
     assert is_trading_day(datetime(2026, 7, 3, 9, 0)) is False
     assert is_trading_day(datetime(2026, 7, 2, 9, 0)) is True
-    assert is_market_time(datetime(2026, 7, 3, 9, 25)) is False
-    assert is_market_time(datetime(2026, 7, 2, 9, 25)) is True
+    assert is_market_time(datetime(2026, 7, 3, 9, 0)) is False
+    assert is_market_time(datetime(2026, 7, 2, 9, 0)) is True
+    assert is_market_time(datetime(2026, 7, 2, 9, 25)) is False
 
 
 def run_test_direct():

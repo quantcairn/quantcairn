@@ -56,7 +56,7 @@ def _make_flat_df(rows: int = 120, base: float = 20.0) -> pd.DataFrame:
 
 def test_range_like_series_scores_and_generates_range():
     scorer = Scorer()
-    result = scorer.score_frame("TEST", _make_range_like_df(), news_items=[], sector="Technology")
+    result = scorer.score_frame("SOFI", _make_range_like_df(), news_items=[], sector="Technology")
 
     assert result is not None
     assert result["score"] > 0

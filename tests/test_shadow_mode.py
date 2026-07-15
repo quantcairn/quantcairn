@@ -139,8 +139,9 @@ def test_shadow_mode_uses_quote_only_and_writes_outputs(monkeypatch, tmp_path):
     fake_module = _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
     _shadow_sandbox_root(monkeypatch, tmp_path)
+    runtime_output_dir = Path("artifacts/shadow/test_shadow_runtime")
     runtime = ShadowRuntimeConfig(
-        output_dir=Path("artifacts/shadow/test_shadow_runtime"),
+        output_dir=runtime_output_dir,
         symbol="SOXS.US",
         benchmark_symbols=("SOXX.US", "SMH.US"),
         frequency="15m",
@@ -163,15 +164,13 @@ def test_shadow_mode_uses_quote_only_and_writes_outputs(monkeypatch, tmp_path):
     assert result["trade_api_used"] is False
     assert result["deployment_eligible"] is False
     assert result["strategy_metrics"]
-    assert (runtime.output_dir / "shadow_events.jsonl").exists()
-    assert (runtime.output_dir / "shadow_simulated_orders.csv").exists()
-    assert (runtime.output_dir / "shadow_simulated_trades.csv").exists()
-    assert (runtime.output_dir / "runtime_state.json").exists()
-    events = (runtime.output_dir / "shadow_events.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert events
-    first = json.loads(events[0])
-    assert first["simulated"] is True
-    assert "benchmarks" in first
+    assert (runtime_output_dir / "shadow_events.jsonl").exists()
+    assert (runtime_output_dir / "shadow_simulated_orders.csv").exists()
+    assert (runtime_output_dir / "shadow_simulated_trades.csv").exists()
+    assert (runtime_output_dir / "runtime_state.json").exists()
+    audit = json.loads((runtime_output_dir / "safety_audit.json").read_text(encoding="utf-8"))
+    assert audit["quote_api_only"] is True
+    assert audit["trade_api_used"] is False
     assert fake_module.QuoteContext({"x": 1}).calls == []
 
 
