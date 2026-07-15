@@ -1,15 +1,40 @@
-ticker: SOXS
+ticker: SOFI
 mode: paper
 selection:
   source: ai_selector
-  selection_date: '2026-07-08'
-  score: 69.58
-  confidence: 0.58
+  selection_date: '2026-07-15'
+  score: 61.3
+  ai_score: 50.0
+  range_score: 78.25
+  final_score: 61.3
+  confidence: 0.55
+  trade_filter_passed: true
+  reject_reason: ''
+  fallback_used: false
+  leveraged_etf: false
+  composition_filter_passed: true
+  composition_reject_reason: ''
+  final_rank: 1
   protected_position: false
   reduce_only: false
-  reason: 'Fallback TradingAgents mock for SOXS: tradingagents_timeout | FinRobot
-    research artifacts parsed | Growth 50.0, profitability 50.0, balance sheet 50.0,
-    cash flow 50.0, valuation 50.0'
+  reason: 'Fallback TradingAgents mock for SOFI: tradingagents_timeout_budget_exhausted
+    | Fallback FinRobot mock for SOFI: finrobot_budget_exhausted | Growth 50.0, profitability
+    50.0, balance sheet 50.0, cash flow 50.0, valuation 50.0'
+  entry:
+    entry_proximity_score: 55.0
+    good_for_entry_now: false
+    entry_quality: neutral
+    entry_reason: mid_range_observation_only
+    range_position: 50.0
+    dist_to_support: 6.41
+    dist_to_resistance: 6.02
+allocation:
+  target_capital: 90.0
+  target_shares: 4
+  weight: 0.15
+  atr_pct: 0.05
+  risk_pct: 1.0
+  reason: risk_adjusted_allocation
 range:
   mode: auto
   support_price: null
@@ -17,15 +42,15 @@ range:
   auto_lookback: 60
   auto_refresh_minutes: 5
   trend_filter:
-    enabled: false
+    enabled: true
     ma_period: 20
     min_trend_strength: 0.3
   tolerance_pct: 1.0
-  min_profit_per_trade: 0.3
+  min_profit_per_trade: 0.56
   min_range_width_pct: 0.6
   quick_stop_pct: 3.0
 position:
-  size_per_trade: 119
+  size_per_trade: 30
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0
@@ -36,6 +61,19 @@ risk:
   daily_loss_limit: 60.0
   max_consecutive_losses: 3
   max_drawdown_pct: 8.0
+portfolio:
+  enabled: false
+  max_positions: 3
+  max_total_exposure: 1.0
+  max_total_risk: 0.05
+  leveraged_etf_max_single_position: 0.15
+  leveraged_etf_max_group_exposure: 0.5
+ai_selector:
+  allow_fallback_paper_entries: false
+  allow_fallback_live_entries: false
+  fallback_paper_position_multiplier: 0.25
+  entry_proximity_enabled: true
+  entry_proximity_weight: 0.0
 trading_hours:
   timezone: America/New_York
   start: 09:30
