@@ -13,6 +13,7 @@ import re
 from zoneinfo import ZoneInfo
 
 from src.ai_selector.config import load_runtime_config
+from src.ai_selector.selection_report import load_latest_ai_selection_state, normalize_provider_audit
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
 from src.ai_selector.universe_filter import load_universe_rules
 from src.ai_selector.selection_state import configured_top_count, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
@@ -578,61 +579,7 @@ def _dashboard_active_symbols(ai_selection: dict | None, selection_sync: dict | 
 
 
 def _load_ai_selection_report():
-    path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
-    if not path.exists():
-        return {
-            "timestamp": None,
-            "report": [],
-            "top3": [],
-            "top10": [],
-            "settings": {},
-            "refined_top3": [],
-            "refined_top10": [],
-            "refined_report": [],
-            "refinement_status": None,
-            "refinement_selection_stage": None,
-        }
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {
-                "timestamp": None,
-                "report": [],
-                "top3": [],
-                "top10": [],
-                "settings": {},
-                "refined_top3": [],
-                "refined_top10": [],
-                "refined_report": [],
-                "refinement_status": None,
-                "refinement_selection_stage": None,
-            }
-        rows = data.get("report") if isinstance(data.get("report"), list) else []
-        return {
-            "timestamp": data.get("timestamp"),
-            "report": rows,
-            "top3": data.get("top3") if isinstance(data.get("top3"), list) else [],
-            "top10": data.get("top10") if isinstance(data.get("top10"), list) else [],
-            "settings": data.get("settings") if isinstance(data.get("settings"), dict) else {},
-            "refined_top3": data.get("refined_top3") if isinstance(data.get("refined_top3"), list) else [],
-            "refined_top10": data.get("refined_top10") if isinstance(data.get("refined_top10"), list) else [],
-            "refined_report": data.get("refined_report") if isinstance(data.get("refined_report"), list) else [],
-            "refinement_status": data.get("refinement_status"),
-            "refinement_selection_stage": data.get("refinement_selection_stage"),
-        }
-    except Exception:
-        return {
-            "timestamp": None,
-            "report": [],
-            "top3": [],
-            "top10": [],
-            "settings": {},
-            "refined_top3": [],
-            "refined_top10": [],
-            "refined_report": [],
-            "refinement_status": None,
-            "refinement_selection_stage": None,
-        }
+    return load_latest_ai_selection_state(PROJECT_DIR)
 
 
 def _load_latest_research_digest() -> dict[str, object]:
@@ -5062,9 +5009,19 @@ def _api_status_payload() -> dict[str, object]:
             "top_n_missing_count": int(ai_selection.get("top_n_missing_count") or 0),
             "warnings_structured": list(ai_selection.get("warnings_structured") or []),
             "provider_audit": ai_selection.get("provider_audit") or {},
-            "provider_audit_sections": build_provider_audit_sections(
-                dict(ai_selection.get("provider_audit") or {}),
-                dict(ai_selection.get("provider_outputs") or {}),
+            "provider_audit_sections": dict(
+                ai_selection.get("provider_audit_sections")
+                or build_provider_audit_sections(
+                    dict(ai_selection.get("provider_audit") or {}),
+                    dict(ai_selection.get("provider_outputs") or {}),
+                )
+            ),
+            "provider_audit_normalized": dict(
+                ai_selection.get("provider_audit_normalized")
+                or normalize_provider_audit(
+                    dict(ai_selection.get("provider_audit") or {}),
+                    dict(ai_selection.get("provider_outputs") or {}),
+                )
             ),
             "top3": list(ai_selection.get("top3") or []),
         },

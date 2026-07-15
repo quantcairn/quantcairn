@@ -13,6 +13,8 @@ from typing import Optional
 import requests
 import yaml
 
+from src.ai_selector.selection_report import provider_audit_sections
+
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
@@ -312,73 +314,11 @@ def _first_non_empty(*values: object, default: object = "") -> object:
     return default
 
 
-def _normalize_provider_name(name: object) -> str:
-    text = str(name or "").strip()
-    return text
-
-
 def build_provider_audit_sections(
     provider_audit: dict[str, dict] | None,
     provider_outputs: dict[str, dict] | None,
 ) -> dict[str, str]:
-    records = []
-    for provider_name, record in sorted((provider_audit or {}).items()):
-        provider_record = dict(record or {})
-        provider_record["provider_name"] = _normalize_provider_name(provider_record.get("provider_name") or provider_name)
-        records.append(provider_record)
-
-    if not records and provider_outputs:
-        for provider_name in sorted(provider_outputs):
-            records.append({"provider_name": _normalize_provider_name(provider_name)})
-
-    attempted: list[str] = []
-    success: list[str] = []
-    failure: list[str] = []
-    timeout: list[str] = []
-    fallback: list[str] = []
-    mock: list[str] = []
-    contributors: list[str] = []
-
-    for record in records:
-        name = _normalize_provider_name(record.get("provider_name"))
-        if not name:
-            continue
-        attempted_hits = int(record.get("attempted") or 0)
-        success_hits = int(record.get("success") or 0)
-        timeout_hits = int(record.get("timed_out") or 0)
-        fallback_hits = int(record.get("fallback_used") or 0)
-        mock_hits = int(record.get("mock_used") or 0)
-        contributed_fields = list(record.get("contributed_fields") or [])
-
-        if attempted_hits > 0:
-            attempted.append(name)
-        if success_hits > 0 and timeout_hits <= 0:
-            success.append(name)
-        elif attempted_hits > 0 and timeout_hits <= 0 and fallback_hits <= 0 and mock_hits <= 0:
-            failure.append(name)
-        if timeout_hits > 0:
-            timeout.append(name)
-        if fallback_hits > 0:
-            fallback.append(name)
-        if mock_hits > 0:
-            mock.append(name)
-        if contributed_fields:
-            suffix = " (mock)" if mock_hits > 0 else ""
-            contributors.append(f"{name}{suffix}")
-
-    def _join(values: list[str]) -> str:
-        unique = list(dict.fromkeys(item for item in values if item))
-        return " / ".join(unique) if unique else "无"
-
-    return {
-        "attempted": _join(attempted),
-        "success": _join(success),
-        "failure": _join(failure),
-        "timeout": _join(timeout),
-        "fallback": _join(fallback),
-        "mock": _join(mock),
-        "contributor": _join(contributors),
-    }
+    return provider_audit_sections(provider_audit, provider_outputs)
 
 
 def build_research_admission_notice(

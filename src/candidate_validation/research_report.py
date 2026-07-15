@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .performance_tracker import CandidatePerformanceTracker
+from src.ai_selector.selection_report import load_latest_ai_selection_state
 from .store import CandidateValidationStore
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
@@ -72,15 +73,7 @@ def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 
 def _load_ai_selection_report(project_dir: Path | None = None) -> dict[str, Any]:
-    project_root = Path(project_dir or PROJECT_DIR)
-    path = project_root / "reports" / "ai_selection_latest.json"
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return load_latest_ai_selection_state(Path(project_dir or PROJECT_DIR))
 
 
 @dataclass(slots=True)

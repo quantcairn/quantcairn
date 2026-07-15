@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from src.ai_selector.selection_state import load_selection_state
+from src.ai_selector.selection_report import load_latest_ai_selection_state
 from src.ai_selector.settings import DEFAULT_MAX_PRICE, DEFAULT_MIN_PRICE, resolve_price_band
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 
@@ -72,9 +73,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _load_ai_selection_report(project_dir: Path | None = None) -> dict[str, Any]:
-    if project_dir is not None:
-        return _load_json(Path(project_dir) / "reports" / "ai_selection_latest.json")
-    return _load_json(DEFAULT_AI_REPORT_PATH)
+    return load_latest_ai_selection_state(Path(project_dir or PROJECT_DIR))
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
