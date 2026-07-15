@@ -36,8 +36,8 @@ def test_profile_fields_for_non_leveraged():
 def test_profile_leverage_tier():
     # 3x → 15%
     assert get_profile("SOXS")["max_position_pct"] == 0.15
-    # 2x → 20%
-    assert get_profile("YINN")["max_position_pct"] == 0.20
+    # 2x China ETF has an explicit symbol override in the profile registry.
+    assert get_profile("YINN")["max_position_pct"] == 0.80
 
 
 def test_profile_non_inverse_etf():

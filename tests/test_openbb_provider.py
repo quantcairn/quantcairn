@@ -158,11 +158,8 @@ def test_openbb_client_statements_disabled_by_default():
     original_env = os.environ.copy()
     try:
         os.environ.pop("SOXS_OPENBB_ENABLE_STATEMENTS", None)
-        client = StubOpenBBClient(
-            income_statement={"epsGrowth": 0.18},
-            balance_sheet={"quickRatio": 1.5},
-            cash_flow={"freeCashFlowGrowth": 0.16},
-        )
+        client = StubOpenBBClient()
+
         provider = OpenBBProvider(
             config=_config(),
             client=client,
@@ -172,6 +169,7 @@ def test_openbb_client_statements_disabled_by_default():
 
         assert result["NVDA"]["fallback"] is False
         assert result["NVDA"]["cash_flow_score"] == 50.0
+        assert result["NVDA"]["risk_score"] == 50.0
     finally:
         os.environ.clear()
         os.environ.update(original_env)

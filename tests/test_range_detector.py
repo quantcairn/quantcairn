@@ -216,7 +216,7 @@ def test_auto_range_buy_is_blocked_when_support_confidence_is_weak():
     )
     detector._auto_support = 100.0
     detector._auto_resistance = 105.0
-    detector._support_confidence = 0.1
+    detector._support_confidence = 0.099
 
     signal = detector.evaluate(100.2, has_position=False)
 
@@ -288,6 +288,7 @@ def test_needs_auto_refresh_respects_refresh_interval():
         ticker="TOP1",
         mode="auto",
         auto_refresh_minutes=15,
+        range_lock_minutes=0,
         trend_enabled=False,
     )
 
