@@ -398,18 +398,31 @@ def load_latest_ai_selection_state(project_dir: Path | None = None) -> dict[str,
     if latest_path.exists():
         candidates.append(latest_path)
 
-    try:
-        state = load_selection_state()
-    except Exception:
-        state = None
-    if isinstance(state, dict):
-        report_path = str(state.get("report_path") or "").strip()
+    local_state_path = root / "state" / "ai_selection_state.json"
+    local_state = _load_json(local_state_path) if local_state_path.exists() else {}
+    if isinstance(local_state, dict):
+        report_path = str(local_state.get("report_path") or "").strip()
         if report_path:
             candidate = Path(report_path)
             if not candidate.is_absolute():
                 candidate = root / report_path
             if candidate.exists():
                 candidates.append(candidate)
+
+    state: dict[str, Any] | None = None
+    if project_dir is None:
+        try:
+            state = load_selection_state()
+        except Exception:
+            state = None
+        if isinstance(state, dict):
+            report_path = str(state.get("report_path") or "").strip()
+            if report_path:
+                candidate = Path(report_path)
+                if not candidate.is_absolute():
+                    candidate = root / report_path
+                if candidate.exists():
+                    candidates.append(candidate)
 
     reports_dir = root / "reports"
     if reports_dir.exists():
@@ -437,7 +450,18 @@ def load_latest_ai_selection_state(project_dir: Path | None = None) -> dict[str,
     if best_report is not None:
         return best_report
 
-    if isinstance(state, dict):
+    if isinstance(local_state, dict):
+        report_path = str(local_state.get("report_path") or "").strip()
+        if report_path:
+            candidate = Path(report_path)
+            if not candidate.is_absolute():
+                candidate = root / report_path
+            if candidate.exists():
+                data = _load_json(candidate)
+                if isinstance(data, dict):
+                    return _report_from_data(data, source_path=candidate)
+
+    if project_dir is None and isinstance(state, dict):
         report_path = str(state.get("report_path") or "").strip()
         if report_path:
             candidate = Path(report_path)
