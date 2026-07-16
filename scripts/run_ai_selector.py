@@ -47,6 +47,7 @@ from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector.selector import write_selection_filter_log
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import resolve_price_band
+from src.ai_selector.data_quality import enrich_candidate_quality, evaluate_candidate_data_quality
 from src.ai_selector.universe_filter import filter_universe_candidates, load_universe_rules
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
@@ -513,6 +514,92 @@ def _normalize_selection_metadata(item: dict) -> dict:
     normalized.setdefault("composition_filter_passed", True)
     normalized.setdefault("composition_reject_reason", "")
     return normalized
+
+
+def _enrich_candidate_quality_rows(
+    rows: list[dict],
+    *,
+    provider_audit: dict[str, dict] | None = None,
+    provider_outputs: dict[str, dict] | None = None,
+) -> list[dict]:
+    enriched: list[dict] = []
+    for raw in rows or []:
+        item = enrich_candidate_quality(
+            dict(raw),
+            provider_audit=provider_audit,
+            provider_outputs=provider_outputs,
+        )
+        item["candidate_score"] = float(
+            item.get("candidate_score")
+            or item.get("final_score")
+            or item.get("score")
+            or item.get("ai_score")
+            or 0.0
+        )
+        item["confidence_score"] = float(
+            item.get("confidence_score")
+            or item.get("confidence")
+            or 0.0
+        )
+        item["score_reason"] = str(item.get("score_reason") or item.get("reason") or "")
+        item["why_selected"] = str(item.get("why_selected") or "")
+        enriched.append(item)
+    return enriched
+
+
+def _attach_ranking_context(rows: list[dict], ranked_rows: list[dict]) -> list[dict]:
+    ranked = [
+        dict(item)
+        for item in ranked_rows or []
+        if str((item or {}).get("ticker") or "").strip()
+    ]
+    ranked.sort(
+        key=lambda item: (
+            -float(item.get("candidate_score") or item.get("final_score") or item.get("score") or 0.0),
+            str(item.get("ticker") or ""),
+        )
+    )
+    selected_tickers = {
+        str(item.get("ticker") or "").strip().upper()
+        for item in rows or []
+        if str(item.get("ticker") or "").strip()
+    }
+    enhanced: list[dict] = []
+    for raw in rows or []:
+        item = dict(raw)
+        ticker = str(item.get("ticker") or "").strip().upper()
+        score = float(item.get("candidate_score") or item.get("final_score") or item.get("score") or 0.0)
+        nearest_rejected = None
+        best_margin = None
+        for other in ranked:
+            other_ticker = str(other.get("ticker") or "").strip().upper()
+            if not other_ticker or other_ticker == ticker or other_ticker in selected_tickers:
+                continue
+            other_score = float(other.get("candidate_score") or other.get("final_score") or other.get("score") or 0.0)
+            margin = round(score - other_score, 4)
+            if nearest_rejected is None or other_score > float(nearest_rejected.get("candidate_score") or nearest_rejected.get("final_score") or nearest_rejected.get("score") or 0.0):
+                nearest_rejected = {
+                    "ticker": other_ticker,
+                    "candidate_score": round(other_score, 4),
+                    "data_status": str(other.get("data_status") or ""),
+                    "reason": str(other.get("score_reason") or other.get("reason") or ""),
+                }
+                best_margin = margin
+        if nearest_rejected is None:
+            item["nearest_rejected_candidate"] = {}
+            item["ranking_margin"] = None
+        else:
+            item["nearest_rejected_candidate"] = nearest_rejected
+            item["ranking_margin"] = best_margin
+        if not item.get("why_selected"):
+            if item.get("rank", 0) == 1:
+                item["why_selected"] = "candidate_score highest among eligible candidates"
+            elif item.get("data_status") == "COMPLETE":
+                item["why_selected"] = "critical data complete and score ranked within top cohort"
+            else:
+                item["why_selected"] = "candidate selected after quality filtering"
+        enhanced.append(item)
+    return enhanced
 
 
 def _build_conservative_fallback_candidates(existing_symbols: set[str] | None = None) -> list[dict]:
@@ -1000,13 +1087,25 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
     provider_audit_summary = _build_provider_audit_summary(provider_audit or {}, provider_outputs)
     fallback_used = bool(summary.get("fallback_used", False)) or bool(summary.get("provider_fallback_used", False))
     mock_used = bool(provider_audit_summary.get("provider_mocks", 0))
-    timed_out = bool((summary.get("quality_filter_report") or {}).get("timed_out", False))
+    timed_out = bool((summary.get("quality_filter_report") or {}).get("timed_out", False)) or bool(
+        provider_audit_summary.get("provider_timeouts", 0)
+    ) or bool(provider_audit_summary.get("provider_empty_responses", 0))
     invalid_candidates = []
     degraded_reasons: set[str] = set()
     for item in top_items:
         candidate = dict(item or {})
         fallback_scope, fallback_severity, affected_fields = _candidate_fallback_metadata(candidate, provider_outputs)
-        candidate_fallback = bool(candidate.get("fallback_used") or candidate.get("quality_backfill") or candidate.get("fallback_history_incomplete") or candidate.get("data_status") in {"STALE", "INVALID"} or candidate.get("scoring_eligible") is False)
+        data_quality = dict(candidate.get("data_quality") or {})
+        dq_status = str(data_quality.get("data_status") or candidate.get("data_status") or "").strip().upper()
+        dq_scoring = bool(data_quality.get("scoring_eligible", candidate.get("scoring_eligible", False)))
+        dq_warnings = list(data_quality.get("quality_warnings") or [])
+        candidate_fallback = bool(
+            candidate.get("fallback_used")
+            or candidate.get("quality_backfill")
+            or candidate.get("fallback_history_incomplete")
+            or dq_status in {"STALE", "INVALID"}
+            or dq_scoring is False
+        )
         fallback_sources: list[str] = []
         mock_sources: list[str] = []
         ticker = _normalize_ticker(candidate.get("ticker"))
@@ -1029,7 +1128,15 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
         candidate["fallback_scope"] = fallback_scope or ("CRITICAL_MARKET_DATA" if candidate.get("data_status") in {"STALE", "INVALID"} else "")
         candidate["fallback_severity"] = fallback_severity or ("CRITICAL" if candidate.get("data_status") in {"STALE", "INVALID"} else "")
         candidate["affected_fields"] = affected_fields
-        candidate["degraded"] = bool(candidate["candidate_fallback"] or candidate["mock_used"] or candidate.get("data_status") in {"STALE", "INVALID"})
+        candidate["data_quality"] = data_quality
+        candidate["data_status"] = dq_status or candidate.get("data_status")
+        candidate["scoring_eligible"] = dq_scoring
+        candidate["quality_warnings"] = list(dict.fromkeys([*dq_warnings, *(candidate.get("quality_warnings") or [])]))
+        candidate["data_quality_score"] = float(candidate.get("data_quality_score") or (0.0 if dq_status == "INVALID" else 35.0 if dq_status == "STALE" else 85.0 if dq_warnings else 100.0))
+        candidate["critical_data_sources"] = list(dict.fromkeys(list(data_quality.get("critical_data_sources") or [])))
+        candidate["noncritical_data_sources"] = list(dict.fromkeys(list(data_quality.get("noncritical_data_sources") or [])))
+        candidate["provider_chain"] = list(dict.fromkeys(list(data_quality.get("provider_chain") or [])))
+        candidate["degraded"] = bool(candidate["candidate_fallback"] or candidate["mock_used"] or dq_status in {"STALE", "INVALID"} or dq_warnings)
         if candidate["candidate_fallback"]:
             degraded_reasons.add("fallback_used")
         if candidate["mock_used"]:
@@ -1039,6 +1146,11 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
         if candidate.get("data_status") == "INVALID":
             invalid_candidates.append(ticker)
             degraded_reasons.add("invalid_data")
+        if candidate.get("data_quality") and not dq_scoring and candidate.get("fallback_scope") == "CRITICAL_MARKET_DATA":
+            invalid_candidates.append(ticker)
+            degraded_reasons.add("critical_market_data_blocked")
+        if dq_warnings:
+            degraded_reasons.update(dq_warnings)
         candidate["degradation_reasons"] = sorted(
             set(
                 [
@@ -1046,6 +1158,7 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
                     *(["mock_used"] if candidate["mock_used"] else []),
                     *(["stale_data"] if candidate.get("data_status") == "STALE" else []),
                     *(["invalid_data"] if candidate.get("data_status") == "INVALID" else []),
+                    *dq_warnings,
                 ]
             )
         )
@@ -1573,6 +1686,21 @@ def main(mode: str | None = None):
     selected = [_normalize_entry_report_fields(_normalize_selection_metadata(item)) for item in selected]
     selected, low_quality_rejected = _filter_entry_quality(selected)
     report_top10 = [_normalize_entry_report_fields(item) for item in report_top10]
+    provider_audit_snapshot = dict(integrated_ai.get("provider_audit") or {})
+    provider_outputs_snapshot = dict(integrated_ai.get("provider_outputs") or {})
+    provider_audit_summary = _build_provider_audit_summary(provider_audit_snapshot, provider_outputs_snapshot)
+    selected = _enrich_candidate_quality_rows(
+        selected,
+        provider_audit=provider_audit_snapshot,
+        provider_outputs=provider_outputs_snapshot,
+    )
+    report_top10 = _enrich_candidate_quality_rows(
+        report_top10,
+        provider_audit=provider_audit_snapshot,
+        provider_outputs=provider_outputs_snapshot,
+    )
+    selected = _attach_ranking_context(selected, report_top10)
+    report_top10 = _attach_ranking_context(report_top10, report_top10)
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -1619,19 +1747,19 @@ def main(mode: str | None = None):
     quality_report["selection_funnel"] = {
         "universe_scanned": int(len(selection_symbols or integrated_ai.get("preferred_symbols") or out.get("top10") or [])),
         "universe_passed": int(len(report_top10 or [])),
-        "data_complete": int(sum(1 for item in (report_top10 or []) if str(item.get("data_status") or "").strip().upper() == "VALID")),
+        "quote_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("quote_as_of") or (item or {}).get("quote_timestamp") or "").strip())),
+        "ohlcv_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("ohlcv_as_of") or (item or {}).get("daily_data_as_of") or "").strip())),
+        "benchmark_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("benchmark_status") or "").strip().upper() == "VALID")),
+        "provider_empty_responses": int(provider_audit_summary.get("provider_empty_responses", 0) or 0),
+        "data_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_status") or "").strip().upper() == "COMPLETE")),
         "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
         "ranked_candidates": int(len(out.get("top10") or [])),
         "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
         "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),
         "refined_selected": int(len(selected)),
         "final_selected": int(len(selected)),
-        "provider_timeouts": int((out.get("quality_filter_report") or {}).get("timed_out", False)),
-        "provider_failures": int(sum(
-            int((record or {}).get("failure", 0) or 0)
-            for record in (integrated_ai.get("provider_audit") or {}).values()
-            if isinstance(record, dict)
-        )),
+        "provider_timeouts": int((provider_audit_summary.get("provider_timeouts", 0) if isinstance(provider_audit_summary, dict) else 0) or 0),
+        "provider_failures": int(provider_audit_summary.get("provider_failures", 0) or 0),
         "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
         "budget_exhausted": bool((out.get("quality_filter_report") or {}).get("timed_out", False)),
         "run_mode": run_mode,
@@ -1867,15 +1995,19 @@ def main(mode: str | None = None):
     summary["selection_funnel"] = {
         "universe_scanned": int(len(selection_symbols or integrated_ai.get("preferred_symbols") or out.get("top10") or [])),
         "universe_passed": int(len(report_top10 or [])),
-        "data_complete": int(sum(1 for item in (report_top10 or []) if str(item.get("data_status") or "").strip().upper() == "VALID")),
+        "quote_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("quote_as_of") or (item or {}).get("quote_timestamp") or "").strip())),
+        "ohlcv_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("ohlcv_as_of") or (item or {}).get("daily_data_as_of") or "").strip())),
+        "benchmark_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("benchmark_status") or "").strip().upper() == "VALID")),
+        "provider_empty_responses": int((provider_audit_summary.get("provider_empty_responses", 0) if isinstance(provider_audit_summary, dict) else 0) or 0),
+        "data_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_status") or "").strip().upper() == "COMPLETE")),
         "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
         "ranked_candidates": int(len(out.get("top10") or [])),
         "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
         "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),
         "refined_selected": int(len(summary.get("refined_top3") or summary.get("refined_top5") or [])),
         "final_selected": int(len(summary.get("top3") or [])),
-        "provider_timeouts": int((summary.get("provider_audit") or {}).get("provider_timeouts", 0) or 0),
-        "provider_failures": int((summary.get("provider_audit") or {}).get("provider_failures", 0) or 0),
+        "provider_timeouts": int(provider_audit_summary.get("provider_timeouts", 0) or 0),
+        "provider_failures": int(provider_audit_summary.get("provider_failures", 0) or 0),
         "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
         "budget_exhausted": bool((summary.get("quality_filter_report") or {}).get("timed_out", False)),
         "run_mode": run_mode,
