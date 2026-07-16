@@ -213,9 +213,14 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs():
         assert "BRK" in rejected_tickers
         assert "LOWVOL" in rejected_tickers
 
-        assert not (tmpdir / "configs" / "TOP1.yaml").exists()
-        assert not (tmpdir / "configs" / "TOP2.yaml").exists()
-        assert not (tmpdir / "configs" / "TOP3.yaml").exists()
+        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
+        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
+        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
+        assert top1["enabled"] is True
+        assert top2["enabled"] is False
+        assert top3["enabled"] is False
+        assert top2["reason"] == "top_n_not_filled"
+        assert top3["reason"] == "top_n_not_filled"
 
 
 def test_combined_dashboard_shows_universe_filter_when_report_missing_price_settings(monkeypatch):

@@ -342,9 +342,14 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
             item.get("reason") == "leveraged_etf_limit_exceeded"
             for item in summary["composition_filter"]["rejected"]
         )
-        assert not (tmpdir / "configs" / "TOP1.yaml").exists()
-        assert not (tmpdir / "configs" / "TOP2.yaml").exists()
-        assert not (tmpdir / "configs" / "TOP3.yaml").exists()
+        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
+        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
+        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
+        assert top1["enabled"] is True
+        assert top2["enabled"] is False
+        assert top3["enabled"] is False
+        assert top2["reason"] == "top_n_not_filled"
+        assert top3["reason"] == "top_n_not_filled"
 
 
 def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
@@ -452,7 +457,12 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
             str(warning).startswith("top_n_not_filled")
             for warning in summary["quality_filter_report"]["composition_filter"]["warnings"]
         )
-        assert not (tmpdir / "configs" / "TOP3.yaml").exists()
+        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
+        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
+        assert top2["enabled"] is False
+        assert top3["enabled"] is False
+        assert top2["reason"] == "top_n_not_filled"
+        assert top3["reason"] == "top_n_not_filled"
 
 
 def test_low_entry_quality_candidates_do_not_fill_top_slots():
@@ -647,8 +657,12 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
         top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
         assert top1["ticker"] == "AAA"
         assert top1["selection"]["entry"]["entry_quality"] == "excellent"
-        assert not (tmpdir / "configs" / "TOP2.yaml").exists()
-        assert not (tmpdir / "configs" / "TOP3.yaml").exists()
+        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
+        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
+        assert top2["enabled"] is False
+        assert top3["enabled"] is False
+        assert top2["reason"] == "top_n_not_filled"
+        assert top3["reason"] == "top_n_not_filled"
 
 
 def test_shell_scripts_treat_missing_top3_as_disabled():

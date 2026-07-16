@@ -57,8 +57,6 @@ def main() -> None:
         return
     if expected_timestamp and str(latest.get("timestamp") or "").strip() != expected_timestamp:
         return
-    if str(((latest.get("settings") or {}).get("selection_stage") or "")).strip() != "fast_preliminary":
-        return
 
     runtime_settings = load_runtime_settings()
     min_price, max_price = resolve_price_band(runtime_settings)

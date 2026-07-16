@@ -160,7 +160,60 @@ class AISelector:
     ) -> dict[str, object]:
         rows = [dict(value) for value in (result or {}).values() if isinstance(value, dict)]
         contributor_fields: set[str] = set()
+        affected_candidates: set[str] = set()
+        critical_market_data_fields = {
+            "current_price",
+            "open",
+            "high",
+            "low",
+            "close",
+            "ohlcv",
+            "quote",
+            "bid",
+            "ask",
+            "spread_pct",
+            "current_session",
+            "previous_completed_session",
+            "daily_data_as_of",
+            "benchmark_data_as_of",
+            "benchmark_alignment_status",
+            "market_cap",
+            "average_dollar_volume_20d",
+            "avg_dollar_volume_20d",
+            "avg_10d_volume",
+            "volume",
+            "atr_20_percentage",
+            "atr_pct",
+            "gap_pct",
+        }
+        non_critical_factor_fields = {
+            "score",
+            "ai_score",
+            "range_score",
+            "final_score",
+            "candidate_score",
+            "confidence",
+            "technical_score",
+            "sentiment_score",
+            "fundamental_score",
+            "valuation_score",
+            "earnings_score",
+            "growth_score",
+            "risk_score",
+        }
+        explanation_only_fields = {
+            "reason",
+            "summary",
+            "commentary",
+            "explanation",
+            "narrative",
+            "analysis",
+            "notes",
+        }
         for row in rows:
+            ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+            if ticker:
+                affected_candidates.add(ticker)
             for key, value in row.items():
                 if key == "ticker" or value is None:
                     continue
@@ -196,6 +249,21 @@ class AISelector:
                 mock_hits += 1
             if has_scores and not is_fallback:
                 success_hits += 1
+        if contributor_fields & critical_market_data_fields:
+            fallback_scope = "CRITICAL_MARKET_DATA"
+            fallback_severity = "CRITICAL"
+        elif contributor_fields & non_critical_factor_fields:
+            fallback_scope = "NON_CRITICAL_FACTOR"
+            fallback_severity = "DEGRADED"
+        elif contributor_fields & explanation_only_fields:
+            fallback_scope = "EXPLANATION_ONLY"
+            fallback_severity = "INFO"
+        elif timeout_hits:
+            fallback_scope = "RUN_LEVEL"
+            fallback_severity = "DEGRADED"
+        else:
+            fallback_scope = "EXPLANATION_ONLY"
+            fallback_severity = "INFO"
         return {
             "provider_name": label,
             "attempted": len(tickers),
@@ -209,6 +277,10 @@ class AISelector:
             "error_code": type(error).__name__ if error is not None else "",
             "error_message": str(error) if error is not None else "",
             "contributed_fields": sorted(contributor_fields),
+            "affected_candidates": sorted(affected_candidates),
+            "affected_fields": sorted(contributor_fields),
+            "fallback_scope": fallback_scope,
+            "fallback_severity": fallback_severity,
             "contributor_count": len(contributor_fields),
         }
 

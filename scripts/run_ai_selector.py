@@ -6,6 +6,7 @@ Usage: scripts/run_ai_selector.py
 import os
 import sys
 import subprocess
+import argparse
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
@@ -52,6 +53,7 @@ from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
 from src.ai_selector.selection_state import write_selection_state as persist_selection_state
 from src.ai_selector.selection_bundle import write_selection_bundle_atomic
+from src.ai_selector.config_writer import write_top_configs
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -107,6 +109,58 @@ CONSERVATIVE_FALLBACK_POOL = [
     "KO",
     "INTC",
 ]
+
+_EXPLANATION_ONLY_FIELDS = {
+    "reason",
+    "summary",
+    "commentary",
+    "explanation",
+    "narrative",
+    "analysis",
+    "notes",
+}
+
+_NON_CRITICAL_FACTOR_FIELDS = {
+    "score",
+    "ai_score",
+    "range_score",
+    "final_score",
+    "candidate_score",
+    "confidence",
+    "technical_score",
+    "sentiment_score",
+    "fundamental_score",
+    "valuation_score",
+    "earnings_score",
+    "growth_score",
+    "risk_score",
+}
+
+_CRITICAL_MARKET_DATA_FIELDS = {
+    "current_price",
+    "open",
+    "high",
+    "low",
+    "close",
+    "ohlcv",
+    "quote",
+    "bid",
+    "ask",
+    "spread_pct",
+    "current_session",
+    "previous_completed_session",
+    "daily_data_as_of",
+    "benchmark_data_as_of",
+    "benchmark_alignment_status",
+    "market_cap",
+    "average_dollar_volume_20d",
+    "avg_dollar_volume_20d",
+    "avg_10d_volume",
+    "volume",
+    "atr_20_percentage",
+    "atr_pct",
+    "gap_pct",
+}
 
 
 def _et_now() -> datetime:
@@ -184,6 +238,58 @@ def _provider_metadata(
         name for name in dict.fromkeys(providers_disabled) if name not in providers_used
     ]
     return providers_used, providers_disabled, fmp_enabled
+
+
+def _candidate_fallback_metadata(candidate: dict, provider_outputs: dict[str, dict] | None) -> tuple[str, str, list[str]]:
+    provider_outputs = dict(provider_outputs or {})
+    candidate_fallback = bool(
+        candidate.get("fallback_used")
+        or candidate.get("quality_backfill")
+        or candidate.get("fallback_history_incomplete")
+        or candidate.get("data_status") in {"STALE", "INVALID"}
+        or candidate.get("scoring_eligible") is False
+    )
+    affected_fields: set[str] = set()
+    fallback_sources: set[str] = set()
+    mock_sources: set[str] = set()
+    has_critical_fields = False
+    has_factor_fields = False
+    has_explanation_fields = False
+    ticker = _normalize_ticker(candidate.get("ticker"))
+    for provider_name, provider_rows in provider_outputs.items():
+        provider_row = dict(provider_rows.get(ticker) or {}) if isinstance(provider_rows, dict) else {}
+        if not provider_row:
+            continue
+        text = " ".join(
+            str(provider_row.get(key) or "")
+            for key in ("reason", "source", "error_message", "error_code")
+        ).lower()
+        is_mock = "mock" in text or str(provider_row.get("source") or "").lower().endswith("_mock")
+        is_fallback = bool(provider_row.get("fallback")) or is_mock
+        if is_fallback:
+            fallback_sources.add(provider_name)
+            candidate_fallback = True
+        if is_mock:
+            mock_sources.add(provider_name)
+        fields = {
+            str(key)
+            for key, value in provider_row.items()
+            if key not in {"ticker", "symbol", "source", "reason", "error_message", "error_code", "fallback", "mock", "mock_used", "fallback_used", "timed_out"} and value is not None
+        }
+        affected_fields.update(fields)
+        if fields & _CRITICAL_MARKET_DATA_FIELDS:
+            has_critical_fields = True
+        elif fields & _NON_CRITICAL_FACTOR_FIELDS:
+            has_factor_fields = True
+        elif fields & _EXPLANATION_ONLY_FIELDS:
+            has_explanation_fields = True
+    if has_critical_fields:
+        return "CRITICAL_MARKET_DATA", "CRITICAL", sorted(affected_fields)
+    if has_factor_fields:
+        return "NON_CRITICAL_FACTOR", "DEGRADED", sorted(affected_fields)
+    if has_explanation_fields or candidate_fallback or mock_sources:
+        return "EXPLANATION_ONLY", "INFO", sorted(affected_fields)
+    return "", "", sorted(affected_fields)
 
 
 def _run_integrated_ai_selector() -> dict:
@@ -622,6 +728,78 @@ def _merge_rejected_rows(rows: list[dict]) -> list[dict]:
     return merged
 
 
+def _selector_run_mode(value: str | None = None) -> str:
+    mode = str(value or os.environ.get("AI_SELECTOR_RUN_MODE") or "full").strip().lower()
+    if mode not in {"fast_preliminary", "quality_refined", "full"}:
+        return "full"
+    return mode
+
+
+def _apply_selector_run_mode(mode: str) -> None:
+    normalized = _selector_run_mode(mode)
+    if normalized == "fast_preliminary":
+        os.environ["AI_SELECTOR_FAST_START_ONLY"] = "1"
+        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "1"
+    elif normalized == "quality_refined":
+        os.environ["AI_SELECTOR_FAST_START_ONLY"] = "0"
+        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+    else:
+        os.environ["AI_SELECTOR_FAST_START_ONLY"] = "0"
+        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "1"
+
+
+def _rejection_reason_code(item: dict) -> str:
+    reasons = item.get("rejection_reason")
+    if isinstance(reasons, list) and reasons:
+        return str(reasons[0]).strip() or "unknown"
+    for key in ("reason_code", "reason", "reject_reason", "scoring_block_reason", "composition_reject_reason", "selection_penalty_reason", "stale_reason"):
+        value = item.get(key)
+        if isinstance(value, list):
+            value = next((str(v).strip() for v in value if str(v).strip()), "")
+        value = str(value or "").strip()
+        if value:
+            return value.split(":", 1)[0].split(";", 1)[0].strip() or "unknown"
+    return "unknown"
+
+
+def _build_rejection_trace(groups: list[tuple[str, list[dict]]]) -> tuple[list[dict], dict[str, int]]:
+    trace: list[dict] = []
+    counts: dict[str, int] = {}
+    seen: set[tuple[str, str, str, str]] = set()
+    for stage, rows in groups:
+        for raw in rows or []:
+            item = dict(raw or {})
+            ticker = _normalize_ticker(item.get("ticker") or item.get("symbol"))
+            reason_code = _rejection_reason_code(item)
+            reason_detail = str(
+                item.get("reason_detail")
+                or item.get("details")
+                or item.get("reason")
+                or item.get("reject_reason")
+                or item.get("scoring_block_reason")
+                or ""
+            ).strip()
+            key = (stage, ticker, reason_code, reason_detail)
+            if not ticker or key in seen:
+                continue
+            seen.add(key)
+            record = {
+                "symbol": ticker,
+                "stage": stage,
+                "reason_code": reason_code,
+                "reason_detail": reason_detail,
+                "asset_type": str(item.get("asset_type") or "").strip(),
+                "data_status": str(item.get("data_status") or "").strip().upper(),
+                "scoring_eligible": bool(item.get("scoring_eligible", item.get("trade_filter_passed", False))),
+                "candidate_score": float(item.get("candidate_score") or item.get("score") or item.get("final_score") or 0.0),
+                "fallback_scope": str(item.get("fallback_scope") or ""),
+                "fallback_severity": str(item.get("fallback_severity") or ""),
+            }
+            trace.append(record)
+            counts[reason_code] = counts.get(reason_code, 0) + 1
+    return trace, counts
+
+
 def _normalize_entry_report_fields(item: dict) -> dict:
     normalized = dict(item or {})
     entry = normalized.get("entry") if isinstance(normalized.get("entry"), dict) else {}
@@ -827,11 +1005,12 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
     degraded_reasons: set[str] = set()
     for item in top_items:
         candidate = dict(item or {})
+        fallback_scope, fallback_severity, affected_fields = _candidate_fallback_metadata(candidate, provider_outputs)
         candidate_fallback = bool(candidate.get("fallback_used") or candidate.get("quality_backfill") or candidate.get("fallback_history_incomplete") or candidate.get("data_status") in {"STALE", "INVALID"} or candidate.get("scoring_eligible") is False)
         fallback_sources: list[str] = []
         mock_sources: list[str] = []
         ticker = _normalize_ticker(candidate.get("ticker"))
-        for provider_name, provider_rows in (provider_outputs := dict(summary.get("provider_outputs") or {})).items():
+        for provider_name, provider_rows in provider_outputs.items():
             provider_row = dict(provider_rows.get(ticker) or {}) if isinstance(provider_rows, dict) else {}
             if not provider_row:
                 continue
@@ -847,6 +1026,9 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
         candidate["fallback_sources"] = sorted(set(fallback_sources))
         candidate["mock_used"] = bool(mock_sources)
         candidate["mock_sources"] = sorted(set(mock_sources))
+        candidate["fallback_scope"] = fallback_scope or ("CRITICAL_MARKET_DATA" if candidate.get("data_status") in {"STALE", "INVALID"} else "")
+        candidate["fallback_severity"] = fallback_severity or ("CRITICAL" if candidate.get("data_status") in {"STALE", "INVALID"} else "")
+        candidate["affected_fields"] = affected_fields
         candidate["degraded"] = bool(candidate["candidate_fallback"] or candidate["mock_used"] or candidate.get("data_status") in {"STALE", "INVALID"})
         if candidate["candidate_fallback"]:
             degraded_reasons.add("fallback_used")
@@ -913,6 +1095,7 @@ def _enrich_selection_rows(
     for raw in rows or []:
         item = dict(raw or {})
         ticker = _normalize_ticker(item.get("ticker"))
+        fallback_scope, fallback_severity, affected_fields = _candidate_fallback_metadata(item, provider_outputs)
         candidate_fallback = bool(
             item.get("fallback_used")
             or item.get("quality_backfill")
@@ -941,6 +1124,9 @@ def _enrich_selection_rows(
         item["fallback_sources"] = sorted(set(fallback_sources))
         item["mock_used"] = bool(mock_sources)
         item["mock_sources"] = sorted(set(mock_sources))
+        item["fallback_scope"] = fallback_scope or ("CRITICAL_MARKET_DATA" if item.get("data_status") in {"STALE", "INVALID"} else "")
+        item["fallback_severity"] = fallback_severity or ("CRITICAL" if item.get("data_status") in {"STALE", "INVALID"} else "")
+        item["affected_fields"] = affected_fields
         item["degraded"] = bool(item["candidate_fallback"] or item["mock_used"] or item.get("data_status") in {"STALE", "INVALID"})
         item["degradation_reasons"] = sorted(
             set(
@@ -1245,7 +1431,9 @@ def _split_selected_and_protected_positions(
     protected_positions.sort(key=lambda item: (item.get("ticker") or ""))
     return tradable[:limit], protected_positions
 
-def main():
+def main(mode: str | None = None):
+    run_mode = _selector_run_mode(mode)
+    _apply_selector_run_mode(run_mode)
     load_local_ai_env()
     runtime_settings = load_runtime_settings()
     min_price, max_price = resolve_price_band(runtime_settings)
@@ -1417,6 +1605,37 @@ def main():
     quality_report["disabled_configs"] = [
         f"TOP{i}.yaml" for i in range(len(selected) + 1, TOP_COUNT + 1)
     ]
+    rejection_trace, rejection_reason_counts = _build_rejection_trace(
+        [
+            ("UNIVERSE", list(universe_rejected_rows or [])),
+            ("PRICE_BAND", list(price_band_rejected_rows or [])),
+            ("TRADE_FILTER", list(trade_filter_rejected or [])),
+            ("COMPOSITION", list(composition_filter_report.get("rejected") or [])),
+            ("ENTRY_QUALITY", list(low_quality_rejected or [])),
+        ]
+    )
+    quality_report["rejection_trace"] = list(rejection_trace)
+    quality_report["rejection_reason_counts"] = dict(rejection_reason_counts)
+    quality_report["selection_funnel"] = {
+        "universe_scanned": int(len(selection_symbols or integrated_ai.get("preferred_symbols") or out.get("top10") or [])),
+        "universe_passed": int(len(report_top10 or [])),
+        "data_complete": int(sum(1 for item in (report_top10 or []) if str(item.get("data_status") or "").strip().upper() == "VALID")),
+        "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
+        "ranked_candidates": int(len(out.get("top10") or [])),
+        "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
+        "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),
+        "refined_selected": int(len(selected)),
+        "final_selected": int(len(selected)),
+        "provider_timeouts": int((out.get("quality_filter_report") or {}).get("timed_out", False)),
+        "provider_failures": int(sum(
+            int((record or {}).get("failure", 0) or 0)
+            for record in (integrated_ai.get("provider_audit") or {}).values()
+            if isinstance(record, dict)
+        )),
+        "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
+        "budget_exhausted": bool((out.get("quality_filter_report") or {}).get("timed_out", False)),
+        "run_mode": run_mode,
+    }
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     out["settings"] = dict(out.get("settings") or {})
@@ -1561,6 +1780,9 @@ def main():
     if summary.get("warnings_structured"):
         summary["warnings_structured"] = _dedupe_warning_records(list(summary.get("warnings_structured") or []))
         summary["warnings"] = [_format_warning_record(item) for item in summary["warnings_structured"]]
+    summary["rejection_trace"] = list(quality_report.get("rejection_trace") or [])
+    summary["rejection_reason_counts"] = dict(quality_report.get("rejection_reason_counts") or {})
+    summary["selection_funnel"] = dict(quality_report.get("selection_funnel") or {})
 
     latest_report_path, _ = _write_reports(summary)
     selection_state_hook_payload = {
@@ -1602,6 +1824,18 @@ def main():
             result_quality=str(summary.get("result_quality") or ""),
             research_admission=str(summary.get("research_admission") or ""),
         )
+        write_top_configs(
+            list(selected),
+            selection_run_id=selection_run_id,
+            selection_date=current_session,
+            generated_at=timestamp,
+            disabled_reason="top_n_not_filled",
+            result_quality=str(summary.get("result_quality") or ""),
+            research_admission=str(summary.get("research_admission") or ""),
+            top_sync_status="OK",
+            top_sync_error="",
+            slot_limit=TOP_COUNT,
+        )
         bundle_result = {}
     else:
         bundle_result = write_selection_bundle_atomic(
@@ -1618,6 +1852,34 @@ def main():
         )
     if isinstance(bundle_result, dict):
         summary.update(bundle_result)
+
+    rejection_trace, rejection_reason_counts = _build_rejection_trace(
+        [
+            ("UNIVERSE", list(universe_rejected_rows or [])),
+            ("PRICE_BAND", list(price_band_rejected_rows or [])),
+            ("TRADE_FILTER", list(trade_filter_rejected or [])),
+            ("COMPOSITION", list(composition_filter_report.get("rejected") or [])),
+            ("ENTRY_QUALITY", list(low_quality_rejected or [])),
+        ]
+    )
+    summary["rejection_trace"] = rejection_trace
+    summary["rejection_reason_counts"] = rejection_reason_counts
+    summary["selection_funnel"] = {
+        "universe_scanned": int(len(selection_symbols or integrated_ai.get("preferred_symbols") or out.get("top10") or [])),
+        "universe_passed": int(len(report_top10 or [])),
+        "data_complete": int(sum(1 for item in (report_top10 or []) if str(item.get("data_status") or "").strip().upper() == "VALID")),
+        "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
+        "ranked_candidates": int(len(out.get("top10") or [])),
+        "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
+        "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),
+        "refined_selected": int(len(summary.get("refined_top3") or summary.get("refined_top5") or [])),
+        "final_selected": int(len(summary.get("top3") or [])),
+        "provider_timeouts": int((summary.get("provider_audit") or {}).get("provider_timeouts", 0) or 0),
+        "provider_failures": int((summary.get("provider_audit") or {}).get("provider_failures", 0) or 0),
+        "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
+        "budget_exhausted": bool((summary.get("quality_filter_report") or {}).get("timed_out", False)),
+        "run_mode": run_mode,
+    }
 
     _publish_candidate_validation_records(summary)
     notification_rows = selected or summary_top3_source
@@ -1676,4 +1938,12 @@ def _load_final_top_configs(limit: int = TOP_COUNT) -> list[dict]:
     return configs
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description="Run the AI selector")
+    parser.add_argument(
+        "--mode",
+        choices=("fast_preliminary", "quality_refined", "full"),
+        default=None,
+        help="Selector run mode (default: full)",
+    )
+    args = parser.parse_args()
+    main(mode=args.mode)

@@ -489,6 +489,9 @@ def _ticker_line(top_config: dict, rank: int) -> str:
     fallback_text = "是" if candidate_fallback else "否"
     fallback_source_text = " / ".join(str(item).strip().upper() for item in (fallback_sources or []) if str(item).strip())
     mock_source_text = " / ".join(str(item).strip().upper() for item in (mock_sources or []) if str(item).strip())
+    fallback_scope = str(_first_non_empty(selection.get("fallback_scope"), top_config.get("fallback_scope"), default="")).strip().upper()
+    fallback_severity = str(_first_non_empty(selection.get("fallback_severity"), top_config.get("fallback_severity"), default="")).strip().upper()
+    affected_fields = _first_non_empty(selection.get("affected_fields"), top_config.get("affected_fields"), default=[])
     lines = [
         f"TOP{rank}：{ticker}",
         f"分数：final {final_score} / AI {ai_score} / Range {range_score}",
@@ -506,6 +509,14 @@ def _ticker_line(top_config: dict, rank: int) -> str:
         lines.append(f"fallback来源：{fallback_source_text}")
     if mock_source_text:
         lines.append(f"mock来源：{mock_source_text}")
+    if fallback_scope:
+        lines.append(f"fallback范围：{fallback_scope}")
+    if fallback_severity:
+        lines.append(f"fallback级别：{fallback_severity}")
+    if affected_fields:
+        fields = ", ".join(str(field) for field in affected_fields if str(field).strip())
+        if fields:
+            lines.append(f"fallback影响：{fields}")
     lines.append(f"理由：{reason or '无'}")
     return "\n".join(lines)
 

@@ -199,6 +199,9 @@ def _sample_report_with_semantics() -> dict:
             "data_status": "VALID",
             "current_validation_status": "AI_CANDIDATE",
             "trade_admission_status": "NOT_TRADABLE",
+            "fallback_scope": "EXPLANATION_ONLY",
+            "fallback_severity": "INFO",
+            "affected_fields": ["reason", "summary"],
             "selection_date": "2026-07-09",
             "allocation": {
                 "target_capital": 4920,
@@ -380,6 +383,9 @@ def test_ai_selection_message_renders_provider_audit_sections():
                 "data_status": "INVALID",
                 "current_validation_status": "AI_CANDIDATE",
                 "trade_admission_status": "NOT_TRADABLE",
+                "fallback_scope": "CRITICAL_MARKET_DATA",
+                "fallback_severity": "CRITICAL",
+                "affected_fields": ["current_price", "close", "atr_20_percentage"],
             }
         ],
     )
@@ -393,6 +399,9 @@ def test_ai_selection_message_renders_provider_audit_sections():
     assert "Provider 超时：tradingagents" in body
     assert "Provider Mock：finrobot / tradingagents" in body
     assert "Provider 实际贡献：" in body
+    assert "fallback范围：CRITICAL_MARKET_DATA" in body
+    assert "fallback级别：CRITICAL" in body
+    assert "fallback影响：current_price, close, atr_20_percentage" in body
 
 
 def test_notify_ai_selection_without_telegram_does_not_raise(monkeypatch):

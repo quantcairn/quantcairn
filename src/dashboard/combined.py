@@ -819,6 +819,34 @@ def _ai_universe_filter_summary(ai_selection: dict | None = None) -> dict[str, o
     }
 
 
+def _ai_selection_rejection_reason_counts(ai_selection: dict | None = None) -> dict[str, int]:
+    report = ai_selection if isinstance(ai_selection, dict) else {}
+    counts: dict[str, int] = {}
+    if isinstance(report.get("rejection_reason_counts"), dict) and report.get("rejection_reason_counts"):
+        for key, value in report.get("rejection_reason_counts", {}).items():
+            try:
+                counts[str(key)] = int(value or 0)
+            except Exception:
+                continue
+        return counts
+
+    trace = report.get("rejection_trace") if isinstance(report.get("rejection_trace"), list) else []
+    for item in trace or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("reason_code") or item.get("warning_code") or "unknown").strip() or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+
+    if not counts:
+        warnings = report.get("warnings_structured") if isinstance(report.get("warnings_structured"), list) else []
+        for item in warnings or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("warning_code") or item.get("code") or "unknown").strip() or "unknown"
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _resolve_dashboard_config_path() -> Path | None:
     explicit = str(_env("SOXS_CONFIG", "") or "").strip()
     candidates = []
@@ -3968,6 +3996,12 @@ HTML = """<!DOCTYPE html>
                             <div style="line-height:1.5" id="ai-selection-provider-fallback">Provider Fallback：{{ ai_selection.provider_audit_sections.fallback if ai_selection.provider_audit_sections else '无' }}</div>
                             <div style="line-height:1.5" id="ai-selection-provider-mock">Provider Mock：{{ ai_selection.provider_audit_sections.mock if ai_selection.provider_audit_sections else '无' }}</div>
                             <div style="line-height:1.5" id="ai-selection-provider-contributor">Provider 实际贡献：{{ ai_selection.provider_audit_sections.contributor if ai_selection.provider_audit_sections else '无' }}</div>
+                            {% if ai_selection.selection_funnel %}
+                                <div style="line-height:1.5" id="ai-selection-funnel">候选漏斗：{{ ai_selection.selection_funnel | safe }}</div>
+                            {% endif %}
+                            {% if ai_selection.rejection_reason_counts %}
+                                <div style="line-height:1.5" id="ai-selection-rejection-counts">拒绝统计：{{ ai_selection.rejection_reason_counts | safe }}</div>
+                            {% endif %}
                             {% if ai_selection.protected_positions %}
                                 · 保护持仓：{{ ai_selection.protected_positions | map(attribute='ticker') | join(' / ') }}
                             {% endif %}
@@ -5075,6 +5109,40 @@ def _api_status_payload() -> dict[str, object]:
                     dict(ai_selection.get("provider_audit") or {}),
                     dict(ai_selection.get("provider_outputs") or {}),
                 )
+            ),
+            "selection_funnel": dict(
+                ai_selection.get("selection_funnel")
+                or {
+                    "universe_scanned": len(ai_selection.get("top10") or ai_selection.get("top3") or []),
+                    "universe_passed": len(ai_selection.get("top10") or ai_selection.get("top3") or []),
+                    "data_complete": int(sum(1 for item in (ai_selection.get("top10") or ai_selection.get("top3") or []) if str((item or {}).get("data_status") or "").strip().upper() == "VALID")),
+                    "scoring_eligible": int(sum(1 for item in (ai_selection.get("top10") or ai_selection.get("top3") or []) if bool((item or {}).get("scoring_eligible", False)))),
+                    "ranked_candidates": len(ai_selection.get("top10") or ai_selection.get("top3") or []),
+                    "quality_threshold_passed": int(sum(1 for item in (ai_selection.get("top10") or ai_selection.get("top3") or []) if bool((item or {}).get("trade_filter_passed", False)))),
+                    "preliminary_selected": len(ai_selection.get("top3") or ai_selection.get("top5") or []),
+                    "refined_selected": len(ai_selection.get("top3") or ai_selection.get("top5") or []),
+                    "final_selected": len(ai_selection.get("top3") or ai_selection.get("top5") or []),
+                    "provider_timeouts": int((ai_selection.get("provider_audit") or {}).get("provider_timeouts", 0) or 0),
+                    "provider_failures": int((ai_selection.get("provider_audit") or {}).get("provider_failures", 0) or 0),
+                    "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
+                    "budget_exhausted": bool((ai_selection.get("quality_filter_report") or {}).get("timed_out", False)),
+                    "run_mode": "full",
+                }
+            ),
+            "rejection_trace": list(ai_selection.get("rejection_trace") or []),
+            "rejection_reason_counts": dict(
+                ai_selection.get("rejection_reason_counts")
+                or {
+                    str(item.get("warning_code") or item.get("reason_code") or "top_n_not_filled" if str(item.get("warning_code") or item.get("reason_code") or "").strip() == "top_n_not_filled" else "unknown"): int(item.get("count", 1) or 1)
+                    for item in (ai_selection.get("rejection_trace") or [])
+                    if isinstance(item, dict)
+                }
+                or {
+                    str(item.get("warning_code") or item.get("code") or "top_n_not_filled"): int(1)
+                    for item in (ai_selection.get("warnings_structured") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("warning_code") or item.get("code") or "").strip().lower() == "top_n_not_filled"
+                }
             ),
             "top3": list(ai_selection.get("top3") or []),
         },

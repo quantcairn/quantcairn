@@ -43,6 +43,58 @@ _META_KEYS = {
     "timed_out",
 }
 
+_EXPLANATION_ONLY_FIELDS = {
+    "reason",
+    "summary",
+    "commentary",
+    "explanation",
+    "narrative",
+    "analysis",
+    "notes",
+}
+
+_NON_CRITICAL_FACTOR_FIELDS = {
+    "score",
+    "ai_score",
+    "range_score",
+    "final_score",
+    "candidate_score",
+    "confidence",
+    "technical_score",
+    "sentiment_score",
+    "fundamental_score",
+    "valuation_score",
+    "earnings_score",
+    "growth_score",
+    "risk_score",
+}
+
+_CRITICAL_MARKET_DATA_FIELDS = {
+    "current_price",
+    "open",
+    "high",
+    "low",
+    "close",
+    "ohlcv",
+    "quote",
+    "bid",
+    "ask",
+    "spread_pct",
+    "current_session",
+    "previous_completed_session",
+    "daily_data_as_of",
+    "benchmark_data_as_of",
+    "benchmark_alignment_status",
+    "market_cap",
+    "average_dollar_volume_20d",
+    "avg_dollar_volume_20d",
+    "avg_10d_volume",
+    "volume",
+    "atr_20_percentage",
+    "atr_pct",
+    "gap_pct",
+}
+
 
 def _load_json(path: Path) -> dict[str, Any] | None:
     try:
@@ -126,6 +178,20 @@ def _row_contributed_fields(row: dict[str, Any]) -> list[str]:
     return sorted(dict.fromkeys(fields))
 
 
+def _classify_fallback_scope(row: dict[str, Any]) -> tuple[str, str, list[str]]:
+    contributed_fields = _row_contributed_fields(row)
+    field_set = set(contributed_fields)
+    if field_set & _CRITICAL_MARKET_DATA_FIELDS:
+        return "CRITICAL_MARKET_DATA", "CRITICAL", contributed_fields
+    if field_set & _NON_CRITICAL_FACTOR_FIELDS:
+        return "NON_CRITICAL_FACTOR", "DEGRADED", contributed_fields
+    if field_set & _EXPLANATION_ONLY_FIELDS:
+        return "EXPLANATION_ONLY", "INFO", contributed_fields
+    if _row_is_timeout(row):
+        return "RUN_LEVEL", "DEGRADED", contributed_fields
+    return "EXPLANATION_ONLY", "INFO", contributed_fields
+
+
 def _provider_records_from_outputs(provider_outputs: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
     records: dict[str, list[dict[str, Any]]] = {}
     for provider_name, payload in sorted((provider_outputs or {}).items()):
@@ -187,6 +253,13 @@ def normalize_provider_audit(
         row_fallback = any(_row_is_fallback(row) for row in rows)
         row_success = any(_row_has_real_success(row) for row in rows)
         row_contributors = sorted({field for row in rows for field in _row_contributed_fields(row)})
+        row_scopes = sorted({scope for row in rows for scope, _, _ in [_classify_fallback_scope(row)]})
+        row_severities = sorted({severity for row in rows for _, severity, _ in [_classify_fallback_scope(row)]})
+        affected_candidates = sorted({
+            str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+            for row in rows
+            if str(row.get("ticker") or row.get("symbol") or "").strip()
+        })
 
         if not attempted_count:
             attempted_count = len(rows) if rows else (1 if provider_name in provider_outputs else 0)
@@ -227,6 +300,10 @@ def normalize_provider_audit(
                 "fallback": fallback_count,
                 "mock": mock_count,
                 "contributors": list(dict.fromkeys(contributor_fields)),
+                "fallback_scope": row_scopes[0] if row_scopes else "EXPLANATION_ONLY",
+                "fallback_severity": row_severities[0] if row_severities else "INFO",
+                "affected_candidates": affected_candidates,
+                "affected_fields": row_contributors,
                 "has_real_success": row_success or bool(successful_count),
                 "has_timeout": row_timeout or bool(timed_out_count),
                 "has_fallback": row_fallback or bool(fallback_count),

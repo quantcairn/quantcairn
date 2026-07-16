@@ -263,7 +263,7 @@ def test_run_ai_selector_writes_top_configs_when_market_stage_finalized():
                 ],
                 "top3": [],
                 "report": [],
-                "settings": {"selection_stage": "fast_preliminary"},
+                "settings": {"selection_stage": "quality_refined"},
                 "quality_filter_report": {},
             }
 
@@ -476,6 +476,40 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
 
     assert written_reports
     assert [item["ticker"] for item in written_reports[0]["top10"]] == ["NVDA", "MSFT"]
+
+
+def test_selector_run_mode_helpers_toggle_environment():
+    module = _load_module()
+    original_env = dict(os.environ)
+    try:
+        module._apply_selector_run_mode("fast_preliminary")
+        assert os.environ["AI_SELECTOR_FAST_START_ONLY"] == "1"
+        assert os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] == "1"
+
+        module._apply_selector_run_mode("quality_refined")
+        assert os.environ["AI_SELECTOR_FAST_START_ONLY"] == "0"
+        assert os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] == "0"
+
+        module._apply_selector_run_mode("full")
+        assert os.environ["AI_SELECTOR_FAST_START_ONLY"] == "0"
+        assert os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] == "1"
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+
+
+def test_selector_rejection_trace_counts_rows_and_reasons():
+    module = _load_module()
+    trace, counts = module._build_rejection_trace(
+        [
+            ("UNIVERSE", [{"ticker": "SOFI", "reason": "price_out_of_range", "asset_type": "common_stock", "data_status": "INVALID", "scoring_eligible": False, "candidate_score": 10.0}]),
+            ("TRADE_FILTER", [{"ticker": "SOFI", "reason": "fallback_used_blocked", "asset_type": "common_stock", "data_status": "INVALID", "scoring_eligible": False, "candidate_score": 10.0}]),
+        ]
+    )
+
+    assert [item["stage"] for item in trace] == ["UNIVERSE", "TRADE_FILTER"]
+    assert counts["price_out_of_range"] == 1
+    assert counts["fallback_used_blocked"] == 1
 
 
 def run_test_direct():
