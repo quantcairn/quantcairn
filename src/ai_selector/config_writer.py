@@ -197,6 +197,9 @@ def _slot_disabled_payload(
     research_admission: str | None = None,
     top_sync_status: str | None = None,
     top_sync_error: str | None = None,
+    selection_bundle_manifest_path: str | None = None,
+    selection_bundle_hash: str | None = None,
+    selection_bundle_version: str | None = None,
 ) -> dict:
     return {
         "enabled": False,
@@ -211,6 +214,9 @@ def _slot_disabled_payload(
         "research_admission": str(research_admission or ""),
         "top_sync_status": str(top_sync_status or "OK"),
         "top_sync_error": str(top_sync_error or ""),
+        "selection_bundle_manifest_path": str(selection_bundle_manifest_path or ""),
+        "selection_bundle_hash": str(selection_bundle_hash or ""),
+        "selection_bundle_version": str(selection_bundle_version or ""),
         "mode": "paper",
         "broker": {
             "longbridge": {
@@ -241,6 +247,9 @@ def write_top_configs(
     top_sync_status: str | None = None,
     top_sync_error: str | None = None,
     slot_limit: int | None = None,
+    selection_bundle_manifest_path: str | None = None,
+    selection_bundle_hash: str | None = None,
+    selection_bundle_version: str | None = None,
 ):
     default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
@@ -274,6 +283,9 @@ def write_top_configs(
                     research_admission=research_admission,
                     top_sync_status=top_sync_status,
                     top_sync_error=top_sync_error,
+                    selection_bundle_manifest_path=selection_bundle_manifest_path,
+                    selection_bundle_hash=selection_bundle_hash,
+                    selection_bundle_version=selection_bundle_version,
                 )
             else:
                 initial_capital = TOP_INITIAL_CAPITAL
@@ -299,14 +311,17 @@ def write_top_configs(
                 payload = {
                     "enabled": True,
                     "slot": i,
-                    "selection_run_id": selection_run_id,
-                    "top_sync_run_id": selection_run_id,
-                    "top_sync_status": str(top_sync_status or "OK"),
-                    "top_sync_error": str(top_sync_error or ""),
-                    "selection_date": selection_date,
-                    "generated_at": generated_at,
-                    "result_quality": str(result_quality or ""),
-                    "research_admission": str(research_admission or ""),
+                        "selection_run_id": selection_run_id,
+                        "top_sync_run_id": selection_run_id,
+                        "top_sync_status": str(top_sync_status or "OK"),
+                        "top_sync_error": str(top_sync_error or ""),
+                        "selection_bundle_manifest_path": str(selection_bundle_manifest_path or ""),
+                        "selection_bundle_hash": str(selection_bundle_hash or ""),
+                        "selection_bundle_version": str(selection_bundle_version or ""),
+                        "selection_date": selection_date,
+                        "generated_at": generated_at,
+                        "result_quality": str(result_quality or ""),
+                        "research_admission": str(research_admission or ""),
                     "ticker": item["ticker"],
                     "mode": mode,
                     "selection": {
@@ -437,6 +452,9 @@ def write_top_configs(
                 research_admission=research_admission,
                 top_sync_status=top_sync_status,
                 top_sync_error=top_sync_error,
+                selection_bundle_manifest_path=selection_bundle_manifest_path,
+                selection_bundle_hash=selection_bundle_hash,
+                selection_bundle_version=selection_bundle_version,
             )
         writes.append((path, payload))
 

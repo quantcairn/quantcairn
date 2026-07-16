@@ -261,7 +261,7 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
 
         original_base = config_writer.BASE
         original_composition_filter = module._apply_composition_filter
-        written_reports: list[dict] = []
+        captured_bundles: list[dict] = []
 
         def _row(ticker: str, score: float) -> dict:
             price = {"SOXS": 12.0, "YINN": 25.0, "DRIP": 11.0}[ticker]
@@ -319,9 +319,20 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
                     ],
                 },
             )
-            module._write_reports = lambda summary: (
-                written_reports.append(dict(summary)) or True
-            ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
+            module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or {
+                "selection_run_id": payload.get("selection_run_id", "run-1"),
+                "selection_bundle_hash": "bundle-hash",
+                "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+                "selection_date": payload.get("selection_date", "2026-07-16"),
+                "generated_at": payload.get("generated_at", "2026-07-16T08:30:00-04:00"),
+                "selection_stage": payload.get("selection_state_payload", {}).get("selection_stage", "FINALIZED"),
+                "disabled_slots": [2, 3],
+                "selected_symbols": ["SOXS"],
+                "audit_path": "state/selection_sync_audit.json",
+                "state_path": "state/ai_selection_state.json",
+                "report_path": "reports/ai_selection_latest.json",
+                "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
+            }
             os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
             os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
             try:
@@ -332,8 +343,8 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
         finally:
             config_writer.BASE = original_base
 
-        assert written_reports
-        summary = written_reports[0]
+        assert captured_bundles
+        summary = captured_bundles[0]["summary"]
         assert summary["fallback_used"] is True
         assert summary["settings"]["fallback_used"] is True
         assert summary["selection_count"] == 1
@@ -342,14 +353,9 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
             item.get("reason") == "leveraged_etf_limit_exceeded"
             for item in summary["composition_filter"]["rejected"]
         )
-        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
-        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
-        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
-        assert top1["enabled"] is True
-        assert top2["enabled"] is False
-        assert top3["enabled"] is False
-        assert top2["reason"] in {"top_n_not_filled", "selection_blocked"}
-        assert top3["reason"] in {"top_n_not_filled", "selection_blocked"}
+        top_items = captured_bundles[0]["top_items"]
+        assert [item["ticker"] for item in top_items] == ["SOXS"]
+        assert summary["missing_slots"] == 2
 
 
 def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
@@ -365,7 +371,7 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
         original_base = config_writer.BASE
         original_fallback_builder = module._build_conservative_fallback_candidates
         original_apply_trade_filter = module._apply_trade_filter
-        written_reports: list[dict] = []
+        captured_bundles: list[dict] = []
         try:
             config_writer.BASE = str(tmpdir)
             _patch_common(module, tmpdir)
@@ -384,9 +390,20 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
                 "INTC": 25.0,
                 "SOFI": 17.0,
             }.get(str(ticker).upper())
-            module._write_reports = lambda summary: (
-                written_reports.append(dict(summary)) or True
-            ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
+            module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or {
+                "selection_run_id": payload.get("selection_run_id", "run-1"),
+                "selection_bundle_hash": "bundle-hash",
+                "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+                "selection_date": payload.get("selection_date", "2026-07-16"),
+                "generated_at": payload.get("generated_at", "2026-07-16T08:30:00-04:00"),
+                "selection_stage": payload.get("selection_state_payload", {}).get("selection_stage", "FINALIZED"),
+                "disabled_slots": [2],
+                "selected_symbols": ["SOFI", "AMD", "BAC"],
+                "audit_path": "state/selection_sync_audit.json",
+                "state_path": "state/ai_selection_state.json",
+                "report_path": "reports/ai_selection_latest.json",
+                "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
+            }
             os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
             os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
             try:
@@ -398,8 +415,8 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
             module._live_candidate_price = original_live_candidate_price
             config_writer.BASE = original_base
 
-        assert written_reports
-        summary = written_reports[0]
+        assert captured_bundles
+        summary = captured_bundles[0]["summary"]
         assert summary["selection_count"] == 3
         assert summary["target_top_n"] == 3
         assert summary["top_n_filled"] is True
@@ -408,12 +425,10 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
         assert summary["disabled_configs"] == []
         assert summary["quality_filter_report"]["fallback_pool_used"] is True
         assert summary["quality_filter_report"]["top_n_filled"] is True
-        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
-        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
-        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
-        assert top1["ticker"] == "SOFI"
-        assert top2["ticker"] == "AMD"
-        assert top3["ticker"] == "BAC"
+        assert [item["ticker"] for item in captured_bundles[0]["top_items"]] == ["SOFI", "AMD", "BAC"]
+        assert captured_bundles[0]["top_items"][0]["ticker"] == "SOFI"
+        assert captured_bundles[0]["top_items"][1]["ticker"] == "AMD"
+        assert captured_bundles[0]["top_items"][2]["ticker"] == "BAC"
 
 
 def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slot():
@@ -427,14 +442,25 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
         from src.ai_selector import config_writer
 
         original_base = config_writer.BASE
-        written_reports: list[dict] = []
+        captured_bundles: list[dict] = []
         try:
             config_writer.BASE = str(tmpdir)
             _patch_common(module, tmpdir)
             module._build_conservative_fallback_candidates = lambda existing_symbols=None: []
-            module._write_reports = lambda summary: (
-                written_reports.append(dict(summary)) or True
-            ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
+            module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or {
+                "selection_run_id": payload.get("selection_run_id", "run-1"),
+                "selection_bundle_hash": "bundle-hash",
+                "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+                "selection_date": payload.get("selection_date", "2026-07-16"),
+                "generated_at": payload.get("generated_at", "2026-07-16T08:30:00-04:00"),
+                "selection_stage": payload.get("selection_state_payload", {}).get("selection_stage", "FINALIZED"),
+                "disabled_slots": [2, 3],
+                "selected_symbols": ["SOXS"],
+                "audit_path": "state/selection_sync_audit.json",
+                "state_path": "state/ai_selection_state.json",
+                "report_path": "reports/ai_selection_latest.json",
+                "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
+            }
             os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
             os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
             try:
@@ -445,8 +471,8 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
         finally:
             config_writer.BASE = original_base
 
-        assert written_reports
-        summary = written_reports[0]
+        assert captured_bundles
+        summary = captured_bundles[0]["summary"]
         assert summary["selection_count"] == 1
         assert summary["target_top_n"] == 3
         assert summary["top_n_filled"] is False
@@ -457,12 +483,9 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
             str(warning).startswith("top_n_not_filled")
             for warning in summary["quality_filter_report"]["composition_filter"]["warnings"]
         )
-        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
-        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
-        assert top2["enabled"] is False
-        assert top3["enabled"] is False
-        assert top2["reason"] in {"top_n_not_filled", "selection_blocked"}
-        assert top3["reason"] in {"top_n_not_filled", "selection_blocked"}
+        top_items = captured_bundles[0]["top_items"]
+        assert [item["ticker"] for item in top_items] == ["SOFI"]
+        assert summary["missing_slots"] == 2
 
 
 def test_low_entry_quality_candidates_do_not_fill_top_slots():
@@ -475,7 +498,7 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
         from src.ai_selector import config_writer
 
         original_base = config_writer.BASE
-        written_reports: list[dict] = []
+        captured_bundles: list[dict] = []
         try:
             config_writer.BASE = str(tmpdir)
             _patch_common(module, tmpdir)
@@ -634,9 +657,20 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                     ],
                 },
             )
-            module._write_reports = lambda summary: (
-                written_reports.append(dict(summary)) or True
-            ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
+            module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or {
+                "selection_run_id": payload.get("selection_run_id", "run-1"),
+                "selection_bundle_hash": "bundle-hash",
+                "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+                "selection_date": payload.get("selection_date", "2026-07-16"),
+                "generated_at": payload.get("generated_at", "2026-07-16T08:30:00-04:00"),
+                "selection_stage": payload.get("selection_state_payload", {}).get("selection_stage", "FINALIZED"),
+                "disabled_slots": [2, 3],
+                "selected_symbols": ["AAA"],
+                "audit_path": "state/selection_sync_audit.json",
+                "state_path": "state/ai_selection_state.json",
+                "report_path": "reports/ai_selection_latest.json",
+                "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
+            }
             os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
             os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
             try:
@@ -647,22 +681,16 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
         finally:
             config_writer.BASE = original_base
 
-        assert written_reports
-        summary = written_reports[0]
+        assert captured_bundles
+        summary = captured_bundles[0]["summary"]
         assert summary["selection_count"] == 1
         assert summary["top_n_filled"] is False
         assert summary["quality_filter_report"]["removed_low_entry_quality"]
         assert summary["quality_filter_report"]["removed_low_entry_quality"][0]["reason"] == "entry_quality_too_low"
         assert summary["quality_filter_report"]["removed_low_entry_quality"][0]["ticker"] in {"BBB", "CCC"}
-        top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
-        assert top1["ticker"] == "AAA"
-        assert top1["selection"]["entry"]["entry_quality"] == "excellent"
-        top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
-        top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
-        assert top2["enabled"] is False
-        assert top3["enabled"] is False
-        assert top2["reason"] in {"top_n_not_filled", "selection_blocked"}
-        assert top3["reason"] in {"top_n_not_filled", "selection_blocked"}
+        top_items = captured_bundles[0]["top_items"]
+        assert [item["ticker"] for item in top_items] == ["AAA"]
+        assert summary["missing_slots"] == 2
 
 
 def test_shell_scripts_treat_missing_top3_as_disabled():

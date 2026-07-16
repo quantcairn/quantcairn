@@ -177,6 +177,9 @@ def write_selection_state(
     synced_at: str | None = None,
     result_quality: str | None = None,
     research_admission: str | None = None,
+    selection_bundle_manifest_path: str | None = None,
+    selection_bundle_hash: str | None = None,
+    selection_bundle_version: str | None = None,
 ) -> Path:
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -203,6 +206,9 @@ def write_selection_state(
         "synced_at": str(synced_at or generated_at),
         "result_quality": str(result_quality or ""),
         "research_admission": str(research_admission or ""),
+        "selection_bundle_manifest_path": str(selection_bundle_manifest_path or ""),
+        "selection_bundle_hash": str(selection_bundle_hash or ""),
+        "selection_bundle_version": str(selection_bundle_version or ""),
         "updated_at": datetime.now().isoformat(),
     }
     path = selection_state_path()

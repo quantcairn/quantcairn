@@ -52,9 +52,7 @@ from src.ai_selector.universe_filter import filter_universe_candidates, load_uni
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
-from src.ai_selector.selection_state import write_selection_state as persist_selection_state
 from src.ai_selector.selection_bundle import write_selection_bundle_atomic
-from src.ai_selector.config_writer import write_top_configs
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -1912,12 +1910,11 @@ def main(mode: str | None = None):
     summary["rejection_reason_counts"] = dict(quality_report.get("rejection_reason_counts") or {})
     summary["selection_funnel"] = dict(quality_report.get("selection_funnel") or {})
 
-    latest_report_path, _ = _write_reports(summary)
     selection_state_hook_payload = {
         "et_date": current_session,
         "generated_at": timestamp,
         "selected_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
-        "report_path": str(latest_report_path),
+        "report_path": str(PROJECT_DIR / "reports" / "ai_selection_latest.json"),
         "selection_stage": selection_stage,
         "processing_phase": processing_phase,
         "result_quality": str(summary.get("result_quality") or ""),
@@ -1931,53 +1928,19 @@ def main(mode: str | None = None):
         "disabled_slots": list(range(len(selected) + 1, TOP_COUNT + 1)),
         "synced_at": timestamp,
     }
-    write_selection_state(**selection_state_hook_payload)
-    background_refinement_enabled = os.environ.get("AI_SELECTOR_BACKGROUND_REFINEMENT", "1") == "1"
-    if processing_phase == "fast_preliminary" and background_refinement_enabled:
-        persist_selection_state(
-            et_date=current_session,
-            generated_at=timestamp,
-            selected_symbols=list(selection_state_hook_payload.get("selected_symbols") or []),
-            report_path=str(latest_report_path),
-            selection_stage=selection_stage,
-            processing_phase=processing_phase,
-            selection_run_id=selection_run_id,
-            top_sync_run_id=selection_run_id,
-            top_sync_status="OK",
-            top_sync_error="",
-            selection_symbols=list(selection_state_hook_payload.get("selection_symbols") or []),
-            configured_top_symbols=list(selection_state_hook_payload.get("configured_top_symbols") or []),
-            disabled_slots=list(selection_state_hook_payload.get("disabled_slots") or []),
-            synced_at=timestamp,
-            result_quality=str(summary.get("result_quality") or ""),
-            research_admission=str(summary.get("research_admission") or ""),
-        )
-        write_top_configs(
-            list(selected),
-            selection_run_id=selection_run_id,
-            selection_date=current_session,
-            generated_at=timestamp,
-            disabled_reason="top_n_not_filled",
-            result_quality=str(summary.get("result_quality") or ""),
-            research_admission=str(summary.get("research_admission") or ""),
-            top_sync_status="OK",
-            top_sync_error="",
-            slot_limit=TOP_COUNT,
-        )
-        bundle_result = {}
-    else:
-        bundle_result = write_selection_bundle_atomic(
-            selection_state_payload=selection_state_hook_payload,
-            top_items=list(selected),
-            selection_run_id=selection_run_id,
-            selection_date=current_session,
-            generated_at=timestamp,
-            result_quality=str(summary.get("result_quality") or ""),
-            research_admission=str(summary.get("research_admission") or ""),
-            processing_phase=processing_phase,
-            top_sync_status="OK",
-            top_sync_error="",
-        )
+    bundle_result = write_selection_bundle_atomic(
+        summary=summary,
+        selection_state_payload=selection_state_hook_payload,
+        top_items=list(selected),
+        selection_run_id=selection_run_id,
+        selection_date=current_session,
+        generated_at=timestamp,
+        result_quality=str(summary.get("result_quality") or ""),
+        research_admission=str(summary.get("research_admission") or ""),
+        processing_phase=processing_phase,
+        top_sync_status="OK",
+        top_sync_error="",
+    )
     if isinstance(bundle_result, dict):
         summary.update(bundle_result)
 

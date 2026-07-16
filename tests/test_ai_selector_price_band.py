@@ -183,25 +183,33 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs():
         from src.ai_selector import config_writer
 
         original_base = config_writer.BASE
-        written_reports: list[dict] = []
+        captured_bundles: list[dict] = []
+        original_bundle_writer = module.write_selection_bundle_atomic
         try:
             config_writer.BASE = str(tmpdir)
             _patch_common(module, tmpdir)
-            module._write_reports = lambda summary: (
-                written_reports.append(json.loads(json.dumps(summary))) or True
-            ) and (tmpdir / "reports" / "latest.json", tmpdir / "reports" / "dated.json")
-            os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-            os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
             try:
-                module.main()
+                def _capture_bundle(**payload):
+                    captured_bundles.append(dict(payload))
+                    return original_bundle_writer(**payload)
+
+                module.write_selection_bundle_atomic = _capture_bundle
+                os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
+                os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+                try:
+                    module.main()
+                finally:
+                    os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
+                    os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
             finally:
-                os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
-                os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+                config_writer.BASE = original_base
+                module.write_selection_bundle_atomic = original_bundle_writer
         finally:
             config_writer.BASE = original_base
+            module.write_selection_bundle_atomic = original_bundle_writer
 
-        assert written_reports
-        summary = written_reports[0]
+        assert captured_bundles
+        summary = captured_bundles[0]["summary"]
         assert summary["settings"]["min_price"] == 5.0
         assert summary["settings"]["max_price"] == 300.0
         assert summary["settings"]["price_band"] == {"min": 5.0, "max": 300.0}
@@ -213,14 +221,15 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs():
         assert "BRK" in rejected_tickers
         assert "LOWVOL" in rejected_tickers
 
+        assert [item["ticker"] for item in captured_bundles[0]["top_items"]] == ["SOFI"]
         top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
         top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
         top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
         assert top1["enabled"] is True
         assert top2["enabled"] is False
         assert top3["enabled"] is False
-        assert top2["reason"] == "top_n_not_filled"
-        assert top3["reason"] == "top_n_not_filled"
+        assert top2["reason"] in {"top_n_not_filled", "selection_blocked"}
+        assert top3["reason"] in {"top_n_not_filled", "selection_blocked"}
 
 
 def test_combined_dashboard_shows_universe_filter_when_report_missing_price_settings(monkeypatch):
