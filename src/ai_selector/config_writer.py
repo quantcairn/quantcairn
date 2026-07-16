@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from src.config.runtime_values import has_longbridge_runtime_credentials
 from src.portfolio.risk_allocator import RiskAllocator
-from src.utils.market_calendar import market_session_context
+from src.utils.market_calendar import market_session_context, required_selection_date
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
@@ -71,7 +71,7 @@ def _global_reduce_only_enabled() -> bool:
 def _selection_date() -> str:
     try:
         now_et = datetime.now(ZoneInfo("America/New_York"))
-        return market_session_context(now_et).current_session.isoformat()
+        return required_selection_date(now_et)
     except Exception:
         return datetime.utcnow().date().isoformat()
 

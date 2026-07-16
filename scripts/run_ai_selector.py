@@ -31,7 +31,7 @@ from src.ai_selector.composition_filter import (
 from src.ai_selector.selector import AIStrategySelector
 from src.ai_selector.range_score import RangeFitnessScorer
 from src.ai_selector.trade_filter import TradeEligibilityFilter
-from src.utils.market_calendar import market_session_context
+from src.utils.market_calendar import market_session_context, required_selection_date
 from datetime import datetime
 import os
 import json
@@ -114,7 +114,7 @@ def _et_now() -> datetime:
 
 
 def _selection_date() -> str:
-    return market_session_context(_et_now()).current_session.isoformat()
+    return required_selection_date(_et_now())
 
 
 def _truthy_env(name: str) -> bool:
@@ -1435,7 +1435,7 @@ def main():
     selection_run_id = uuid.uuid4().hex
     if selected:
         for item in selected:
-            item["selection_date"] = market_context.current_session.isoformat()
+            item["selection_date"] = _selection_date()
             item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
             item.update(_normalize_selection_metadata(item))
             item["fallback_used"] = bool(item.get("fallback_used", False))
@@ -1482,7 +1482,7 @@ def main():
 
     top3_summary = [_normalize_entry_report_fields(item) for item in list(selected)]
     first_item = top3_summary[0] if top3_summary else {}
-    current_session = market_context.current_session.isoformat()
+    current_session = _selection_date()
     summary = {
         'timestamp': timestamp,
         'generated_at': timestamp,
