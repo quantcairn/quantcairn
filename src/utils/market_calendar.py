@@ -182,3 +182,27 @@ def market_session_context(now_et: datetime | None = None) -> MarketSessionConte
         current_session_status=current_session_status,
         current_session_reason=current_session_reason,
     )
+
+
+def required_selection_date(
+    now_et: datetime | None = None,
+    *,
+    selection_completed: bool = False,
+) -> str:
+    """Return the selection date the dashboard/notifier should expect.
+
+    The selector may legitimately continue to use the previous completed
+    session until the current session has been completed.  This keeps
+    premarket / weekend snapshots from being mislabeled as stale.
+    """
+
+    session = market_session_context(now_et)
+    if session.is_premarket:
+        return session.previous_completed_session.isoformat()
+    if session.is_regular_session or session.is_after_hours:
+        return (
+            session.current_session.isoformat()
+            if selection_completed
+            else session.previous_completed_session.isoformat()
+        )
+    return session.previous_completed_session.isoformat()

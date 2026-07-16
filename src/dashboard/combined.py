@@ -16,7 +16,7 @@ from src.ai_selector.config import load_runtime_config
 from src.ai_selector.selection_report import load_latest_ai_selection_state, normalize_provider_audit
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
 from src.ai_selector.universe_filter import load_universe_rules
-from src.ai_selector.selection_state import configured_top_count, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
+from src.ai_selector.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.broker.paper_broker import PaperBroker
@@ -30,7 +30,7 @@ from src.notifier.alerts import build_provider_audit_sections, build_research_ad
 from src.shadow.config import ShadowRuntimeConfig
 from src.shadow.universe import default_shadow_output_directory, is_safe_shadow_output_directory, shadow_title_for
 from src.candidate_validation import CandidatePerformanceTracker, CandidateValidationStore, ValidationStatus
-from src.utils.market_calendar import market_session_context
+from src.utils.market_calendar import market_session_context, required_selection_date
 
 app = Flask(__name__)
 
@@ -2082,7 +2082,23 @@ def _ai_runtime_status() -> dict:
 
 
 def _selection_sync_status() -> dict:
-    required_date = _current_et_date()
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    session = market_session_context(now_et)
+    latest_report = _load_ai_selection_report() or {}
+    latest_report_date = str(latest_report.get("selection_date") or latest_report.get("date") or "").strip()
+    latest_report_stage = str(
+        latest_report.get("selection_stage")
+        or latest_report.get("market_selection_stage")
+        or latest_report.get("settings", {}).get("selection_stage")
+        or ""
+    ).strip().upper()
+    latest_execution_status = str(latest_report.get("execution_status") or "").strip().upper()
+    selection_completed = (
+        latest_report_date == session.current_session.isoformat()
+        and latest_execution_status == "COMPLETED"
+        and latest_report_stage == "FINALIZED"
+    )
+    required_date = required_selection_date(now_et, selection_completed=selection_completed)
     ok, reason, state = verify_selection_state(required_et_date=required_date)
     state = state or load_selection_state() or {}
     state_date = str(state.get("et_date") or "").strip() or None
@@ -2101,17 +2117,26 @@ def _selection_sync_status() -> dict:
         for item in (state.get("state_top_config_symbols") or state.get("top_config_symbols") or [])
         if str(item or "").strip()
     ]
+    disabled_slots = [
+        int(item)
+        for item in (state.get("disabled_slots") or current_top_config_disabled_slots(limit=max(configured_top_count(), len(selection_state_symbols) or 1)))
+        if str(item).strip()
+    ]
+    selection_run_id = str(state.get("selection_run_id") or "")
+    top_sync_run_id = str(state.get("top_sync_run_id") or "")
     mismatch_reason = ""
-    if reason == "top_config_symbols_mismatch":
-        mismatch_reason = "top_config_symbols_do_not_match_selection_state"
+    if reason in {"symbol_mismatch", "top_config_symbols_mismatch"}:
+        mismatch_reason = "symbol_mismatch"
     elif reason.startswith("selection_state_date_mismatch"):
         mismatch_reason = "selection_state_date_mismatch"
+    elif reason == "missing_top_slot":
+        mismatch_reason = "missing_top_slot"
     elif reason == "selection_state_missing":
         mismatch_reason = "selection_state_missing"
     suggestion = "请重新运行 AI Selector 或重新写入 TOP 配置"
     label = "已对齐"
     level = "green"
-    detail = f"当天配置已对齐（美东 {required_date}）"
+    detail = f"当前配置已对齐（美东 {required_date}）"
     if ok:
         return {
             "ok": True,
@@ -2123,6 +2148,11 @@ def _selection_sync_status() -> dict:
             "selection_state_symbols": selection_state_symbols,
             "current_top_config_symbols": current_top_config_symbols_list,
             "state_top_config_symbols": state_top_config_symbols,
+            "disabled_slots": disabled_slots,
+            "selection_run_id": selection_run_id,
+            "top_sync_run_id": top_sync_run_id,
+            "synced": True,
+            "reason": "ok",
             "mismatch_reason": "",
             "suggestion": suggestion,
         }
@@ -2131,17 +2161,35 @@ def _selection_sync_status() -> dict:
         level = "yellow"
         detail = "还没有当天选股校验记录，启动前会先重选并校验。"
     elif reason.startswith("selection_state_date_mismatch"):
-        label = "不是今天"
-        level = "yellow"
+        if session.is_regular_session and not selection_completed:
+            label = "等待本次选股"
+            level = "yellow"
+            detail = (
+                f"当前是美东 {session.current_session.isoformat()} 的交易时段，正在等待本次选股完成。"
+                f"上一完整交易日状态仍可继续使用。 selection_state tickers: {selection_state_symbols or []}"
+                f" · current TOP config tickers: {current_top_config_symbols_list or []}。"
+            )
+            mismatch_reason = "awaiting_current_session_selection"
+        else:
+            label = "不是今天"
+            level = "yellow"
+            detail = (
+                f"当前记录日期是美东 {state_date or '未知'}，不是当前要求日期 {required_date}。"
+                f" selection_state tickers: {selection_state_symbols or []} · current TOP config tickers: {current_top_config_symbols_list or []}。"
+            )
+    elif reason == "missing_top_slot":
+        label = "配置不完整"
+        level = "red"
         detail = (
-            f"当前记录日期是美东 {state_date or '未知'}，不是今天 {required_date}。"
-            f" selection_state tickers: {selection_state_symbols or []} · current TOP config tickers: {current_top_config_symbols_list or []}。"
+            f"TOP1-3 配置槽位不完整。 selection_state tickers: {selection_state_symbols or []}"
+            f" · current TOP config tickers: {current_top_config_symbols_list or []}。"
+            f" 缺失槽位: {disabled_slots or []}。"
         )
-    elif reason == "top_config_symbols_mismatch":
+    elif reason in {"symbol_mismatch", "top_config_symbols_mismatch"}:
         label = "配置不一致"
         level = "red"
         detail = (
-            "TOP1-3 配置和最近一次选股结果不一致，交易启动会被拦下。"
+            f"TOP1-3 配置和最近一次选股结果不一致。"
             f" selection_state tickers: {selection_state_symbols or []} · current TOP config tickers: {current_top_config_symbols_list or []}。"
             f" mismatch reason: {mismatch_reason}。"
             f" 建议操作：{suggestion}。"
@@ -2163,6 +2211,11 @@ def _selection_sync_status() -> dict:
         "selection_state_symbols": selection_state_symbols,
         "current_top_config_symbols": current_top_config_symbols_list,
         "state_top_config_symbols": state_top_config_symbols,
+        "disabled_slots": disabled_slots,
+        "selection_run_id": selection_run_id,
+        "top_sync_run_id": top_sync_run_id,
+        "synced": False,
+        "reason": reason,
         "mismatch_reason": mismatch_reason,
         "suggestion": suggestion,
     }
