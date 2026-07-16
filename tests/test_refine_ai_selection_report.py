@@ -64,6 +64,16 @@ def test_merge_refinement_summary_marks_fast_background_when_refinement_stays_pr
     assert merged["refinement_selection_stage"] == "fast_preliminary"
 
 
+def test_merge_refined_candidates_preserves_preliminary_fill():
+    module = _load_module()
+    preliminary = [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}]
+    refined = [{"ticker": "NVDA"}]
+
+    merged = module._merge_refined_candidates(preliminary, refined, limit=3)
+
+    assert [item["ticker"] for item in merged] == ["NVDA", "SOFI", "AAPL"]
+
+
 def test_main_refines_even_if_latest_report_is_finalized():
     module = _load_module()
     written_reports = []
@@ -86,7 +96,12 @@ def test_main_refines_even_if_latest_report_is_finalized():
 
     original_env = dict(module.os.environ)
     try:
-        module._load_latest_report = lambda: {"timestamp": "2026-07-05T09:00:00", "settings": {"selection_stage": "FINALIZED"}}
+        module._load_latest_report = lambda: {
+            "timestamp": "2026-07-05T09:00:00",
+            "top5": [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+            "top3": [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+            "settings": {"selection_stage": "fast_preliminary"},
+        }
         module.load_runtime_settings = lambda: {"auto_refresh_minutes": 5, "max_symbols": 20}
         module.resolve_price_band = lambda settings: (10.0, 50.0)
         module.AIStrategySelector = FakeSelector
@@ -105,6 +120,8 @@ def test_main_refines_even_if_latest_report_is_finalized():
     assert written_reports
     assert written_reports[0]["refinement_status"] == "quality_refined"
     assert written_reports[0]["refinement_selection_stage"] == "quality_refined"
+    assert [item["ticker"] for item in written_reports[0]["top5"]] == ["SOFI", "AAPL", "MSFT"]
+    assert [item["ticker"] for item in written_reports[0]["refined_top5"]] == ["NVDA", "SOFI", "AAPL"]
 
 
 def run_test_direct():

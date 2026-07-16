@@ -35,6 +35,27 @@ def _write_refined_report(summary: dict) -> None:
     selector_runner._write_reports(summary)
 
 
+def _merge_refined_candidates(preliminary_rows: list[dict] | None, refined_rows: list[dict] | None, *, limit: int) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+
+    def _append_rows(rows: list[dict] | None) -> None:
+        for row in rows or []:
+            if len(merged) >= limit:
+                return
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or "").strip().upper()
+            if not ticker or ticker in seen:
+                continue
+            merged.append(dict(row))
+            seen.add(ticker)
+
+    _append_rows(refined_rows)
+    _append_rows(preliminary_rows)
+    return merged
+
+
 def _merge_refinement_summary(preliminary: dict, refined_summary: dict) -> dict:
     merged = dict(preliminary)
     refinement_stage = str((refined_summary.get("settings") or {}).get("selection_stage") or "")
@@ -87,11 +108,13 @@ def main() -> None:
         live_positions,
         limit=selector.selection_size,
     )
-    if not refined_selected:
+    preliminary_selected = list(latest.get("top5") or latest.get("top3") or [])
+    merged_selected = _merge_refined_candidates(preliminary_selected, refined_selected, limit=selector.selection_size)
+    if not merged_selected:
         return
-    refined["top5"] = refined_selected
-    refined["top3"] = refined_selected[:3]
-    refined["report"] = selector._format_report_rows(refined_selected)
+    refined["top5"] = merged_selected
+    refined["top3"] = merged_selected[:3]
+    refined["report"] = selector._format_report_rows(merged_selected)
 
     merged = _merge_refinement_summary(latest, refined)
     _write_refined_report(merged)
