@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import yaml
+
 from src.ai_selector import selection_state
 
 
@@ -8,7 +10,11 @@ def test_selection_state_verifies_same_day_top_configs(tmp_path, monkeypatch):
     monkeypatch.setattr(selection_state, "PROJECT_DIR", tmp_path)
     configs_dir = tmp_path / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
-    (configs_dir / "TOP1.yaml").write_text("ticker: SOFI\nmode: live\n", encoding="utf-8")
+    for idx in range(1, 4):
+        payload = {"enabled": False, "slot": idx, "reason": "top_n_not_filled", "selection_run_id": "run-1", "selection_date": "2026-07-02", "generated_at": "2026-07-02T08:30:00-04:00"}
+        if idx == 1:
+            payload.update({"enabled": True, "ticker": "SOFI", "mode": "live", "reason": "selected"})
+        (configs_dir / f"TOP{idx}.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     selection_state.write_selection_state(
         et_date="2026-07-02",
@@ -29,7 +35,11 @@ def test_selection_state_detects_top_config_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(selection_state, "PROJECT_DIR", tmp_path)
     configs_dir = tmp_path / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
-    (configs_dir / "TOP1.yaml").write_text("ticker: NVDA\nmode: live\n", encoding="utf-8")
+    for idx in range(1, 4):
+        payload = {"enabled": False, "slot": idx, "reason": "top_n_not_filled", "selection_run_id": "run-1", "selection_date": "2026-07-02", "generated_at": "2026-07-02T08:30:00-04:00"}
+        if idx == 1:
+            payload.update({"enabled": True, "ticker": "NVDA", "mode": "live", "reason": "selected"})
+        (configs_dir / f"TOP{idx}.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     selection_state.write_selection_state(
         et_date="2026-07-02",
@@ -62,7 +72,11 @@ def test_verify_live_startup_selection_blocks_stale_live_configs(tmp_path, monke
     monkeypatch.setattr(selection_state, "PROJECT_DIR", tmp_path)
     configs_dir = tmp_path / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
-    (configs_dir / "TOP1.yaml").write_text("ticker: SOFI\nmode: live\n", encoding="utf-8")
+    for idx in range(1, 4):
+        payload = {"enabled": False, "slot": idx, "reason": "top_n_not_filled", "selection_run_id": "run-1", "selection_date": "2026-07-05", "generated_at": "2026-07-05T08:30:00-04:00"}
+        if idx == 1:
+            payload.update({"enabled": True, "ticker": "SOFI", "mode": "live", "reason": "selected"})
+        (configs_dir / f"TOP{idx}.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     selection_state.write_selection_state(
         et_date="2026-07-05",
