@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from .performance_tracker import CandidatePerformanceTracker
+from .outcome_dataset import CandidateOutcomeDatasetBuilder
+from .model_evaluation import load_candidate_model_evaluation_snapshot
 from src.ai_selector.selection_report import load_latest_ai_selection_state
 from .store import CandidateValidationStore
 
@@ -104,6 +106,11 @@ class CandidateDailyResearchReportGenerator:
         tracker = CandidatePerformanceTracker(root) if root is not None else CandidatePerformanceTracker()
         return tracker.analyze(self._load_candidates())
 
+    def _load_outcome_dataset(self):
+        return CandidateOutcomeDatasetBuilder(
+            candidate_root=self.candidate_root if self.candidate_root is not None else None,
+        ).build()
+
     def _top_candidates(self, candidates: list[Any], limit: int = 10) -> list[dict[str, Any]]:
         rows = sorted(
             [candidate.to_dict() for candidate in candidates],
@@ -166,6 +173,10 @@ class CandidateDailyResearchReportGenerator:
     def build(self) -> dict[str, Any]:
         candidates = self._load_candidates()
         performance = self._load_performance()
+        outcome_dataset = self._load_outcome_dataset()
+        candidate_model_evaluation = load_candidate_model_evaluation_snapshot(
+            candidate_root=self.candidate_root if self.candidate_root is not None else None,
+        )
         ai_report = _load_ai_selection_report()
         top_candidates = self._top_candidates(candidates)
         failure_analysis = self._failure_analysis(candidates)
@@ -202,6 +213,7 @@ class CandidateDailyResearchReportGenerator:
             "score_distribution": score_distribution,
             "top_candidates": top_candidates,
             "performance": performance,
+            "candidate_model_evaluation": candidate_model_evaluation,
             "failure_analysis": failure_analysis,
             "selection_execution_status": execution_status,
             "selection_result_quality": result_quality,

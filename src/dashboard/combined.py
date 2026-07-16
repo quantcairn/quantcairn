@@ -29,7 +29,7 @@ from src.safety.trading_environment_guard import TradingEnvironmentGuard
 from src.notifier.alerts import build_provider_audit_sections, build_research_admission_notice
 from src.shadow.config import ShadowRuntimeConfig
 from src.shadow.universe import default_shadow_output_directory, is_safe_shadow_output_directory, shadow_title_for
-from src.candidate_validation import CandidatePerformanceTracker, CandidateValidationStore, ValidationStatus
+from src.candidate_validation import CandidatePerformanceTracker, CandidateValidationStore, ValidationStatus, load_candidate_model_evaluation_snapshot
 from src.utils.market_calendar import market_session_context, required_selection_date
 
 app = Flask(__name__)
@@ -1077,6 +1077,46 @@ def _candidate_research_report_snapshot() -> dict[str, object]:
         "high_score_threshold": performance.get("high_score_threshold", 80.0),
         "performance": performance,
     }
+
+
+def _candidate_model_evaluation_snapshot() -> dict[str, object]:
+    try:
+        return load_candidate_model_evaluation_snapshot(
+            candidate_root=_candidate_artifact_root(),
+            backtest_root=PROJECT_DIR / "artifacts" / "backtests",
+            model_root=PROJECT_DIR / "config" / "candidate_models",
+        )
+    except Exception as exc:
+        return {
+            "title": "Candidate Model Evaluation",
+            "generated_at": None,
+            "active_model_version": None,
+            "challenger_version": None,
+            "training_sample_count": 0,
+            "training_period": {"start": None, "end": None},
+            "baseline_version": "baseline_v1",
+            "baseline_status": "ACTIVE",
+            "challenger_status": "DRAFT",
+            "approval_status": "DRAFT",
+            "recommended_action": "collect_more_samples",
+            "baseline_metrics": {},
+            "challenger_metrics": {},
+            "baseline_weights": {},
+            "proposed_weights": {},
+            "feature_importance": {},
+            "confidence_interval": {},
+            "calibration_curve": [],
+            "calibration_error": None,
+            "sample_size_warning": True,
+            "overfitting_warning": True,
+            "proxy_target_used": True,
+            "warnings": [str(exc)],
+            "comparison": {},
+            "dataset": {"sample_count": 0, "training_period": {"start": None, "end": None}, "target_definition": "unavailable", "warnings": [str(exc)], "source_paths": {}},
+            "model_governance": {},
+            "active_model": None,
+            "challenger_model": None,
+        }
 
 
 def _research_status_payload() -> dict[str, object]:
@@ -3642,6 +3682,76 @@ HTML = """<!DOCTYPE html>
                     </div>
                 </div>
             </div>
+            <div class="system-status-card full candidate-model-card {{ candidate_model_status_class }}" id="candidate-model-card">
+                <span class="system-status-label" id="candidate-model-title">{{ candidate_model_evaluation.title or 'Candidate Model Evaluation' }}</span>
+                <span class="system-status-value" id="candidate-model-status">{{ candidate_model_evaluation.approval_status or 'DRAFT' }}</span>
+                <span class="system-status-detail" id="candidate-model-detail">{{ candidate_model_evaluation.recommended_action or 'collect_more_samples' }}</span>
+                <div class="board-section-head" style="margin-top: 8px;">
+                    <span>Model Snapshot</span>
+                </div>
+                <div class="shadow-metrics-grid">
+                    <div class="shadow-metric">
+                        <span>Active Model</span>
+                        <strong id="candidate-model-active-version">{{ candidate_model_evaluation.active_model_version or 'baseline_v1' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Challenger</span>
+                        <strong id="candidate-model-challenger-version">{{ candidate_model_evaluation.challenger_version or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Training Samples</span>
+                        <strong id="candidate-model-training-sample-count">{{ candidate_model_evaluation.training_sample_count if candidate_model_evaluation.training_sample_count is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Training Period</span>
+                        <strong id="candidate-model-training-period">{{ candidate_model_evaluation.training_period.start or 'unavailable' }} -> {{ candidate_model_evaluation.training_period.end or 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Baseline Score</span>
+                        <strong id="candidate-model-baseline-score">{{ candidate_model_evaluation.comparison.baseline_score if candidate_model_evaluation.comparison and candidate_model_evaluation.comparison.baseline_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Challenger Score</span>
+                        <strong id="candidate-model-challenger-score">{{ candidate_model_evaluation.comparison.challenger_score if candidate_model_evaluation.comparison and candidate_model_evaluation.comparison.challenger_score is not none else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Approval Status</span>
+                        <strong id="candidate-model-approval-status">{{ candidate_model_evaluation.approval_status or 'DRAFT' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Recommended Action</span>
+                        <strong id="candidate-model-recommended-action">{{ candidate_model_evaluation.recommended_action or 'collect_more_samples' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Sample Size Warning</span>
+                        <strong id="candidate-model-sample-warning">{{ 'YES' if candidate_model_evaluation.sample_size_warning else 'NO' }}</strong>
+                    </div>
+                    <div class="shadow-metric">
+                        <span>Overfitting Warning</span>
+                        <strong id="candidate-model-overfitting-warning">{{ 'YES' if candidate_model_evaluation.overfitting_warning else 'NO' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>Baseline Metrics</span>
+                        <strong id="candidate-model-baseline-metrics">{{ candidate_model_evaluation.baseline_metrics|tojson if candidate_model_evaluation.baseline_metrics else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>Challenger Metrics</span>
+                        <strong id="candidate-model-challenger-metrics">{{ candidate_model_evaluation.challenger_metrics|tojson if candidate_model_evaluation.challenger_metrics else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>Candidate Weights</span>
+                        <strong id="candidate-model-weights">{{ candidate_model_evaluation.proposed_weights|tojson if candidate_model_evaluation.proposed_weights else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>Calibration Curve</span>
+                        <strong id="candidate-model-calibration-curve">{{ candidate_model_evaluation.calibration_curve|tojson if candidate_model_evaluation.calibration_curve else 'unavailable' }}</strong>
+                    </div>
+                    <div class="shadow-metric full">
+                        <span>Warnings</span>
+                        <strong id="candidate-model-warnings">{{ candidate_model_evaluation.warnings|join(' · ') if candidate_model_evaluation.warnings else 'none' }}</strong>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     <div class="board-section">
@@ -4731,6 +4841,31 @@ HTML = """<!DOCTYPE html>
                 }).join(' | ')
                 : 'unavailable';
             setText('candidate-performance-buckets', bucketText);
+            const candidateModel = payload.candidate_model_evaluation || {};
+            setText('candidate-model-title', candidateModel.title || 'Candidate Model Evaluation');
+            setText('candidate-model-status', candidateModel.approval_status || candidateModel.status_label || 'DRAFT');
+            setText('candidate-model-detail', candidateModel.recommended_action || 'collect_more_samples');
+            setText('candidate-model-active-version', candidateModel.active_model_version || 'baseline_v1');
+            setText('candidate-model-challenger-version', candidateModel.challenger_version || 'unavailable');
+            setText('candidate-model-training-sample-count', candidateModel.training_sample_count != null ? String(candidateModel.training_sample_count) : 'unavailable');
+            const trainingPeriod = candidateModel.training_period || {};
+            setText('candidate-model-training-period', `${trainingPeriod.start || 'unavailable'} -> ${trainingPeriod.end || 'unavailable'}`);
+            setText('candidate-model-baseline-score', candidateModel.comparison && candidateModel.comparison.baseline_score != null ? String(candidateModel.comparison.baseline_score) : 'unavailable');
+            setText('candidate-model-challenger-score', candidateModel.comparison && candidateModel.comparison.challenger_score != null ? String(candidateModel.comparison.challenger_score) : 'unavailable');
+            setText('candidate-model-approval-status', candidateModel.approval_status || 'DRAFT');
+            setText('candidate-model-recommended-action', candidateModel.recommended_action || 'collect_more_samples');
+            setText('candidate-model-sample-warning', candidateModel.sample_size_warning ? 'YES' : 'NO');
+            setText('candidate-model-overfitting-warning', candidateModel.overfitting_warning ? 'YES' : 'NO');
+            setText('candidate-model-baseline-metrics', candidateModel.baseline_metrics ? JSON.stringify(candidateModel.baseline_metrics) : 'unavailable');
+            setText('candidate-model-challenger-metrics', candidateModel.challenger_metrics ? JSON.stringify(candidateModel.challenger_metrics) : 'unavailable');
+            setText('candidate-model-weights', candidateModel.proposed_weights ? JSON.stringify(candidateModel.proposed_weights) : 'unavailable');
+            setText('candidate-model-calibration-curve', Array.isArray(candidateModel.calibration_curve) ? JSON.stringify(candidateModel.calibration_curve) : 'unavailable');
+            setText('candidate-model-warnings', Array.isArray(candidateModel.warnings) && candidateModel.warnings.length ? candidateModel.warnings.join(' · ') : 'none');
+            const candidateModelCard = document.getElementById('candidate-model-card');
+            if (candidateModelCard) {
+                const candidateModelState = String(candidateModel.approval_status || candidateModel.status_label || candidateModel.state || 'DRAFT').toUpperCase();
+                candidateModelCard.className = `system-status-card full candidate-model-card ${candidateModelState === 'ACTIVE' || candidateModelState === 'APPROVED' || candidateModelState === 'REVIEW_REQUIRED' ? 'status-live' : candidateModelState === 'DRAFT' || candidateModelState === 'BACKTESTED' || candidateModelState === 'WALK_FORWARD_VALIDATED' ? 'status-warn' : 'status-offline'}`;
+            }
             const researchReport = payload.research_report || candidateValidation.research_report || {};
             setText('research-report-title', researchReport.display_title || researchReport.title || 'AI Research Report');
             setText('research-report-state', researchReport.status_label || researchReport.state || 'STALE');
@@ -5075,6 +5210,7 @@ def _api_status_payload() -> dict[str, object]:
         },
         "shadow": shadow_status,
         "candidate_validation": candidate_validation,
+        "candidate_model_evaluation": _candidate_model_evaluation_payload(),
         "research_status": _research_status_payload(),
         "research_report": _candidate_research_report_payload(),
         "ai_selection": {
@@ -5182,6 +5318,14 @@ def api_candidate_performance():
         return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
 
 
+@app.route("/api/candidate-model/evaluation")
+def api_candidate_model_evaluation():
+    try:
+        return jsonify(_candidate_model_evaluation_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
+
+
 @app.route("/api/research/report")
 def api_research_report():
     try:
@@ -5268,6 +5412,7 @@ def api_status():
                 "candidate_validation_api_available": True,
                 "shadow": _shadow_status_payload(),
                 "candidate_validation": _candidate_validation_payload(),
+                "candidate_model_evaluation": _candidate_model_evaluation_payload(),
                 "research_status": _research_status_payload(),
                 "ai_selection": {
                     "price_band": {"min": 5.0, "max": 300.0, "defaulted": True},
@@ -6227,10 +6372,18 @@ def index():
         market_pill_class = "status-offline"
     shadow_status = _shadow_status_payload()
     candidate_validation = _candidate_validation_payload()
+    candidate_model_evaluation = _candidate_model_evaluation_payload()
     shadow_state = str(shadow_status.get("state") or "STALE").upper()
     shadow_status_class = "status-live" if shadow_state == "SAFE" else "status-warn" if shadow_state == "STALE" else "status-offline"
     candidate_state = str(candidate_validation.get("state") or "STALE").upper()
     candidate_status_class = "status-live" if candidate_state == "SAFE" else "status-warn" if candidate_state == "STALE" else "status-offline"
+    candidate_model_state = str(
+        candidate_model_evaluation.get("approval_status")
+        or candidate_model_evaluation.get("status_label")
+        or candidate_model_evaluation.get("state")
+        or "DRAFT"
+    ).upper()
+    candidate_model_status_class = "status-live" if candidate_model_state in {"APPROVED", "ACTIVE", "REVIEW_REQUIRED"} else "status-warn" if candidate_model_state in {"DRAFT", "BACKTESTED", "WALK_FORWARD_VALIDATED"} else "status-offline"
     top_modes = [
         str(mode or "").strip().lower()
         for mode in _load_top_modes()
@@ -6313,6 +6466,8 @@ def index():
         shadow_status_class=shadow_status_class,
         candidate_validation=candidate_validation,
         candidate_status_class=candidate_status_class,
+        candidate_model_evaluation=candidate_model_evaluation,
+        candidate_model_status_class=candidate_model_status_class,
         research_status=_research_status_payload(),
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
