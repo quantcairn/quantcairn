@@ -212,7 +212,8 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     assert written_states[0]["selected_symbols"] == ["NVDA", "MSFT"]
     assert written_reports
     assert written_reports[0]["top3"][0]["ticker"] == "NVDA"
-    assert written_reports[0]["selection_stage"] == "PRELIMINARY"
+    assert written_reports[0]["selection_stage"] == "FINALIZED"
+    assert written_reports[0]["processing_phase"] == "fast_preliminary"
     top_item = written_reports[0]["top3"][0]
     assert isinstance(top_item.get("entry"), dict)
     for key in [

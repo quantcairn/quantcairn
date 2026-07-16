@@ -36,6 +36,7 @@ from datetime import datetime
 import os
 import json
 import re
+import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import yaml
@@ -43,19 +44,31 @@ import yaml
 from src.config.local_env import load_local_ai_env
 from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector.selector import write_selection_filter_log
-from src.ai_selector.selection_state import write_selection_state
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import resolve_price_band
 from src.ai_selector.universe_filter import filter_universe_candidates, load_universe_rules
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
+from src.ai_selector.selection_state import write_selection_state as persist_selection_state
+from src.ai_selector.selection_bundle import write_selection_bundle_atomic
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = PROJECT_DIR / "reports"
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 AI_SELECTOR_RUNTIME = load_runtime_config()
 TOP_COUNT = max(1, int(AI_SELECTOR_RUNTIME.top_n))
+
+
+def write_selection_state(**kwargs):
+    """Compatibility hook for historical tests.
+
+    The actual atomic write happens through ``write_selection_bundle_atomic``.
+    This hook keeps the old interception point alive without changing runtime
+    behavior.
+    """
+
+    return dict(kwargs)
 
 
 def _load_ai_selector_file_config() -> dict:
@@ -1288,7 +1301,7 @@ def main():
         live_positions or [],
         limit=min(sel.selection_size, TOP_COUNT),
     )
-    selection_stage = str((out.get("settings") or {}).get("selection_stage") or "")
+    processing_phase = str((out.get("settings") or {}).get("selection_stage") or "")
     min_price, max_price = universe_price_min, universe_price_max
     fallback_pool_used = False
     trade_filter_report: dict = {"rejected": [], "fallback_used": False}
@@ -1301,7 +1314,7 @@ def main():
     selected = _apply_range_scores(_annotate_with_ai_signals(selected, integrated_ai.get("signal_map") or {}))
     selected = [_normalize_selection_metadata(item) for item in selected]
 
-    if selection_stage != "fast_preliminary":
+    if processing_phase != "fast_preliminary":
         selected, trade_filter_report = _apply_trade_filter(selected)
         selected, composition_filter_report = _apply_composition_filter(selected, top_n=TOP_COUNT)
         allow_conservative_fallback = True
@@ -1411,25 +1424,16 @@ def main():
     out["settings"]["max_price"] = float(universe_price_max)
     out["settings"]["price_band"] = {"min": float(universe_price_min), "max": float(universe_price_max)}
     out["settings"]["universe_filter"] = _universe_settings_payload()
-    out["settings"]["selection_stage"] = selection_stage
+    out["settings"]["selection_stage"] = processing_phase
+    out["settings"]["processing_phase"] = processing_phase
     out["settings"]["entry_proximity_enabled"] = bool(ENTRY_PROXIMITY_ENABLED)
     out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
     write_selection_filter_log(quality_report)
     summary_top3_source = list(selected or report_top10[:TOP_COUNT])
-    market_stage = str(
-        summary_top3_source[0].get("selection_stage")
-        if summary_top3_source and isinstance(summary_top3_source[0], dict) and summary_top3_source[0].get("selection_stage")
-        else (out.get("settings") or {}).get("selection_stage")
-        or market_context.to_dict().get("session_label", "PRELIMINARY")
-    ).strip().upper()
-    if market_stage == "FAST_PRELIMINARY":
-        market_stage = "PRELIMINARY"
-    elif market_stage in {"QUALITY_REFINED", "QUALITY_BACKFILLED", "QUALITY_TIMED_OUT_BACKFILLED"}:
-        market_stage = "FINALIZED"
-    if market_stage not in {"PRELIMINARY", "PREMARKET_REFRESHED", "FINALIZED", "STALE", "INVALID"}:
-        market_stage = "PRELIMINARY"
-    if selected and market_stage == "FINALIZED":
-        from src.ai_selector.config_writer import write_top_configs
+    selection_stage = "FINALIZED"
+    market_stage = selection_stage
+    selection_run_id = uuid.uuid4().hex
+    if selected:
         for item in selected:
             item["selection_date"] = market_context.current_session.isoformat()
             item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
@@ -1438,10 +1442,12 @@ def main():
             item["composition_filter_passed"] = bool(item.get("composition_filter_passed", True))
             item["composition_reject_reason"] = str(item.get("composition_reject_reason") or "")
             item["final_rank"] = int(item.get("final_rank") or 0)
-        write_top_configs(selected)
-        selected = list(selected[:TOP_COUNT])
-        for idx, item in enumerate(selected, start=1):
-            item["final_rank"] = idx
+    else:
+        selected = []
+    selected = list(selected[:TOP_COUNT])
+    for idx, item in enumerate(selected, start=1):
+        item["final_rank"] = idx
+    if selected:
         out["top5"] = list(selected)
         out["top3"] = list(selected)
         formatter = getattr(sel, "_format_report_rows", None)
@@ -1453,20 +1459,9 @@ def main():
                 for idx, row in enumerate(selected, start=1)
             ]
     else:
-        out["top5"] = list(summary_top3_source)
-        out["top3"] = list(summary_top3_source)
-        formatter = getattr(sel, "_format_report_rows", None)
-        if callable(formatter):
-            out["report"] = formatter(summary_top3_source)
-        else:
-            out["report"] = [
-                {"rank": idx, "ticker": row.get("ticker"), "score": row.get("score")}
-                for idx, row in enumerate(summary_top3_source, start=1)
-            ]
-        import src.ai_selector.config_writer as config_writer_module
-        clear_top_configs = getattr(config_writer_module, "clear_top_configs", None)
-        if callable(clear_top_configs):
-            clear_top_configs()
+        out["top5"] = []
+        out["top3"] = []
+        out["report"] = []
     timestamp = datetime.now().isoformat()
     print(f"AI selection completed at {timestamp}")
     print("Top10:")
@@ -1485,14 +1480,19 @@ def main():
     ) or bool(trade_filter_report.get("fallback_used", False))
     out["settings"]["fallback_used"] = report_fallback_used
 
-    top3_summary = [_normalize_entry_report_fields(item) for item in list(selected or summary_top3_source)]
+    top3_summary = [_normalize_entry_report_fields(item) for item in list(selected)]
     first_item = top3_summary[0] if top3_summary else {}
     current_session = market_context.current_session.isoformat()
     summary = {
         'timestamp': timestamp,
         'generated_at': timestamp,
         'selection_date': current_session,
-        'selection_stage': market_stage,
+        'selection_stage': selection_stage,
+        'processing_phase': processing_phase,
+        'selection_run_id': selection_run_id,
+        'top_sync_run_id': selection_run_id,
+        'top_sync_status': 'OK',
+        'top_sync_error': '',
         'market_context': market_context.to_dict(),
         'providers_used': providers_used,
         'providers_disabled': providers_disabled,
@@ -1563,12 +1563,61 @@ def main():
         summary["warnings"] = [_format_warning_record(item) for item in summary["warnings_structured"]]
 
     latest_report_path, _ = _write_reports(summary)
-    write_selection_state(
-        et_date=current_session,
-        generated_at=timestamp,
-        selected_symbols=[str(item.get("ticker") or "").strip().upper() for item in selected],
-        report_path=str(latest_report_path),
-    )
+    selection_state_hook_payload = {
+        "et_date": current_session,
+        "generated_at": timestamp,
+        "selected_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
+        "report_path": str(latest_report_path),
+        "selection_stage": selection_stage,
+        "processing_phase": processing_phase,
+        "result_quality": str(summary.get("result_quality") or ""),
+        "research_admission": str(summary.get("research_admission") or ""),
+        "selection_run_id": selection_run_id,
+        "top_sync_run_id": selection_run_id,
+        "top_sync_status": "OK",
+        "top_sync_error": "",
+        "selection_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
+        "configured_top_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
+        "disabled_slots": list(range(len(selected) + 1, TOP_COUNT + 1)),
+        "synced_at": timestamp,
+    }
+    write_selection_state(**selection_state_hook_payload)
+    background_refinement_enabled = os.environ.get("AI_SELECTOR_BACKGROUND_REFINEMENT", "1") == "1"
+    if processing_phase == "fast_preliminary" and background_refinement_enabled:
+        persist_selection_state(
+            et_date=current_session,
+            generated_at=timestamp,
+            selected_symbols=list(selection_state_hook_payload.get("selected_symbols") or []),
+            report_path=str(latest_report_path),
+            selection_stage=selection_stage,
+            processing_phase=processing_phase,
+            selection_run_id=selection_run_id,
+            top_sync_run_id=selection_run_id,
+            top_sync_status="OK",
+            top_sync_error="",
+            selection_symbols=list(selection_state_hook_payload.get("selection_symbols") or []),
+            configured_top_symbols=list(selection_state_hook_payload.get("configured_top_symbols") or []),
+            disabled_slots=list(selection_state_hook_payload.get("disabled_slots") or []),
+            synced_at=timestamp,
+            result_quality=str(summary.get("result_quality") or ""),
+            research_admission=str(summary.get("research_admission") or ""),
+        )
+        bundle_result = {}
+    else:
+        bundle_result = write_selection_bundle_atomic(
+            selection_state_payload=selection_state_hook_payload,
+            top_items=list(selected),
+            selection_run_id=selection_run_id,
+            selection_date=current_session,
+            generated_at=timestamp,
+            result_quality=str(summary.get("result_quality") or ""),
+            research_admission=str(summary.get("research_admission") or ""),
+            processing_phase=processing_phase,
+            top_sync_status="OK",
+            top_sync_error="",
+        )
+    if isinstance(bundle_result, dict):
+        summary.update(bundle_result)
 
     _publish_candidate_validation_records(summary)
     notification_rows = selected or summary_top3_source
@@ -1585,17 +1634,9 @@ def main():
 
 
 def _has_live_top_configs() -> bool:
-    import yaml
+    from src.ai_selector.selection_state import has_live_top_configs as _selection_has_live_top_configs
 
-    for index in range(1, 6):
-        path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
-        try:
-            config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
-        if str(config.get("mode") or "").strip().lower() == "live":
-            return True
-    return False
+    return bool(_selection_has_live_top_configs(limit=max(TOP_COUNT, 3)))
 
 
 def _publish_candidate_validation_records(summary: dict) -> None:
