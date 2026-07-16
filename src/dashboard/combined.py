@@ -1046,6 +1046,14 @@ def _candidate_research_report_snapshot() -> dict[str, object]:
             "score_distribution": [],
             "top_candidates": [],
             "failure_analysis": {"statuses": {"DATA_INVALID": 0, "BACKTEST_FAILED": 0, "WALK_FORWARD_FAILED": 0}},
+            "market_regime": {},
+            "strategy_selection": {},
+            "candidate_strategy_matrix": [],
+            "portfolio_composition": {},
+            "final_selected": [],
+            "final_selected_count": 0,
+            "selection_outcome": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+            "actionable_candidate_status": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
             "error": str(exc),
         }
     performance = report.get("performance") or {}
@@ -1062,6 +1070,14 @@ def _candidate_research_report_snapshot() -> dict[str, object]:
         "score_distribution": report.get("score_distribution") or [],
         "top_candidates": report.get("top_candidates") or [],
         "failure_analysis": report.get("failure_analysis") or {"statuses": {}},
+        "market_regime": report.get("market_regime") or {},
+        "strategy_selection": report.get("strategy_selection") or {},
+        "candidate_strategy_matrix": list(report.get("candidate_strategy_matrix") or []),
+        "portfolio_composition": dict(report.get("portfolio_composition") or {}),
+        "final_selected": list(report.get("final_selected") or []),
+        "final_selected_count": int(report.get("final_selected_count") or 0),
+        "selection_outcome": report.get("selection_outcome") or "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+        "actionable_candidate_status": report.get("actionable_candidate_status") or "NO_ACTIONABLE_RESEARCH_CANDIDATE",
         "selection_execution_status": report.get("selection_execution_status") or "COMPLETED",
         "selection_result_quality": report.get("selection_result_quality") or "COMPLETE",
         "selection_research_admission": report.get("selection_research_admission") or "RESEARCH_READY",
@@ -1376,6 +1392,47 @@ def _candidate_research_report_payload() -> dict[str, object]:
         "score_distribution": [],
         "top_candidates": [],
         "failure_analysis": {"statuses": {"DATA_INVALID": 0, "BACKTEST_FAILED": 0, "WALK_FORWARD_FAILED": 0}},
+        "market_regime": {},
+        "strategy_selection": {},
+        "candidate_strategy_matrix": [],
+        "portfolio_composition": {},
+        "final_selected": [],
+        "final_selected_count": 0,
+        "selection_outcome": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+        "actionable_candidate_status": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+    }
+
+
+def _candidate_model_evaluation_payload() -> dict[str, object]:
+    return _candidate_model_evaluation_snapshot() or {
+        "title": "Candidate Model Evaluation",
+        "generated_at": None,
+        "active_model_version": None,
+        "challenger_version": None,
+        "training_sample_count": 0,
+        "training_period": {"start": None, "end": None},
+        "baseline_version": "baseline_v1",
+        "baseline_status": "ACTIVE",
+        "challenger_status": "DRAFT",
+        "approval_status": "DRAFT",
+        "recommended_action": "collect_more_samples",
+        "baseline_metrics": {},
+        "challenger_metrics": {},
+        "baseline_weights": {},
+        "proposed_weights": {},
+        "feature_importance": {},
+        "confidence_interval": {},
+        "calibration_curve": [],
+        "calibration_error": None,
+        "sample_size_warning": True,
+        "overfitting_warning": True,
+        "proxy_target_used": True,
+        "warnings": [],
+        "comparison": {},
+        "dataset": {"sample_count": 0, "training_period": {"start": None, "end": None}, "target_definition": "unavailable", "warnings": [], "source_paths": {}},
+        "model_governance": {},
+        "active_model": None,
+        "challenger_model": None,
     }
 
 
@@ -3794,6 +3851,22 @@ HTML = """<!DOCTYPE html>
                     <span>High Score Success Rate</span>
                     <strong id="research-report-high-score-rate">{{ research_report.high_score_success_rate if research_report.high_score_success_rate is not none else 'unavailable' }}</strong>
                 </div>
+                <div class="shadow-metric">
+                    <span>Market Regime</span>
+                    <strong id="research-report-market-regime">{{ research_report.market_regime.regime if research_report.market_regime and research_report.market_regime.regime else 'UNKNOWN' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>Regime Confidence</span>
+                    <strong id="research-report-market-regime-confidence">{{ research_report.market_regime.confidence if research_report.market_regime and research_report.market_regime.confidence is not none else 'unavailable' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>Strategy Outcome</span>
+                    <strong id="research-report-selection-outcome">{{ research_report.selection_outcome or 'NO_ACTIONABLE_RESEARCH_CANDIDATE' }}</strong>
+                </div>
+                <div class="shadow-metric">
+                    <span>Final Selected</span>
+                    <strong id="research-report-final-selected-count">{{ research_report.final_selected_count if research_report.final_selected_count is not none else 0 }}</strong>
+                </div>
                 <div class="shadow-metric full">
                     <span>Score Distribution</span>
                     <strong id="research-report-score-distribution">
@@ -3813,6 +3886,33 @@ HTML = """<!DOCTYPE html>
                             {% for item in research_report.top_candidates %}
                                 {{ item.symbol or item.candidate_id }} · {{ item.candidate_score if item.candidate_score is not none else 'unavailable' }} · {{ item.recommended_strategy or 'unavailable' }}{% if not loop.last %}<br>{% endif %}
                             {% endfor %}
+                        {% else %}
+                            unavailable
+                        {% endif %}
+                    </strong>
+                </div>
+                <div class="shadow-metric full">
+                    <span>Candidate Strategy Matrix</span>
+                    <strong id="research-report-strategy-matrix">
+                        {% if research_report.candidate_strategy_matrix %}
+                            {% for item in research_report.candidate_strategy_matrix %}
+                                {{ item.symbol or item.candidate_id }} · {{ item.strategy_id or 'unavailable' }} · fit {{ item.fit_score if item.fit_score is not none else 'n/a' }} · {{ item.allowed if item.allowed is not none else 'n/a' }}{% if item.blocked_reason %} · {{ item.blocked_reason }}{% endif %}{% if not loop.last %}<br>{% endif %}
+                            {% endfor %}
+                        {% else %}
+                            unavailable
+                        {% endif %}
+                    </strong>
+                </div>
+                <div class="shadow-metric full">
+                    <span>Portfolio Composition</span>
+                    <strong id="research-report-portfolio-composition">
+                        {% if research_report.portfolio_composition %}
+                            selected {{ research_report.portfolio_composition.selected_count if research_report.portfolio_composition.selected_count is not none else 0 }}
+                            · blocked {{ research_report.portfolio_composition.blocked_count if research_report.portfolio_composition.blocked_count is not none else 0 }}
+                            · leveraged/inverse {{ research_report.portfolio_composition.leveraged_inverse_selected_count if research_report.portfolio_composition.leveraged_inverse_selected_count is not none else 0 }}
+                            {% if research_report.portfolio_composition.selected_symbols %}
+                                <br>symbols {{ research_report.portfolio_composition.selected_symbols | join(' / ') }}
+                            {% endif %}
                         {% else %}
                             unavailable
                         {% endif %}
@@ -4873,6 +4973,10 @@ HTML = """<!DOCTYPE html>
             setText('research-report-candidate-count', researchReport.candidate_count != null ? String(researchReport.candidate_count) : 'unavailable');
             setText('research-report-average-score', researchReport.average_score != null ? String(researchReport.average_score) : 'unavailable');
             setText('research-report-high-score-rate', researchReport.high_score_success_rate != null ? `${researchReport.high_score_success_rate}%` : 'unavailable');
+            setText('research-report-market-regime', researchReport.market_regime && researchReport.market_regime.regime ? researchReport.market_regime.regime : 'UNKNOWN');
+            setText('research-report-market-regime-confidence', researchReport.market_regime && researchReport.market_regime.confidence != null ? String(researchReport.market_regime.confidence) : 'unavailable');
+            setText('research-report-selection-outcome', researchReport.selection_outcome || 'NO_ACTIONABLE_RESEARCH_CANDIDATE');
+            setText('research-report-final-selected-count', researchReport.final_selected_count != null ? String(researchReport.final_selected_count) : '0');
             const researchDistribution = Array.isArray(researchReport.score_distribution) ? researchReport.score_distribution : [];
             setText('research-report-score-distribution', researchDistribution.length ? researchDistribution.map((bucket) => {
                 const label = bucket.score_bucket || 'unknown';
@@ -4882,6 +4986,17 @@ HTML = """<!DOCTYPE html>
                 const walkForwardCompleteRate = bucket.walk_forward_complete_rate != null ? `${bucket.walk_forward_complete_rate}%` : 'n/a';
                 return `${label} · ${count} · ${dataValidRate} · ${backtestCompleteRate} · ${walkForwardCompleteRate}`;
             }).join(' | ') : 'unavailable');
+            const strategyCandidates = Array.isArray(researchReport.candidate_strategy_matrix) ? researchReport.candidate_strategy_matrix : [];
+            setText('research-report-strategy-matrix', strategyCandidates.length ? strategyCandidates.map((item) => {
+                const symbol = item.symbol || item.candidate_id || 'unknown';
+                const strategy = item.strategy_id || 'unavailable';
+                const fit = item.fit_score != null ? item.fit_score : 'n/a';
+                const allowed = item.allowed != null ? (item.allowed ? 'YES' : 'NO') : 'n/a';
+                const blockedReason = item.blocked_reason ? ` · ${item.blocked_reason}` : '';
+                return `${symbol} · ${strategy} · fit ${fit} · ${allowed}${blockedReason}`;
+            }).join(' | ') : 'unavailable');
+            const portfolioComposition = researchReport.portfolio_composition || {};
+            setText('research-report-portfolio-composition', Object.keys(portfolioComposition).length ? `selected ${portfolioComposition.selected_count ?? 0} · blocked ${portfolioComposition.blocked_count ?? 0} · leveraged/inverse ${portfolioComposition.leveraged_inverse_selected_count ?? 0}` + (Array.isArray(portfolioComposition.selected_symbols) && portfolioComposition.selected_symbols.length ? ` · symbols ${portfolioComposition.selected_symbols.join(' / ')}` : '') : 'unavailable');
             setText('research-report-top-candidates', Array.isArray(researchReport.top_candidates) && researchReport.top_candidates.length
                 ? researchReport.top_candidates.map((item) => {
                     const symbol = item.symbol || item.candidate_id || 'unknown';

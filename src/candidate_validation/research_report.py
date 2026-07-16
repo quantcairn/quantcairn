@@ -238,6 +238,15 @@ class CandidateDailyResearchReportGenerator:
         score_distribution = report.get("score_distribution") or []
         failure_analysis = report.get("failure_analysis") or {}
         failure_statuses = failure_analysis.get("statuses") or {}
+        model = report.get("candidate_model_evaluation") or {}
+        market_regime = report.get("market_regime") or {}
+        strategy_selection = report.get("strategy_selection") or {}
+        portfolio_composition = report.get("portfolio_composition") or {}
+        strategy_candidates = report.get("strategy_candidates") or []
+        baseline_metrics = model.get("baseline_metrics") or {}
+        challenger_metrics = model.get("challenger_metrics") or {}
+        baseline_weights = model.get("baseline_weights") or {}
+        proposed_weights = model.get("proposed_weights") or {}
 
         lines = [
             "# AI Candidate Daily Research Report",
@@ -328,15 +337,52 @@ class CandidateDailyResearchReportGenerator:
                 "",
                 "## Failure Analysis",
                 "",
-                _markdown_table(
-                    ["status", "count"],
-                    [[status, failure_statuses.get(status, 0)] for status in ("DATA_INVALID", "BACKTEST_FAILED", "WALK_FORWARD_FAILED")],
-                ),
-                "",
-                "## Selection Execution",
-                "",
-                _markdown_table(
-                    ["metric", "value"],
+            _markdown_table(
+                ["status", "count"],
+                [[status, failure_statuses.get(status, 0)] for status in ("DATA_INVALID", "BACKTEST_FAILED", "WALK_FORWARD_FAILED")],
+            ),
+            "",
+            "## Candidate Model Evaluation",
+            "",
+            _markdown_table(
+                ["metric", "value"],
+                [
+                    ["active_model_version", model.get("active_model_version") or "baseline_v1"],
+                    ["challenger_version", model.get("challenger_version") or "unavailable"],
+                    ["training_sample_count", model.get("training_sample_count") or 0],
+                    ["training_period", f"{(model.get('training_period') or {}).get('start') or 'unavailable'} -> {(model.get('training_period') or {}).get('end') or 'unavailable'}"],
+                    ["approval_status", model.get("approval_status") or "DRAFT"],
+                    ["recommended_action", model.get("recommended_action") or "keep_baseline"],
+                    ["sample_size_warning", model.get("sample_size_warning")],
+                    ["overfitting_warning", model.get("overfitting_warning")],
+                ],
+            ),
+            "",
+            "### Baseline Metrics",
+            "",
+            _markdown_table(
+                ["metric", "value"],
+                [[key, baseline_metrics.get(key)] for key in ("precision_at_3", "precision_at_5", "backtest_pass_rate", "walk_forward_pass_rate", "average_forward_return", "max_drawdown", "calibration_error", "candidate_turnover", "score_rank_correlation")],
+            ),
+            "",
+            "### Challenger Metrics",
+            "",
+            _markdown_table(
+                ["metric", "value"],
+                [[key, challenger_metrics.get(key)] for key in ("precision_at_3", "precision_at_5", "backtest_pass_rate", "walk_forward_pass_rate", "average_forward_return", "max_drawdown", "calibration_error", "candidate_turnover", "score_rank_correlation")],
+            ),
+            "",
+            "### Candidate Weights",
+            "",
+            _markdown_table(
+                ["factor", "baseline", "proposed"],
+                [[name, baseline_weights.get(name), proposed_weights.get(name)] for name in ("liquidity_score", "trend_score", "volatility_score", "risk_score", "strategy_fit_score")],
+            ),
+            "",
+            "## Selection Execution",
+            "",
+            _markdown_table(
+                ["metric", "value"],
                     [
                         ["execution_status", report.get("selection_execution_status")],
                         ["result_quality", report.get("selection_result_quality")],
@@ -347,12 +393,14 @@ class CandidateDailyResearchReportGenerator:
                         ["top_n_missing_count", report.get("selection_top_n_missing_count")],
                     ],
                 ),
-                "",
-                "## 说明",
-                "",
-                "- 本报告只读生成，不会触发交易、回测、Shadow 或 Paper/Live。",
-                "- Top candidates 仅代表当前候选评分与验证状态，不构成交易建议。",
-            ]
+            "",
+            "## 说明",
+            "",
+            "- 本报告只读生成，不会触发交易、回测、Shadow 或 Paper/Live。",
+            "- Top candidates 仅代表当前候选评分与验证状态，不构成交易建议。",
+            "- Candidate Model Evaluation 只表示离线校准和权重建议，不会自动更新正式模型。",
+            "- 当 final_selected_count 为 0 时，输出 NO_ACTIONABLE_RESEARCH_CANDIDATE。",
+        ]
         )
         return "\n".join(lines).strip() + "\n"
 
