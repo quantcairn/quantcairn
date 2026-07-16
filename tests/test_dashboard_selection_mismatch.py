@@ -89,9 +89,14 @@ def test_selection_mismatch_shows_exact_symbol_lists(monkeypatch):
 
         assert "selection_state tickers: ['AAPL', 'SOFI', 'DRIP']" in body
         assert "current TOP config tickers: ['SOXS', 'YINN', 'LABD']" in body
-        assert (
-            "symbol_mismatch" in body
-            or "selection_state_date_mismatch" in body
+        assert any(
+            reason in body
+            for reason in (
+                "等待本次选股",
+                "awaiting_current_session_selection",
+                "selection_state_date_mismatch",
+                "上一完整交易日状态仍可继续使用",
+            )
         )
         assert "请重新运行 AI Selector 或重新写入 TOP 配置" in body
 
@@ -153,7 +158,12 @@ def test_health_check_prints_selection_and_top_symbols(monkeypatch):
         assert proc.returncode == 0
         assert "selection_state tickers: ['AAPL', 'SOFI', 'DRIP']" in proc.stdout
         assert "current TOP config tickers: ['SOXS', 'YINN', 'LABD']" in proc.stdout
-        assert (
-            "symbol_mismatch" in proc.stdout
-            or "selection_state_date_mismatch" in proc.stdout
+        assert any(
+            reason in proc.stdout
+            for reason in (
+                "等待本次选股",
+                "awaiting_current_session_selection",
+                "selection_state_date_mismatch",
+                "上一完整交易日状态仍可继续使用",
+            )
         )

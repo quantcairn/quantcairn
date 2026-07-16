@@ -41,6 +41,8 @@ from ..ai_selector.selection_state import (
     current_top_config_symbols,
     has_live_top_configs,
     load_selection_state,
+    selection_state_path,
+    verify_selection_state,
     verify_live_startup_selection,
 )
 
@@ -61,6 +63,7 @@ except ImportError:
 class AISelectionDecision:
     enabled: bool = False
     active: bool = False
+    selection_mode: str = "DISABLED"
     top10: list[dict] | None = None
     top3: list[dict] | None = None
     signal_for_ticker: Optional[dict] = None
@@ -270,6 +273,7 @@ class TradingEngine:
         # NY timezone
         self._ny_tz = _pytz.timezone("America/New_York") if HAS_PYTZ else None
         self._ai_selection = AISelectionDecision()
+        self._ai_selection_signature: tuple[str, ...] | None = None
 
         # Signal & order cooldown
         self._signal_last_time: float = 0.0
@@ -648,6 +652,9 @@ class TradingEngine:
             self._last_exit_check_at = loop_start
             self._run_dynamic_exit_check(current_price, quote.bid)
             has_position = self._position_shares > 0
+
+        if self.mode == "paper":
+            self._initialize_ai_selector()
 
         # 7. Evaluate strategy (with signal cooldown)
         now_ts = time.time()
@@ -1536,31 +1543,66 @@ class TradingEngine:
 
     def _initialize_ai_selector(self) -> None:
         runtime = load_ai_selector_runtime_config()
-        self._ai_selection = AISelectionDecision(enabled=runtime.enabled)
+        signature = self._ai_selection_signature_for_runtime(runtime)
+        if signature == self._ai_selection_signature:
+            return
+        self._ai_selection_signature = signature
+        self._ai_selection = AISelectionDecision(
+            enabled=runtime.enabled,
+            selection_mode="DISABLED" if not runtime.enabled else "UNAVAILABLE",
+        )
         logger.info("AI selector enabled %s", str(runtime.enabled).lower())
         self._write_runtime_audit(
             "ai_selector_status",
             ai_selector_enabled=runtime.enabled,
             universe=runtime.universe,
+            selection_mode=self._ai_selection.selection_mode,
         )
         if not runtime.enabled:
             return
-        cached_selection = self._load_cached_ai_selection(runtime)
+
+        selection_context = self._load_ai_selection_context(runtime)
+        selection_mode = str(selection_context.get("selection_mode") or "").strip().upper() or "UNAVAILABLE"
+        selection_reason = str(selection_context.get("selection_reason") or "").strip() or "unknown"
+        cached_selection = selection_context.get("cached_selection")
+        top3: list[dict] = []
+        top10: list[dict] = []
+        ai_meta: dict[str, object] = {}
         if cached_selection is not None:
             top3, top10, ai_meta = cached_selection
-        else:
-            logger.warning("AI selection stale, fallback to configured tickers")
-            self._ai_selection.fallback_reason = "ai_selection_stale"
+        if selection_mode != "ACTIVE":
+            logger.warning(
+                "AI selection %s, new paper entries disabled%s",
+                selection_mode.lower(),
+                f" ({selection_reason})" if selection_reason else "",
+            )
+            self._ai_selection.selection_mode = selection_mode
+            self._ai_selection.fallback_reason = selection_reason
+            self._ai_selection.active = False
             self._write_runtime_audit(
-                "ai_selector_stale_fallback",
+                "ai_selector_inactive",
                 ai_selector_enabled=runtime.enabled,
-                fallback_reason="ai_selection_stale",
+                selection_mode=selection_mode,
+                selection_reason=selection_reason,
+                fallback_reason=selection_reason,
+                universe=runtime.universe,
             )
             return
         if not top3:
-            logger.warning("AI selector returned no signals, fallback to original config")
+            logger.warning("AI selector returned no signals, new paper entries disabled")
+            self._ai_selection.selection_mode = "BLOCKED"
             self._ai_selection.fallback_reason = "empty_ai_signals"
+            self._ai_selection.active = False
+            self._write_runtime_audit(
+                "ai_selector_inactive",
+                ai_selector_enabled=runtime.enabled,
+                selection_mode="BLOCKED",
+                selection_reason="empty_ai_signals",
+                fallback_reason="empty_ai_signals",
+                universe=runtime.universe,
+            )
             return
+
         signal_for_ticker = next(
             (item for item in top3 if str(item.get("ticker") or "").upper() == self.ticker.upper()),
             None,
@@ -1577,6 +1619,7 @@ class TradingEngine:
         self._ai_selection = AISelectionDecision(
             enabled=True,
             active=True,
+            selection_mode="ACTIVE",
             top10=top10,
             top3=top3,
             signal_for_ticker=signal_for_ticker,
@@ -1610,6 +1653,153 @@ class TradingEngine:
             risk_approved=risk_approved,
             fallback_used=bool(ai_meta.get("fallback_used", False)),
         )
+
+    def _ai_selection_signature_for_runtime(self, runtime) -> tuple[str, ...]:
+        state = load_selection_state()
+        state_path = selection_state_path()
+        state_mtime = str(state_path.stat().st_mtime_ns) if state_path.exists() else "0"
+        report_path_raw = str(state.get("report_path") or "").strip() if isinstance(state, dict) else ""
+        report_path = (
+            Path(report_path_raw)
+            if report_path_raw
+            else (PROJECT_DIR / "reports" / "ai_selection_latest.json")
+        )
+        report_mtime = str(report_path.stat().st_mtime_ns) if report_path.exists() else "0"
+        return (
+            "enabled" if bool(getattr(runtime, "enabled", False)) else "disabled",
+            state_mtime,
+            report_mtime,
+            str(state.get("et_date") or "") if isinstance(state, dict) else "",
+            str(state.get("selection_run_id") or "") if isinstance(state, dict) else "",
+            str(state.get("top_sync_run_id") or "") if isinstance(state, dict) else "",
+            str(state.get("selection_stage") or "") if isinstance(state, dict) else "",
+            str(state.get("result_quality") or "") if isinstance(state, dict) else "",
+            str(state.get("research_admission") or "") if isinstance(state, dict) else "",
+        )
+
+    def _load_ai_selection_context(self, runtime) -> dict[str, object]:
+        state = load_selection_state()
+        if not isinstance(state, dict):
+            return {
+                "selection_mode": "UNAVAILABLE",
+                "selection_reason": "selection_state_missing",
+                "cached_selection": None,
+            }
+        if not HAS_PYTZ or self._ny_tz is None:
+            return {
+                "selection_mode": "UNAVAILABLE",
+                "selection_reason": "timezone_unavailable",
+                "cached_selection": None,
+            }
+
+        required_day = datetime.now(self._ny_tz).date().isoformat()
+        state_day = str(state.get("et_date") or "").strip()
+        if state_day != required_day:
+            return {
+                "selection_mode": "STALE",
+                "selection_reason": f"selection_state_date_mismatch:{state_day or 'missing'}",
+                "cached_selection": None,
+            }
+
+        ok, reason, verified_state = verify_selection_state(required_et_date=required_day)
+        if not ok:
+            normalized_reason = str(reason or "selection_state_invalid")
+            if normalized_reason == "selection_state_date_mismatch":
+                selection_mode = "STALE"
+            elif normalized_reason == "missing_top_slot":
+                selection_mode = "UNAVAILABLE"
+            else:
+                selection_mode = "BLOCKED"
+            return {
+                "selection_mode": selection_mode,
+                "selection_reason": normalized_reason,
+                "cached_selection": None,
+                "verified_state": verified_state,
+            }
+
+        report_path_raw = str(state.get("report_path") or "").strip()
+        report_path = (
+            Path(report_path_raw)
+            if report_path_raw
+            else (PROJECT_DIR / "reports" / "ai_selection_latest.json")
+        )
+        if not report_path.exists():
+            return {
+                "selection_mode": "UNAVAILABLE",
+                "selection_reason": "selection_report_missing",
+                "cached_selection": None,
+            }
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {
+                "selection_mode": "INVALID",
+                "selection_reason": "selection_report_invalid",
+                "cached_selection": None,
+            }
+        if not isinstance(payload, dict):
+            return {
+                "selection_mode": "INVALID",
+                "selection_reason": "selection_report_invalid",
+                "cached_selection": None,
+            }
+
+        selection_date = str(payload.get("selection_date") or "").strip()
+        if selection_date and selection_date != required_day:
+            return {
+                "selection_mode": "STALE",
+                "selection_reason": f"selection_report_date_mismatch:{selection_date}",
+                "cached_selection": None,
+            }
+
+        selection_stage = str(payload.get("selection_stage") or "").strip().upper()
+        result_quality = str(payload.get("result_quality") or "").strip().upper()
+        research_admission = str(payload.get("research_admission") or "").strip().upper()
+        top3 = payload.get("top3") if isinstance(payload.get("top3"), list) else []
+        top10 = payload.get("top10") if isinstance(payload.get("top10"), list) else []
+        if not top10:
+            top10 = payload.get("top5") if isinstance(payload.get("top5"), list) else []
+        top3 = [dict(item) for item in top3 if isinstance(item, dict)]
+        top10 = [dict(item) for item in top10 if isinstance(item, dict)]
+        if selection_stage in {"PRELIMINARY", "STALE"}:
+            return {
+                "selection_mode": "STALE",
+                "selection_reason": f"selection_stage_{selection_stage.lower()}",
+                "cached_selection": None,
+            }
+        if selection_stage == "INVALID" or result_quality == "INVALID":
+            return {
+                "selection_mode": "INVALID",
+                "selection_reason": "result_quality_invalid",
+                "cached_selection": None,
+            }
+        if research_admission == "BLOCKED":
+            return {
+                "selection_mode": "BLOCKED",
+                "selection_reason": "research_admission_blocked",
+                "cached_selection": None,
+            }
+        if not top3:
+            return {
+                "selection_mode": "BLOCKED",
+                "selection_reason": "empty_ai_signals",
+                "cached_selection": None,
+            }
+
+        cached_selection = self._load_cached_ai_selection(runtime)
+        if cached_selection is None:
+            return {
+                "selection_mode": "BLOCKED",
+                "selection_reason": "cached_selection_missing",
+                "cached_selection": None,
+            }
+        top3, top10, payload = cached_selection
+        return {
+            "selection_mode": "ACTIVE",
+            "selection_reason": "ok",
+            "cached_selection": (top3, top10, payload),
+            "verified_state": verified_state,
+        }
 
     def _load_cached_ai_selection(
         self,
@@ -1730,7 +1920,9 @@ class TradingEngine:
         if not self._ai_selection.enabled:
             return True
         if not self._ai_selection.active:
-            return True
+            return False
+        if str(getattr(self._ai_selection, "selection_mode", "") or "").upper() != "ACTIVE":
+            return False
         if self._ai_selection.regime == "EVENT":
             return False
         return bool(self._ai_selection.signal_for_ticker and self._ai_selection.risk_approved)
@@ -1739,7 +1931,8 @@ class TradingEngine:
         if not self._ai_selection.enabled:
             return "AI 选股未启用"
         if not self._ai_selection.active:
-            return f"AI 选股回退原配置：{self._ai_selection.fallback_reason or 'unknown'}"
+            mode = str(getattr(self._ai_selection, "selection_mode", "") or "UNAVAILABLE").upper()
+            return f"AI 选股状态不可用（{mode}:{self._ai_selection.fallback_reason or 'unknown'}），纸面盘禁止新开仓"
         if self._ai_selection.fallback_used:
             allow_paper, _allow_live, _multiplier = self._ai_fallback_policy()
             if self.mode == "live":
