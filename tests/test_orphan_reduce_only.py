@@ -127,6 +127,7 @@ def test_orphan_no_new_positions():
     """Verify orphan monitor does not open new positions (only manages existing)."""
     broker = FakeBroker(positions=[_position("SOFI", 2, 15.0, 14.0)])
     monitor = OrphanPositionMonitor(broker=broker)
+    monitor._active_assigned_symbols = lambda: {"AAPL"}
 
     # Scan for orphans
     positions = broker.get_positions()
