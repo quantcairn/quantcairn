@@ -31,8 +31,34 @@ def _load_latest_report() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_refined_report(summary: dict) -> None:
-    selector_runner._write_reports(summary)
+def _current_manifest_path() -> Path:
+    return PROJECT_DIR / "state" / "selection_bundle_manifest.json"
+
+
+def _load_current_manifest() -> dict:
+    path = _current_manifest_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _bundle_signature(report: dict, manifest: dict) -> dict[str, str] | None:
+    run_id = str(manifest.get("selection_run_id") or report.get("selection_run_id") or "").strip()
+    bundle_version = str(manifest.get("bundle_version") or report.get("selection_bundle_version") or "").strip()
+    bundle_hash = str(manifest.get("selection_bundle_hash") or report.get("selection_bundle_hash") or "").strip()
+    selection_date = str(manifest.get("selection_date") or report.get("selection_date") or "").strip()
+    if not run_id or not bundle_version or not bundle_hash or not selection_date:
+        return None
+    return {
+        "selection_run_id": run_id,
+        "bundle_version": bundle_version,
+        "bundle_hash": bundle_hash,
+        "selection_date": selection_date,
+    }
 
 
 def _merge_refined_candidates(preliminary_rows: list[dict] | None, refined_rows: list[dict] | None, *, limit: int) -> list[dict]:
@@ -71,12 +97,106 @@ def _merge_refinement_summary(preliminary: dict, refined_summary: dict) -> dict:
     return merged
 
 
+def _final_refined_symbols(rows: list[dict] | None) -> list[str]:
+    return [
+        str(item.get("ticker") or "").strip().upper()
+        for item in rows or []
+        if str(item.get("ticker") or "").strip()
+    ]
+
+
+def _prepare_refined_bundle(preliminary: dict, refined_summary: dict, final_rows: list[dict], *, selector: AIStrategySelector) -> dict:
+    merged = _merge_refinement_summary(preliminary, refined_summary)
+    final_rows = [dict(item or {}) for item in final_rows or []]
+    selected_symbols = _final_refined_symbols(final_rows)
+    requested_top_n = int(
+        merged.get("requested_top_n")
+        or (merged.get("settings") or {}).get("top_n")
+        or selector.selection_size
+        or len(final_rows)
+        or 3
+    )
+
+    merged["preliminary_top5"] = list(preliminary.get("top5") or [])
+    merged["preliminary_top3"] = list(preliminary.get("top3") or [])
+    merged["preliminary_top10"] = list(preliminary.get("top10") or [])
+    merged["top10"] = list(refined_summary.get("top10") or merged.get("top10") or [])
+    merged["top5"] = list(final_rows)
+    merged["top3"] = list(final_rows[:3])
+    merged["report"] = list(selector._format_report_rows(final_rows))
+    merged["selection_count"] = len(final_rows)
+    merged["candidate_count"] = max(int(merged.get("candidate_count") or 0), len(final_rows))
+    merged["requested_top_n"] = requested_top_n
+    merged["selected_top_n"] = len(final_rows)
+    merged["top_n_missing_count"] = max(0, requested_top_n - len(final_rows))
+    merged["top_n_filled"] = len(final_rows) >= requested_top_n
+    merged["selection_symbols"] = list(selected_symbols)
+    merged["selected_symbols"] = list(selected_symbols)
+    merged["configured_top_symbols"] = list(selected_symbols)
+    merged["final_selected_symbols"] = list(selected_symbols)
+    merged["selection_stage"] = str(preliminary.get("selection_stage") or "FINALIZED")
+    merged["top_sync_status"] = str(preliminary.get("top_sync_status") or refined_summary.get("top_sync_status") or "OK")
+    merged["top_sync_error"] = str(preliminary.get("top_sync_error") or refined_summary.get("top_sync_error") or "")
+    merged["source_bundle_hash"] = str(preliminary.get("selection_bundle_hash") or "")
+    merged["source_bundle_version"] = str(preliminary.get("selection_bundle_version") or "")
+    merged["source_selection_run_id"] = str(preliminary.get("selection_run_id") or "")
+    merged["source_selection_date"] = str(preliminary.get("selection_date") or "")
+    return merged
+
+
+def _persist_refined_bundle(summary: dict, top_items: list[dict], *, selection_date: str) -> dict:
+    selection_run_id = str(summary.get("selection_run_id") or "").strip()
+    if not selection_run_id:
+        return {}
+    generated_at = str(summary.get("refined_at") or datetime.now().isoformat())
+    requested_top_n = int(summary.get("requested_top_n") or 3)
+    slot_count = max(3, requested_top_n, len(top_items))
+    selection_state_payload = {
+        "et_date": selection_date,
+        "generated_at": generated_at,
+        "selected_symbols": _final_refined_symbols(top_items),
+        "selection_symbols": _final_refined_symbols(top_items),
+        "configured_top_symbols": _final_refined_symbols(top_items),
+        "selection_stage": str(summary.get("selection_stage") or ""),
+        "processing_phase": str(summary.get("processing_phase") or ""),
+        "result_quality": str(summary.get("result_quality") or ""),
+        "research_admission": str(summary.get("research_admission") or ""),
+        "selection_run_id": selection_run_id,
+        "top_sync_run_id": selection_run_id,
+        "top_sync_status": str(summary.get("top_sync_status") or "OK"),
+        "top_sync_error": str(summary.get("top_sync_error") or ""),
+        "disabled_slots": list(range(len(top_items) + 1, slot_count + 1)),
+        "synced_at": generated_at,
+        "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+        "selection_bundle_version": str(summary.get("selection_bundle_version") or "selection_bundle_v1"),
+        "selection_bundle_hash": "",
+        "report_path": str(_latest_report_path()),
+    }
+    return selector_runner.write_selection_bundle_atomic(
+        summary=summary,
+        selection_state_payload=selection_state_payload,
+        top_items=list(top_items),
+        selection_run_id=selection_run_id,
+        selection_date=selection_date,
+        generated_at=generated_at,
+        result_quality=str(summary.get("result_quality") or ""),
+        research_admission=str(summary.get("research_admission") or ""),
+        processing_phase=str(summary.get("processing_phase") or ""),
+        top_sync_status=str(summary.get("top_sync_status") or "OK"),
+        top_sync_error=str(summary.get("top_sync_error") or ""),
+    )
+
+
 def main() -> None:
     expected_timestamp = str(os.environ.get("AI_SELECTOR_EXPECTED_TIMESTAMP") or "").strip()
     latest = _load_latest_report()
     if not latest:
         return
     if expected_timestamp and str(latest.get("timestamp") or "").strip() != expected_timestamp:
+        return
+    source_manifest = _load_current_manifest()
+    source_signature = _bundle_signature(latest, source_manifest)
+    if not source_signature:
         return
 
     runtime_settings = load_runtime_settings()
@@ -103,8 +223,11 @@ def main() -> None:
     refined = selector.run_selection(write_configs=False)
     live_positions = selector_runner._live_equity_positions() or []
     refined["top10"] = selector_runner._merge_live_position_flags(list(refined.get("top10") or []), live_positions)
+    refined_seed = list(refined.get("top5") or refined.get("top3") or [])
+    if not refined_seed:
+        return
     refined_selected = selector_runner._pin_live_positions(
-        refined.get("top5") or refined.get("top3") or [],
+        refined_seed,
         live_positions,
         limit=selector.selection_size,
     )
@@ -112,12 +235,11 @@ def main() -> None:
     merged_selected = _merge_refined_candidates(preliminary_selected, refined_selected, limit=selector.selection_size)
     if not merged_selected:
         return
-    refined["top5"] = merged_selected
-    refined["top3"] = merged_selected[:3]
-    refined["report"] = selector._format_report_rows(merged_selected)
-
-    merged = _merge_refinement_summary(latest, refined)
-    _write_refined_report(merged)
+    current_signature = _bundle_signature(_load_latest_report(), _load_current_manifest())
+    if current_signature != source_signature:
+        return
+    merged = _prepare_refined_bundle(latest, refined, merged_selected, selector=selector)
+    _persist_refined_bundle(merged, merged_selected, selection_date=str(latest.get("selection_date") or ""))
 
 
 if __name__ == "__main__":
