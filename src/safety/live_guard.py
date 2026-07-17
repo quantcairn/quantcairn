@@ -21,6 +21,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from src.ai_selector.selection_report import load_latest_ai_selection_state
+
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -142,14 +144,9 @@ class LiveGuard:
     # -- 5. AI selection report --
 
     def _check_ai_selection_report(self) -> None:
-        path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
-        if not path.exists():
+        data = load_latest_ai_selection_state(PROJECT_DIR)
+        if not isinstance(data, dict):
             self._error("ai_selection_latest.json does not exist")
-            return
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            self._error("ai_selection_latest.json is corrupt or unreadable")
             return
         today_str = _et_today().isoformat()
         sel_date = str(data.get("selection_date") or "").strip()

@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 
 
@@ -18,6 +19,34 @@ def _load_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_write_selection_filter_log_is_repeatable_without_fd_growth(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "LOG_DIR", tmp_path)
+    baseline_fd_count = len(os.listdir("/dev/fd")) if Path("/dev/fd").exists() else None
+    report = {
+        "generated_at": "2026-07-16T09:00:00-04:00",
+        "total_candidates_before_filters": 1,
+        "removed_by_volume_filter": 0,
+        "removed_by_spread_filter": 0,
+        "removed_by_volatility_filter": 0,
+        "removed_due_to_missing_data": 0,
+        "final_selected_symbols": ["SOFI"],
+        "backfilled_symbols": [],
+        "existing_real_positions_preserved": [],
+        "selection_stage": "FINALIZED",
+        "timed_out": False,
+        "rows": [{"ticker": "SOFI", "score": 92.5}],
+    }
+
+    for _ in range(50):
+        path = module.write_selection_filter_log(report, now=datetime(2026, 7, 16, 9, 0, 0))
+        assert path.exists()
+
+    if baseline_fd_count is not None:
+        after_fd_count = len(os.listdir("/dev/fd"))
+        assert after_fd_count <= baseline_fd_count + 3
 
 
 def test_run_ai_selector_emits_preview_without_writing_configs_when_no_finalized_symbols():

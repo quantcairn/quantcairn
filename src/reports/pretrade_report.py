@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.ai_selector.selection_report import load_latest_ai_selection_state
+
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -99,23 +101,17 @@ class PretradeReport:
             report.max_loss_by_symbol[ticker] = float(rk.get("daily_loss_limit", 0.0) or 0.0)
 
         # AI selection date
-        report_path = REPORTS_DIR / "ai_selection_latest.json"
-        if report_path.exists():
-            try:
-                ai_data = json.loads(report_path.read_text(encoding="utf-8"))
-                report.ai_selection_date = str(ai_data.get("selection_date") or "")
-
-                # Protected positions from AI report
-                for item in ai_data.get("protected_positions") or []:
-                    if isinstance(item, dict):
-                        report.protected_positions.append({
-                            "ticker": str(item.get("ticker") or "").upper(),
-                            "reduce_only": bool(item.get("reduce_only", False)),
-                            "range_low": item.get("range_low"),
-                            "range_high": item.get("range_high"),
-                        })
-            except Exception:
-                pass
+        ai_data = load_latest_ai_selection_state(PROJECT_DIR)
+        if isinstance(ai_data, dict):
+            report.ai_selection_date = str(ai_data.get("selection_date") or "")
+            for item in ai_data.get("protected_positions") or []:
+                if isinstance(item, dict):
+                    report.protected_positions.append({
+                        "ticker": str(item.get("ticker") or "").upper(),
+                        "reduce_only": bool(item.get("reduce_only", False)),
+                        "range_low": item.get("range_low"),
+                        "range_high": item.get("range_high"),
+                    })
 
         # Orphan positions from broker
         if broker is not None:

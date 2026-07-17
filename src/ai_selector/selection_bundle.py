@@ -28,6 +28,16 @@ def _state_dir() -> Path:
     return _state_dir()
 
 
+def _bundle_root_dir(selection_run_id: str, bundle_version: str) -> Path:
+    return _state_dir() / "selection_bundles" / selection_run_id / bundle_version
+
+
+def _bundle_staging_dir(selection_run_id: str, bundle_version: str) -> Path:
+    staging_root = _state_dir() / "selection_bundles" / ".staging" / selection_run_id
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return staging_root / f"{bundle_version}.tmp-{uuid.uuid4().hex}"
+
+
 def _selection_run_id(value: str | None = None) -> str:
     return str(value or uuid.uuid4().hex)
 
@@ -97,6 +107,16 @@ def _write_yaml_atomic(path: Path, payload: dict[str, Any]) -> Path:
         yaml.safe_dump(payload, handle, sort_keys=False, allow_unicode=True)
     os.replace(tmp_path, path)
     return path
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _slot_disabled_reason(result_quality: str | None, research_admission: str | None, disabled_reason: str | None) -> str:
@@ -232,8 +252,32 @@ class SelectionBundle:
         return _state_dir() / "selection_bundle_manifest.json"
 
     @property
+    def bundle_root_path(self) -> Path:
+        return _bundle_root_dir(self.selection_run_id, self.bundle_version)
+
+    @property
+    def bundle_report_path(self) -> Path:
+        return self.bundle_root_path / "ai_selection_report.json"
+
+    @property
+    def bundle_state_path(self) -> Path:
+        return self.bundle_root_path / "ai_selection_state.json"
+
+    @property
+    def bundle_audit_path(self) -> Path:
+        return self.bundle_root_path / "selection_sync_audit.json"
+
+    @property
+    def bundle_metadata_path(self) -> Path:
+        return self.bundle_root_path / "bundle_metadata.json"
+
+    @property
     def top_paths(self) -> list[Path]:
         return [_project_dir() / "configs" / f"TOP{i}.yaml" for i in range(1, self.slot_count + 1)]
+
+    @property
+    def bundle_top_paths(self) -> list[Path]:
+        return [self.bundle_root_path / f"TOP{i}.yaml" for i in range(1, self.slot_count + 1)]
 
     @property
     def selection_bundle_hash(self) -> str:
@@ -257,6 +301,8 @@ class SelectionBundle:
                 "selection_bundle_version": self.bundle_version,
                 "selection_bundle_hash": self.selection_bundle_hash,
                 "selection_bundle_manifest_path": _relative_path(self.manifest_path),
+                "selection_bundle_root_path": _relative_path(self.bundle_root_path),
+                "selection_bundle_report_path": _relative_path(self.bundle_report_path),
                 "requested_top_n": int(self.requested_top_n or self.slot_count),
                 "selected_top_n": self.selected_top_n,
                 "top_slot_count": self.slot_count,
@@ -270,6 +316,8 @@ class SelectionBundle:
         payload.setdefault("selection_bundle_version", self.bundle_version)
         payload.setdefault("selection_bundle_hash", self.selection_bundle_hash)
         payload.setdefault("selection_bundle_manifest_path", _relative_path(self.manifest_path))
+        payload.setdefault("selection_bundle_root_path", _relative_path(self.bundle_root_path))
+        payload.setdefault("selection_bundle_report_path", _relative_path(self.bundle_report_path))
         return payload
 
     def state_payload(self) -> dict[str, Any]:
@@ -292,6 +340,8 @@ class SelectionBundle:
                 "selection_bundle_version": self.bundle_version,
                 "selection_bundle_hash": self.selection_bundle_hash,
                 "selection_bundle_manifest_path": _relative_path(self.manifest_path),
+                "selection_bundle_root_path": _relative_path(self.bundle_root_path),
+                "selection_bundle_state_path": _relative_path(self.bundle_state_path),
             }
         )
         payload.setdefault("selection_symbols", list(self.selected_symbols))
@@ -299,6 +349,8 @@ class SelectionBundle:
         payload.setdefault("selection_bundle_version", self.bundle_version)
         payload.setdefault("selection_bundle_hash", self.selection_bundle_hash)
         payload.setdefault("selection_bundle_manifest_path", _relative_path(self.manifest_path))
+        payload.setdefault("selection_bundle_root_path", _relative_path(self.bundle_root_path))
+        payload.setdefault("selection_bundle_state_path", _relative_path(self.bundle_state_path))
         return payload
 
     def audit_payload(self) -> dict[str, Any]:
@@ -325,14 +377,22 @@ class SelectionBundle:
             "selection_bundle_version": self.bundle_version,
             "selection_bundle_hash": self.selection_bundle_hash,
             "selection_bundle_manifest_path": _relative_path(self.manifest_path),
+            "selection_bundle_root_path": _relative_path(self.bundle_root_path),
+            "selection_bundle_audit_path": _relative_path(self.bundle_audit_path),
         }
 
-    def manifest_payload(self) -> dict[str, Any]:
+    def manifest_payload(self, bundle_root: Path | None = None) -> dict[str, Any]:
         report_payload = self.report_payload()
         state_payload = self.state_payload()
         audit_payload = self.audit_payload()
+        bundle_root = Path(bundle_root) if bundle_root is not None else self.bundle_root_path
+        bundle_report_path = bundle_root / "ai_selection_report.json"
+        bundle_state_path = bundle_root / "ai_selection_state.json"
+        bundle_audit_path = bundle_root / "selection_sync_audit.json"
+        bundle_metadata_path = bundle_root / "bundle_metadata.json"
         top_payloads = {}
-        for index, path in enumerate(self.top_paths, start=1):
+        bundle_top_paths = [bundle_root / f"TOP{i}.yaml" for i in range(1, self.slot_count + 1)]
+        for index, path in enumerate(bundle_top_paths, start=1):
             top_payloads[f"TOP{index}.yaml"] = {
                 "path": _relative_path(path),
                 "exists": path.exists(),
@@ -351,6 +411,8 @@ class SelectionBundle:
             "requested_top_n": int(self.requested_top_n or self.slot_count),
             "selected_top_n": self.selected_top_n,
             "selection_bundle_hash": self.selection_bundle_hash,
+            "bundle_root": _relative_path(bundle_root),
+            "bundle_metadata_path": _relative_path(bundle_metadata_path),
             "selection_symbols": list(self.selected_symbols),
             "disabled_slots": list(self.disabled_slots),
             "enabled_slots": list(self.enabled_slots),
@@ -363,6 +425,11 @@ class SelectionBundle:
                 "state": _relative_path(self.state_path),
                 "audit": _relative_path(self.audit_path),
                 "manifest": _relative_path(self.manifest_path),
+                "bundle_root": _relative_path(bundle_root),
+                "bundle_report": _relative_path(bundle_report_path),
+                "bundle_state": _relative_path(bundle_state_path),
+                "bundle_audit": _relative_path(bundle_audit_path),
+                "bundle_metadata": _relative_path(bundle_metadata_path),
                 "top": top_payloads,
             },
             "hashes": {
@@ -372,7 +439,7 @@ class SelectionBundle:
                 "audit": _sha256_text(_json_dump(audit_payload)),
                 "top": {
                     f"TOP{index}.yaml": _sha256_file(path)
-                    for index, path in enumerate(self.top_paths, start=1)
+                    for index, path in enumerate(bundle_top_paths, start=1)
                 },
             },
             "published_at": self.generated_at,
@@ -426,6 +493,74 @@ def build_selection_bundle(
         top_sync_error=str(top_sync_error or ""),
         disabled_reason=disabled_reason,
     )
+
+
+def load_selection_bundle_manifest(project_dir: Path | None = None) -> dict[str, Any] | None:
+    root = Path(project_dir) if project_dir is not None else _project_dir()
+    manifest = _load_json(root / "state" / "selection_bundle_manifest.json")
+    return manifest if isinstance(manifest, dict) else None
+
+
+def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str, Any] | None:
+    root = Path(project_dir) if project_dir is not None else _project_dir()
+    manifest = load_selection_bundle_manifest(root)
+    if not isinstance(manifest, dict):
+        return None
+
+    bundle_root_raw = str(
+        manifest.get("bundle_root")
+        or manifest.get("selection_bundle_root_path")
+        or manifest.get("bundle_metadata_path")
+        or ""
+    ).strip()
+    bundle_root = Path(bundle_root_raw)
+    if bundle_root_raw and not bundle_root.is_absolute():
+        bundle_root = root / bundle_root_raw
+
+    report_candidates = [bundle_root / "ai_selection_report.json"]
+    state_candidates = [bundle_root / "ai_selection_state.json"]
+    audit_candidates = [bundle_root / "selection_sync_audit.json"]
+    metadata_candidates = [bundle_root / "bundle_metadata.json"]
+
+    report = next((data for path in report_candidates if (data := _load_json(path)) is not None), None)
+    state = next((data for path in state_candidates if (data := _load_json(path)) is not None), None)
+    audit = next((data for path in audit_candidates if (data := _load_json(path)) is not None), None)
+    metadata = next((data for path in metadata_candidates if (data := _load_json(path)) is not None), None)
+
+    if not isinstance(report, dict):
+        return None
+
+    bundle_root_rel = _relative_path(bundle_root)
+    manifest_rel = _relative_path(root / "state" / "selection_bundle_manifest.json")
+    report = dict(report)
+    report.setdefault("selection_bundle_manifest_path", manifest_rel)
+    report.setdefault("selection_bundle_root_path", bundle_root_rel)
+    report.setdefault("selection_bundle_version", str(manifest.get("bundle_version") or report.get("selection_bundle_version") or ""))
+    report.setdefault("selection_bundle_hash", str(manifest.get("selection_bundle_hash") or report.get("selection_bundle_hash") or ""))
+    report.setdefault("selection_bundle_bundle_path", bundle_root_rel)
+    report.setdefault("source_bundle_root", bundle_root_rel)
+    report.setdefault("source_bundle_manifest_path", manifest_rel)
+    if isinstance(state, dict):
+        state = dict(state)
+        state.setdefault("selection_bundle_manifest_path", manifest_rel)
+        state.setdefault("selection_bundle_root_path", bundle_root_rel)
+        state.setdefault("selection_bundle_version", str(manifest.get("bundle_version") or state.get("selection_bundle_version") or ""))
+        state.setdefault("selection_bundle_hash", str(manifest.get("selection_bundle_hash") or state.get("selection_bundle_hash") or ""))
+    if isinstance(audit, dict):
+        audit = dict(audit)
+        audit.setdefault("selection_bundle_manifest_path", manifest_rel)
+        audit.setdefault("selection_bundle_root_path", bundle_root_rel)
+    result: dict[str, Any] = {
+        "manifest": dict(manifest),
+        "report": report,
+        "state": state if isinstance(state, dict) else {},
+        "audit": audit if isinstance(audit, dict) else {},
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "bundle_root": bundle_root,
+    }
+    if isinstance(metadata, dict):
+        result["metadata"] = dict(metadata)
+    return result
 
 
 def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
@@ -496,6 +631,8 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
     manifest_path = bundle.manifest_path
     manifest_reference = _relative_path(manifest_path)
     top_paths = bundle.top_paths
+    bundle_root = bundle.bundle_root_path
+    bundle_work_root = _bundle_staging_dir(bundle.selection_run_id, bundle.bundle_version)
     latest_report_path = bundle.report_latest_path
     dated_report_path = bundle.report_dated_path
 
@@ -525,13 +662,44 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
     backup_root = _state_dir() / ".selection_bundle_backups" / bundle.selection_run_id
     backups = _backup_files([latest_report_path, dated_report_path, state_path, audit_path, manifest_path, *top_paths], backup_root)
     try:
+        if bundle_work_root.exists():
+            shutil.rmtree(bundle_work_root, ignore_errors=True)
+        bundle_work_root.parent.mkdir(parents=True, exist_ok=True)
+        bundle_work_root.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(bundle_work_root / "ai_selection_report.json", report_payload)
+        _write_json_atomic(bundle_work_root / "ai_selection_state.json", state_payload)
+        _write_json_atomic(bundle_work_root / "selection_sync_audit.json", audit_payload)
+        config_writer.write_top_configs(
+            list(bundle.top_items or []),
+            selection_run_id=bundle.selection_run_id,
+            selection_date=bundle.selection_date,
+            generated_at=bundle.generated_at,
+            disabled_reason=disabled_reason,
+            result_quality=bundle.result_quality,
+            research_admission=bundle.research_admission,
+            top_sync_status=bundle.top_sync_status,
+            top_sync_error=bundle.top_sync_error,
+            slot_limit=bundle.slot_count,
+            selection_bundle_manifest_path=manifest_reference,
+            selection_bundle_hash=bundle.selection_bundle_hash,
+            selection_bundle_version=bundle.bundle_version,
+            output_dir=bundle_work_root,
+        )
+        bundle_root.parent.mkdir(parents=True, exist_ok=True)
+        if bundle_root.exists():
+            shutil.rmtree(bundle_root, ignore_errors=True)
+        os.replace(bundle_work_root, bundle_root)
+        manifest_payload = bundle.manifest_payload(bundle_root=bundle_root)
+        _write_json_atomic(bundle_root / "bundle_metadata.json", manifest_payload)
+        _write_json_atomic(manifest_path, manifest_payload)
+
         _write_json_atomic(latest_report_path, report_payload)
         _write_json_atomic(dated_report_path, report_payload)
         selection_state.write_selection_state(
             et_date=str(state_payload.get("et_date") or bundle.selection_date),
             generated_at=str(state_payload.get("generated_at") or bundle.generated_at),
             selected_symbols=list(state_payload.get("selected_symbols") or []),
-            report_path=str(latest_report_path),
+            report_path=_relative_path(latest_report_path),
             selection_stage=str(state_payload.get("selection_stage") or bundle.selection_stage),
             processing_phase=str(state_payload.get("processing_phase") or bundle.processing_phase),
             selection_run_id=bundle.selection_run_id,
@@ -547,6 +715,10 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
             selection_bundle_manifest_path=manifest_reference,
             selection_bundle_hash=bundle.selection_bundle_hash,
             selection_bundle_version=bundle.bundle_version,
+            selection_bundle_root_path=_relative_path(bundle_root),
+            selection_bundle_report_path=_relative_path(bundle_root / "ai_selection_report.json"),
+            selection_bundle_state_path=_relative_path(bundle_root / "ai_selection_state.json"),
+            selection_bundle_audit_path=_relative_path(bundle_root / "selection_sync_audit.json"),
             requested_top_n=int(state_payload.get("requested_top_n") or bundle.slot_count),
             selected_top_n=int(state_payload.get("selected_top_n") or bundle.selected_top_n),
             top_slot_count=int(state_payload.get("top_slot_count") or bundle.slot_count),
@@ -568,10 +740,18 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
             selection_bundle_version=bundle.bundle_version,
         )
         _write_json_atomic(audit_path, audit_payload)
-        manifest_payload = bundle.manifest_payload()
-        _write_json_atomic(manifest_path, manifest_payload)
     except Exception:
         _restore_backups(backups)
+        try:
+            if bundle_root.exists():
+                shutil.rmtree(bundle_root, ignore_errors=True)
+        except Exception:
+            pass
+        try:
+            if bundle_work_root.exists():
+                shutil.rmtree(bundle_work_root, ignore_errors=True)
+        except Exception:
+            pass
         raise
     else:
         _cleanup_backups(backups)
@@ -596,6 +776,11 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
         "state_path": _relative_path(state_path),
         "report_path": _relative_path(latest_report_path),
         "top_paths": [_relative_path(path) for path in top_paths],
+        "bundle_root_path": _relative_path(bundle_root),
+        "bundle_report_path": _relative_path(bundle_root / "ai_selection_report.json"),
+        "bundle_state_path": _relative_path(bundle_root / "ai_selection_state.json"),
+        "bundle_audit_path": _relative_path(bundle_root / "selection_sync_audit.json"),
+        "bundle_metadata_path": _relative_path(bundle_root / "bundle_metadata.json"),
     }
 
 

@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.ai_selector.selection_bundle import (
+    load_committed_selection_bundle,
+    load_selection_bundle_manifest,
+)
 from src.ai_selector.selection_state import load_selection_state
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
@@ -393,6 +397,17 @@ def _report_from_data(data: dict[str, Any], *, source_path: Path) -> dict[str, A
 
 def load_latest_ai_selection_state(project_dir: Path | None = None) -> dict[str, Any]:
     root = Path(project_dir) if project_dir is not None else PROJECT_DIR
+    manifest = load_selection_bundle_manifest(root)
+    if isinstance(manifest, dict):
+        committed_bundle = load_committed_selection_bundle(root)
+        if isinstance(committed_bundle, dict):
+            report = committed_bundle.get("report")
+            bundle_root = committed_bundle.get("bundle_root")
+            if isinstance(report, dict):
+                source_path = Path(bundle_root) / "ai_selection_report.json" if isinstance(bundle_root, Path) else root / "reports" / "ai_selection_latest.json"
+                return _report_from_data(report, source_path=source_path)
+        return {}
+
     candidates: list[Path] = []
     latest_path = root / "reports" / "ai_selection_latest.json"
     if latest_path.exists():

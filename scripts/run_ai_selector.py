@@ -44,7 +44,7 @@ import yaml
 
 from src.config.local_env import load_local_ai_env
 from src.ai_selector.settings import load_runtime_settings
-from src.ai_selector.selector import write_selection_filter_log
+from src.ai_selector import selector as _selector_module
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import resolve_price_band
 from src.ai_selector.data_quality import enrich_candidate_quality, evaluate_candidate_data_quality
@@ -55,10 +55,27 @@ from src.candidate_validation import CandidateValidationStore
 from src.ai_selector.selection_bundle import write_selection_bundle_atomic
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+LOG_DIR = PROJECT_DIR / "logs"
 REPORTS_DIR = PROJECT_DIR / "reports"
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 AI_SELECTOR_RUNTIME = load_runtime_config()
 TOP_COUNT = max(1, int(AI_SELECTOR_RUNTIME.top_n))
+
+
+def write_selection_filter_log(report: dict[str, object], now: datetime | None = None) -> Path:
+    """Compatibility wrapper for selector filter logging.
+
+    Tests monkeypatch ``LOG_DIR`` on this module, so we mirror that setting into
+    the selector module before delegating to the real implementation.
+    """
+
+    original_log_dir = getattr(_selector_module, "LOG_DIR", None)
+    try:
+        _selector_module.LOG_DIR = LOG_DIR
+        return _selector_module.write_selection_filter_log(report, now=now)
+    finally:
+        if original_log_dir is not None:
+            _selector_module.LOG_DIR = original_log_dir
 
 
 def write_selection_state(**kwargs):

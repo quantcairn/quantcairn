@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Sequence, Any
@@ -27,6 +28,15 @@ LIQUID_SPECIAL_ETFS = {
 def _selection_log_path(now: datetime | None = None) -> Path:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d")
     return LOG_DIR / f"selection_{stamp}.log"
+
+
+def _write_text_atomic(path: Path, content: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    os.replace(tmp_path, path)
+    return path
 
 
 def _json_log_line(payload: dict[str, Any]) -> str:
@@ -359,8 +369,7 @@ def write_selection_filter_log(report: dict[str, Any], now: datetime | None = No
     ]
     for row in report.get("rows") or []:
         lines.append(_json_log_line(row))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    return _write_text_atomic(path, "\n".join(lines) + "\n")
 
 
 class AIStrategySelector:

@@ -45,6 +45,8 @@ from ..ai_selector.selection_state import (
     verify_selection_state,
     verify_live_startup_selection,
 )
+from ..ai_selector import selection_state as selection_state_module
+from ..ai_selector.selection_bundle import load_committed_selection_bundle
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -1656,18 +1658,23 @@ class TradingEngine:
 
     def _ai_selection_signature_for_runtime(self, runtime) -> tuple[str, ...]:
         state = load_selection_state()
+        bundle = load_committed_selection_bundle(PROJECT_DIR)
         state_path = selection_state_path()
         state_mtime = str(state_path.stat().st_mtime_ns) if state_path.exists() else "0"
-        report_path_raw = str(state.get("report_path") or "").strip() if isinstance(state, dict) else ""
-        report_path = (
-            Path(report_path_raw)
-            if report_path_raw
-            else (PROJECT_DIR / "reports" / "ai_selection_latest.json")
-        )
+        manifest_path = PROJECT_DIR / "state" / "selection_bundle_manifest.json"
+        manifest_mtime = str(manifest_path.stat().st_mtime_ns) if manifest_path.exists() else "0"
+        report_path = None
+        if isinstance(bundle, dict):
+            bundle_root = bundle.get("bundle_root")
+            if isinstance(bundle_root, Path):
+                report_path = bundle_root / "ai_selection_report.json"
+        if report_path is None:
+            report_path = self._resolve_selection_report_path(state if isinstance(state, dict) else None)
         report_mtime = str(report_path.stat().st_mtime_ns) if report_path.exists() else "0"
         return (
             "enabled" if bool(getattr(runtime, "enabled", False)) else "disabled",
             state_mtime,
+            manifest_mtime,
             report_mtime,
             str(state.get("et_date") or "") if isinstance(state, dict) else "",
             str(state.get("selection_run_id") or "") if isinstance(state, dict) else "",
@@ -1678,8 +1685,9 @@ class TradingEngine:
         )
 
     def _load_ai_selection_context(self, runtime) -> dict[str, object]:
+        bundle = load_committed_selection_bundle(PROJECT_DIR)
         state = load_selection_state()
-        if not isinstance(state, dict):
+        if not isinstance(state, dict) and not isinstance(bundle, dict):
             return {
                 "selection_mode": "UNAVAILABLE",
                 "selection_reason": "selection_state_missing",
@@ -1693,6 +1701,8 @@ class TradingEngine:
             }
 
         required_day = datetime.now(self._ny_tz).date().isoformat()
+        if isinstance(bundle, dict) and isinstance(bundle.get("state"), dict):
+            state = dict(bundle.get("state") or {})
         state_day = str(state.get("et_date") or "").strip()
         if state_day != required_day:
             return {
@@ -1701,7 +1711,7 @@ class TradingEngine:
                 "cached_selection": None,
             }
 
-        ok, reason, verified_state = verify_selection_state(required_et_date=required_day)
+        ok, reason, verified_state = verify_selection_state(required_et_date=required_day, state=state)
         if not ok:
             normalized_reason = str(reason or "selection_state_invalid")
             if normalized_reason == "selection_state_date_mismatch":
@@ -1717,12 +1727,13 @@ class TradingEngine:
                 "verified_state": verified_state,
             }
 
-        report_path_raw = str(state.get("report_path") or "").strip()
-        report_path = (
-            Path(report_path_raw)
-            if report_path_raw
-            else (PROJECT_DIR / "reports" / "ai_selection_latest.json")
-        )
+        report_path = None
+        if isinstance(bundle, dict):
+            bundle_root = bundle.get("bundle_root")
+            if isinstance(bundle_root, Path):
+                report_path = bundle_root / "ai_selection_report.json"
+        if report_path is None:
+            report_path = self._resolve_selection_report_path(state if isinstance(state, dict) else None)
         if not report_path.exists():
             return {
                 "selection_mode": "UNAVAILABLE",
@@ -1813,12 +1824,7 @@ class TradingEngine:
         required_day = datetime.now(self._ny_tz).date().isoformat()
         if str(state.get("et_date") or "").strip() != required_day:
             return None
-        report_path_raw = str(state.get("report_path") or "").strip()
-        report_path = (
-            Path(report_path_raw)
-            if report_path_raw
-            else (PROJECT_DIR / "reports" / "ai_selection_latest.json")
-        )
+        report_path = self._resolve_selection_report_path(state)
         if not report_path.exists():
             return None
         try:
@@ -1852,6 +1858,31 @@ class TradingEngine:
             fallback_used=bool(payload.get("fallback_used", False)),
         )
         return top3, top10, payload
+
+    def _resolve_selection_report_path(self, state: dict[str, object] | None = None) -> Path:
+        report_path_raw = str(state.get("report_path") or "").strip() if isinstance(state, dict) else ""
+        candidates: list[Path] = []
+        if report_path_raw:
+            path = Path(report_path_raw)
+            if path.is_absolute():
+                candidates.append(path)
+            else:
+                candidates.extend(
+                    [
+                        selection_state_module.PROJECT_DIR / report_path_raw,
+                        PROJECT_DIR / report_path_raw,
+                        selection_state_path().parent.parent / report_path_raw,
+                        PROJECT_DIR / "reports" / Path(report_path_raw).name,
+                    ]
+                )
+        candidates.append(PROJECT_DIR / "reports" / "ai_selection_latest.json")
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    return candidate
+            except Exception:
+                continue
+        return candidates[0] if candidates else PROJECT_DIR / "reports" / "ai_selection_latest.json"
 
     def _detect_market_regime(self, top3: list[dict], signal_for_ticker: Optional[dict]) -> str:
         if signal_for_ticker is None:

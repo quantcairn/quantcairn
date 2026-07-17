@@ -13,6 +13,7 @@ import re
 from zoneinfo import ZoneInfo
 
 from src.ai_selector.config import load_runtime_config
+from src.ai_selector.selection_bundle import load_committed_selection_bundle
 from src.ai_selector.selection_report import load_latest_ai_selection_state, normalize_provider_audit
 from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
 from src.ai_selector.universe_filter import load_universe_rules
@@ -2218,14 +2219,16 @@ def _selection_sync_status() -> dict:
         or ""
     ).strip().upper()
     latest_execution_status = str(latest_report.get("execution_status") or "").strip().upper()
+    committed_bundle = load_committed_selection_bundle(PROJECT_DIR)
+    committed_state = committed_bundle.get("state") if isinstance(committed_bundle, dict) else None
     selection_completed = (
         latest_report_date == session.current_session.isoformat()
         and latest_execution_status == "COMPLETED"
         and latest_report_stage == "FINALIZED"
     )
     required_date = required_selection_date(now_et, selection_completed=selection_completed)
-    ok, reason, state = verify_selection_state(required_et_date=required_date)
-    state = state or load_selection_state() or {}
+    ok, reason, state = verify_selection_state(required_et_date=required_date, state=committed_state if isinstance(committed_state, dict) else None)
+    state = state or (committed_state if isinstance(committed_state, dict) else None) or load_selection_state() or {}
     state_date = str(state.get("et_date") or "").strip() or None
     selection_state_symbols = [
         str(item or "").strip().upper()

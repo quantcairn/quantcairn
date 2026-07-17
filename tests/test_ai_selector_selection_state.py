@@ -30,6 +30,22 @@ def test_selection_state_verifies_same_day_top_configs(tmp_path, monkeypatch):
     assert state is not None
 
 
+def test_selection_state_normalizes_absolute_report_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOXS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(selection_state, "PROJECT_DIR", tmp_path)
+    state_path = selection_state.write_selection_state(
+        et_date="2026-07-02",
+        generated_at="2026-07-02T08:30:00-04:00",
+        selected_symbols=["SOFI"],
+        report_path="/var/folders/abc/orphan_test_123/state/selection_bundle_manifest.json",
+        selection_bundle_manifest_path="/var/folders/abc/orphan_test_123/state/selection_bundle_manifest.json",
+    )
+
+    payload = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    assert payload["report_path"] == "state/selection_bundle_manifest.json"
+    assert payload["selection_bundle_manifest_path"] == "state/selection_bundle_manifest.json"
+
+
 def test_selection_state_detects_top_config_mismatch(tmp_path, monkeypatch):
     monkeypatch.setenv("SOXS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(selection_state, "PROJECT_DIR", tmp_path)

@@ -240,6 +240,13 @@ def _write_yaml_atomic(path: str, payload: dict) -> None:
         yaml.safe_dump(payload, handle, sort_keys=False, allow_unicode=True)
     os.replace(tmp_path, path)
 
+
+def _top_config_dir(output_dir: str | os.PathLike[str] | None = None) -> str:
+    if output_dir is None:
+        return os.path.join(BASE, "configs")
+    return os.fspath(output_dir)
+
+
 def write_top_configs(
     top_items,
     *,
@@ -255,6 +262,7 @@ def write_top_configs(
     selection_bundle_manifest_path: str | None = None,
     selection_bundle_hash: str | None = None,
     selection_bundle_version: str | None = None,
+    output_dir: str | os.PathLike[str] | None = None,
 ):
     default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
@@ -270,8 +278,9 @@ def write_top_configs(
     allocations = allocator.allocate_positions(items, TOP_INITIAL_CAPITAL) if items else {}
     writes: list[tuple[str, dict]] = []
 
+    top_dir = _top_config_dir(output_dir)
     for i in range(1, slot_count + 1):
-        path = os.path.join(BASE, f"configs/TOP{i}.yaml")
+        path = os.path.join(top_dir, f"TOP{i}.yaml")
         if i <= len(items):
             item = items[i - 1]
             support = float(item.get("range_low") or 0.0)

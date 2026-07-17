@@ -12,6 +12,7 @@ import yaml
 
 from ..broker.base import Position
 from ..config.loader import AppConfig, PositionConfig
+from ..ai_selector.selection_report import load_latest_ai_selection_state
 from .trading_engine import (
     TradingEngine,
     append_runtime_audit,
@@ -63,12 +64,14 @@ def _is_equity_position(position: Position) -> bool:
 
 
 def _load_report_exit_range(symbol: str) -> dict | None:
-    if not AI_SELECTION_REPORT.exists():
-        return None
-    try:
-        payload = json.loads(AI_SELECTION_REPORT.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    payload = None
+    if AI_SELECTION_REPORT.exists():
+        try:
+            payload = json.loads(AI_SELECTION_REPORT.read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+    if not isinstance(payload, dict):
+        payload = load_latest_ai_selection_state(PROJECT_DIR)
     if not isinstance(payload, dict):
         return None
 

@@ -46,6 +46,26 @@ def _read_top_config(path: Path) -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
 
+def _normalize_path_value(value: str | None) -> str:
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    path = Path(text)
+    if not path.is_absolute():
+        return text
+    parts = list(path.parts)
+    for marker in ("reports", "state", "configs", "artifacts"):
+        if marker in parts:
+            index = parts.index(marker)
+            return str(Path(*parts[index:]))
+    try:
+        return str(path.relative_to(PROJECT_DIR))
+    except Exception:
+        return path.name
+
+
 def current_top_config_slots(limit: int | None = None) -> list[dict[str, Any]]:
     slot_limit = _top_slot_limit(limit)
     slots: list[dict[str, Any]] = []
@@ -180,6 +200,10 @@ def write_selection_state(
     selection_bundle_manifest_path: str | None = None,
     selection_bundle_hash: str | None = None,
     selection_bundle_version: str | None = None,
+    selection_bundle_root_path: str | None = None,
+    selection_bundle_report_path: str | None = None,
+    selection_bundle_state_path: str | None = None,
+    selection_bundle_audit_path: str | None = None,
     requested_top_n: int | None = None,
     selected_top_n: int | None = None,
     top_slot_count: int | None = None,
@@ -208,7 +232,7 @@ def write_selection_state(
         "requested_top_n": requested_top_n_value,
         "selected_top_n": selected_top_n_value,
         "top_slot_count": top_slot_count_value,
-        "report_path": report_path,
+        "report_path": _normalize_path_value(report_path),
         "selection_stage": str(selection_stage or ""),
         "processing_phase": str(processing_phase or ""),
         "selection_run_id": selection_run_id,
@@ -218,9 +242,13 @@ def write_selection_state(
         "synced_at": str(synced_at or generated_at),
         "result_quality": str(result_quality or ""),
         "research_admission": str(research_admission or ""),
-        "selection_bundle_manifest_path": str(selection_bundle_manifest_path or ""),
+        "selection_bundle_manifest_path": _normalize_path_value(selection_bundle_manifest_path),
         "selection_bundle_hash": str(selection_bundle_hash or ""),
         "selection_bundle_version": str(selection_bundle_version or ""),
+        "selection_bundle_root_path": _normalize_path_value(selection_bundle_root_path),
+        "selection_bundle_report_path": _normalize_path_value(selection_bundle_report_path),
+        "selection_bundle_state_path": _normalize_path_value(selection_bundle_state_path),
+        "selection_bundle_audit_path": _normalize_path_value(selection_bundle_audit_path),
         "updated_at": datetime.now().isoformat(),
     }
     path = selection_state_path()
@@ -230,8 +258,12 @@ def write_selection_state(
     return path
 
 
-def verify_selection_state(required_et_date: str | None = None) -> tuple[bool, str, dict[str, Any] | None]:
-    state = load_selection_state()
+def verify_selection_state(
+    required_et_date: str | None = None,
+    *,
+    state: dict[str, Any] | None = None,
+) -> tuple[bool, str, dict[str, Any] | None]:
+    state = dict(state) if isinstance(state, dict) else load_selection_state()
     if not state:
         return False, "selection_state_missing", None
 
