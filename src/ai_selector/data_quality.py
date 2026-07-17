@@ -564,3 +564,120 @@ def enrich_candidate_quality(
         )
     )
     return payload
+
+
+_FORMAL_INELIGIBLE_STATUSES = {"INVALID", "STALE", "MISSING"}
+_FORMAL_ELIGIBLE_STATUSES = {"COMPLETE", "VALID", "OK", "LATEST_COMPLETED_SESSION"}
+_FORMAL_CRITICAL_BLOCK_REASONS = {
+    "critical_market_data_missing",
+    "critical_market_data_stale",
+    "critical_data_unavailable",
+    "quote_missing",
+    "quote_invalid",
+    "quote_stale",
+    "quote_expired",
+    "quote_timestamp_in_future",
+    "missing_quote",
+    "missing_ohlcv",
+    "missing_history",
+    "benchmark_invalid",
+    "daily_data_invalid",
+    "stale_data",
+}
+
+
+def formal_selection_ineligibility_reasons(candidate: Mapping[str, Any]) -> list[str]:
+    payload = dict(candidate or {})
+    data_quality = payload.get("data_quality") if isinstance(payload.get("data_quality"), Mapping) else {}
+
+    def present(*keys: str) -> Any:
+        value = _candidate_field_value(payload, *keys)
+        if value is not None:
+            return value
+        if isinstance(data_quality, Mapping):
+            return _candidate_field_value(data_quality, *keys)
+        return None
+
+    reasons: list[str] = []
+
+    data_status = _normalize_text(present("data_status")).upper()
+    if data_status in _FORMAL_INELIGIBLE_STATUSES:
+        reasons.append(f"data_status_{data_status.lower()}")
+
+    scoring_eligible = present("scoring_eligible")
+    if scoring_eligible is False:
+        reasons.append("scoring_eligible_false")
+
+    quote_status = _normalize_text(present("quote_status")).upper()
+    if quote_status in _FORMAL_INELIGIBLE_STATUSES:
+        reasons.append(f"quote_status_{quote_status.lower()}")
+
+    ohlcv_status = _normalize_text(present("ohlcv_status")).upper()
+    if ohlcv_status in _FORMAL_INELIGIBLE_STATUSES:
+        reasons.append(f"ohlcv_status_{ohlcv_status.lower()}")
+
+    history_status = _normalize_text(present("history_status")).upper()
+    if history_status in _FORMAL_INELIGIBLE_STATUSES:
+        reasons.append(f"history_status_{history_status.lower()}")
+
+    benchmark_status = _normalize_text(present("benchmark_status", "benchmark_alignment_status")).upper()
+    if benchmark_status in _FORMAL_INELIGIBLE_STATUSES:
+        reasons.append(f"benchmark_status_{benchmark_status.lower()}")
+
+    freshness_status = _normalize_text(present("freshness_status")).upper()
+    if freshness_status in _FORMAL_INELIGIBLE_STATUSES:
+        reasons.append(f"freshness_status_{freshness_status.lower()}")
+
+    daily_data_status = _normalize_text(present("daily_data_status")).upper()
+    if daily_data_status in _FORMAL_INELIGIBLE_STATUSES:
+        reasons.append(f"daily_data_status_{daily_data_status.lower()}")
+
+    fallback_scope = _normalize_text(present("fallback_scope")).upper()
+    fallback_severity = _normalize_text(present("fallback_severity")).upper()
+    if fallback_scope == "CRITICAL_MARKET_DATA":
+        reasons.append("critical_market_data_fallback")
+    if fallback_severity == "CRITICAL":
+        reasons.append("critical_fallback_severity")
+
+    blocking_reasons = present("blocking_reasons") or []
+    if isinstance(blocking_reasons, (str, bytes)):
+        blocking_reasons = [blocking_reasons]
+    for reason in list(blocking_reasons or []):
+        text = _normalize_text(reason).lower()
+        if not text:
+            continue
+        if text in _FORMAL_CRITICAL_BLOCK_REASONS:
+            reasons.append(text)
+
+    missing_fields = present("missing_fields") or []
+    if isinstance(missing_fields, (str, bytes)):
+        missing_fields = [missing_fields]
+    critical_missing = {
+        "quote",
+        "quote_timestamp",
+        "current_price",
+        "ohlcv",
+        "history",
+        "benchmark",
+        "market_cap",
+        "average_dollar_volume_20d",
+        "atr_20_percentage",
+        "ma20",
+        "ma50",
+    }
+    for field in list(missing_fields or []):
+        text = _normalize_text(field)
+        if text in critical_missing:
+            reasons.append(f"missing_{text}")
+
+    stale_fields = present("stale_fields") or []
+    if isinstance(stale_fields, (str, bytes)):
+        stale_fields = [stale_fields]
+    if stale_fields:
+        reasons.append("stale_fields_present")
+
+    return list(dict.fromkeys(reasons))
+
+
+def is_formal_selection_eligible(candidate: Mapping[str, Any]) -> bool:
+    return not formal_selection_ineligibility_reasons(candidate)

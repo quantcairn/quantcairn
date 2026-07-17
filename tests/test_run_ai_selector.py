@@ -12,6 +12,47 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_DIR / "scripts" / "run_ai_selector.py"
 
 
+def _formal_candidate_row(ticker: str, score: float, price: float, *, reason: str = "research_complete", source: str = "selector") -> dict:
+    return {
+        "ticker": ticker,
+        "score": score,
+        "final_score": score,
+        "ai_score": score,
+        "range_score": score,
+        "current_price": price,
+        "range_low": round(price * 0.95, 4),
+        "range_high": round(price * 1.05, 4),
+        "average_dollar_volume_20d": 250000000.0,
+        "atr_20_percentage": 2.5,
+        "market_cap": 3000000000.0,
+        "ma20": round(price * 0.98, 4),
+        "ma50": round(price * 0.95, 4),
+        "ma200": round(price * 0.90, 4),
+        "quote_timestamp": "2026-07-16T13:00:00Z",
+        "quote_age_seconds": 60,
+        "daily_data_as_of": "2026-07-15",
+        "benchmark_data_as_of": "2026-07-15",
+        "benchmark_status": "VALID",
+        "daily_data_status": "VALID",
+        "freshness_status": "SAFE",
+        "quote_status": "OK",
+        "ohlcv_status": "OK",
+        "history_status": "OK",
+        "history_rows": 30,
+        "close_history": [price] * 30,
+        "open": round(price * 0.99, 4),
+        "high": round(price * 1.01, 4),
+        "low": round(price * 0.98, 4),
+        "close": price,
+        "volume": 1_000_000,
+        "data_status": "COMPLETE",
+        "scoring_eligible": True,
+        "confidence": 0.8,
+        "reason": reason,
+        "source": source,
+    }
+
+
 def _load_module():
     spec = importlib.util.spec_from_file_location("test_run_ai_selector_module", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -138,12 +179,12 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
                 "top10": [
-                    {"ticker": "NVDA", "score": 91.5, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
-                    {"ticker": "MSFT", "score": 88.2, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                    _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
+                    _formal_candidate_row("MSFT", 88.2, 100.0, reason="research_complete"),
                 ],
                 "top5": [
-                    {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
-                    {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                    _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
+                    _formal_candidate_row("MSFT", 88.2, 100.0, reason="research_complete"),
                 ],
                 "top3": [],
                 "report": [],
@@ -186,6 +227,7 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         module.load_local_ai_env = lambda: None
         module._annotate_with_ai_signals = lambda rows, signal_map: [dict(item) for item in rows]
         module._apply_range_scores = lambda rows: [dict(item) for item in rows]
+        module._enrich_candidate_quality_rows = lambda rows, provider_audit=None, provider_outputs=None: [dict(item) for item in rows]
         module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: [dict(item) for item in (selector_top10 or selected or [])]
         module._finalize_price_band = lambda candidates, min_price, max_price: ([dict(item) for item in candidates], [])
         module._apply_trade_filter = lambda rows: ([dict(item) for item in rows], {"rejected": [], "fallback_used": False})
@@ -209,13 +251,13 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
             "enabled": True,
             "top3": [],
             "top10": [
-                {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
-                {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "research_complete", "source": "selector", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0, "ma20": 98.0, "ma50": 95.0, "ma200": 90.0, "quote_timestamp": "2026-07-16T13:00:00Z", "quote_age_seconds": 60, "daily_data_as_of": "2026-07-15", "benchmark_data_as_of": "2026-07-15", "benchmark_status": "VALID", "daily_data_status": "VALID", "freshness_status": "SAFE", "quote_status": "OK", "ohlcv_status": "OK", "history_status": "OK", "history_rows": 30, "close_history": [100.0] * 30, "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0, "volume": 1000000, "data_status": "COMPLETE", "scoring_eligible": True},
+                {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "research_complete", "source": "selector", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0, "ma20": 98.0, "ma50": 95.0, "ma200": 90.0, "quote_timestamp": "2026-07-16T13:00:00Z", "quote_age_seconds": 60, "daily_data_as_of": "2026-07-15", "benchmark_data_as_of": "2026-07-15", "benchmark_status": "VALID", "daily_data_status": "VALID", "freshness_status": "SAFE", "quote_status": "OK", "ohlcv_status": "OK", "history_status": "OK", "history_rows": 30, "close_history": [100.0] * 30, "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0, "volume": 1000000, "data_status": "COMPLETE", "scoring_eligible": True},
             ],
             "preferred_symbols": ["NVDA", "MSFT"],
             "signal_map": {
-                "NVDA": {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
-                "MSFT": {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "stub", "source": "stub", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                "NVDA": {"ticker": "NVDA", "score": 91.5, "confidence": 0.8, "reason": "research_complete", "source": "selector", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0, "ma20": 98.0, "ma50": 95.0, "ma200": 90.0, "quote_timestamp": "2026-07-16T13:00:00Z", "quote_age_seconds": 60, "daily_data_as_of": "2026-07-15", "benchmark_data_as_of": "2026-07-15", "benchmark_status": "VALID", "daily_data_status": "VALID", "freshness_status": "SAFE", "quote_status": "OK", "ohlcv_status": "OK", "history_status": "OK", "history_rows": 30, "close_history": [100.0] * 30, "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0, "volume": 1000000, "data_status": "COMPLETE", "scoring_eligible": True},
+                "MSFT": {"ticker": "MSFT", "score": 88.2, "confidence": 0.75, "reason": "research_complete", "source": "selector", "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0, "ma20": 98.0, "ma50": 95.0, "ma200": 90.0, "quote_timestamp": "2026-07-16T13:00:00Z", "quote_age_seconds": 60, "daily_data_as_of": "2026-07-15", "benchmark_data_as_of": "2026-07-15", "benchmark_status": "VALID", "daily_data_status": "VALID", "freshness_status": "SAFE", "quote_status": "OK", "ohlcv_status": "OK", "history_status": "OK", "history_rows": 30, "close_history": [100.0] * 30, "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0, "volume": 1000000, "data_status": "COMPLETE", "scoring_eligible": True},
             },
             "providers_used": ["openbb"],
             "providers_disabled": ["fmp"],
@@ -278,7 +320,7 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     assert spawned_refinement
 
 
-def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
+def test_run_ai_selector_filters_ineligible_candidates_before_bundle_publish():
     module = _load_module()
     captured_bundles: list[dict] = []
 
@@ -287,10 +329,45 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
 
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
-            "top10": [],
-            "top5": [
-                        {"ticker": "NVDA", "score": 91.5, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
-                        {"ticker": "MSFT", "score": 88.2, "reduce_only": False, "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "average_dollar_volume_20d": 250000000.0, "atr_20_percentage": 2.5, "market_cap": 3000000000.0},
+                "top10": [
+                    _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
+                    {
+                        "ticker": "SOFI",
+                        "score": 70.0,
+                        "current_price": 18.0,
+                        "range_low": 17.0,
+                        "range_high": 19.0,
+                        "average_dollar_volume_20d": 1000000.0,
+                        "atr_20_percentage": 4.0,
+                        "market_cap": 15000000000.0,
+                        "data_status": "INVALID",
+                        "scoring_eligible": False,
+                        "quote_status": "MISSING",
+                        "ohlcv_status": "MISSING",
+                        "history_status": "MISSING",
+                        "benchmark_status": "INVALID",
+                        "score_reason": "stub",
+                    },
+                ],
+                "top5": [
+                    _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
+                    {
+                        "ticker": "SOFI",
+                        "score": 70.0,
+                        "current_price": 18.0,
+                        "range_low": 17.0,
+                        "range_high": 19.0,
+                        "average_dollar_volume_20d": 1000000.0,
+                        "atr_20_percentage": 4.0,
+                        "market_cap": 15000000000.0,
+                        "data_status": "INVALID",
+                        "scoring_eligible": False,
+                        "quote_status": "MISSING",
+                        "ohlcv_status": "MISSING",
+                        "history_status": "MISSING",
+                        "benchmark_status": "INVALID",
+                        "score_reason": "stub",
+                    },
                 ],
                 "top3": [],
                 "report": [],
@@ -333,6 +410,220 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
         module.load_local_ai_env = lambda: None
         module._annotate_with_ai_signals = lambda rows, signal_map: [dict(item) for item in rows]
         module._apply_range_scores = lambda rows: [dict(item) for item in rows]
+        module._enrich_candidate_quality_rows = lambda rows, provider_audit=None, provider_outputs=None: [dict(item) for item in rows]
+        module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: [dict(item) for item in (selector_top10 or selected or [])]
+        module._finalize_price_band = lambda candidates, min_price, max_price: ([dict(item) for item in candidates], [])
+        module._apply_trade_filter = lambda rows: ([dict(item) for item in rows], {"rejected": [], "fallback_used": False})
+        module._apply_composition_filter = lambda rows, top_n=3: ([dict(item) for item in rows], {"rejected": [], "warnings": []})
+        module._split_selected_and_protected_positions = lambda candidates, positions, limit=5: (list(candidates)[:limit], [])
+        module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or {
+            "selection_run_id": payload.get("selection_run_id", "run-1"),
+            "selection_bundle_hash": "bundle-hash",
+            "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+            "selection_date": payload.get("selection_date", "2026-07-16"),
+            "generated_at": payload.get("generated_at", "2026-07-16T08:30:00-04:00"),
+            "selection_stage": payload.get("selection_state_payload", {}).get("selection_stage", "FINALIZED"),
+            "disabled_slots": [2, 3],
+            "selected_symbols": ["NVDA"],
+            "audit_path": "state/selection_sync_audit.json",
+            "state_path": "state/ai_selection_state.json",
+            "report_path": "reports/ai_selection_latest.json",
+            "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
+        }
+        module._run_integrated_ai_selector = lambda: {
+            "enabled": True,
+            "top3": [],
+            "top10": [
+                {
+                    "ticker": "NVDA",
+                    "score": 91.5,
+                    "confidence": 0.8,
+                    "reason": "research_complete",
+                    "source": "selector",
+                    "average_dollar_volume_20d": 250000000.0,
+                    "atr_20_percentage": 2.5,
+                    "market_cap": 3000000000.0,
+                    "ma20": 98.0,
+                    "ma50": 95.0,
+                    "ma200": 90.0,
+                    "quote_timestamp": "2026-07-16T13:00:00Z",
+                    "quote_age_seconds": 60,
+                    "daily_data_as_of": "2026-07-15",
+                    "benchmark_data_as_of": "2026-07-15",
+                    "benchmark_status": "VALID",
+                    "daily_data_status": "VALID",
+                    "freshness_status": "SAFE",
+                    "quote_status": "OK",
+                    "ohlcv_status": "OK",
+                    "history_status": "OK",
+                    "history_rows": 30,
+                    "close_history": [100.0] * 30,
+                    "open": 99.0,
+                    "high": 101.0,
+                    "low": 98.0,
+                    "close": 100.0,
+                    "volume": 1000000,
+                    "data_status": "COMPLETE",
+                    "scoring_eligible": True,
+                },
+                {
+                    "ticker": "SOFI",
+                    "score": 70.0,
+                    "confidence": 0.6,
+                    "reason": "stub",
+                    "source": "stub",
+                    "data_status": "INVALID",
+                    "scoring_eligible": False,
+                    "quote_status": "MISSING",
+                    "ohlcv_status": "MISSING",
+                    "history_status": "MISSING",
+                    "benchmark_status": "INVALID",
+                },
+            ],
+            "preferred_symbols": ["NVDA", "SOFI"],
+            "signal_map": {
+                "NVDA": {
+                    "ticker": "NVDA",
+                    "score": 91.5,
+                    "confidence": 0.8,
+                    "reason": "research_complete",
+                    "source": "selector",
+                    "average_dollar_volume_20d": 250000000.0,
+                    "atr_20_percentage": 2.5,
+                    "market_cap": 3000000000.0,
+                    "ma20": 98.0,
+                    "ma50": 95.0,
+                    "ma200": 90.0,
+                    "quote_timestamp": "2026-07-16T13:00:00Z",
+                    "quote_age_seconds": 60,
+                    "daily_data_as_of": "2026-07-15",
+                    "benchmark_data_as_of": "2026-07-15",
+                    "benchmark_status": "VALID",
+                    "daily_data_status": "VALID",
+                    "freshness_status": "SAFE",
+                    "quote_status": "OK",
+                    "ohlcv_status": "OK",
+                    "history_status": "OK",
+                    "history_rows": 30,
+                    "close_history": [100.0] * 30,
+                    "open": 99.0,
+                    "high": 101.0,
+                    "low": 98.0,
+                    "close": 100.0,
+                    "volume": 1000000,
+                    "data_status": "COMPLETE",
+                    "scoring_eligible": True,
+                },
+                "SOFI": {
+                    "ticker": "SOFI",
+                    "score": 70.0,
+                    "confidence": 0.6,
+                    "reason": "stub",
+                    "source": "stub",
+                    "data_status": "INVALID",
+                    "scoring_eligible": False,
+                    "quote_status": "MISSING",
+                    "ohlcv_status": "MISSING",
+                    "history_status": "MISSING",
+                    "benchmark_status": "INVALID",
+                },
+            },
+            "providers_used": ["openbb"],
+            "providers_disabled": ["fmp"],
+            "fmp_enabled": False,
+            "fallback_used": False,
+        }
+
+        os.environ["SOXS_OPENBB_ENABLED"] = "1"
+        os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
+        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+
+        module.main()
+    finally:
+        module.AIStrategySelector = original_selector
+        module._live_equity_positions = original_live_positions
+        module._has_live_top_configs = original_has_live
+        module.load_runtime_settings = original_load_settings
+        module.write_selection_filter_log = original_write_log
+        module._restart_top_engines = original_restart
+        module._spawn_background_refinement = original_spawn
+        module.load_local_ai_env = original_load_local_env
+        module._run_integrated_ai_selector = original_run_integrated
+        module._split_selected_and_protected_positions = original_split_selected
+        module._annotate_with_ai_signals = original_annotate
+        module._apply_range_scores = original_apply_range_scores
+        module._build_report_top10 = original_build_report_top10
+        module._finalize_price_band = original_finalize_price_band
+        module._apply_trade_filter = original_apply_trade_filter
+        module._apply_composition_filter = original_apply_composition_filter
+        module.write_selection_bundle_atomic = original_bundle_writer
+        os.environ.clear()
+        os.environ.update(original_env)
+
+    assert captured_bundles
+    bundle = captured_bundles[0]
+    assert [item["ticker"] for item in bundle["top_items"]] == ["NVDA"]
+    assert bundle["selection_state_payload"]["selected_symbols"] == ["NVDA"]
+    assert bundle["summary"]["selection_count"] == 1
+    assert bundle["summary"]["final_selected_symbols"] == ["NVDA"]
+
+
+def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
+    module = _load_module()
+    captured_bundles: list[dict] = []
+
+    class FakeSelector:
+        selection_size = 5
+
+        def run_selection(self, write_configs: bool = True, symbols_override=None):
+            return {
+            "top10": [],
+            "top5": [
+                        _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
+                        _formal_candidate_row("MSFT", 88.2, 100.0, reason="research_complete"),
+                ],
+                "top3": [],
+                "report": [],
+                "settings": {"selection_stage": "fast_preliminary"},
+                "quality_filter_report": {},
+            }
+
+        def _format_report_rows(self, selected: list[dict]):
+            return [
+                {"rank": idx + 1, "ticker": row["ticker"], "score": row["score"]}
+                for idx, row in enumerate(selected)
+            ]
+
+    original_selector = module.AIStrategySelector
+    original_live_positions = module._live_equity_positions
+    original_has_live = module._has_live_top_configs
+    original_load_settings = module.load_runtime_settings
+    original_write_log = module.write_selection_filter_log
+    original_restart = module._restart_top_engines
+    original_spawn = module._spawn_background_refinement
+    original_load_local_env = module.load_local_ai_env
+    original_run_integrated = module._run_integrated_ai_selector
+    original_split_selected = module._split_selected_and_protected_positions
+    original_annotate = module._annotate_with_ai_signals
+    original_apply_range_scores = module._apply_range_scores
+    original_build_report_top10 = module._build_report_top10
+    original_finalize_price_band = module._finalize_price_band
+    original_apply_trade_filter = module._apply_trade_filter
+    original_apply_composition_filter = module._apply_composition_filter
+    original_bundle_writer = module.write_selection_bundle_atomic
+    original_env = os.environ.copy()
+    try:
+        module.AIStrategySelector = FakeSelector
+        module._live_equity_positions = lambda: []
+        module._has_live_top_configs = lambda: False
+        module.load_runtime_settings = lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5, "max_symbols": 20}
+        module.write_selection_filter_log = lambda payload: None
+        module._restart_top_engines = lambda: 0
+        module._spawn_background_refinement = lambda timestamp: None
+        module.load_local_ai_env = lambda: None
+        module._annotate_with_ai_signals = lambda rows, signal_map: [dict(item) for item in rows]
+        module._apply_range_scores = lambda rows: [dict(item) for item in rows]
+        module._enrich_candidate_quality_rows = lambda rows, provider_audit=None, provider_outputs=None: [dict(item) for item in rows]
         module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: [dict(item) for item in (selector_top10 or selected or [])]
         module._finalize_price_band = lambda candidates, min_price, max_price: ([dict(item) for item in candidates], [])
         module._apply_trade_filter = lambda rows: ([dict(item) for item in rows], {"rejected": [], "fallback_used": False})

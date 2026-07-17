@@ -251,8 +251,7 @@ def main() -> None:
     )
     preliminary_selected = list(latest.get("top5") or latest.get("top3") or [])
     merged_selected = _merge_refined_candidates(preliminary_selected, refined_selected, limit=requested_top_n)
-    if not merged_selected:
-        return
+    merged_selected = [row for row in merged_selected if selector_runner.is_formal_selection_eligible(row)]
     current_signature = _bundle_signature(_load_latest_report(), _load_current_manifest())
     if current_signature != source_signature:
         return

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from src.ai_selector.data_quality import enrich_candidate_quality, evaluate_candidate_data_quality
+from src.ai_selector.data_quality import (
+    enrich_candidate_quality,
+    evaluate_candidate_data_quality,
+    formal_selection_ineligibility_reasons,
+    is_formal_selection_eligible,
+)
 
 
 def _complete_candidate() -> dict[str, object]:
@@ -103,3 +108,30 @@ def test_enrich_candidate_quality_attaches_explanations() -> None:
     assert enriched["score_reason"] == "strong liquidity"
     assert enriched["why_selected"]
     assert enriched["confidence_score"] == 0.0
+
+
+def test_formal_selection_helpers_reject_explicit_invalid_data() -> None:
+    candidate = _complete_candidate()
+    candidate.update(
+        {
+            "data_status": "INVALID",
+            "scoring_eligible": False,
+            "quote_status": "MISSING",
+            "ohlcv_status": "MISSING",
+            "history_status": "MISSING",
+            "benchmark_status": "INVALID",
+            "fallback_scope": "CRITICAL_MARKET_DATA",
+            "fallback_severity": "CRITICAL",
+        }
+    )
+
+    reasons = formal_selection_ineligibility_reasons(candidate)
+
+    assert is_formal_selection_eligible(candidate) is False
+    assert "data_status_invalid" in reasons
+    assert "scoring_eligible_false" in reasons
+    assert "quote_status_missing" in reasons
+    assert "ohlcv_status_missing" in reasons
+    assert "history_status_missing" in reasons
+    assert "benchmark_status_invalid" in reasons
+    assert "critical_market_data_fallback" in reasons

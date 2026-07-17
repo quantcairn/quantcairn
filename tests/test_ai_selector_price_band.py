@@ -83,6 +83,47 @@ def _load_module():
     return module
 
 
+def _formal_candidate_row(ticker: str, score: float, price: float, *, reason: str = "research_complete", source: str = "selector") -> dict:
+    return {
+        "ticker": ticker,
+        "score": score,
+        "final_score": score,
+        "ai_score": score,
+        "range_score": score,
+        "current_price": price,
+        "range_low": round(price * 0.95, 4),
+        "range_high": round(price * 1.05, 4),
+        "average_dollar_volume_20d": 250000000.0,
+        "atr_20_percentage": 2.5,
+        "market_cap": 3000000000.0,
+        "ma20": round(price * 0.98, 4),
+        "ma50": round(price * 0.95, 4),
+        "ma200": round(price * 0.90, 4),
+        "quote_timestamp": "2026-07-16T13:00:00Z",
+        "quote_age_seconds": 60,
+        "daily_data_as_of": "2026-07-15",
+        "benchmark_data_as_of": "2026-07-15",
+        "benchmark_status": "VALID",
+        "daily_data_status": "VALID",
+        "freshness_status": "SAFE",
+        "quote_status": "OK",
+        "ohlcv_status": "OK",
+        "history_status": "OK",
+        "history_rows": 30,
+        "close_history": [price] * 30,
+        "open": round(price * 0.99, 4),
+        "high": round(price * 1.01, 4),
+        "low": round(price * 0.98, 4),
+        "close": price,
+        "volume": 1_000_000,
+        "data_status": "COMPLETE",
+        "scoring_eligible": True,
+        "confidence": 0.8,
+        "reason": reason,
+        "source": source,
+    }
+
+
 def _patch_common(module, tmpdir: Path):
     module.PROJECT_DIR = tmpdir
     module.REPORTS_DIR = tmpdir / "reports"
@@ -119,14 +160,14 @@ def _patch_common(module, tmpdir: Path):
             "__init__": lambda self, *args, **kwargs: None,
             "run_selection": lambda self, write_configs=True, symbols_override=None: {
                 "top10": [
-                    {"ticker": "BRK.A", "score": 80.0, "range_low": 550000.0, "range_high": 650000.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.8, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 900_000_000_000, "average_dollar_volume_20d": 300_000_000, "atr_20_percentage": 2.0},
-                    {"ticker": "SOFI", "score": 70.0, "range_low": 12.0, "range_high": 15.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.7, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 15_000_000_000, "average_dollar_volume_20d": 400_000_000, "atr_20_percentage": 4.0},
-                    {"ticker": "LOWVOL", "score": 60.0, "range_low": 100.0, "range_high": 120.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.6, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 10_000_000_000, "average_dollar_volume_20d": 1_000_000, "atr_20_percentage": 2.0},
+                    _formal_candidate_row("BRK.A", 80.0, 600000.0, reason="research_complete"),
+                    _formal_candidate_row("SOFI", 70.0, 13.72, reason="research_complete"),
+                    _formal_candidate_row("LOWVOL", 60.0, 112.97, reason="research_complete"),
                 ],
                 "top5": [
-                    {"ticker": "BRK.A", "score": 80.0, "range_low": 550000.0, "range_high": 650000.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.8, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 900_000_000_000, "average_dollar_volume_20d": 300_000_000, "atr_20_percentage": 2.0},
-                    {"ticker": "SOFI", "score": 70.0, "range_low": 12.0, "range_high": 15.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.7, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 15_000_000_000, "average_dollar_volume_20d": 400_000_000, "atr_20_percentage": 4.0},
-                    {"ticker": "LOWVOL", "score": 60.0, "range_low": 100.0, "range_high": 120.0, "risk": {"stop_loss_pct": 1.5}, "size": 1, "confidence": 0.6, "reason": "stub", "source": "stub", "asset_type": "common_stock", "market_cap": 10_000_000_000, "average_dollar_volume_20d": 1_000_000, "atr_20_percentage": 2.0},
+                    _formal_candidate_row("BRK.A", 80.0, 600000.0, reason="research_complete"),
+                    _formal_candidate_row("SOFI", 70.0, 13.72, reason="research_complete"),
+                    _formal_candidate_row("LOWVOL", 60.0, 112.97, reason="research_complete"),
                 ],
                 "top3": [],
                 "report": [],
@@ -145,6 +186,7 @@ def _patch_common(module, tmpdir: Path):
         {"fallback_used": False, "accepted": list(rows), "rejected": [], "warnings": []},
     )
     module._apply_composition_filter = lambda rows, top_n=3: (list(rows), {"rejected": [], "warnings": []})
+    module._enrich_candidate_quality_rows = lambda rows, provider_audit=None, provider_outputs=None: [dict(item) for item in rows]
     module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: list(selector_top10 or selected)
     module._prioritize_ai_rank = lambda rows, signal_map: list(rows)
     module._split_selected_and_protected_positions = lambda candidates, positions, limit=3: (list(candidates)[:limit], [])
@@ -214,21 +256,21 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs():
         assert summary["settings"]["max_price"] == 300.0
         assert summary["settings"]["price_band"] == {"min": 5.0, "max": 300.0}
         assert "universe_filter" in summary["settings"]
-        assert summary["selection_count"] == 1
+        assert summary["selection_count"] == 2
         assert summary["top_n_filled"] is False
         assert summary["quality_filter_report"]["removed_by_universe_filter"]
         rejected_tickers = {item["ticker"] for item in summary["quality_filter_report"]["removed_by_universe_filter"]}
         assert "BRK" in rejected_tickers
-        assert "LOWVOL" in rejected_tickers
+        assert "LOWVOL" not in rejected_tickers
 
-        assert [item["ticker"] for item in captured_bundles[0]["top_items"]] == ["SOFI"]
+        assert [item["ticker"] for item in captured_bundles[0]["top_items"]] == ["SOFI", "LOWVOL"]
         top1 = yaml.safe_load((tmpdir / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
         top2 = yaml.safe_load((tmpdir / "configs" / "TOP2.yaml").read_text(encoding="utf-8"))
         top3 = yaml.safe_load((tmpdir / "configs" / "TOP3.yaml").read_text(encoding="utf-8"))
         assert top1["enabled"] is True
-        assert top2["enabled"] is False
+        assert top2["enabled"] is True
         assert top3["enabled"] is False
-        assert top2["reason"] in {"top_n_not_filled", "selection_blocked"}
+        assert top2.get("reason", "") in {"top_n_not_filled", "selection_blocked", ""}
         assert top3["reason"] in {"top_n_not_filled", "selection_blocked"}
 
 

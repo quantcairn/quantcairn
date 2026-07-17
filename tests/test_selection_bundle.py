@@ -326,6 +326,122 @@ def test_selection_bundle_rejects_top_items_over_requested_top_n(tmp_path, monke
     assert "selected_top_n_exceeds_requested" in audit["validation_error_codes"]
 
 
+def test_selection_bundle_rejects_ineligible_formal_top_items(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "INVALID", "BLOCKED"),
+            "requested_top_n": 3,
+            "top3": [
+                {
+                    "ticker": "SOFI",
+                    "score": 70.0,
+                    "final_score": 70.0,
+                    "selection_date": "2026-07-16",
+                    "data_status": "INVALID",
+                    "scoring_eligible": False,
+                    "quote_status": "MISSING",
+                    "ohlcv_status": "MISSING",
+                    "history_status": "MISSING",
+                    "benchmark_status": "INVALID",
+                    "fallback_scope": "CRITICAL_MARKET_DATA",
+                    "fallback_severity": "CRITICAL",
+                }
+            ],
+            "top5": [
+                {
+                    "ticker": "SOFI",
+                    "score": 70.0,
+                    "final_score": 70.0,
+                    "selection_date": "2026-07-16",
+                    "data_status": "INVALID",
+                    "scoring_eligible": False,
+                    "quote_status": "MISSING",
+                    "ohlcv_status": "MISSING",
+                    "history_status": "MISSING",
+                    "benchmark_status": "INVALID",
+                    "fallback_scope": "CRITICAL_MARKET_DATA",
+                    "fallback_severity": "CRITICAL",
+                }
+            ],
+            "top10": [
+                {
+                    "ticker": "SOFI",
+                    "score": 70.0,
+                    "final_score": 70.0,
+                    "selection_date": "2026-07-16",
+                    "data_status": "INVALID",
+                    "scoring_eligible": False,
+                    "quote_status": "MISSING",
+                    "ohlcv_status": "MISSING",
+                    "history_status": "MISSING",
+                    "benchmark_status": "INVALID",
+                    "fallback_scope": "CRITICAL_MARKET_DATA",
+                    "fallback_severity": "CRITICAL",
+                }
+            ],
+            "selection_count": 1,
+            "candidate_count": 1,
+            "top_n_filled": False,
+            "missing_slots": 2,
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": ["SOFI"],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "INVALID",
+            "research_admission": "BLOCKED",
+            "selection_run_id": "run-4",
+            "selection_symbols": ["SOFI"],
+            "configured_top_symbols": ["SOFI"],
+            "requested_top_n": 3,
+            "selected_top_n": 1,
+            "top_slot_count": 3,
+        },
+        top_items=[
+            {
+                "ticker": "SOFI",
+                "score": 70.0,
+                "final_score": 70.0,
+                "selection_date": "2026-07-16",
+                "data_status": "INVALID",
+                "scoring_eligible": False,
+                "quote_status": "MISSING",
+                "ohlcv_status": "MISSING",
+                "history_status": "MISSING",
+                "benchmark_status": "INVALID",
+                "fallback_scope": "CRITICAL_MARKET_DATA",
+                "fallback_severity": "CRITICAL",
+            }
+        ],
+        selection_run_id="run-4",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="INVALID",
+        research_admission="BLOCKED",
+        processing_phase="fast_preliminary",
+        requested_top_n=3,
+    )
+
+    try:
+        persist_selection_bundle(bundle)
+    except ValueError as exc:
+        assert "bundle_validation_failed" in str(exc)
+        assert "formal_top_ineligible:SOFI" in str(exc)
+    else:
+        raise AssertionError("expected bundle validation failure")
+
+    assert not (tmp_path / "reports" / "ai_selection_latest.json").exists()
+    assert not (tmp_path / "state" / "selection_bundle_manifest.json").exists()
+    assert not (tmp_path / "configs" / "TOP4.yaml").exists()
+    audit = json.loads((tmp_path / "state" / "selection_sync_audit.json").read_text(encoding="utf-8"))
+    assert audit["validation_status"] == "failed"
+    assert "formal_top_ineligible:SOFI" in audit["validation_error_codes"]
+
+
 def test_selection_bundle_rolls_back_when_compat_sync_fails_after_manifest_commit(tmp_path, monkeypatch):
     _patch_bundle_roots(tmp_path, monkeypatch)
 

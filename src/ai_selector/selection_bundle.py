@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from src.utils.market_calendar import required_selection_date
 
 
@@ -564,6 +563,8 @@ def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str
 
 
 def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
+    from src.ai_selector.data_quality import formal_selection_ineligibility_reasons, is_formal_selection_eligible
+
     errors: list[str] = []
     requested_top_n = bundle.requested_top_n
     if requested_top_n is None:
@@ -597,6 +598,14 @@ def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
     ]
     if bundle.selected_symbols != expected_selected_symbols:
         errors.append("selected_symbol_mismatch")
+
+    for item in bundle.top_items:
+        ticker = str(item.get("ticker") or "").strip().upper() or "UNKNOWN"
+        if not is_formal_selection_eligible(item):
+            reasons = formal_selection_ineligibility_reasons(item)
+            errors.append(f"formal_top_ineligible:{ticker}")
+            errors.extend(f"{ticker}:{reason}" for reason in reasons[:3])
+            break
     return errors
 
 

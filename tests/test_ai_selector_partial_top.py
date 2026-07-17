@@ -180,6 +180,31 @@ def _patch_common(module, tmpdir: Path):
             item.setdefault("atr_20_percentage", 4.0)
             if item["asset_type"] == "common_stock":
                 item.setdefault("market_cap", 10_000_000_000)
+            item.setdefault("ma20", float(item["current_price"]) * 0.98 if item.get("current_price") else 1.0)
+            item.setdefault("ma50", float(item["current_price"]) * 0.95 if item.get("current_price") else 1.0)
+            item.setdefault("ma200", float(item["current_price"]) * 0.90 if item.get("current_price") else 1.0)
+            item.setdefault("quote_timestamp", "2026-07-16T13:00:00Z")
+            item.setdefault("quote_age_seconds", 60)
+            item.setdefault("daily_data_as_of", "2026-07-15")
+            item.setdefault("benchmark_data_as_of", "2026-07-15")
+            item.setdefault("benchmark_status", "VALID")
+            item.setdefault("daily_data_status", "VALID")
+            item.setdefault("freshness_status", "SAFE")
+            item.setdefault("quote_status", "OK")
+            item.setdefault("ohlcv_status", "OK")
+            item.setdefault("history_status", "OK")
+            item.setdefault("history_rows", 30)
+            if not item.get("close_history"):
+                item["close_history"] = [float(item["current_price"]) if item.get("current_price") else 1.0] * 30
+            item.setdefault("open", float(item["current_price"]) * 0.99 if item.get("current_price") else 1.0)
+            item.setdefault("high", float(item["current_price"]) * 1.01 if item.get("current_price") else 1.0)
+            item.setdefault("low", float(item["current_price"]) * 0.98 if item.get("current_price") else 1.0)
+            item.setdefault("close", float(item["current_price"]) if item.get("current_price") else 1.0)
+            item.setdefault("volume", 1_000_000)
+            item.setdefault("data_status", "COMPLETE")
+            item.setdefault("scoring_eligible", True)
+            item.setdefault("fallback_scope", "EXPLANATION_ONLY")
+            item.setdefault("fallback_severity", "INFO")
             enriched.append(item)
         return original_universe_filter(enriched)
 
@@ -224,6 +249,7 @@ def _patch_common(module, tmpdir: Path):
         },
     )
     module._apply_range_scores = lambda rows: list(rows)
+    module._enrich_candidate_quality_rows = lambda rows, provider_audit=None, provider_outputs=None: [dict(item) for item in rows]
     module._apply_trade_filter = lambda rows: (
         list(rows),
         {"fallback_used": False, "accepted": list(rows), "rejected": [], "warnings": []},

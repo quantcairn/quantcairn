@@ -47,7 +47,11 @@ from src.ai_selector.settings import load_runtime_settings
 from src.ai_selector import selector as _selector_module
 from src.ai_selector.config import load_runtime_config
 from src.ai_selector.settings import resolve_price_band
-from src.ai_selector.data_quality import enrich_candidate_quality, evaluate_candidate_data_quality
+from src.ai_selector.data_quality import (
+    enrich_candidate_quality,
+    evaluate_candidate_data_quality,
+    is_formal_selection_eligible,
+)
 from src.ai_selector.universe_filter import filter_universe_candidates, load_universe_rules
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
@@ -1755,6 +1759,8 @@ def main(mode: str | None = None):
     )
     selected = _attach_ranking_context(selected, report_top10)
     report_top10 = _attach_ranking_context(report_top10, report_top10)
+    diagnostic_selected = list(selected)
+    selected = [item for item in selected if is_formal_selection_eligible(item)]
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -1786,6 +1792,11 @@ def main(mode: str | None = None):
     quality_report["missing_slots"] = max(0, TOP_COUNT - len(selected))
     quality_report["disabled_configs"] = [
         f"TOP{i}.yaml" for i in range(len(selected) + 1, TOP_COUNT + 1)
+    ]
+    quality_report["diagnostic_selected_symbols"] = [
+        str(item.get("ticker") or "").strip().upper()
+        for item in diagnostic_selected
+        if str(item.get("ticker") or "").strip()
     ]
     rejection_trace, rejection_reason_counts = _build_rejection_trace(
         [
@@ -1839,7 +1850,7 @@ def main(mode: str | None = None):
     out["settings"]["entry_proximity_enabled"] = bool(ENTRY_PROXIMITY_ENABLED)
     out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
     write_selection_filter_log(quality_report)
-    summary_top3_source = list(selected or report_top10[:TOP_COUNT])
+    summary_top3_source = list(selected)
     selection_stage = "FINALIZED"
     market_stage = selection_stage
     selection_run_id = uuid.uuid4().hex
@@ -1974,6 +1985,11 @@ def main(mode: str | None = None):
     summary["rejection_trace"] = list(quality_report.get("rejection_trace") or [])
     summary["rejection_reason_counts"] = dict(quality_report.get("rejection_reason_counts") or {})
     summary["selection_funnel"] = dict(quality_report.get("selection_funnel") or {})
+    summary["final_selected_symbols"] = [
+        str(item.get("ticker") or "").strip().upper()
+        for item in selected
+        if str(item.get("ticker") or "").strip()
+    ]
 
     selection_state_hook_payload = {
         "et_date": current_session,
