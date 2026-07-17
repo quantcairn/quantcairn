@@ -12,6 +12,14 @@ from src.utils.market_calendar import market_session_context
 class _FakePriceFetcher:
     def __init__(self, symbol: str, poll_interval: int = 0):
         self.symbol = symbol
+        self._last_quote_fetch_status = "COMPLETE"
+        self._last_quote_error_code = None
+        self._last_quote_error_message = None
+        self._last_history_fetch_status = "COMPLETE"
+        self._last_history_error_code = None
+        self._last_history_error_message = None
+        self._cache_status = "COMPLETE"
+        self._cache_error_message = None
 
     def get_quote(self):
         now_et = datetime(2026, 7, 13, 8, 55, tzinfo=ZoneInfo("America/New_York"))
@@ -92,3 +100,27 @@ def test_build_candidate_market_snapshot_uses_generic_benchmark_fallback_for_unk
     assert snapshot["selection_stage"] == "PREMARKET_REFRESHED"
     assert snapshot["freshness_status"] == "SAFE"
     assert snapshot["stale_reason"] == ""
+
+
+def test_build_candidate_market_snapshot_records_fetch_diagnostics_and_normalizes_benchmarks(monkeypatch):
+    monkeypatch.setenv("SOXS_ENABLE_LIVE_MARKET_SNAPSHOT_IN_TESTS", "1")
+    seen_symbols: list[str] = []
+
+    class _TrackingPriceFetcher(_FakePriceFetcher):
+        def __init__(self, symbol: str, poll_interval: int = 0):
+            seen_symbols.append(symbol)
+            super().__init__(symbol, poll_interval=poll_interval)
+
+    monkeypatch.setattr(market_context, "PriceFetcher", _TrackingPriceFetcher)
+    monkeypatch.setattr(market_context, "default_benchmarks_for", lambda symbol: ["SOXX.US", "SMH.US"])
+    now_et = datetime(2026, 7, 13, 8, 55, tzinfo=ZoneInfo("America/New_York"))
+
+    snapshot = market_context.build_candidate_market_snapshot("SOXS.US", now_et=now_et)
+
+    assert seen_symbols[0] == "SOXS"
+    assert seen_symbols[1:] == ["SOXX.US", "SMH.US"]
+    assert snapshot["quote_fetch_status"] == "COMPLETE"
+    assert snapshot["ohlcv_fetch_status"] == "COMPLETE"
+    assert snapshot["benchmark_quote_fetch_status"] == {"SOXX.US": "COMPLETE", "SMH.US": "COMPLETE"}
+    assert snapshot["benchmark_ohlcv_fetch_status"] == {"SOXX.US": "COMPLETE", "SMH.US": "COMPLETE"}
+    assert snapshot["benchmark_status"] == "VALID"

@@ -62,6 +62,14 @@ def _neutral_candidate_snapshot(symbol: str, session) -> dict[str, Any]:
         "premarket_snapshot_at": None,
         "quote_timestamp": None,
         "quote_age_seconds": None,
+        "quote_fetch_status": "UNAVAILABLE",
+        "quote_fetch_error_code": None,
+        "quote_fetch_error_message": None,
+        "ohlcv_fetch_status": "UNAVAILABLE",
+        "ohlcv_fetch_error_code": None,
+        "ohlcv_fetch_error_message": None,
+        "cache_status": "COMPLETE",
+        "cache_error_message": None,
         "current_price": None,
         "price": None,
         "premarket_last_price": None,
@@ -77,6 +85,12 @@ def _neutral_candidate_snapshot(symbol: str, session) -> dict[str, Any]:
         "benchmark_data_as_of": {},
         "benchmark_change_pct": {},
         "benchmark_volume": {},
+        "benchmark_quote_fetch_status": {},
+        "benchmark_quote_error_code": {},
+        "benchmark_quote_error_message": {},
+        "benchmark_ohlcv_fetch_status": {},
+        "benchmark_ohlcv_error_code": {},
+        "benchmark_ohlcv_error_message": {},
         "benchmark_alignment_status": "VALID",
         "benchmark_status": "VALID",
         "selection_stage": "PRELIMINARY",
@@ -302,6 +316,14 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         daily = fetcher.get_ohlcv(period="1mo", interval="1d")
     except Exception as exc:
         quote_error = quote_error or str(exc)
+    quote_fetch_status = str(getattr(fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
+    quote_fetch_error_code = getattr(fetcher, "_last_quote_fetch_error_code", None)
+    quote_fetch_error_message = getattr(fetcher, "_last_quote_fetch_error_message", None)
+    ohlcv_fetch_status = str(getattr(fetcher, "_last_history_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
+    ohlcv_fetch_error_code = getattr(fetcher, "_last_history_error_code", None)
+    ohlcv_fetch_error_message = getattr(fetcher, "_last_history_error_message", None)
+    cache_status = str(getattr(fetcher, "_cache_status", "COMPLETE") or "COMPLETE").upper()
+    cache_error_message = getattr(fetcher, "_cache_error_message", None)
 
     current_price = _safe_float(getattr(quote, "price", None)) or _safe_float(getattr(quote, "last_done", None))
     bid = _safe_float(getattr(quote, "bid", None))
@@ -353,6 +375,12 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
     benchmark_change_pct: dict[str, float | None] = {}
     benchmark_volume: dict[str, int | None] = {}
     benchmark_closes: dict[str, list[float]] = {}
+    benchmark_quote_fetch_status: dict[str, str] = {}
+    benchmark_quote_error_code: dict[str, str | None] = {}
+    benchmark_quote_error_message: dict[str, str | None] = {}
+    benchmark_ohlcv_fetch_status: dict[str, str] = {}
+    benchmark_ohlcv_error_code: dict[str, str | None] = {}
+    benchmark_ohlcv_error_message: dict[str, str | None] = {}
     benchmark_alignment_ok = bool(benchmark_symbols)
     for benchmark_symbol in benchmark_symbols:
         bench_fetcher = PriceFetcher(benchmark_symbol, poll_interval=0)
@@ -366,6 +394,12 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
             bench_daily = bench_fetcher.get_ohlcv(period="1mo", interval="1d")
         except Exception:
             bench_daily = []
+        benchmark_quote_fetch_status[benchmark_symbol] = str(getattr(bench_fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
+        benchmark_quote_error_code[benchmark_symbol] = getattr(bench_fetcher, "_last_quote_error_code", None)
+        benchmark_quote_error_message[benchmark_symbol] = getattr(bench_fetcher, "_last_quote_error_message", None)
+        benchmark_ohlcv_fetch_status[benchmark_symbol] = str(getattr(bench_fetcher, "_last_history_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
+        benchmark_ohlcv_error_code[benchmark_symbol] = getattr(bench_fetcher, "_last_history_error_code", None)
+        benchmark_ohlcv_error_message[benchmark_symbol] = getattr(bench_fetcher, "_last_history_error_message", None)
         bench_as_of = _last_daily_as_of(bench_daily)
         benchmark_data_as_of[benchmark_symbol] = bench_as_of
         benchmark_volume[benchmark_symbol] = _safe_int(getattr(bench_quote, "volume", None))
@@ -378,7 +412,11 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
             benchmark_change_pct[benchmark_symbol] = round(((bench_price - bench_close[-2]) / bench_close[-2]) * 100.0, 4)
         else:
             benchmark_change_pct[benchmark_symbol] = None
-        if bench_as_of != session.previous_completed_session.isoformat():
+        if (
+            bench_as_of != session.previous_completed_session.isoformat()
+            or benchmark_quote_fetch_status[benchmark_symbol] != "COMPLETE"
+            or benchmark_ohlcv_fetch_status[benchmark_symbol] != "COMPLETE"
+        ):
             benchmark_alignment_ok = False
     benchmark_status = "VALID" if benchmark_alignment_ok else "INVALID"
     if not benchmark_alignment_ok:
@@ -502,6 +540,14 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         "premarket_snapshot_at": snapshot_at,
         "quote_timestamp": snapshot_at,
         "quote_age_seconds": round(float(quote_age_seconds or 0.0), 2) if quote_age_seconds is not None else None,
+        "quote_fetch_status": quote_fetch_status,
+        "quote_fetch_error_code": quote_fetch_error_code,
+        "quote_fetch_error_message": quote_fetch_error_message,
+        "ohlcv_fetch_status": ohlcv_fetch_status,
+        "ohlcv_fetch_error_code": ohlcv_fetch_error_code,
+        "ohlcv_fetch_error_message": ohlcv_fetch_error_message,
+        "cache_status": cache_status,
+        "cache_error_message": cache_error_message,
         "current_price": current_price,
         "price": current_price,
         "premarket_last_price": current_price,
@@ -517,6 +563,12 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         "benchmark_data_as_of": benchmark_data_as_of,
         "benchmark_change_pct": benchmark_change_pct,
         "benchmark_volume": benchmark_volume,
+        "benchmark_quote_fetch_status": benchmark_quote_fetch_status,
+        "benchmark_quote_error_code": benchmark_quote_error_code,
+        "benchmark_quote_error_message": benchmark_quote_error_message,
+        "benchmark_ohlcv_fetch_status": benchmark_ohlcv_fetch_status,
+        "benchmark_ohlcv_error_code": benchmark_ohlcv_error_code,
+        "benchmark_ohlcv_error_message": benchmark_ohlcv_error_message,
         "benchmark_alignment_status": benchmark_status,
         "benchmark_status": benchmark_status,
         "selection_stage": selection_stage,

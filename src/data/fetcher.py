@@ -7,12 +7,21 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_YFINANCE_CACHE_DIR = Path(
+    os.environ.get("SOXS_YFINANCE_CACHE_DIR", str(PROJECT_DIR / "state" / "yfinance_cache"))
+).expanduser().resolve()
+_YFINANCE_CACHE_LOCK = Lock()
+_YFINANCE_CACHE_INITIALIZED = False
+_YFINANCE_CACHE_ERROR: str | None = None
 
 
 class PriceDataError(Exception):
@@ -39,6 +48,32 @@ def _provider_ticker(symbol: str) -> str:
     if upper.endswith(".US"):
         return upper[:-3]
     return upper
+
+
+def _configure_yfinance_cache() -> tuple[str, str | None]:
+    """Pin yfinance's sqlite-backed cache to an absolute, writable path."""
+    global _YFINANCE_CACHE_INITIALIZED, _YFINANCE_CACHE_ERROR
+    with _YFINANCE_CACHE_LOCK:
+        if _YFINANCE_CACHE_INITIALIZED:
+            return ("CACHE_ERROR" if _YFINANCE_CACHE_ERROR else "COMPLETE", _YFINANCE_CACHE_ERROR)
+        _YFINANCE_CACHE_INITIALIZED = True
+        cache_dir = DEFAULT_YFINANCE_CACHE_DIR
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            _YFINANCE_CACHE_ERROR = f"cache_dir_create_failed:{exc}"
+            logger.warning("Failed to create yfinance cache dir %s: %s", cache_dir, exc)
+            return "CACHE_ERROR", _YFINANCE_CACHE_ERROR
+        try:
+            import yfinance.cache as yf_cache
+
+            yf_cache.set_cache_location(str(cache_dir))
+            _YFINANCE_CACHE_ERROR = None
+            return "COMPLETE", None
+        except Exception as exc:
+            _YFINANCE_CACHE_ERROR = f"cache_config_failed:{exc}"
+            logger.warning("Failed to configure yfinance cache dir %s: %s", cache_dir, exc)
+            return "CACHE_ERROR", _YFINANCE_CACHE_ERROR
 
 
 @dataclass
@@ -75,15 +110,32 @@ class PriceFetcher:
         self._provider_ticker = _provider_ticker(ticker)
         self.poll_interval = poll_interval
         self.max_data_age_seconds = max_data_age_seconds
+        self._cache_status, self._cache_error_message = _configure_yfinance_cache()
         self._ticker_obj = yf.Ticker(self._provider_ticker)
         self._last_fetch_time: float = 0
         self._last_successful_fetch: float = 0.0
         self._cached_quote: Optional[Quote] = None
+        self._last_quote_fetch_status: str = "UNAVAILABLE"
+        self._last_quote_error_code: str | None = None
+        self._last_quote_error_message: str | None = None
+        self._last_history_fetch_status: str = "UNAVAILABLE"
+        self._last_history_error_code: str | None = None
+        self._last_history_error_message: str | None = None
         self._synthetic_market = os.environ.get("SOXS_SYNTHETIC_MARKET", "").strip().lower() in {"1", "true", "yes", "on"}
         self._synthetic_start_price = _positive_float(os.environ.get("SOXS_SYNTHETIC_START_PRICE"), 100.0)
         self._synthetic_amplitude_pct = _positive_float(os.environ.get("SOXS_SYNTHETIC_AMPLITUDE_PCT"), 2.0)
         self._synthetic_period_seconds = max(15, int(_positive_float(os.environ.get("SOXS_SYNTHETIC_PERIOD_SECONDS"), 120.0)))
         self._synthetic_started_at = time.time()
+
+    def _set_quote_diagnostic(self, status: str, error_code: str | None = None, error_message: str | None = None) -> None:
+        self._last_quote_fetch_status = status
+        self._last_quote_error_code = error_code
+        self._last_quote_error_message = error_message
+
+    def _set_history_diagnostic(self, status: str, error_code: str | None = None, error_message: str | None = None) -> None:
+        self._last_history_fetch_status = status
+        self._last_history_error_code = error_code
+        self._last_history_error_message = error_message
 
     def _call_with_retries(self, func, attempts: int = 3, base_delay: float = 0.5):
         """Call *func* with retries and exponential backoff.
@@ -190,11 +242,30 @@ class PriceFetcher:
                 time.sleep(0.25 * (2 ** attempt))
         else:
             logger.debug("Yahoo chart fallback failed for %s: %s", self.ticker, last_exc)
+            self._set_quote_diagnostic("PROVIDER_ERROR", "CHART_HTTP_ERROR", str(last_exc) if last_exc else None)
             return {}
 
         try:
-            result = ((data.get("chart") or {}).get("result") or [None])[0]
+            if data is None:
+                self._set_quote_diagnostic("EMPTY_RESPONSE", "EMPTY_JSON", "chart payload is null")
+                return {}
+            if not isinstance(data, dict):
+                self._set_quote_diagnostic("MALFORMED_RESPONSE", "NON_DICT_JSON", f"chart payload type={type(data).__name__}")
+                return {}
+            chart = data.get("chart")
+            if not isinstance(chart, dict):
+                self._set_quote_diagnostic("EMPTY_RESPONSE", "MISSING_CHART", "chart payload missing")
+                return {}
+            result_list = chart.get("result")
+            if not isinstance(result_list, list) or not result_list or result_list[0] is None:
+                self._set_quote_diagnostic("EMPTY_RESPONSE", "MISSING_RESULT", "chart result missing")
+                return {}
+            result = result_list[0]
+            if not isinstance(result, dict):
+                self._set_quote_diagnostic("MALFORMED_RESPONSE", "NON_DICT_RESULT", f"result type={type(result).__name__}")
+                return {}
             if not result:
+                self._set_quote_diagnostic("EMPTY_RESPONSE", "EMPTY_RESULT", "chart result empty")
                 return {}
 
             meta = result.get("meta") or {}
@@ -212,7 +283,9 @@ class PriceFetcher:
             if price <= 0:
                 price = _positive_float(_last(quote.get("close")))
 
+            self._set_quote_diagnostic("COMPLETE")
             return {
+                "status": "COMPLETE",
                 "price": price,
                 "previous_close": _positive_float(
                     meta.get("previousClose"),
@@ -233,6 +306,7 @@ class PriceFetcher:
             }
         except Exception as e:
             logger.debug("Yahoo chart fallback parse failed for %s: %s", self.ticker, e)
+            self._set_quote_diagnostic("MALFORMED_RESPONSE", "CHART_PARSE_ERROR", str(e))
             return {}
 
     def _fetch_chart_history(self, period: str, interval: str) -> list[OHLCV]:
@@ -255,7 +329,28 @@ class PriceFetcher:
                 timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
             )
             resp.raise_for_status()
-            result = ((resp.json().get("chart") or {}).get("result") or [None])[0] or {}
+            payload = resp.json()
+            if payload is None:
+                self._set_history_diagnostic("EMPTY_RESPONSE", "EMPTY_JSON", "chart payload is null")
+                return []
+            if not isinstance(payload, dict):
+                self._set_history_diagnostic("MALFORMED_RESPONSE", "NON_DICT_JSON", f"chart payload type={type(payload).__name__}")
+                return []
+            chart = payload.get("chart")
+            if not isinstance(chart, dict):
+                self._set_history_diagnostic("EMPTY_RESPONSE", "MISSING_CHART", "chart payload missing")
+                return []
+            result_list = chart.get("result")
+            if not isinstance(result_list, list) or not result_list or result_list[0] is None:
+                self._set_history_diagnostic("EMPTY_RESPONSE", "MISSING_RESULT", "chart result missing")
+                return []
+            result = result_list[0]
+            if not isinstance(result, dict):
+                self._set_history_diagnostic("MALFORMED_RESPONSE", "NON_DICT_RESULT", f"result type={type(result).__name__}")
+                return []
+            if not result:
+                self._set_history_diagnostic("EMPTY_RESPONSE", "EMPTY_RESULT", "chart result empty")
+                return []
             timestamps = result.get("timestamp") or []
             quote = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
             opens = quote.get("open") or []
@@ -277,9 +372,11 @@ class PriceFetcher:
                         volume=int(volume or 0),
                     )
                 )
+            self._set_history_diagnostic("COMPLETE")
             return candles
         except Exception as e:
             logger.debug("Direct chart history failed for %s (%s %s): %s", self.ticker, period, interval, e)
+            self._set_history_diagnostic("PROVIDER_ERROR", "CHART_HISTORY_ERROR", str(e))
             return []
 
     def _synthetic_quote(self) -> Quote:
@@ -327,6 +424,8 @@ class PriceFetcher:
 
         try:
             chart = self._fetch_chart_quote()
+            if not isinstance(chart, dict):
+                chart = {}
             fast = {} if _positive_float(chart.get("price")) > 0 else self._get_safe_fast_info()
 
             prev_close = _positive_float(
@@ -512,6 +611,8 @@ class PriceFetcher:
         hist = self._fetch_history(period=period, interval=interval, prepost=True)
         if hist is None or hist.empty:
             logger.error(f"Failed to fetch OHLCV for {self.ticker}: no data returned")
+            if self._last_history_fetch_status == "UNAVAILABLE":
+                self._set_history_diagnostic("EMPTY_RESPONSE", "NO_HISTORY", "no data returned")
             return []
 
         candles = []

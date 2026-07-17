@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from src.data.fetcher import PriceFetcher
 import os
 import src.data.fetcher as fetcher_mod
@@ -87,6 +89,176 @@ def test_get_quote_from_history(monkeypatch=None):
         assert q.volume == 100
     finally:
         fetcher_mod.PriceFetcher._fetch_chart_quote = original_fetch_chart_quote
+
+
+def test_get_quote_handles_none_chart_payload_without_attribute_error(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit('.', 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    original_fetch_chart_quote = fetcher_mod.PriceFetcher._fetch_chart_quote
+    original_get_safe_fast_info = fetcher_mod.PriceFetcher._get_safe_fast_info
+    original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
+    fetcher_mod.PriceFetcher._fetch_chart_quote = lambda self: None
+    fetcher_mod.PriceFetcher._get_safe_fast_info = lambda self: {}
+    fetcher_mod.PriceFetcher._fetch_history = lambda self, period, interval, prepost=True: None
+    pf = PriceFetcher('FOO')
+    try:
+        quote = pf.get_quote()
+    finally:
+        fetcher_mod.PriceFetcher._fetch_chart_quote = original_fetch_chart_quote
+        fetcher_mod.PriceFetcher._get_safe_fast_info = original_get_safe_fast_info
+        fetcher_mod.PriceFetcher._fetch_history = original_fetch_history
+
+    assert quote is None or getattr(quote, "price", 0) >= 0
+
+
+def test_fetch_chart_quote_marks_empty_response_for_none_json():
+    original_session = fetcher_mod.requests.Session
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return None
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, *args, **kwargs):
+            return DummyResponse()
+
+    try:
+        fetcher_mod.requests.Session = DummySession
+        pf = PriceFetcher("MSFT")
+        quote = pf._fetch_chart_quote()
+    finally:
+        fetcher_mod.requests.Session = original_session
+
+    assert quote == {}
+    assert pf._last_quote_fetch_status == "EMPTY_RESPONSE"
+    assert pf._last_quote_error_code == "EMPTY_JSON"
+
+
+def test_fetch_chart_quote_marks_empty_response_for_empty_dict():
+    original_session = fetcher_mod.requests.Session
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, *args, **kwargs):
+            return DummyResponse()
+
+    try:
+        fetcher_mod.requests.Session = DummySession
+        pf = PriceFetcher("MSFT")
+        quote = pf._fetch_chart_quote()
+    finally:
+        fetcher_mod.requests.Session = original_session
+
+    assert quote == {}
+    assert pf._last_quote_fetch_status == "EMPTY_RESPONSE"
+    assert pf._last_quote_error_code == "MISSING_CHART"
+
+
+def test_fetch_chart_history_marks_empty_response_for_none_json():
+    original_session = fetcher_mod.requests.Session
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return None
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, *args, **kwargs):
+            return DummyResponse()
+
+    try:
+        fetcher_mod.requests.Session = DummySession
+        pf = PriceFetcher("MSFT")
+        candles = pf._fetch_chart_history("1mo", "1d")
+    finally:
+        fetcher_mod.requests.Session = original_session
+
+    assert candles == []
+    assert pf._last_history_fetch_status == "EMPTY_RESPONSE"
+    assert pf._last_history_error_code == "EMPTY_JSON"
+
+
+def test_price_fetcher_uses_absolute_yfinance_cache_dir(monkeypatch, tmp_path: Path):
+    cache_dir = tmp_path / "state" / "yfinance_cache"
+    recorded: dict[str, str] = {}
+
+    def _record_cache_location(location):
+        recorded["location"] = location
+
+    monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_INITIALIZED", False)
+    monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_ERROR", None)
+    monkeypatch.setattr(fetcher_mod, "DEFAULT_YFINANCE_CACHE_DIR", cache_dir)
+    import yfinance.cache as yf_cache
+
+    original_set_cache_location = yf_cache.set_cache_location
+    yf_cache.set_cache_location = _record_cache_location
+    try:
+        pf = PriceFetcher("SOFI.US")
+    finally:
+        yf_cache.set_cache_location = original_set_cache_location
+
+    assert cache_dir.is_dir()
+    assert recorded["location"] == str(cache_dir.resolve())
+    assert pf._cache_status == "COMPLETE"
+
+
+def test_get_ohlcv_handles_empty_dataframe_without_attribute_error(monkeypatch=None):
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit('.', 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    class EmptyHist:
+        empty = True
+
+    monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    original_fetch_chart_history = fetcher_mod.PriceFetcher._fetch_chart_history
+    original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
+    fetcher_mod.PriceFetcher._fetch_chart_history = lambda self, period, interval: []
+    fetcher_mod.PriceFetcher._fetch_history = lambda self, period, interval, prepost=True: EmptyHist()
+    pf = PriceFetcher("FOO")
+    try:
+        candles = pf.get_ohlcv(period="1mo", interval="1d")
+    finally:
+        fetcher_mod.PriceFetcher._fetch_chart_history = original_fetch_chart_history
+        fetcher_mod.PriceFetcher._fetch_history = original_fetch_history
+
+    assert candles == []
+    assert pf._last_history_fetch_status == "EMPTY_RESPONSE"
+    assert pf._last_history_error_code == "NO_HISTORY"
 
 
 def test_validate_live_mode_requires_longbridge_credentials():
