@@ -32,6 +32,18 @@ def test_shadow_universe_supports_other_symbols_with_default_catalog():
     assert config.validate() == []
 
 
+def test_shadow_universe_uses_generic_benchmark_fallback_for_unknown_common_stock():
+    assert default_benchmarks_for("SOFI.US") == ("QQQ.US", "SPY.US")
+    config = ShadowUniverseConfig.for_symbol(
+        "SOFI.US",
+        strategy_family="mean_reversion",
+        risk_profile="balanced",
+    )
+    assert config.benchmarks == ("QQQ.US", "SPY.US")
+    assert config.symbol_class == "common_stock"
+    assert config.validate() == []
+
+
 def test_shadow_universe_classifies_leveraged_etf():
     config = ShadowUniverseConfig.for_symbol("YINN.US")
     assert config.symbol_class == "leveraged_etf"

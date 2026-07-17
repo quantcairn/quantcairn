@@ -31,6 +31,16 @@ def _positive_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _provider_ticker(symbol: str) -> str:
+    text = str(symbol or "").strip()
+    if not text:
+        return text
+    upper = text.upper()
+    if upper.endswith(".US"):
+        return upper[:-3]
+    return upper
+
+
 @dataclass
 class Quote:
     """Real-time price snapshot."""
@@ -62,9 +72,10 @@ class PriceFetcher:
 
     def __init__(self, ticker: str, poll_interval: int = 15, max_data_age_seconds: int = 120):
         self.ticker = ticker
+        self._provider_ticker = _provider_ticker(ticker)
         self.poll_interval = poll_interval
         self.max_data_age_seconds = max_data_age_seconds
-        self._ticker_obj = yf.Ticker(ticker)
+        self._ticker_obj = yf.Ticker(self._provider_ticker)
         self._last_fetch_time: float = 0
         self._last_successful_fetch: float = 0.0
         self._cached_quote: Optional[Quote] = None
@@ -122,6 +133,29 @@ class PriceFetcher:
 
         return result
 
+    def get_market_cap(self) -> Optional[float]:
+        """Best-effort market-cap lookup for selector quality gating."""
+        try:
+            fast = self._call_with_retries(lambda: self._ticker_obj.fast_info, attempts=1, base_delay=0.25)
+        except Exception as e:
+            logger.debug("market cap fast_info unavailable for %s: %s", self.ticker, e)
+            fast = {}
+        try:
+            value = None
+            if isinstance(fast, dict):
+                value = fast.get("market_cap") or fast.get("marketCap")
+            else:
+                value = getattr(fast, "market_cap", None) or getattr(fast, "marketCap", None)
+            if value is None:
+                info = self._call_with_retries(lambda: self._ticker_obj.info, attempts=1, base_delay=0.25)
+                if isinstance(info, dict):
+                    value = info.get("marketCap") or info.get("market_cap")
+            market_cap = _positive_float(value)
+            return market_cap if market_cap > 0 else None
+        except Exception as e:
+            logger.debug("market cap unavailable for %s: %s", self.ticker, e)
+            return None
+
     def _fetch_history(self, period: str, interval: str, prepost: bool = True):
         """Fetch historical data with retries and pre/post-market support."""
         try:
@@ -136,7 +170,7 @@ class PriceFetcher:
 
     def _fetch_chart_quote(self) -> dict:
         """Fetch a lightweight Yahoo chart quote without inherited proxy settings."""
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{self.ticker}"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{self._provider_ticker}"
         session = requests.Session()
         session.trust_env = False
         last_exc = None
@@ -215,7 +249,7 @@ class PriceFetcher:
         session.trust_env = False
         try:
             resp = session.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{self.ticker}",
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{self._provider_ticker}",
                 params={"range": yahoo_range, "interval": interval, "includePrePost": "true"},
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),

@@ -43,6 +43,29 @@ class DummyTicker:
         return {}
 
 
+def test_price_fetcher_normalizes_us_suffix_for_provider_calls(monkeypatch=None):
+    captured: list[str] = []
+
+    class RecordingTicker(DummyTicker):
+        def __init__(self, ticker):
+            captured.append(ticker)
+            super().__init__(ticker)
+
+    if monkeypatch is None:
+        class SimpleMonkeyPatch:
+            def setattr(self, target, value):
+                module_name, attr_name = target.rsplit('.', 1)
+                module = __import__(module_name, fromlist=[attr_name])
+                setattr(module, attr_name, value)
+
+        monkeypatch = SimpleMonkeyPatch()
+
+    monkeypatch.setattr('yfinance.Ticker', RecordingTicker)
+    pf = PriceFetcher('SOFI.US')
+    assert captured[0] == 'SOFI'
+    assert pf._provider_ticker == 'SOFI'
+
+
 def test_get_quote_from_history(monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:

@@ -1205,6 +1205,13 @@ def _enrich_selection_rows(
     provider_outputs = dict(provider_outputs or {})
     for raw in rows or []:
         item = dict(raw or {})
+        for nested_key in ("market_data", "trade_market_data", "metrics"):
+            nested = item.get(nested_key)
+            if not isinstance(nested, dict):
+                continue
+            for key, value in nested.items():
+                if key not in item or item.get(key) is None:
+                    item[key] = value
         ticker = _normalize_ticker(item.get("ticker"))
         fallback_scope, fallback_severity, affected_fields = _candidate_fallback_metadata(item, provider_outputs)
         candidate_fallback = bool(
@@ -1747,11 +1754,17 @@ def main(mode: str | None = None):
         "universe_passed": int(len(report_top10 or [])),
         "quote_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("quote_as_of") or (item or {}).get("quote_timestamp") or "").strip())),
         "ohlcv_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("ohlcv_as_of") or (item or {}).get("daily_data_as_of") or "").strip())),
-        "benchmark_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("benchmark_status") or "").strip().upper() == "VALID")),
+        "benchmark_complete": int(sum(1 for item in (report_top10 or []) if str(
+            (item or {}).get("benchmark_status")
+            or (item or {}).get("benchmark_alignment_status")
+            or ((item or {}).get("market_data") or {}).get("benchmark_status")
+            or ((item or {}).get("market_data") or {}).get("benchmark_alignment_status")
+            or ""
+        ).strip().upper() == "VALID")),
         "provider_empty_responses": int(provider_audit_summary.get("provider_empty_responses", 0) or 0),
         "data_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_status") or "").strip().upper() == "COMPLETE")),
         "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
-        "ranked_candidates": int(len(out.get("top10") or [])),
+        "ranked_candidates": int(len(report_top10 or [])),
         "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
         "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),
         "refined_selected": int(len(selected)),
@@ -1961,11 +1974,17 @@ def main(mode: str | None = None):
         "universe_passed": int(len(report_top10 or [])),
         "quote_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("quote_as_of") or (item or {}).get("quote_timestamp") or "").strip())),
         "ohlcv_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("ohlcv_as_of") or (item or {}).get("daily_data_as_of") or "").strip())),
-        "benchmark_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("benchmark_status") or "").strip().upper() == "VALID")),
+        "benchmark_complete": int(sum(1 for item in (report_top10 or []) if str(
+            (item or {}).get("benchmark_status")
+            or (item or {}).get("benchmark_alignment_status")
+            or ((item or {}).get("market_data") or {}).get("benchmark_status")
+            or ((item or {}).get("market_data") or {}).get("benchmark_alignment_status")
+            or ""
+        ).strip().upper() == "VALID")),
         "provider_empty_responses": int((provider_audit_summary.get("provider_empty_responses", 0) if isinstance(provider_audit_summary, dict) else 0) or 0),
         "data_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_status") or "").strip().upper() == "COMPLETE")),
         "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
-        "ranked_candidates": int(len(out.get("top10") or [])),
+        "ranked_candidates": int(len(report_top10 or [])),
         "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
         "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),
         "refined_selected": int(len(summary.get("refined_top3") or summary.get("refined_top5") or [])),

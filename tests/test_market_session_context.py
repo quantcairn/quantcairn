@@ -77,3 +77,18 @@ def test_build_candidate_market_snapshot_keeps_friday_daily_data_latest_complete
     assert snapshot["shadow_enabled"] is False
     assert snapshot["paper_enabled"] is False
     assert snapshot["live_enabled"] is False
+
+
+def test_build_candidate_market_snapshot_uses_generic_benchmark_fallback_for_unknown_common_stock(monkeypatch):
+    monkeypatch.setenv("SOXS_ENABLE_LIVE_MARKET_SNAPSHOT_IN_TESTS", "1")
+    monkeypatch.setattr(market_context, "PriceFetcher", _FakePriceFetcher)
+    now_et = datetime(2026, 7, 13, 8, 55, tzinfo=ZoneInfo("America/New_York"))
+
+    snapshot = market_context.build_candidate_market_snapshot("SOFI.US", now_et=now_et)
+
+    assert snapshot["benchmark_symbols"] == ["QQQ.US", "SPY.US"]
+    assert snapshot["benchmark_status"] == "VALID"
+    assert snapshot["benchmark_alignment_status"] == "VALID"
+    assert snapshot["selection_stage"] == "PREMARKET_REFRESHED"
+    assert snapshot["freshness_status"] == "SAFE"
+    assert snapshot["stale_reason"] == ""

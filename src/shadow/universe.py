@@ -88,6 +88,13 @@ SHADOW_SYMBOL_CATALOG: dict[str, dict[str, Any]] = {
     },
 }
 
+_FALLBACK_BENCHMARKS_BY_CLASS: dict[str, tuple[str, ...]] = {
+    "common_stock": ("QQQ.US", "SPY.US"),
+    "index_etf": ("SPY.US", "QQQ.US"),
+    "leveraged_etf": ("QQQ.US", "SPY.US"),
+    "inverse_etf": ("QQQ.US", "SPY.US"),
+}
+
 
 def _safe_slug(value: str, *, fallback: str = "shadow") -> str:
     text = str(value or "").strip().lower().replace(".", "_")
@@ -146,6 +153,9 @@ def default_benchmarks_for(symbol: str) -> tuple[str, ...]:
         return tuple(canonical_shadow_symbol(item) for item in values)
     if isinstance(values, list):
         return tuple(canonical_shadow_symbol(item) for item in values)
+    fallback = _FALLBACK_BENCHMARKS_BY_CLASS.get(symbol_class_for(symbol))
+    if fallback:
+        return tuple(canonical_shadow_symbol(item) for item in fallback)
     return ()
 
 
@@ -198,7 +208,13 @@ class ShadowUniverseConfig:
         entry = _catalog_entry(canonical_symbol)
         resolved_benchmarks = tuple(
             canonical_shadow_symbol(item)
-            for item in (benchmarks if benchmarks is not None else entry.get("default_benchmarks") or ())
+            for item in (
+                benchmarks
+                if benchmarks is not None
+                else entry.get("default_benchmarks")
+                or default_benchmarks_for(canonical_symbol)
+                or ()
+            )
         )
         resolved_family = str(strategy_family or entry.get("strategy_family") or "").strip()
         resolved_risk_profile = str(risk_profile or entry.get("risk_profile") or "").strip().lower()

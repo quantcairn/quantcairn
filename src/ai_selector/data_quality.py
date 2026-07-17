@@ -522,6 +522,26 @@ def enrich_candidate_quality(
     payload["quality_warnings_structured"] = list(warning_list)
     payload["data_status"] = result.data_status
     payload["scoring_eligible"] = result.scoring_eligible
+    payload["quote_status"] = str(payload.get("quote_status") or ("OK" if payload.get("quote_timestamp") else "MISSING")).upper()
+    payload["ohlcv_status"] = str(payload.get("ohlcv_status") or ("OK" if payload.get("close_history") or payload.get("daily_data_as_of") else "MISSING")).upper()
+    payload["history_status"] = str(payload.get("history_status") or ("OK" if payload.get("close_history") else "MISSING")).upper()
+    payload["factor_status"] = str(
+        payload.get("factor_status")
+        or (
+            "OK"
+            if payload.get("average_dollar_volume_20d") is not None
+            and payload.get("atr_20_percentage") is not None
+            and payload.get("ma20") is not None
+            and payload.get("ma50") is not None
+            else "MISSING"
+        )
+    ).upper()
+    payload["benchmark_status"] = str(payload.get("benchmark_status") or payload.get("benchmark_alignment_status") or "").upper()
+    payload["quote_timestamp"] = payload.get("quote_timestamp")
+    payload["quote_age_seconds"] = payload.get("quote_age_seconds")
+    payload["daily_data_status"] = str(payload.get("daily_data_status") or "").upper()
+    payload["freshness_status"] = str(payload.get("freshness_status") or "").upper()
+    payload["selection_stage"] = str(payload.get("selection_stage") or "").upper()
     payload["blocking_reasons"] = list(result.blocking_reasons)
     payload["missing_fields"] = list(result.missing_fields)
     payload["stale_fields"] = list(result.stale_fields)

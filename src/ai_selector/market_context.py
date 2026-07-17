@@ -196,6 +196,53 @@ def _daily_volume_history(candles: Iterable[Any]) -> list[int]:
     return volumes
 
 
+def _atr_20_percentage(candles: Iterable[Any]) -> float | None:
+    high_values: list[float] = []
+    low_values: list[float] = []
+    close_values: list[float] = []
+    for item in candles or []:
+        try:
+            high = float(getattr(item, "high", 0.0) or 0.0)
+            low = float(getattr(item, "low", 0.0) or 0.0)
+            close = float(getattr(item, "close", 0.0) or 0.0)
+        except Exception:
+            continue
+        if high > 0 and low > 0 and close > 0:
+            high_values.append(high)
+            low_values.append(low)
+            close_values.append(close)
+    if len(close_values) < 2:
+        return None
+    lookback = min(20, len(close_values))
+    true_ranges: list[float] = []
+    start_index = max(1, len(close_values) - lookback)
+    for index in range(start_index, len(close_values)):
+        high = high_values[index]
+        low = low_values[index]
+        prev_close = close_values[index - 1]
+        true_range = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close),
+        )
+        true_ranges.append(true_range)
+    if not true_ranges:
+        return None
+    atr = sum(true_ranges) / len(true_ranges)
+    last_close = close_values[-1]
+    if last_close <= 0:
+        return None
+    return round((atr / last_close) * 100.0, 4)
+
+
+def _market_cap_from_fetcher(fetcher: PriceFetcher) -> float | None:
+    try:
+        market_cap = fetcher.get_market_cap()
+        return _safe_float(market_cap)
+    except Exception:
+        return None
+
+
 def _safe_mean(values: Iterable[float]) -> float | None:
     series = pd.Series([float(value) for value in values if value is not None], dtype="float64")
     if series.empty:
@@ -375,6 +422,8 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
                 recent_close_vol_pairs.append(float(close_value) * float(volume_value))
         if recent_close_vol_pairs:
             average_dollar_volume_20d = round(sum(recent_close_vol_pairs) / len(recent_close_vol_pairs), 4)
+    market_cap = _market_cap_from_fetcher(fetcher)
+    atr_20_percentage = _atr_20_percentage(daily)
 
     close_series = pd.Series(closes, dtype="float64") if closes else pd.Series(dtype="float64")
     ma20 = _safe_mean(close_series.tail(20))
@@ -475,6 +524,8 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         "stale_reason": "; ".join(dict.fromkeys(item for item in stale_reason_parts if item)) or "",
         "avg_10d_volume": average_volume_10,
         "average_dollar_volume_20d": average_dollar_volume_20d,
+        "market_cap": market_cap,
+        "atr_20_percentage": atr_20_percentage,
         "ma20": ma20,
         "ma50": ma50,
         "ma200": ma200,
