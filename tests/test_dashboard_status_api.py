@@ -349,8 +349,8 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert len(payload["top_engines"]) == 3
     assert payload["ai_selection"]["price_band"]["min"] == 5.0
     assert payload["ai_selection"]["price_band"]["max"] == 300.0
-    assert payload["candidate_validation"]["state"] == "STALE"
-    assert payload["candidate_validation"]["status_label"] == "STALE"
+    assert payload["candidate_validation"]["state"] == "SAFE"
+    assert payload["candidate_validation"]["status_label"] == "SAFE"
     assert payload["candidate_validation_api_available"] is True
     assert payload["system"]["mode"] == "PAPER"
     assert payload["system"]["broker_type"] == "PaperBroker"

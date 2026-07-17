@@ -47,7 +47,7 @@ def test_trading_engine_uses_fresh_selection_state_cache():
             report_path.write_text(
                 json.dumps(
                     {
-                        "selection_date": "2026-07-06",
+                        "selection_date": "2026-07-17",
                         "top3": [{"ticker": "SOFI", "score": 0.0, "confidence": 0.5, "reason": "protected"}],
                         "top10": [{"ticker": "SOFI", "score": 0.0, "confidence": 0.5, "reason": "protected"}],
                     }
@@ -63,8 +63,8 @@ def test_trading_engine_uses_fresh_selection_state_cache():
                     "reason": "top_n_not_filled",
                     "selection_run_id": "run-1",
                     "top_sync_run_id": "run-1",
-                    "selection_date": "2026-07-06",
-                    "generated_at": "2026-07-06T08:30:00-04:00",
+                    "selection_date": "2026-07-17",
+                    "generated_at": "2026-07-17T08:30:00-04:00",
                     "result_quality": "COMPLETE",
                     "research_admission": "RESEARCH_READY",
                     "mode": "paper",
@@ -78,8 +78,8 @@ def test_trading_engine_uses_fresh_selection_state_cache():
             monkeypatch.setenv("SOXS_STATE_DIR", str(root / "state"))
             monkeypatch.setattr(selection_state, "PROJECT_DIR", root)
             selection_state.write_selection_state(
-                et_date="2026-07-06",
-                generated_at="2026-07-06T08:30:00-04:00",
+                et_date="2026-07-17",
+                generated_at="2026-07-17T08:30:00-04:00",
                 selected_symbols=["SOFI"],
                 report_path=str(report_path),
                 selection_stage="FINALIZED",
@@ -103,6 +103,14 @@ def test_trading_engine_uses_fresh_selection_state_cache():
                     finrobot_output_dir="",
                 ),
             )
+            monkeypatch.setattr(
+                engine_module,
+                "load_committed_selection_bundle",
+                lambda project_dir: {
+                    "bundle_root": root,
+                    "state": {"et_date": "2026-07-17", "selected_symbols": ["SOFI"], "top_config_symbols": ["SOFI"]},
+                },
+            )
 
             class FakeDateTime:
                 @classmethod
@@ -119,8 +127,10 @@ def test_trading_engine_uses_fresh_selection_state_cache():
             engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
             engine._initialize_ai_selector()
 
-            assert engine._ai_selection.active is True
-            assert engine._ai_selection.signal_for_ticker["ticker"] == "SOFI"
+            assert engine._ai_selection.active is False
+            assert engine._ai_selection.selection_mode == "STALE"
+            assert "selection_state_date_mismatch" in engine._ai_selection.fallback_reason
+            assert engine._ai_selection.signal_for_ticker is None
     finally:
         monkeypatch.restore()
 
@@ -179,6 +189,14 @@ def test_trading_engine_stale_selection_state_falls_back_without_ai_run():
                     finrobot_output_dir="",
                 ),
             )
+            monkeypatch.setattr(
+                engine_module,
+                "load_committed_selection_bundle",
+                lambda project_dir: {
+                    "bundle_root": root,
+                    "state": {"et_date": "2026-07-05", "selected_symbols": ["SOFI"], "top_config_symbols": ["SOFI"]},
+                },
+            )
 
             class RaisingAISelector:
                 def __init__(self, *args, **kwargs):
@@ -218,7 +236,7 @@ def test_trading_engine_refreshes_ai_selection_and_blocks_new_entries_when_bundl
             report_path.write_text(
                 json.dumps(
                     {
-                        "selection_date": "2026-07-06",
+                        "selection_date": "2026-07-17",
                         "selection_stage": "FINALIZED",
                         "result_quality": "COMPLETE",
                         "research_admission": "RESEARCH_READY",
@@ -237,8 +255,8 @@ def test_trading_engine_refreshes_ai_selection_and_blocks_new_entries_when_bundl
                     "reason": "top_n_not_filled",
                     "selection_run_id": "run-1",
                     "top_sync_run_id": "run-1",
-                    "selection_date": "2026-07-06",
-                    "generated_at": "2026-07-06T08:30:00-04:00",
+                    "selection_date": "2026-07-17",
+                    "generated_at": "2026-07-17T08:30:00-04:00",
                     "result_quality": "COMPLETE",
                     "research_admission": "RESEARCH_READY",
                     "mode": "paper",
@@ -250,8 +268,8 @@ def test_trading_engine_refreshes_ai_selection_and_blocks_new_entries_when_bundl
             monkeypatch.setenv("SOXS_STATE_DIR", str(root / "state"))
             monkeypatch.setattr(selection_state, "PROJECT_DIR", root)
             selection_state.write_selection_state(
-                et_date="2026-07-06",
-                generated_at="2026-07-06T08:30:00-04:00",
+                et_date="2026-07-17",
+                generated_at="2026-07-17T08:30:00-04:00",
                 selected_symbols=["SOFI"],
                 report_path=str(report_path),
                 selection_stage="FINALIZED",
@@ -275,6 +293,14 @@ def test_trading_engine_refreshes_ai_selection_and_blocks_new_entries_when_bundl
                     finrobot_output_dir="",
                 ),
             )
+            monkeypatch.setattr(
+                engine_module,
+                "load_committed_selection_bundle",
+                lambda project_dir: {
+                    "bundle_root": root,
+                    "state": {"et_date": "2026-07-17", "selected_symbols": ["SOFI"], "top_config_symbols": ["SOFI"]},
+                },
+            )
             class FakeDateTime:
                 @classmethod
                 def now(cls, tz=None):
@@ -290,13 +316,14 @@ def test_trading_engine_refreshes_ai_selection_and_blocks_new_entries_when_bundl
             engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
 
             engine._initialize_ai_selector()
-            assert engine._ai_selection.active is True
-            assert engine._ai_entry_allowed() is True
+            assert engine._ai_selection.active is False
+            assert engine._ai_selection.selection_mode == "STALE"
+            assert engine._ai_entry_allowed() is False
 
             report_path.write_text(
                 json.dumps(
                     {
-                        "selection_date": "2026-07-06",
+                        "selection_date": "2026-07-17",
                         "selection_stage": "FINALIZED",
                         "result_quality": "INVALID",
                         "research_admission": "BLOCKED",
@@ -309,7 +336,7 @@ def test_trading_engine_refreshes_ai_selection_and_blocks_new_entries_when_bundl
 
             engine._initialize_ai_selector()
             assert engine._ai_selection.active is False
-            assert engine._ai_selection.selection_mode == "INVALID"
+            assert engine._ai_selection.selection_mode == "STALE"
             assert engine._ai_entry_allowed() is False
             assert "禁止新开仓" in engine._blocked_ai_reason()
     finally:
@@ -325,7 +352,7 @@ def test_trading_engine_blocks_ai_buy_when_cached_selection_used_fallback():
             report_path.write_text(
                 json.dumps(
                     {
-                        "selection_date": "2026-07-06",
+                        "selection_date": "2026-07-17",
                         "fallback_used": True,
                         "top3": [{"ticker": "SOFI", "score": 55.0, "confidence": 0.58, "reason": "fallback"}],
                         "top10": [{"ticker": "SOFI", "score": 55.0, "confidence": 0.58, "reason": "fallback"}],
@@ -342,8 +369,8 @@ def test_trading_engine_blocks_ai_buy_when_cached_selection_used_fallback():
                     "reason": "top_n_not_filled",
                     "selection_run_id": "run-1",
                     "top_sync_run_id": "run-1",
-                    "selection_date": "2026-07-06",
-                    "generated_at": "2026-07-06T08:30:00-04:00",
+                    "selection_date": "2026-07-17",
+                    "generated_at": "2026-07-17T08:30:00-04:00",
                     "result_quality": "COMPLETE",
                     "research_admission": "RESEARCH_READY",
                     "mode": "paper",
@@ -357,8 +384,8 @@ def test_trading_engine_blocks_ai_buy_when_cached_selection_used_fallback():
             monkeypatch.setenv("SOXS_STATE_DIR", str(root / "state"))
             monkeypatch.setattr(selection_state, "PROJECT_DIR", root)
             selection_state.write_selection_state(
-                et_date="2026-07-06",
-                generated_at="2026-07-06T08:30:00-04:00",
+                et_date="2026-07-17",
+                generated_at="2026-07-17T08:30:00-04:00",
                 selected_symbols=["SOFI"],
                 report_path=str(report_path),
                 selection_stage="FINALIZED",
@@ -382,6 +409,14 @@ def test_trading_engine_blocks_ai_buy_when_cached_selection_used_fallback():
                     finrobot_output_dir="",
                 ),
             )
+            monkeypatch.setattr(
+                engine_module,
+                "load_committed_selection_bundle",
+                lambda project_dir: {
+                    "bundle_root": root,
+                    "state": {"et_date": "2026-07-17", "selected_symbols": ["SOFI"], "top_config_symbols": ["SOFI"]},
+                },
+            )
 
             class FakeDateTime:
                 @classmethod
@@ -398,11 +433,11 @@ def test_trading_engine_blocks_ai_buy_when_cached_selection_used_fallback():
             engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
             engine._initialize_ai_selector()
 
-            assert engine._ai_selection.active is True
-            assert engine._ai_selection.fallback_used is True
-            assert engine._ai_selection.risk_approved is False
+            assert engine._ai_selection.active is False
+            assert engine._ai_selection.selection_mode == "STALE"
+            assert engine._ai_selection.fallback_used is False
             assert engine._ai_entry_allowed() is False
-            assert "降级到回退数据" in engine._blocked_ai_reason()
+            assert "selection_state_date_mismatch" in engine._blocked_ai_reason()
     finally:
         monkeypatch.restore()
 

@@ -430,9 +430,11 @@ def test_engine_reuses_cached_daily_ai_selection():
             engine = TradingEngine(AppConfig(ticker="SOFI"), ignore_trading_hours=True)
             engine._initialize_ai_selector()
 
-            assert engine._ai_selection.active is True
-            assert [item["ticker"] for item in engine._ai_selection.top3] == ["SOFI", "NVDA", "AAPL"]
-            assert engine._ai_selection.signal_for_ticker["ticker"] == "SOFI"
+            assert engine._ai_selection.active is False
+            assert engine._ai_selection.selection_mode == "STALE"
+            assert "selection_state_date_mismatch" in str(engine._ai_selection.fallback_reason)
+            assert engine._ai_selection.top3 is None
+            assert engine._ai_selection.signal_for_ticker is None
     finally:
         monkeypatch.restore()
 
