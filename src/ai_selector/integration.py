@@ -83,14 +83,26 @@ class AISelector:
                 logger.warning("FMP disabled: missing FMP_API_KEY or SOXS_FMP_ENABLED=0")
             self.last_provider_audit = {}
             self.last_provider_outputs = {}
-            ta_result = self._safe_analyze(self.tradingagents_provider, analyzed_universe, "tradingagents")
-            fr_result = self._safe_analyze(self.finrobot_provider, analyzed_universe, "finrobot")
+            preliminary_ranked = self._build_preliminary_ranked_candidates(analyzed_universe)
+            provider_refine_limit = self._resolve_provider_refine_candidate_limit(len(preliminary_ranked))
+            provider_refine_candidates = [
+                str(item.get("ticker") or "").strip().upper()
+                for item in preliminary_ranked
+                if str(item.get("ticker") or "").strip() and bool(item.get("scoring_eligible", True))
+            ][:provider_refine_limit]
+            self.last_run_metadata = {
+                "provider_refine_candidate_limit": provider_refine_limit,
+                "provider_refine_candidates": list(provider_refine_candidates),
+            }
+            ta_result = self._safe_analyze(self.tradingagents_provider, provider_refine_candidates, "tradingagents")
+            fr_result = self._safe_analyze(self.finrobot_provider, provider_refine_candidates, "finrobot")
             ob_result = (
-                self._safe_analyze(self.openbb_provider, analyzed_universe, "openbb")
+                self._safe_analyze(self.openbb_provider, provider_refine_candidates, "openbb")
                 if self.config.openbb_enabled
                 else {}
             )
-            ranked = combine_scores(ta_result, fr_result, ob_result)
+            refined_ranked = combine_scores(ta_result, fr_result, ob_result)
+            ranked = self._merge_preliminary_and_refined_candidates(preliminary_ranked, refined_ranked)
             provider_fallback_used = any(
                 bool(item.get("fallback"))
                 for item in [*ta_result.values(), *fr_result.values(), *ob_result.values()]
@@ -133,6 +145,10 @@ class AISelector:
             "provider_fallback_used": provider_fallback_used,
             "fallback_used": provider_fallback_used,
             "provider_audit": dict(self.last_provider_audit),
+            "provider_refine_candidate_limit": int(
+                self.last_run_metadata.get("provider_refine_candidate_limit") or 0
+            ),
+            "provider_refine_candidates": list(self.last_run_metadata.get("provider_refine_candidates") or []),
             "range_score_enabled": True,
             "entry_proximity_enabled": bool(getattr(self.config, "entry_proximity_enabled", True)),
             "entry_proximity_weight": float(getattr(self.config, "entry_proximity_weight", 0.0) or 0.0),
@@ -144,10 +160,71 @@ class AISelector:
             "composition_filter_warnings": list(self.last_run_metadata.get("composition_filter_warnings") or []),
             "analysis_universe": analyzed_universe,
             "analysis_universe_limit": analysis_limit,
+            "provider_refine_candidate_limit": int(self.last_run_metadata.get("provider_refine_candidate_limit") or 0),
+            "provider_refine_candidates": list(self.last_run_metadata.get("provider_refine_candidates") or []),
         }
         self._write_report(self.last_top10)
         top_n = min(max(1, self.config.top_n), len(self.last_top10))
         return self.last_top10[:top_n]
+
+    def _resolve_provider_refine_candidate_limit(self, universe_size: int) -> int:
+        configured = int(getattr(self.config, "provider_refine_candidate_limit", 0) or 0)
+        if configured <= 0:
+            configured = max(int(getattr(self.config, "top_n", 3) or 3) * 2, 5)
+        return max(1, min(configured, max(1, int(universe_size or 1))))
+
+    def _build_preliminary_ranked_candidates(self, tickers: list[str]) -> list[dict]:
+        preliminary: list[dict] = []
+        for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
+            market_data = self._market_data_snapshot(ticker)
+            candidate = {
+                "ticker": ticker,
+                "source": "market_data_precheck",
+                "reason": "local pre-screen before research providers",
+                "confidence": 0.5,
+                "fallback": False,
+                "market_data": dict(market_data or {}),
+                "trade_market_data": dict(market_data or {}),
+            }
+            sufficiency = evaluate_data_sufficiency(
+                candidate,
+                strict_quote=False,
+                strict_history=False,
+                strict_benchmark=True,
+            )
+            candidate["data_mode"] = sufficiency.data_mode
+            candidate["data_freshness"] = sufficiency.data_freshness
+            candidate["data_status"] = sufficiency.data_status
+            candidate["scoring_eligible"] = sufficiency.scoring_eligible
+            candidate["scoring_block_reason"] = sufficiency.scoring_block_reason
+            candidate["missing_fields"] = list(sufficiency.missing_fields)
+            candidate["data_sufficiency"] = sufficiency.to_dict()
+            candidate = score_candidate(candidate)
+            candidate.setdefault("base_score", round(float(candidate.get("score", candidate.get("final_score", 50.0))), 2))
+            preliminary.append(candidate)
+        preliminary.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
+        return preliminary
+
+    def _merge_preliminary_and_refined_candidates(
+        self,
+        preliminary_ranked: list[dict],
+        refined_ranked: list[dict],
+    ) -> list[dict]:
+        merged: dict[str, dict[str, object]] = {
+            str(item.get("ticker") or "").strip().upper(): dict(item)
+            for item in preliminary_ranked
+            if str(item.get("ticker") or "").strip()
+        }
+        for item in refined_ranked or []:
+            ticker = str(item.get("ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            base = dict(merged.get(ticker) or {})
+            base.update(item)
+            merged[ticker] = base
+        ranked = list(merged.values())
+        ranked.sort(key=lambda item: (-float(item.get("final_score") or item.get("score") or 0.0), item.get("ticker") or ""))
+        return ranked
 
     def _build_provider_audit(
         self,
@@ -219,10 +296,14 @@ class AISelector:
                     continue
                 contributor_fields.add(str(key))
         timeout_hits = 0
+        skipped_budget_hits = 0
+        unavailable_hits = 0
+        malformed_hits = 0
         fallback_hits = 0
         mock_hits = 0
         success_hits = 0
         for row in rows:
+            status = str(row.get("status") or "").strip().upper()
             text = " ".join(
                 str(row.get(key) or "")
                 for key in ("reason", "source", "error_message", "error_code")
@@ -241,13 +322,19 @@ class AISelector:
                     "confidence",
                 )
             )
-            if is_timeout:
+            if status == "TIMEOUT" or (is_timeout and status not in {"SKIPPED_BUDGET", "UNAVAILABLE"}):
                 timeout_hits += 1
+            elif status == "SKIPPED_BUDGET":
+                skipped_budget_hits += 1
+            elif status == "UNAVAILABLE":
+                unavailable_hits += 1
+            elif status == "MALFORMED_RESPONSE":
+                malformed_hits += 1
             if is_fallback:
                 fallback_hits += 1
             if is_mock:
                 mock_hits += 1
-            if has_scores and not is_fallback:
+            if status == "COMPLETE" or (has_scores and not is_fallback and status not in {"TIMEOUT", "SKIPPED_BUDGET", "UNAVAILABLE", "MALFORMED_RESPONSE"}):
                 success_hits += 1
         if contributor_fields & critical_market_data_fields:
             fallback_scope = "CRITICAL_MARKET_DATA"
@@ -270,6 +357,9 @@ class AISelector:
             "success": success_hits,
             "failure": max(0, len(tickers) - success_hits),
             "timed_out": timeout_hits,
+            "budget_exhausted": skipped_budget_hits,
+            "unavailable": unavailable_hits,
+            "malformed_response": malformed_hits,
             "empty_response": int(not rows),
             "fallback_used": fallback_hits,
             "mock_used": mock_hits,

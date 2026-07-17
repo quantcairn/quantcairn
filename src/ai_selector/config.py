@@ -16,6 +16,7 @@ ENTRY_PROXIMITY_ENABLED = True
 ENTRY_PROXIMITY_WEIGHT = 0.0
 TOP_N = 3
 ANALYSIS_UNIVERSE_LIMIT = 9
+PROVIDER_REFINE_CANDIDATE_LIMIT = 0
 UNIVERSE = [
     "SOXS",
     "LABD",
@@ -49,6 +50,7 @@ class AISelectorRuntimeConfig:
     finrobot_config_file: str
     finrobot_output_dir: str
     analysis_universe_limit: int = ANALYSIS_UNIVERSE_LIMIT
+    provider_refine_candidate_limit: int = PROVIDER_REFINE_CANDIDATE_LIMIT
     openbb_enabled: bool = OPENBB_ENABLED
     fmp_enabled: bool = FMP_ENABLED
     fmp_api_key: str = FMP_API_KEY
@@ -98,6 +100,10 @@ def load_runtime_config() -> AISelectorRuntimeConfig:
         analysis_universe_limit=_int_env(
             "SOXS_AI_SELECTOR_ANALYSIS_UNIVERSE_LIMIT",
             ANALYSIS_UNIVERSE_LIMIT,
+        ),
+        provider_refine_candidate_limit=_int_env(
+            "SOXS_AI_SELECTOR_PROVIDER_REFINE_CANDIDATE_LIMIT",
+            PROVIDER_REFINE_CANDIDATE_LIMIT,
         ),
         universe=_list_env("SOXS_AI_SELECTOR_UNIVERSE", UNIVERSE),
         top10_path=LATEST_TOP10_PATH,

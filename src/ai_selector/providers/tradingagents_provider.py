@@ -41,28 +41,64 @@ class TradingAgentsProvider:
         remaining_fallback_reason: str | None = None
         for ticker in normalized_tickers:
             if remaining_fallback_reason is not None:
-                results[ticker] = self._mock_result(ticker, reason=remaining_fallback_reason)
+                results[ticker] = self._mock_result(
+                    ticker,
+                    reason=remaining_fallback_reason,
+                    status="SKIPPED_BUDGET",
+                    timed_out=False,
+                    budget_exhausted=True,
+                )
                 continue
             if (time.monotonic() - started_at) >= self._total_budget_seconds():
-                results[ticker] = self._mock_result(ticker, reason="tradingagents_budget_exhausted")
+                results[ticker] = self._mock_result(
+                    ticker,
+                    reason="tradingagents_budget_exhausted",
+                    status="SKIPPED_BUDGET",
+                    timed_out=False,
+                    budget_exhausted=True,
+                )
                 continue
             try:
                 if self._is_available():
                     results[ticker] = self._analyze_with_tradingagents(ticker)
                 else:
-                    results[ticker] = self._mock_result(ticker, reason="tradingagents_not_installed")
+                    results[ticker] = self._mock_result(
+                        ticker,
+                        reason="tradingagents_not_installed",
+                        status="UNAVAILABLE",
+                        timed_out=False,
+                        budget_exhausted=False,
+                    )
             except subprocess.TimeoutExpired as exc:
                 logger.warning("TradingAgents analyze timeout for %s: %s", ticker, exc)
-                results[ticker] = self._mock_result(ticker, reason="tradingagents_timeout")
+                results[ticker] = self._mock_result(
+                    ticker,
+                    reason="tradingagents_timeout",
+                    status="TIMEOUT",
+                    timed_out=True,
+                    budget_exhausted=False,
+                )
                 remaining_fallback_reason = "tradingagents_timeout_budget_exhausted"
             except Exception as exc:
                 logger.warning("TradingAgents analyze fallback for %s: %s", ticker, exc)
                 message = str(exc).strip() or "tradingagents_error"
                 if message == "tradingagents_missing_openai_api_key":
-                    results[ticker] = self._mock_result(ticker, reason=message)
+                    results[ticker] = self._mock_result(
+                        ticker,
+                        reason=message,
+                        status="UNAVAILABLE",
+                        timed_out=False,
+                        budget_exhausted=False,
+                    )
                     remaining_fallback_reason = "tradingagents_missing_openai_api_key"
                 else:
-                    results[ticker] = self._mock_result(ticker, reason="tradingagents_error")
+                    results[ticker] = self._mock_result(
+                        ticker,
+                        reason="tradingagents_error",
+                        status="MALFORMED_RESPONSE",
+                        timed_out=False,
+                        budget_exhausted=False,
+                    )
         return results
 
     def _is_available(self) -> bool:
@@ -184,6 +220,10 @@ print(json.dumps(decision, ensure_ascii=False, default=str))
             "reason": reason,
             "source": "tradingagents",
             "fallback": False,
+            "mock_used": False,
+            "timed_out": False,
+            "budget_exhausted": False,
+            "status": "COMPLETE",
             "raw": payload,
         }
 
@@ -238,7 +278,15 @@ print(json.dumps(decision, ensure_ascii=False, default=str))
                 score -= 5.0
         return _clamp_score(score, 58.0)
 
-    def _mock_result(self, ticker: str, *, reason: str) -> dict[str, Any]:
+    def _mock_result(
+        self,
+        ticker: str,
+        *,
+        reason: str,
+        status: str = "SKIPPED_BUDGET",
+        timed_out: bool = False,
+        budget_exhausted: bool = False,
+    ) -> dict[str, Any]:
         return {
             "ticker": ticker,
             "technical_score": 50.0,
@@ -249,4 +297,8 @@ print(json.dumps(decision, ensure_ascii=False, default=str))
             "reason": f"Fallback TradingAgents mock for {ticker}: {reason}",
             "source": "tradingagents_mock",
             "fallback": True,
+            "mock_used": True,
+            "timed_out": bool(timed_out),
+            "budget_exhausted": bool(budget_exhausted),
+            "status": status,
         }

@@ -38,19 +38,43 @@ class FinRobotProvider:
         started_at = time.monotonic()
         for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
             if (time.monotonic() - started_at) >= self._total_budget_seconds():
-                results[ticker] = self._mock_result(ticker, reason="finrobot_budget_exhausted")
+                results[ticker] = self._mock_result(
+                    ticker,
+                    reason="finrobot_budget_exhausted",
+                    status="SKIPPED_BUDGET",
+                    timed_out=False,
+                    budget_exhausted=True,
+                )
                 continue
             try:
                 if self._is_available():
                     results[ticker] = self._analyze_with_compatible_interface(ticker)
                 else:
-                    results[ticker] = self._mock_result(ticker, reason="finrobot_not_installed")
+                    results[ticker] = self._mock_result(
+                        ticker,
+                        reason="finrobot_not_installed",
+                        status="UNAVAILABLE",
+                        timed_out=False,
+                        budget_exhausted=False,
+                    )
             except subprocess.TimeoutExpired as exc:
                 logger.warning("FinRobot analyze timeout for %s: %s", ticker, exc)
-                results[ticker] = self._mock_result(ticker, reason="finrobot_timeout")
+                results[ticker] = self._mock_result(
+                    ticker,
+                    reason="finrobot_timeout",
+                    status="TIMEOUT",
+                    timed_out=True,
+                    budget_exhausted=False,
+                )
             except Exception as exc:
                 logger.warning("FinRobot analyze fallback for %s: %s", ticker, exc)
-                results[ticker] = self._mock_result(ticker, reason="finrobot_error")
+                results[ticker] = self._mock_result(
+                    ticker,
+                    reason="finrobot_error",
+                    status="MALFORMED_RESPONSE",
+                    timed_out=False,
+                    budget_exhausted=False,
+                )
         return results
 
     def _is_available(self) -> bool:
@@ -215,6 +239,10 @@ class FinRobotProvider:
             "reason": reason,
             "source": "finrobot",
             "fallback": False,
+            "mock_used": False,
+            "timed_out": False,
+            "budget_exhausted": False,
+            "status": "COMPLETE",
             "raw": payload,
         }
 
@@ -336,7 +364,15 @@ class FinRobotProvider:
                 score -= 5.0
         return _clamp_score(score, 59.0)
 
-    def _mock_result(self, ticker: str, *, reason: str) -> dict[str, Any]:
+    def _mock_result(
+        self,
+        ticker: str,
+        *,
+        reason: str,
+        status: str = "SKIPPED_BUDGET",
+        timed_out: bool = False,
+        budget_exhausted: bool = False,
+    ) -> dict[str, Any]:
         return {
             "ticker": ticker,
             "fundamental_score": 50.0,
@@ -347,4 +383,8 @@ class FinRobotProvider:
             "reason": f"Fallback FinRobot mock for {ticker}: {reason}",
             "source": "finrobot_mock",
             "fallback": True,
+            "mock_used": True,
+            "timed_out": bool(timed_out),
+            "budget_exhausted": bool(budget_exhausted),
+            "status": status,
         }

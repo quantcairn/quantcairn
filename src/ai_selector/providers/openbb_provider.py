@@ -41,16 +41,34 @@ class OpenBBProvider:
         started_at = time.monotonic()
         for ticker in [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]:
             if (time.monotonic() - started_at) >= self._total_budget_seconds():
-                results[ticker] = self._fallback_result(ticker, "openbb_budget_exhausted")
+                results[ticker] = self._fallback_result(
+                    ticker,
+                    "openbb_budget_exhausted",
+                    status="SKIPPED_BUDGET",
+                    timed_out=False,
+                    budget_exhausted=True,
+                )
                 continue
             try:
                 if not self._is_available():
-                    results[ticker] = self._fallback_result(ticker, "openbb_not_installed")
+                    results[ticker] = self._fallback_result(
+                        ticker,
+                        "openbb_not_installed",
+                        status="UNAVAILABLE",
+                        timed_out=False,
+                        budget_exhausted=False,
+                    )
                     continue
                 results[ticker] = self._analyze_ticker(ticker)
             except Exception as exc:
                 logger.warning("OpenBB analyze fallback for %s: %s", ticker, exc)
-                results[ticker] = self._fallback_result(ticker, "openbb_error")
+                results[ticker] = self._fallback_result(
+                    ticker,
+                    "openbb_error",
+                    status="MALFORMED_RESPONSE",
+                    timed_out=False,
+                    budget_exhausted=False,
+                )
         return results
 
     def _is_available(self) -> bool:
@@ -109,6 +127,10 @@ class OpenBBProvider:
             "reason": reason,
             "source": "openbb",
             "fallback": False,
+            "mock_used": False,
+            "timed_out": False,
+            "budget_exhausted": False,
+            "status": "COMPLETE",
             "raw": {
                 "fundamentals": fundamentals,
                 "income_statement": income_statement,
@@ -118,7 +140,15 @@ class OpenBBProvider:
             },
         }
 
-    def _fallback_result(self, ticker: str, reason: str) -> dict[str, Any]:
+    def _fallback_result(
+        self,
+        ticker: str,
+        reason: str,
+        *,
+        status: str = "SKIPPED_BUDGET",
+        timed_out: bool = False,
+        budget_exhausted: bool = False,
+    ) -> dict[str, Any]:
         return {
             "ticker": ticker,
             "fundamental_score": 50.0,
@@ -132,6 +162,10 @@ class OpenBBProvider:
             "reason": f"Fallback OpenBB result for {ticker}: {reason}",
             "source": "openbb_mock",
             "fallback": True,
+            "mock_used": True,
+            "timed_out": bool(timed_out),
+            "budget_exhausted": bool(budget_exhausted),
+            "status": status,
         }
 
     def _flatten(self, payload: Any, prefix: str = "") -> dict[str, float]:

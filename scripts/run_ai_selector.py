@@ -1012,6 +1012,9 @@ def _build_provider_audit_summary(provider_audit: dict[str, dict], provider_outp
         "provider_successes": 0,
         "provider_failures": 0,
         "provider_timeouts": 0,
+        "provider_budget_exhausted": 0,
+        "provider_unavailable": 0,
+        "provider_malformed_responses": 0,
         "provider_empty_responses": 0,
         "provider_fallbacks": 0,
         "provider_mocks": 0,
@@ -1027,6 +1030,9 @@ def _build_provider_audit_summary(provider_audit: dict[str, dict], provider_outp
         provider_record["success"] = int(provider_record.get("success", 0) or 0)
         provider_record["failure"] = int(provider_record.get("failure", max(0, provider_record["attempted"] - provider_record["success"])) or 0)
         provider_record["timed_out"] = int(provider_record.get("timed_out", 0) or 0)
+        provider_record["budget_exhausted"] = int(provider_record.get("budget_exhausted", 0) or 0)
+        provider_record["unavailable"] = int(provider_record.get("unavailable", 0) or 0)
+        provider_record["malformed_response"] = int(provider_record.get("malformed_response", 0) or 0)
         provider_record["empty_response"] = int(provider_record.get("empty_response", 0) or 0)
         provider_record["fallback_used"] = int(provider_record.get("fallback_used", 0) or 0)
         provider_record["mock_used"] = int(provider_record.get("mock_used", 0) or 0)
@@ -1035,6 +1041,9 @@ def _build_provider_audit_summary(provider_audit: dict[str, dict], provider_outp
         summary["provider_successes"] += provider_record["success"]
         summary["provider_failures"] += provider_record["failure"]
         summary["provider_timeouts"] += provider_record["timed_out"]
+        summary["provider_budget_exhausted"] += provider_record["budget_exhausted"]
+        summary["provider_unavailable"] += provider_record["unavailable"]
+        summary["provider_malformed_responses"] += provider_record["malformed_response"]
         summary["provider_empty_responses"] += provider_record["empty_response"]
         summary["provider_fallbacks"] += provider_record["fallback_used"]
         summary["provider_mocks"] += provider_record["mock_used"]
@@ -1085,11 +1094,15 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
     provider_audit_summary = _build_provider_audit_summary(provider_audit or {}, provider_outputs)
     fallback_used = bool(summary.get("fallback_used", False)) or bool(summary.get("provider_fallback_used", False))
     mock_used = bool(provider_audit_summary.get("provider_mocks", 0))
-    timed_out = bool((summary.get("quality_filter_report") or {}).get("timed_out", False)) or bool(
-        provider_audit_summary.get("provider_timeouts", 0)
-    ) or bool(provider_audit_summary.get("provider_empty_responses", 0))
+    provider_timeout_count = int(provider_audit_summary.get("provider_timeouts", 0) or 0)
+    provider_budget_exhausted = int(provider_audit_summary.get("provider_budget_exhausted", 0) or 0)
+    provider_unavailable = int(provider_audit_summary.get("provider_unavailable", 0) or 0)
+    provider_malformed = int(provider_audit_summary.get("provider_malformed_responses", 0) or 0)
+    provider_empty = int(provider_audit_summary.get("provider_empty_responses", 0) or 0)
+    timed_out = bool((summary.get("quality_filter_report") or {}).get("timed_out", False)) or bool(provider_timeout_count)
     invalid_candidates = []
     degraded_reasons: set[str] = set()
+    research_only_reasons: set[str] = set()
     for item in top_items:
         candidate = dict(item or {})
         fallback_scope, fallback_severity, affected_fields = _candidate_fallback_metadata(candidate, provider_outputs)
@@ -1134,11 +1147,15 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
         candidate["critical_data_sources"] = list(dict.fromkeys(list(data_quality.get("critical_data_sources") or [])))
         candidate["noncritical_data_sources"] = list(dict.fromkeys(list(data_quality.get("noncritical_data_sources") or [])))
         candidate["provider_chain"] = list(dict.fromkeys(list(data_quality.get("provider_chain") or [])))
-        candidate["degraded"] = bool(candidate["candidate_fallback"] or candidate["mock_used"] or dq_status in {"STALE", "INVALID"} or dq_warnings)
-        if candidate["candidate_fallback"]:
-            degraded_reasons.add("fallback_used")
+        critical_fallback = fallback_scope == "CRITICAL_MARKET_DATA" or fallback_severity == "CRITICAL"
+        candidate["research_degraded"] = bool(candidate["candidate_fallback"] or candidate["mock_used"] or dq_warnings or candidate.get("data_status") == "STALE")
+        candidate["degraded"] = bool(critical_fallback or dq_status in {"STALE", "INVALID"})
+        if critical_fallback:
+            degraded_reasons.add("critical_market_data_fallback")
+        elif candidate["candidate_fallback"]:
+            research_only_reasons.add("fallback_used")
         if candidate["mock_used"]:
-            degraded_reasons.add("mock_used")
+            research_only_reasons.add("mock_used")
         if candidate.get("data_status") == "STALE":
             degraded_reasons.add("stale_data")
         if candidate.get("data_status") == "INVALID":
@@ -1148,15 +1165,25 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
             invalid_candidates.append(ticker)
             degraded_reasons.add("critical_market_data_blocked")
         if dq_warnings:
-            degraded_reasons.update(dq_warnings)
+            if any(str(warning).startswith(("critical_", "invalid_", "stale_")) for warning in dq_warnings):
+                degraded_reasons.update(dq_warnings)
+            else:
+                research_only_reasons.update(dq_warnings)
         candidate["degradation_reasons"] = sorted(
             set(
                 [
-                    *(["fallback_used"] if candidate["candidate_fallback"] else []),
-                    *(["mock_used"] if candidate["mock_used"] else []),
+                    *(["critical_market_data_fallback"] if critical_fallback else []),
                     *(["stale_data"] if candidate.get("data_status") == "STALE" else []),
                     *(["invalid_data"] if candidate.get("data_status") == "INVALID" else []),
-                    *dq_warnings,
+                ]
+            )
+        )
+        candidate["research_only_reasons"] = sorted(
+            set(
+                [
+                    *(["fallback_used"] if candidate["candidate_fallback"] and not critical_fallback else []),
+                    *(["mock_used"] if candidate["mock_used"] else []),
+                    *([str(warning) for warning in dq_warnings if str(warning)]),
                 ]
             )
         )
@@ -1164,10 +1191,10 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
     result_quality = "COMPLETE"
     if invalid_candidates:
         result_quality = "INVALID"
-    elif fallback_used or mock_used or timed_out or missing_count > 0 or bool(degraded_reasons):
+    elif missing_count > 0 or bool(degraded_reasons):
         result_quality = "DEGRADED"
     research_admission = "RESEARCH_READY"
-    if result_quality == "DEGRADED":
+    if result_quality == "DEGRADED" or fallback_used or mock_used or timed_out or provider_budget_exhausted or provider_unavailable or provider_malformed or provider_empty or bool(research_only_reasons):
         research_admission = "RESEARCH_ONLY"
     elif result_quality == "INVALID":
         research_admission = "BLOCKED"
@@ -1192,7 +1219,12 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
         "mock_used": mock_used,
         "degraded": result_quality != "COMPLETE",
         "degradation_reasons": sorted(degraded_reasons),
+        "research_only_reasons": sorted(research_only_reasons),
         "invalid_candidates": invalid_candidates,
+        "provider_timeouts": provider_timeout_count,
+        "provider_budget_exhausted": provider_budget_exhausted,
+        "provider_unavailable": provider_unavailable,
+        "provider_malformed_responses": provider_malformed,
     }
 
 
@@ -1762,6 +1794,9 @@ def main(mode: str | None = None):
             or ""
         ).strip().upper() == "VALID")),
         "provider_empty_responses": int(provider_audit_summary.get("provider_empty_responses", 0) or 0),
+        "provider_budget_exhausted": int(provider_audit_summary.get("provider_budget_exhausted", 0) or 0),
+        "provider_unavailable": int(provider_audit_summary.get("provider_unavailable", 0) or 0),
+        "provider_malformed_responses": int(provider_audit_summary.get("provider_malformed_responses", 0) or 0),
         "data_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_status") or "").strip().upper() == "COMPLETE")),
         "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
         "ranked_candidates": int(len(report_top10 or [])),
@@ -1990,6 +2025,9 @@ def main(mode: str | None = None):
         "refined_selected": int(len(summary.get("refined_top3") or summary.get("refined_top5") or [])),
         "final_selected": int(len(summary.get("top3") or [])),
         "provider_timeouts": int(provider_audit_summary.get("provider_timeouts", 0) or 0),
+        "provider_budget_exhausted": int(provider_audit_summary.get("provider_budget_exhausted", 0) or 0),
+        "provider_unavailable": int(provider_audit_summary.get("provider_unavailable", 0) or 0),
+        "provider_malformed_responses": int(provider_audit_summary.get("provider_malformed_responses", 0) or 0),
         "provider_failures": int(provider_audit_summary.get("provider_failures", 0) or 0),
         "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
         "budget_exhausted": bool((summary.get("quality_filter_report") or {}).get("timed_out", False)),

@@ -92,6 +92,31 @@ class StubOpenBBProvider:
         return result
 
 
+class RecordingProvider:
+    def __init__(self, label: str):
+        self.label = label
+        self.calls: list[list[str]] = []
+
+    def analyze(self, tickers: list) -> dict:
+        normalized = [str(item or "").strip().upper() for item in tickers if str(item or "").strip()]
+        self.calls.append(normalized)
+        return {
+            ticker: {
+                "ticker": ticker,
+                "technical_score": 80.0,
+                "news_score": 80.0,
+                "sentiment_score": 80.0,
+                "risk_score": 80.0,
+                "confidence": 0.8,
+                "reason": f"{self.label}:{ticker}",
+                "source": self.label,
+                "fallback": False,
+                "status": "COMPLETE",
+            }
+            for ticker in normalized
+        }
+
+
 class SimpleMonkeyPatch:
     def __init__(self):
         self._originals = []
@@ -139,10 +164,10 @@ def test_ai_selector_returns_top3_and_writes_top10_report():
 
         signals = selector.get_signals()
 
-        assert [item["ticker"] for item in signals] == ["NVDA", "MSFT", "AAPL"]
+        assert {item["ticker"] for item in signals} == {"NVDA", "MSFT", "AAPL"}
         assert top10_path.exists()
         payload = json.loads(top10_path.read_text(encoding="utf-8"))
-        assert [item["ticker"] for item in payload["top10"][:3]] == ["NVDA", "MSFT", "AAPL"]
+        assert {item["ticker"] for item in payload["top10"][:3]} == {"NVDA", "MSFT", "AAPL"}
         assert len(payload["top3"]) == 3
 
 
@@ -169,14 +194,106 @@ def test_ai_selector_with_openbb_enabled_enhances_scores():
             openbb_provider=StubOpenBBProvider(),
         )
 
+        preliminary_rows = [
+            {
+                "ticker": ticker,
+                "score": 100.0 - index,
+                "final_score": 100.0 - index,
+                "candidate_score": 100.0 - index,
+                "ai_score": 100.0 - index,
+                "confidence": 0.9,
+                "reason": f"pre:{ticker}",
+                "source": "preliminary",
+                "market_data": {},
+                "trade_market_data": {},
+                "data_status": "COMPLETE",
+                "scoring_eligible": True,
+            }
+            for index, ticker in enumerate(["NVDA", "MSFT", "AAPL", "PLTR"], start=1)
+        ]
+        selector._build_preliminary_ranked_candidates = lambda tickers: [dict(row) for row in preliminary_rows]  # type: ignore[method-assign]
+        selector._apply_range_scores = lambda ranked: [dict(item) for item in ranked]  # type: ignore[method-assign]
+        selector._apply_trade_filter = lambda ranked: [dict(item) for item in ranked]  # type: ignore[method-assign]
+        selector._apply_composition_filter = lambda ranked: [dict(item) for item in ranked]  # type: ignore[method-assign]
+
         signals = selector.get_signals()
 
-        assert [item["ticker"] for item in signals] == ["NVDA", "MSFT", "AAPL"]
-        assert "openbb" in signals[0]["source"]
-        assert "ob:NVDA" in signals[0]["reason"]
+        assert {item["ticker"] for item in signals} == {"NVDA", "MSFT", "AAPL"}
+        assert selector.last_run_metadata["provider_refine_candidates"] == ["NVDA", "MSFT", "AAPL", "PLTR"]
+        assert selector.last_provider_audit["openbb"]["attempted"] == 4
         payload = json.loads(top10_path.read_text(encoding="utf-8"))
-        assert payload["top10"][0]["ticker"] == "NVDA"
+        assert {item["ticker"] for item in payload["top10"][:3]} == {"NVDA", "MSFT", "AAPL"}
         assert payload["top10"][0]["score"] >= payload["top10"][1]["score"]
+
+
+def test_ai_selector_limits_research_providers_to_pre_ranked_candidates():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        top10_path = Path(tmpdir) / "latest_top10.json"
+        tradingagents_provider = RecordingProvider("tradingagents")
+        finrobot_provider = RecordingProvider("finrobot")
+        openbb_provider = RecordingProvider("openbb")
+        selector = AISelector(
+            config=AISelectorRuntimeConfig(
+                enabled=True,
+                top_n=3,
+                universe=["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH", "III"],
+                top10_path=top10_path,
+                tradingagents_path="",
+                tradingagents_python="python3",
+                tradingagents_analysis_date=None,
+                finrobot_path="",
+                finrobot_python="python3",
+                finrobot_config_file="",
+                finrobot_output_dir="",
+            ),
+            tradingagents_provider=tradingagents_provider,
+            finrobot_provider=finrobot_provider,
+            openbb_provider=openbb_provider,
+        )
+
+        preliminary_rows = [
+            {
+                "ticker": ticker,
+                "score": 100.0 - index,
+                "final_score": 100.0 - index,
+                "candidate_score": 100.0 - index,
+                "ai_score": 100.0 - index,
+                "confidence": 0.9,
+                "reason": f"pre:{ticker}",
+                "source": "preliminary",
+                "market_data": {},
+                "trade_market_data": {},
+                "data_status": "COMPLETE",
+                "scoring_eligible": True,
+            }
+            for index, ticker in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH", "III"], start=1)
+        ]
+
+        original_build_preliminary = selector._build_preliminary_ranked_candidates
+        original_apply_range_scores = selector._apply_range_scores
+        original_apply_trade_filter = selector._apply_trade_filter
+        original_apply_composition_filter = selector._apply_composition_filter
+        original_write_report = selector._write_report
+        try:
+            selector._build_preliminary_ranked_candidates = lambda tickers: list(preliminary_rows)
+            selector._apply_range_scores = lambda rows: [dict(item) for item in rows]
+            selector._apply_trade_filter = lambda rows: [dict(item) for item in rows]
+            selector._apply_composition_filter = lambda rows: [dict(item) for item in rows]
+            selector._write_report = lambda ranked: None
+
+            signals = selector.get_signals()
+        finally:
+            selector._build_preliminary_ranked_candidates = original_build_preliminary
+            selector._apply_range_scores = original_apply_range_scores
+            selector._apply_trade_filter = original_apply_trade_filter
+            selector._apply_composition_filter = original_apply_composition_filter
+            selector._write_report = original_write_report
+
+        assert selector.last_run_metadata["provider_refine_candidate_limit"] == 6
+        assert tradingagents_provider.calls == [["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]]
+        assert finrobot_provider.calls == [["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]]
+        assert openbb_provider.calls == []
+        assert [item["ticker"] for item in signals] == ["AAA", "BBB", "CCC"]
 
 
 def test_ai_selector_disabled_does_not_change_engine_behavior():
