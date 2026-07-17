@@ -9,14 +9,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 import yaml
 
+from src.ai_selector.selection_bundle import load_committed_selection_bundle
 from src.ai_selector.selection_report import provider_audit_sections
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+US_EASTERN = ZoneInfo("America/New_York")
+ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 # Rate limiting for Telegram: max 1 msg/sec
 _telegram_last_send = 0.0
@@ -314,6 +318,109 @@ def _first_non_empty(*values: object, default: object = "") -> object:
     return default
 
 
+def _parse_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ASIA_SHANGHAI)
+    return dt
+
+
+def _format_datetime_in_timezone(value: object, tz: ZoneInfo, *, suffix: str) -> str:
+    dt = _parse_datetime(value)
+    if dt is None:
+        return "未知"
+    try:
+        return dt.astimezone(tz).strftime(f"%Y-%m-%d %H:%M {suffix}")
+    except Exception:
+        return "未知"
+
+
+def _current_notification_sent_at() -> datetime:
+    return datetime.now(tz=ASIA_SHANGHAI)
+
+
+_SHORTFALL_REASON_LABELS = {
+    "low_dollar_volume": "低成交额",
+    "price_out_of_range": "价格超出范围",
+    "quote_missing": "报价缺失",
+    "ohlcv_missing": "历史行情缺失",
+    "benchmark_invalid": "基准数据无效",
+    "freshness_invalid": "数据时效无效",
+    "history_insufficient": "历史数据不足",
+    "entry_quality_too_low": "入场质量不足",
+    "leveraged_etf_limit_exceeded": "杠杆ETF数量限制",
+    "composition_limit": "组合约束",
+    "top_n_not_filled": "正式候选不足",
+    "unknown": "其他原因",
+}
+
+
+def _selection_shortfall_reasons(report: dict, *, limit: int = 3) -> list[str]:
+    counts = report.get("rejection_reason_counts")
+    if not isinstance(counts, dict):
+        counts = dict((report.get("quality_filter_report") or {}).get("rejection_reason_counts") or {})
+    items: list[tuple[str, int]] = []
+    for raw_code, raw_count in counts.items():
+        code = str(raw_code or "").strip().lower()
+        if not code or code == "top_n_not_filled":
+            continue
+        try:
+            count = int(raw_count or 0)
+        except Exception:
+            continue
+        if count <= 0:
+            continue
+        items.append((code, count))
+    items.sort(key=lambda item: (-item[1], item[0]))
+    summary: list[str] = []
+    for code, count in items[:limit]:
+        label = _SHORTFALL_REASON_LABELS.get(code, code)
+        summary.append(f"{label}：{count}")
+    return summary
+
+
+def _resolve_manifest_first_selection_payload(
+    selection_report: dict,
+    top_configs: list | None,
+) -> tuple[dict, list[dict], str]:
+    report = dict(selection_report or {})
+    source = "missing"
+    committed = None
+    try:
+        committed = load_committed_selection_bundle(PROJECT_DIR)
+    except Exception:
+        committed = None
+
+    if isinstance(committed, dict):
+        committed_report = committed.get("report")
+        if isinstance(committed_report, dict):
+            report = dict(committed_report)
+            source = "selection_bundle" if report.get("selection_date") else "missing"
+
+    if source == "missing":
+        if report.get("selection_date"):
+            source = "selection_bundle"
+        elif report.get("date"):
+            source = "legacy_date"
+
+    raw_top_items = list(report.get("top3") or report.get("top5") or [])
+    if not raw_top_items:
+        raw_top_items = list(top_configs or [])
+    top_items = [_merge_top_item_with_report(dict(item or {}), report, rank) for rank, item in enumerate(raw_top_items, start=1)]
+    return report, top_items, source
+
+
 def build_provider_audit_sections(
     provider_audit: dict[str, dict] | None,
     provider_outputs: dict[str, dict] | None,
@@ -522,21 +629,23 @@ def _ticker_line(top_config: dict, rank: int) -> str:
 
 
 def _build_ai_selection_message(selection_report: dict, top_configs: list | None = None) -> tuple[str, str]:
-    report = dict(selection_report or {})
-    date_str = str(report.get("selection_date") or report.get("date") or datetime.now().date().isoformat())
+    report, top_items, selection_date_source = _resolve_manifest_first_selection_payload(selection_report, top_configs)
+    selection_date = str(report.get("selection_date") or "").strip()
+    legacy_date = str(report.get("date") or "").strip()
+    selection_date_display = selection_date or legacy_date or "未知"
+    notification_sent_at = _current_notification_sent_at()
+    generated_at_text = _format_datetime_in_timezone(report.get("generated_at"), US_EASTERN, suffix="ET")
+    notification_sent_at_text = notification_sent_at.strftime("%Y-%m-%d %H:%M 北京时间")
     selection_stage = str(report.get("selection_stage") or report.get("market_selection_stage") or report.get("settings", {}).get("selection_stage") or "").strip().upper()
     last_completed_session = str(report.get("last_completed_session") or report.get("previous_completed_session") or "")
     daily_data_as_of = str(report.get("daily_data_as_of") or "")
     premarket_snapshot_at = str(report.get("premarket_snapshot_at") or "")
     freshness_status = str(report.get("freshness_status") or "").strip().upper()
     stale_reason = str(report.get("stale_reason") or "").strip()
-    raw_top_items = list(top_configs or report.get("top3") or report.get("top5") or [])
-    top_items = [
-        _merge_top_item_with_report(dict(item or {}), report, rank)
-        for rank, item in enumerate(raw_top_items, start=1)
-    ]
-    target_top_n = int(report.get("target_top_n") or 3)
-    selection_count = int(report.get("selection_count") or len(top_items))
+    requested_top_n = int(_first_non_empty(report.get("requested_top_n"), report.get("target_top_n"), 3, default=3) or 3)
+    selected_top_n = int(_first_non_empty(report.get("selected_top_n"), report.get("selection_count"), len(top_items), default=len(top_items)) or 0)
+    missing_count = max(0, requested_top_n - selected_top_n)
+    missing_slots = [f"TOP{i}" for i in range(selected_top_n + 1, requested_top_n + 1)] if missing_count > 0 else []
     fallback_used = bool(report.get("fallback_used", False))
     execution_status = str(report.get("execution_status") or "").strip().upper()
     result_quality = str(report.get("result_quality") or "").strip().upper()
@@ -556,8 +665,10 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         result_quality = "DEGRADED" if fallback_used else "COMPLETE"
     if not research_admission:
         research_admission = "RESEARCH_ONLY" if result_quality == "DEGRADED" else ("BLOCKED" if result_quality == "INVALID" else "RESEARCH_READY")
+    if not selection_date and selection_date_source == "missing":
+        warnings.insert(0, "selection_date_missing")
     structured_warnings = list(report.get("warnings_structured") or quality_report.get("warnings_structured") or [])
-    if selection_count < target_top_n and not any(
+    if selected_top_n < requested_top_n and not any(
         str(item.get("warning_code") or item.get("code") or "").strip().lower() == "top_n_not_filled"
         for item in structured_warnings
         if isinstance(item, dict)
@@ -566,11 +677,11 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
             {
                 "warning_code": "top_n_not_filled",
                 "stage": "FINALIZED",
-                "requested_count": target_top_n,
-                "selected_count": selection_count,
-                "missing_count": max(0, target_top_n - selection_count),
+                "requested_count": requested_top_n,
+                "selected_count": selected_top_n,
+                "missing_count": missing_count,
                 "selected_symbols": [str(item.get("ticker") or "").strip().upper() for item in top_items if str(item.get("ticker") or "").strip()],
-                "missing_slots": [f"TOP{i}" for i in range(selection_count + 1, target_top_n + 1)],
+                "missing_slots": list(missing_slots),
                 "details": "final TOP still below requested count",
             }
         )
@@ -624,6 +735,8 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
             if details:
                 parts.append(details)
             warnings.append(" | ".join(parts))
+    if selection_date_source == "missing" and "selection_date_missing" not in warnings:
+        warnings.insert(0, "selection_date_missing")
     execution_text = "已完成" if execution_status != "FAILED" else "已失败"
     result_text = {"COMPLETE": "完整", "DEGRADED": "降级", "INVALID": "无效"}.get(result_quality, result_quality or "未知")
     admission_text = {"RESEARCH_READY": "已就绪", "RESEARCH_ONLY": "仅研究", "BLOCKED": "已阻止"}.get(research_admission, research_admission or "未知")
@@ -634,13 +747,19 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         bool(report.get("mock_used", False)),
         report.get("data_status") or (top_items[0].get("data_status") if top_items else ""),
     )
+    shortfall_reasons = _selection_shortfall_reasons(report)
     lines = [
-        f"日期：{date_str}",
-        f"阶段：{selection_stage or 'UNKNOWN'}",
-        f"TOP数量：{selection_count}/{target_top_n}",
+        f"选股数据日：{selection_date_display}{'（美东交易日）' if selection_date_display != '未知' else ''}",
+        f"选股日期来源：{selection_date_source}",
+        f"结果生成：{generated_at_text}",
+        f"通知发送：{notification_sent_at_text}",
+        f"流程：{selection_stage or 'UNKNOWN'}",
+        f"正式TOP：{selected_top_n}/{requested_top_n}",
+        f"缺失槽位：{missing_count}{'（' + ', '.join(missing_slots) + '）' if missing_slots else ''}",
         f"执行状态：{execution_text} ({execution_status or 'COMPLETED'})",
         f"结果质量：{result_text} ({result_quality or ('DEGRADED' if fallback_used else 'COMPLETE')})",
         f"研究准入：{admission_text} ({research_admission or ('RESEARCH_ONLY' if fallback_used else 'RESEARCH_READY')})",
+        f"交易含义：{notice}",
         "",
     ]
     if last_completed_session:
@@ -653,14 +772,17 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         lines.append(f"新鲜度：{freshness_status}")
     if stale_reason:
         lines.append(f"原因：{stale_reason}")
+    if shortfall_reasons and missing_count > 0:
+        lines.append("候选不足主要原因：")
+        lines.extend([f"- {item}" for item in shortfall_reasons[:3]])
     if last_completed_session or daily_data_as_of or premarket_snapshot_at or freshness_status or stale_reason:
         lines.append("")
 
-    for rank in range(1, target_top_n + 1):
+    for rank in range(1, requested_top_n + 1):
         if rank <= len(top_items):
             lines.append(_ticker_line(dict(top_items[rank - 1] or {}), rank))
         else:
-            reason = "top_n_not_filled" if selection_count < target_top_n else "未生成"
+            reason = "top_n_not_filled" if selected_top_n < requested_top_n else "未生成"
             lines.append(f"TOP{rank}：未生成 / disabled\n原因：{reason}")
         lines.append("")
 
@@ -678,8 +800,29 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     if warnings:
         lines.append("警告：")
         lines.extend([f"- {item}" for item in warnings[:6]])
-    lines.append(f"注意：{notice}")
+    lines.append(f"状态解释：{_stage_explanation(selection_stage, result_quality, research_admission)}")
     return "【AI 选股完成】", "\n".join(lines).strip()
+
+
+def _stage_explanation(selection_stage: str, result_quality: str, research_admission: str) -> str:
+    stage = str(selection_stage or "").strip().upper() or "UNKNOWN"
+    quality = str(result_quality or "").strip().upper() or "UNKNOWN"
+    admission = str(research_admission or "").strip().upper() or "UNKNOWN"
+    stage_label = {
+        "FINALIZED": "流程已完成",
+        "COMPLETE": "核心数据和研究证据完整",
+        "DEGRADED": "流程完成，但存在非关键降级或研究证据不足",
+        "INVALID": "核心数据无效",
+        "RESEARCH_READY": "可进入下一阶段研究",
+        "RESEARCH_ONLY": "仅供研究，不代表交易资格",
+        "BLOCKED": "阻断后续研究或交易准入",
+    }
+    parts = [
+        f"{stage}={stage_label.get(stage, '状态未知')}",
+        f"{quality}={stage_label.get(quality, '状态未知')}",
+        f"{admission}={stage_label.get(admission, '状态未知')}",
+    ]
+    return "；".join(parts)
 
 
 def notify_ai_selection_result(selection_report: dict, top_configs: list | None = None) -> None:

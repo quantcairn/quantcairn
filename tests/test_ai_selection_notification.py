@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
 from src.notifier import alerts
+
+
+@pytest.fixture(autouse=True)
+def _disable_real_committed_bundle(monkeypatch):
+    monkeypatch.setattr(alerts, "load_committed_selection_bundle", lambda *args, **kwargs: None)
+
+
+def _fixed_notification_time() -> datetime:
+    return datetime(2026, 7, 18, 6, 25, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def _sample_top(rank: int, ticker: str, *, fallback_used: bool = False, reason: str = "High range fitness") -> dict:
@@ -153,6 +167,7 @@ def _sample_report_with_semantics() -> dict:
     report.update(
         {
             "execution_status": "COMPLETED",
+            "selection_stage": "FINALIZED",
             "result_quality": "DEGRADED",
             "research_admission": "RESEARCH_ONLY",
             "top_n_complete": False,
@@ -217,6 +232,8 @@ def _sample_report_with_semantics() -> dict:
 
 
 def test_ai_selection_message_includes_top3():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
     title, body = alerts._build_ai_selection_message(
         _sample_report(),
         [
@@ -225,12 +242,14 @@ def test_ai_selection_message_includes_top3():
             _sample_top(3, "SOFI"),
         ],
     )
+    monkeypatch.undo()
 
     assert title == "【AI 选股完成】"
     assert "TOP1：SOXS" in body
     assert "TOP2：AAPL" in body
     assert "TOP3：SOFI" in body
     assert "状态：成功" not in body
+    assert "流程：UNKNOWN" in body
     assert "执行状态：" in body
     assert "结果质量：" in body
     assert "研究准入：" in body
@@ -240,6 +259,8 @@ def test_ai_selection_message_includes_top3():
 
 
 def test_ai_selection_message_handles_only_top2():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
     _, body = alerts._build_ai_selection_message(
         _sample_report(selection_count=2),
         [
@@ -247,15 +268,43 @@ def test_ai_selection_message_handles_only_top2():
             _sample_top(2, "SOFI"),
         ],
     )
+    monkeypatch.undo()
 
-    assert "TOP数量：2/3" in body
+    assert "正式TOP：2/3" in body
     assert "TOP3：未生成 / disabled" in body
     assert "selected_symbols=SOXS,SOFI" in body
     assert "missing_slots=TOP3" in body
     assert "原因：top_n_not_filled" in body
 
 
+def test_ai_selection_message_shows_zero_of_three_formal_top():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    _, body = alerts._build_ai_selection_message(
+        {
+            "selection_run_id": "run-zero",
+            "selection_date": "2026-07-16",
+            "generated_at": "2026-07-17T23:42:21+08:00",
+            "requested_top_n": 3,
+            "selected_top_n": 0,
+            "top_n_missing_count": 3,
+            "top3": [],
+            "rejection_reason_counts": {"low_dollar_volume": 7, "price_out_of_range": 2},
+        },
+        [],
+    )
+    monkeypatch.undo()
+
+    assert "正式TOP：0/3" in body
+    assert "缺失槽位：3（TOP1, TOP2, TOP3）" in body
+    assert "候选不足主要原因：" in body
+    assert "- 低成交额：7" in body
+    assert "- 价格超出范围：2" in body
+
+
 def test_ai_selection_message_warns_on_fallback():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
     _, body = alerts._build_ai_selection_message(
         _sample_report(fallback_used=True),
         [
@@ -264,15 +313,18 @@ def test_ai_selection_message_warns_on_fallback():
             _sample_top(3, "AAPL"),
         ],
     )
+    monkeypatch.undo()
 
     assert "执行状态：已完成 (COMPLETED)" in body
     assert "结果质量：降级 (DEGRADED)" in body
     assert "研究准入：仅研究 (RESEARCH_ONLY)" in body
-    assert "注意：本次结果仅供研究" in body
+    assert "交易含义：本次结果仅供研究" in body
     assert "不建议直接 live" not in body
 
 
 def test_ai_selection_message_uses_top_level_fields_when_selection_missing():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
     _, body = alerts._build_ai_selection_message(
         _sample_report(),
         [
@@ -289,6 +341,7 @@ def test_ai_selection_message_uses_top_level_fields_when_selection_missing():
             }
         ],
     )
+    monkeypatch.undo()
 
     assert "分数：final 78.9 / AI 81.2 / Range 76.5" in body
     assert "类型：杠杆/反向ETF" in body
@@ -297,6 +350,8 @@ def test_ai_selection_message_uses_top_level_fields_when_selection_missing():
 
 
 def test_ai_selection_message_merges_report_fields_when_yaml_sparse():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
     _, body = alerts._build_ai_selection_message(
         _sample_report_with_rich_top3(),
         [
@@ -326,6 +381,7 @@ def test_ai_selection_message_merges_report_fields_when_yaml_sparse():
             },
         ],
     )
+    monkeypatch.undo()
 
     assert "分数：final 77.99 / AI 82.58 / Range 71.11" in body
     assert "仓位：$4920 / 1000股" in body
@@ -334,6 +390,8 @@ def test_ai_selection_message_merges_report_fields_when_yaml_sparse():
 
 
 def test_ai_selection_message_shows_execution_and_result_semantics():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
     _, body = alerts._build_ai_selection_message(
         _sample_report_with_semantics(),
         [
@@ -347,6 +405,7 @@ def test_ai_selection_message_shows_execution_and_result_semantics():
             }
         ],
     )
+    monkeypatch.undo()
 
     assert "执行状态：已完成 (COMPLETED)" in body
     assert "结果质量：降级 (DEGRADED)" in body
@@ -361,11 +420,14 @@ def test_ai_selection_message_shows_execution_and_result_semantics():
     assert "Provider 成功：" in body
     assert "Provider 超时：" in body
     assert "Provider Mock：" in body
-    assert "注意：本次结果仅供研究" in body
+    assert "交易含义：本次结果仅供研究" in body
+    assert "状态解释：FINALIZED=流程已完成" in body
 
 
 def test_ai_selection_message_renders_provider_audit_sections():
     report = _sample_report(fallback_used=True)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
     _, body = alerts._build_ai_selection_message(
         report,
         [
@@ -389,6 +451,7 @@ def test_ai_selection_message_renders_provider_audit_sections():
             }
         ],
     )
+    monkeypatch.undo()
 
     assert "fallback：是" in body
     assert "mock=是" in body
@@ -402,6 +465,119 @@ def test_ai_selection_message_renders_provider_audit_sections():
     assert "fallback范围：CRITICAL_MARKET_DATA" in body
     assert "fallback级别：CRITICAL" in body
     assert "fallback影响：current_price, close, atr_20_percentage" in body
+
+
+def test_ai_selection_message_uses_manifest_first_bundle_and_time_fields(monkeypatch):
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {
+            "report": {
+                "selection_run_id": "bundle-run-1",
+                "selection_date": "2026-07-16",
+                "generated_at": "2026-07-17T23:42:21+08:00",
+                "selection_stage": "FINALIZED",
+                "result_quality": "DEGRADED",
+                "research_admission": "RESEARCH_ONLY",
+                "selected_top_n": 1,
+                "requested_top_n": 3,
+                "top_n_missing_count": 2,
+                "top_n_shortfall_reason": "top_n_not_filled",
+                "rejection_reason_counts": {
+                    "low_dollar_volume": 7,
+                    "price_out_of_range": 2,
+                    "entry_quality_too_low": 1,
+                },
+                "top3": [
+                    {
+                        "ticker": "SOFI",
+                        "selection": {
+                            "selection_date": "2026-07-16",
+                            "score": 59.9,
+                            "reason": "bundle top",
+                        },
+                        "trade_admission_status": "NOT_TRADABLE",
+                        "data_status": "VALID",
+                    }
+                ],
+            }
+        },
+    )
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+
+    _, body = alerts._build_ai_selection_message(
+        {
+            "selection_run_id": "legacy-run-9",
+            "selection_date": "2026-07-15",
+            "date": "2026-07-14",
+            "generated_at": "2026-07-15T08:00:00+08:00",
+            "requested_top_n": 3,
+            "selected_top_n": 0,
+            "top_n_missing_count": 3,
+        },
+        [
+            {
+                "ticker": "SOXS",
+                "selection": {"selection_date": "2026-07-15", "score": 71.0},
+            }
+        ],
+    )
+
+    assert "选股数据日：2026-07-16（美东交易日）" in body
+    assert "选股日期来源：selection_bundle" in body
+    assert "结果生成：2026-07-17 11:42 ET" in body
+    assert "通知发送：2026-07-18 06:25 北京时间" in body
+    assert "正式TOP：1/3" in body
+    assert "缺失槽位：2（TOP2, TOP3）" in body
+    assert "候选不足主要原因：" in body
+    assert "- 低成交额：7" in body
+    assert "- 价格超出范围：2" in body
+    assert "- 入场质量不足：1" in body
+    assert "交易含义：本次结果仅供研究" in body
+
+
+def test_ai_selection_message_marks_missing_selection_date_without_today_fallback(monkeypatch):
+    monkeypatch.setattr(alerts, "load_committed_selection_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+
+    _, body = alerts._build_ai_selection_message(
+        {
+            "selection_run_id": "legacy-run-10",
+            "generated_at": "2026-07-15T08:00:00+08:00",
+            "requested_top_n": 3,
+            "selected_top_n": 0,
+            "top_n_missing_count": 3,
+            "top3": [],
+        },
+        [],
+    )
+
+    assert "选股数据日：未知" in body
+    assert "选股日期来源：missing" in body
+    assert "selection_date_missing" in body
+    assert "通知发送：2026-07-18 06:25 北京时间" in body
+
+
+def test_ai_selection_message_marks_legacy_date_source(monkeypatch):
+    monkeypatch.setattr(alerts, "load_committed_selection_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+
+    _, body = alerts._build_ai_selection_message(
+        {
+            "selection_run_id": "legacy-run-11",
+            "date": "2026-07-16",
+            "generated_at": "2026-07-16T08:00:00+08:00",
+            "requested_top_n": 3,
+            "selected_top_n": 1,
+            "top_n_missing_count": 2,
+            "top3": [_sample_top(1, "SOXS")],
+        },
+        [_sample_top(1, "SOXS")],
+    )
+
+    assert "选股数据日：2026-07-16（美东交易日）" in body
+    assert "选股日期来源：legacy_date" in body
+    assert "正式TOP：1/3" in body
 
 
 def test_notify_ai_selection_without_telegram_does_not_raise(monkeypatch):
