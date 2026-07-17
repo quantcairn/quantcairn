@@ -107,15 +107,15 @@ def _slot_disabled_reason(result_quality: str | None, research_admission: str | 
     return "top_n_not_filled"
 
 
-def _slot_count(top_items: list[dict[str, Any]], limit: int | None = None) -> int:
+def _slot_count(top_items: list[dict[str, Any]], requested_top_n: int | None = None) -> int:
     from src.ai_selector.selection_state import configured_top_count
 
-    configured = configured_top_count()
-    if limit is not None:
+    if requested_top_n is not None:
         try:
-            configured = max(1, int(limit))
+            return max(1, int(requested_top_n))
         except Exception:
-            configured = max(1, configured)
+            pass
+    configured = configured_top_count()
     return max(3, configured, len(list(top_items or [])))
 
 
@@ -174,11 +174,16 @@ class SelectionBundle:
     selection_stage: str
     result_quality: str
     research_admission: str
+    requested_top_n: int | None = None
     top_sync_status: str = "OK"
     top_sync_error: str = ""
     disabled_reason: str | None = None
     bundle_version: str = "selection_bundle_v1"
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def selected_top_n(self) -> int:
+        return len(self.top_items)
 
     @property
     def selected_symbols(self) -> list[str]:
@@ -190,11 +195,19 @@ class SelectionBundle:
 
     @property
     def slot_count(self) -> int:
-        return _slot_count(self.top_items)
+        return _slot_count(self.top_items, requested_top_n=self.requested_top_n)
+
+    @property
+    def top_slot_count(self) -> int:
+        return self.slot_count
+
+    @property
+    def enabled_slots(self) -> list[int]:
+        return [i for i in range(1, self.slot_count + 1) if i <= self.selected_top_n]
 
     @property
     def disabled_slots(self) -> list[int]:
-        return [i for i in range(1, self.slot_count + 1) if i > len(self.top_items)]
+        return [i for i in range(1, self.slot_count + 1) if i > self.selected_top_n]
 
     @property
     def report_latest_path(self) -> Path:
@@ -244,6 +257,14 @@ class SelectionBundle:
                 "selection_bundle_version": self.bundle_version,
                 "selection_bundle_hash": self.selection_bundle_hash,
                 "selection_bundle_manifest_path": _relative_path(self.manifest_path),
+                "requested_top_n": int(self.requested_top_n or self.slot_count),
+                "selected_top_n": self.selected_top_n,
+                "top_slot_count": self.slot_count,
+                "selected_symbols": list(self.selected_symbols),
+                "selection_symbols": list(self.selected_symbols),
+                "configured_top_symbols": list(self.selected_symbols),
+                "enabled_slots": list(self.enabled_slots),
+                "disabled_slots": list(self.disabled_slots),
             }
         )
         payload.setdefault("selection_bundle_version", self.bundle_version)
@@ -263,6 +284,10 @@ class SelectionBundle:
                 "selection_symbols": list(self.selected_symbols),
                 "configured_top_symbols": list(self.selected_symbols),
                 "disabled_slots": list(self.disabled_slots),
+                "requested_top_n": int(self.requested_top_n or self.slot_count),
+                "selected_top_n": self.selected_top_n,
+                "top_slot_count": self.slot_count,
+                "enabled_slots": list(self.enabled_slots),
                 "synced_at": self.generated_at,
                 "selection_bundle_version": self.bundle_version,
                 "selection_bundle_hash": self.selection_bundle_hash,
@@ -286,6 +311,10 @@ class SelectionBundle:
             "generated_at": self.generated_at,
             "selection_stage": self.selection_stage,
             "processing_phase": self.processing_phase,
+            "requested_top_n": int(self.requested_top_n or self.slot_count),
+            "selected_top_n": self.selected_top_n,
+            "top_slot_count": self.slot_count,
+            "enabled_slots": list(self.enabled_slots),
             "top_count": len(self.top_items),
             "slot_count": self.slot_count,
             "disabled_slots": list(self.disabled_slots),
@@ -319,10 +348,14 @@ class SelectionBundle:
             "execution_status": str(report_payload.get("execution_status") or "COMPLETED"),
             "result_quality": self.result_quality,
             "research_admission": self.research_admission,
+            "requested_top_n": int(self.requested_top_n or self.slot_count),
+            "selected_top_n": self.selected_top_n,
             "selection_bundle_hash": self.selection_bundle_hash,
             "selection_symbols": list(self.selected_symbols),
             "disabled_slots": list(self.disabled_slots),
+            "enabled_slots": list(self.enabled_slots),
             "slot_count": self.slot_count,
+            "top_slot_count": self.slot_count,
             "top_count": len(self.top_items),
             "paths": {
                 "report_latest": _relative_path(self.report_latest_path),
@@ -357,6 +390,7 @@ def build_selection_bundle(
     result_quality: str | None = None,
     research_admission: str | None = None,
     processing_phase: str | None = None,
+    requested_top_n: int | None = None,
     top_sync_status: str = "OK",
     top_sync_error: str = "",
     disabled_reason: str | None = None,
@@ -368,6 +402,13 @@ def build_selection_bundle(
     selection_stage = str(summary.get("selection_stage") or selection_state_payload.get("selection_stage") or "")
     result_quality = str(result_quality or summary.get("result_quality") or "")
     research_admission = str(research_admission or summary.get("research_admission") or "")
+    requested_top_n = requested_top_n if requested_top_n is not None else summary.get("requested_top_n")
+    if requested_top_n is None:
+        requested_top_n = summary.get("target_top_n") or selection_state_payload.get("requested_top_n") or selection_state_payload.get("top_slot_count")
+    try:
+        requested_top_n = int(requested_top_n) if requested_top_n is not None else None
+    except Exception:
+        requested_top_n = None
     disabled_reason = _slot_disabled_reason(result_quality, research_admission, disabled_reason)
     return SelectionBundle(
         summary=dict(summary or {}),
@@ -380,10 +421,48 @@ def build_selection_bundle(
         selection_stage=selection_stage,
         result_quality=result_quality,
         research_admission=research_admission,
+        requested_top_n=requested_top_n,
         top_sync_status=str(top_sync_status or "OK"),
         top_sync_error=str(top_sync_error or ""),
         disabled_reason=disabled_reason,
     )
+
+
+def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
+    errors: list[str] = []
+    requested_top_n = bundle.requested_top_n
+    if requested_top_n is None:
+        return errors
+    try:
+        requested_top_n = int(requested_top_n)
+    except Exception:
+        errors.append("invalid_top_slot_count")
+        return errors
+    if requested_top_n <= 0:
+        errors.append("invalid_top_slot_count")
+        return errors
+
+    selected_top_n = bundle.selected_top_n
+    slot_count = bundle.slot_count
+    if selected_top_n > requested_top_n:
+        errors.append("selected_top_n_exceeds_requested")
+    if slot_count != requested_top_n:
+        errors.append("invalid_top_slot_count")
+    if len(bundle.top_paths) != requested_top_n:
+        errors.append("invalid_top_slot_count")
+
+    expected_disabled_slots = list(range(selected_top_n + 1, requested_top_n + 1))
+    if list(bundle.disabled_slots) != expected_disabled_slots:
+        errors.append("disabled_slot_mismatch")
+
+    expected_selected_symbols = [
+        str(item.get("ticker") or "").strip().upper()
+        for item in bundle.top_items
+        if str(item.get("ticker") or "").strip()
+    ]
+    if bundle.selected_symbols != expected_selected_symbols:
+        errors.append("selected_symbol_mismatch")
+    return errors
 
 
 def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
@@ -412,11 +491,6 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
         disabled_reason=getattr(bundle, "disabled_reason", None),
     )
 
-    report_payload = bundle.report_payload()
-    state_payload = bundle.state_payload()
-    audit_payload = bundle.audit_payload()
-    disabled_reason = bundle.disabled_reason
-
     state_path = selection_state.selection_state_path()
     audit_path = bundle.audit_path
     manifest_path = bundle.manifest_path
@@ -424,6 +498,29 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
     top_paths = bundle.top_paths
     latest_report_path = bundle.report_latest_path
     dated_report_path = bundle.report_dated_path
+
+    report_payload = bundle.report_payload()
+    state_payload = bundle.state_payload()
+    audit_payload = bundle.audit_payload()
+    disabled_reason = bundle.disabled_reason
+    validation_errors = _bundle_validation_errors(bundle)
+    if validation_errors:
+        failure_payload = dict(audit_payload)
+        failure_payload.update(
+            {
+                "validation_status": "failed",
+                "validation_error_codes": list(validation_errors),
+                "validation_error_reason": ",".join(validation_errors),
+                "validation_error_message": "bundle_validation_failed",
+                "selection_top_n": bundle.selected_top_n,
+                "requested_top_n": int(bundle.requested_top_n or bundle.slot_count),
+                "top_slot_count": bundle.slot_count,
+                "enabled_slots": list(bundle.enabled_slots),
+                "disabled_slots": list(bundle.disabled_slots),
+            }
+        )
+        _write_json_atomic(audit_path, failure_payload)
+        raise ValueError("bundle_validation_failed:" + ",".join(validation_errors))
 
     backup_root = _state_dir() / ".selection_bundle_backups" / bundle.selection_run_id
     backups = _backup_files([latest_report_path, dated_report_path, state_path, audit_path, manifest_path, *top_paths], backup_root)
@@ -450,6 +547,10 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
             selection_bundle_manifest_path=manifest_reference,
             selection_bundle_hash=bundle.selection_bundle_hash,
             selection_bundle_version=bundle.bundle_version,
+            requested_top_n=int(state_payload.get("requested_top_n") or bundle.slot_count),
+            selected_top_n=int(state_payload.get("selected_top_n") or bundle.selected_top_n),
+            top_slot_count=int(state_payload.get("top_slot_count") or bundle.slot_count),
+            enabled_slots=list(state_payload.get("enabled_slots") or bundle.enabled_slots),
         )
         config_writer.write_top_configs(
             list(bundle.top_items or []),
@@ -486,6 +587,9 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
         "selection_date": bundle.selection_date,
         "generated_at": bundle.generated_at,
         "selection_stage": bundle.selection_stage,
+        "requested_top_n": int(state_payload.get("requested_top_n") or bundle.slot_count),
+        "selected_top_n": int(state_payload.get("selected_top_n") or bundle.selected_top_n),
+        "top_slot_count": int(state_payload.get("top_slot_count") or bundle.slot_count),
         "disabled_slots": list(bundle.disabled_slots),
         "selected_symbols": list(bundle.selected_symbols),
         "audit_path": _relative_path(audit_path),
@@ -506,6 +610,7 @@ def write_selection_bundle_atomic(
     result_quality: str | None = None,
     research_admission: str | None = None,
     processing_phase: str | None = None,
+    requested_top_n: int | None = None,
     top_sync_status: str = "OK",
     top_sync_error: str = "",
     disabled_reason: str | None = None,
@@ -520,6 +625,7 @@ def write_selection_bundle_atomic(
         result_quality=result_quality,
         research_admission=research_admission,
         processing_phase=processing_phase,
+        requested_top_n=requested_top_n,
         top_sync_status=top_sync_status,
         top_sync_error=top_sync_error,
         disabled_reason=disabled_reason,

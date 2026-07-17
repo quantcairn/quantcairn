@@ -141,6 +141,9 @@ def test_selection_bundle_persists_report_state_top_and_manifest(tmp_path, monke
     assert manifest["selection_stage"] == "FINALIZED"
     assert manifest["result_quality"] == "DEGRADED"
     assert manifest["research_admission"] == "RESEARCH_ONLY"
+    assert manifest["requested_top_n"] == 3
+    assert manifest["selected_top_n"] == 1
+    assert manifest["top_slot_count"] == 3
     assert manifest["paths"]["state"] == "state/ai_selection_state.json"
     assert manifest["paths"]["manifest"] == "state/selection_bundle_manifest.json"
     assert manifest["hashes"]["report_latest"] == manifest["hashes"]["report_dated"]
@@ -184,3 +187,82 @@ def test_selection_bundle_marks_empty_slots_as_selection_blocked_when_run_blocke
     assert top3["enabled"] is False
     manifest = json.loads((tmp_path / "state" / "selection_bundle_manifest.json").read_text(encoding="utf-8"))
     assert manifest["disabled_slots"] == [1, 2, 3]
+    assert manifest["requested_top_n"] == 3
+    assert manifest["selected_top_n"] == 0
+    assert manifest["top_slot_count"] == 3
+
+
+def test_selection_bundle_rejects_top_items_over_requested_top_n(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"),
+            "requested_top_n": 3,
+            "top3": [
+                {"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"},
+                {"ticker": "SOFI", "score": 90.0, "final_score": 90.0, "selection_date": "2026-07-16"},
+                {"ticker": "AAPL", "score": 89.0, "final_score": 89.0, "selection_date": "2026-07-16"},
+            ],
+            "top5": [
+                {"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"},
+                {"ticker": "SOFI", "score": 90.0, "final_score": 90.0, "selection_date": "2026-07-16"},
+                {"ticker": "AAPL", "score": 89.0, "final_score": 89.0, "selection_date": "2026-07-16"},
+                {"ticker": "MSFT", "score": 88.0, "final_score": 88.0, "selection_date": "2026-07-16"},
+            ],
+            "top10": [
+                {"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"},
+                {"ticker": "SOFI", "score": 90.0, "final_score": 90.0, "selection_date": "2026-07-16"},
+                {"ticker": "AAPL", "score": 89.0, "final_score": 89.0, "selection_date": "2026-07-16"},
+                {"ticker": "MSFT", "score": 88.0, "final_score": 88.0, "selection_date": "2026-07-16"},
+            ],
+            "selection_count": 4,
+            "candidate_count": 4,
+            "top_n_filled": False,
+            "missing_slots": 0,
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": ["NVDA", "SOFI", "AAPL", "MSFT"],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selection_run_id": "run-3",
+            "selection_symbols": ["NVDA", "SOFI", "AAPL", "MSFT"],
+            "configured_top_symbols": ["NVDA", "SOFI", "AAPL", "MSFT"],
+            "requested_top_n": 3,
+            "selected_top_n": 4,
+            "top_slot_count": 3,
+        },
+        top_items=[
+            {"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"},
+            {"ticker": "SOFI", "score": 90.0, "final_score": 90.0, "selection_date": "2026-07-16"},
+            {"ticker": "AAPL", "score": 89.0, "final_score": 89.0, "selection_date": "2026-07-16"},
+            {"ticker": "MSFT", "score": 88.0, "final_score": 88.0, "selection_date": "2026-07-16"},
+        ],
+        selection_run_id="run-3",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="DEGRADED",
+        research_admission="RESEARCH_ONLY",
+        processing_phase="fast_preliminary",
+        requested_top_n=3,
+    )
+
+    try:
+        persist_selection_bundle(bundle)
+    except ValueError as exc:
+        assert "bundle_validation_failed" in str(exc)
+        assert "selected_top_n_exceeds_requested" in str(exc)
+    else:
+        raise AssertionError("expected bundle validation failure")
+
+    assert not (tmp_path / "reports" / "ai_selection_latest.json").exists()
+    assert not (tmp_path / "reports" / "ai_selection_2026-07-16.json").exists()
+    assert not (tmp_path / "state" / "selection_bundle_manifest.json").exists()
+    assert not (tmp_path / "configs" / "TOP4.yaml").exists()
+    audit = json.loads((tmp_path / "state" / "selection_sync_audit.json").read_text(encoding="utf-8"))
+    assert audit["validation_status"] == "failed"
+    assert "selected_top_n_exceeds_requested" in audit["validation_error_codes"]

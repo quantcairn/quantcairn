@@ -171,7 +171,7 @@ def _top_slot_count(top_items: list[dict], limit: int | None = None) -> int:
     configured = _load_configured_top_count()
     if limit is not None:
         try:
-            configured = max(1, int(limit))
+            return max(1, int(limit))
         except Exception:
             configured = max(1, configured)
     return max(3, configured, len(list(top_items or [])))
@@ -189,6 +189,8 @@ def _load_configured_top_count() -> int:
 def _slot_disabled_payload(
     *,
     slot: int,
+    requested_top_n: int | None = None,
+    selected_top_n: int | None = None,
     selection_run_id: str,
     selection_date: str,
     generated_at: str,
@@ -217,6 +219,9 @@ def _slot_disabled_payload(
         "selection_bundle_manifest_path": str(selection_bundle_manifest_path or ""),
         "selection_bundle_hash": str(selection_bundle_hash or ""),
         "selection_bundle_version": str(selection_bundle_version or ""),
+        "requested_top_n": int(requested_top_n or slot),
+        "selected_top_n": int(selected_top_n or 0),
+        "top_slot_count": int(requested_top_n or slot),
         "mode": "paper",
         "broker": {
             "longbridge": {
@@ -275,6 +280,8 @@ def write_top_configs(
                 logger.warning("Skipping invalid TOP%d payload for %s", i, item.get("ticker"))
                 payload = _slot_disabled_payload(
                     slot=i,
+                    requested_top_n=slot_count,
+                    selected_top_n=len(items),
                     selection_run_id=selection_run_id,
                     selection_date=selection_date,
                     generated_at=generated_at,
@@ -311,17 +318,20 @@ def write_top_configs(
                 payload = {
                     "enabled": True,
                     "slot": i,
-                        "selection_run_id": selection_run_id,
-                        "top_sync_run_id": selection_run_id,
-                        "top_sync_status": str(top_sync_status or "OK"),
-                        "top_sync_error": str(top_sync_error or ""),
-                        "selection_bundle_manifest_path": str(selection_bundle_manifest_path or ""),
-                        "selection_bundle_hash": str(selection_bundle_hash or ""),
-                        "selection_bundle_version": str(selection_bundle_version or ""),
-                        "selection_date": selection_date,
-                        "generated_at": generated_at,
-                        "result_quality": str(result_quality or ""),
-                        "research_admission": str(research_admission or ""),
+                    "selection_run_id": selection_run_id,
+                    "top_sync_run_id": selection_run_id,
+                    "top_sync_status": str(top_sync_status or "OK"),
+                    "top_sync_error": str(top_sync_error or ""),
+                    "selection_bundle_manifest_path": str(selection_bundle_manifest_path or ""),
+                    "selection_bundle_hash": str(selection_bundle_hash or ""),
+                    "selection_bundle_version": str(selection_bundle_version or ""),
+                    "selection_date": selection_date,
+                    "generated_at": generated_at,
+                    "result_quality": str(result_quality or ""),
+                    "research_admission": str(research_admission or ""),
+                    "requested_top_n": int(slot_count),
+                    "selected_top_n": int(len(items)),
+                    "top_slot_count": int(slot_count),
                     "ticker": item["ticker"],
                     "mode": mode,
                     "selection": {
@@ -444,6 +454,8 @@ def write_top_configs(
         else:
             payload = _slot_disabled_payload(
                 slot=i,
+                requested_top_n=slot_count,
+                selected_top_n=len(items),
                 selection_run_id=selection_run_id,
                 selection_date=selection_date,
                 generated_at=generated_at,

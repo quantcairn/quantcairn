@@ -85,20 +85,23 @@ def test_main_refines_even_if_latest_report_is_finalized():
     }
 
     class FakeSelector:
-        selection_size = 3
+        selection_size = 4
 
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
-                "top10": [{"ticker": "NVDA"}],
-                "top5": [{"ticker": "NVDA"}],
-                "top3": [{"ticker": "NVDA"}],
-                "report": [{"ticker": "NVDA"}],
+                "top10": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+                "top5": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+                "top3": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}],
+                "report": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
                 "settings": {"selection_stage": "quality_refined"},
                 "quality_filter_report": {},
             }
 
         def _format_report_rows(self, selected):
-            return [{"rank": 1, "ticker": "NVDA", "score": 90.0}]
+            return [
+                {"rank": idx, "ticker": row["ticker"], "score": 90.0 - idx}
+                for idx, row in enumerate(selected, start=1)
+            ]
 
     original_env = dict(module.os.environ)
     try:
@@ -112,7 +115,9 @@ def test_main_refines_even_if_latest_report_is_finalized():
             "research_admission": "RESEARCH_ONLY",
             "selection_bundle_hash": "bundle-hash-1",
             "selection_bundle_version": "selection_bundle_v1",
-            "top5": [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+            "requested_top_n": 3,
+            "target_top_n": 3,
+            "top5": [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}, {"ticker": "GOOGL"}],
             "top3": [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
             "settings": {"selection_stage": "fast_preliminary"},
         }
@@ -156,6 +161,97 @@ def test_main_refines_even_if_latest_report_is_finalized():
     assert bundle["selection_state_payload"]["disabled_slots"] == []
     assert bundle["summary"]["source_bundle_hash"] == "bundle-hash-1"
     assert bundle["summary"]["source_bundle_version"] == "selection_bundle_v1"
+    assert bundle["summary"]["requested_top_n"] == 3
+    assert bundle["summary"]["selected_top_n"] == 3
+    assert bundle["selection_state_payload"]["requested_top_n"] == 3
+    assert bundle["selection_state_payload"]["selected_top_n"] == 3
+    assert bundle["selection_state_payload"]["top_slot_count"] == 3
+
+
+def test_main_truncates_refined_candidates_to_requested_top_n():
+    module = _load_module()
+    written_bundles = []
+    source_manifest = {
+        "selection_run_id": "run-1",
+        "bundle_version": "selection_bundle_v1",
+        "selection_bundle_hash": "bundle-hash-1",
+        "selection_date": "2026-07-05",
+    }
+
+    class FakeSelector:
+        selection_size = 4
+
+        def run_selection(self, write_configs: bool = True, symbols_override=None):
+            return {
+                "top10": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+                "top5": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+                "top3": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}],
+                "report": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+                "settings": {"selection_stage": "quality_refined"},
+                "quality_filter_report": {},
+            }
+
+        def _format_report_rows(self, selected):
+            return [
+                {"rank": idx, "ticker": row["ticker"], "score": 90.0 - idx}
+                for idx, row in enumerate(selected, start=1)
+            ]
+
+    original_env = dict(module.os.environ)
+    try:
+        module._load_latest_report = lambda: {
+            "timestamp": "2026-07-05T09:00:00",
+            "selection_run_id": "run-1",
+            "selection_date": "2026-07-05",
+            "generated_at": "2026-07-05T09:00:00",
+            "selection_stage": "FINALIZED",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selection_bundle_hash": "bundle-hash-1",
+            "selection_bundle_version": "selection_bundle_v1",
+            "requested_top_n": 3,
+            "target_top_n": 3,
+            "top5": [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}, {"ticker": "GOOGL"}],
+            "top3": [{"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+            "settings": {"selection_stage": "fast_preliminary"},
+        }
+        module._load_current_manifest = lambda: dict(source_manifest)
+        module.load_runtime_settings = lambda: {"auto_refresh_minutes": 5, "max_symbols": 20}
+        module.resolve_price_band = lambda settings: (10.0, 50.0)
+        module.AIStrategySelector = FakeSelector
+        module.selector_runner._live_equity_positions = lambda: []
+        module.selector_runner._merge_live_position_flags = lambda items, positions: list(items)
+        module.selector_runner._pin_live_positions = lambda items, positions, limit=3: list(items)[:limit]
+        module.selector_runner.write_selection_bundle_atomic = lambda **payload: written_bundles.append(dict(payload)) or {
+            "selection_run_id": payload.get("selection_run_id", "run-1"),
+            "selection_bundle_hash": "bundle-hash",
+            "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+            "selection_date": payload.get("selection_date", "2026-07-05"),
+            "generated_at": payload.get("generated_at", "2026-07-05T09:00:00"),
+            "selection_stage": payload.get("selection_state_payload", {}).get("selection_stage", "FINALIZED"),
+            "disabled_slots": [2, 3],
+            "selected_symbols": ["NVDA", "SOFI", "AAPL"],
+            "audit_path": "state/selection_sync_audit.json",
+            "state_path": "state/ai_selection_state.json",
+            "report_path": "reports/ai_selection_latest.json",
+            "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
+        }
+        module.os.environ.clear()
+        module.os.environ.update(original_env)
+        module.os.environ["AI_SELECTOR_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
+        module.main()
+    finally:
+        module.os.environ.clear()
+        module.os.environ.update(original_env)
+
+    assert written_bundles
+    bundle = written_bundles[0]
+    assert len(bundle["top_items"]) == 3
+    assert [item["ticker"] for item in bundle["top_items"]] == ["NVDA", "SOFI", "AAPL"]
+    assert bundle["requested_top_n"] == 3
+    assert bundle["selection_state_payload"]["requested_top_n"] == 3
+    assert bundle["selection_state_payload"]["selected_top_n"] == 3
+    assert bundle["selection_state_payload"]["disabled_slots"] == []
 
 
 def test_main_skips_refine_when_current_manifest_changes_mid_run():

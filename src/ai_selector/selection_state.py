@@ -180,6 +180,10 @@ def write_selection_state(
     selection_bundle_manifest_path: str | None = None,
     selection_bundle_hash: str | None = None,
     selection_bundle_version: str | None = None,
+    requested_top_n: int | None = None,
+    selected_top_n: int | None = None,
+    top_slot_count: int | None = None,
+    enabled_slots: list[int] | None = None,
 ) -> Path:
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -188,6 +192,10 @@ def write_selection_state(
     disabled_slots = list(disabled_slots or current_top_config_disabled_slots(limit=max(configured_top_count(), len(selected_symbols))))
     selection_run_id = str(selection_run_id or "")
     top_sync_run_id = str(top_sync_run_id or selection_run_id or "")
+    selected_top_n_value = int(selected_top_n or len(selected_symbols))
+    requested_top_n_value = int(requested_top_n or max(configured_top_count(), len(selected_symbols)))
+    top_slot_count_value = int(top_slot_count or max(configured_top_count(), len(selected_symbols)))
+    enabled_slots_value = list(enabled_slots or list(range(1, selected_top_n_value + 1)))
     payload = {
         "et_date": et_date,
         "generated_at": generated_at,
@@ -196,6 +204,10 @@ def write_selection_state(
         "top_config_symbols": configured_top_symbols,
         "configured_top_symbols": configured_top_symbols,
         "disabled_slots": disabled_slots,
+        "enabled_slots": enabled_slots_value,
+        "requested_top_n": requested_top_n_value,
+        "selected_top_n": selected_top_n_value,
+        "top_slot_count": top_slot_count_value,
         "report_path": report_path,
         "selection_stage": str(selection_stage or ""),
         "processing_phase": str(processing_phase or ""),

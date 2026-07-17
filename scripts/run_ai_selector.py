@@ -1938,6 +1938,7 @@ def main(mode: str | None = None):
         result_quality=str(summary.get("result_quality") or ""),
         research_admission=str(summary.get("research_admission") or ""),
         processing_phase=processing_phase,
+        requested_top_n=int(summary.get("target_top_n") or TOP_COUNT),
         top_sync_status="OK",
         top_sync_error="",
     )

@@ -112,10 +112,12 @@ def _prepare_refined_bundle(preliminary: dict, refined_summary: dict, final_rows
     requested_top_n = int(
         merged.get("requested_top_n")
         or (merged.get("settings") or {}).get("top_n")
-        or selector.selection_size
         or len(final_rows)
         or 3
     )
+    requested_top_n = max(1, requested_top_n)
+    final_rows = list(final_rows[:requested_top_n])
+    selected_symbols = _final_refined_symbols(final_rows)
 
     merged["preliminary_top5"] = list(preliminary.get("top5") or [])
     merged["preliminary_top3"] = list(preliminary.get("top3") or [])
@@ -141,6 +143,9 @@ def _prepare_refined_bundle(preliminary: dict, refined_summary: dict, final_rows
     merged["source_bundle_version"] = str(preliminary.get("selection_bundle_version") or "")
     merged["source_selection_run_id"] = str(preliminary.get("selection_run_id") or "")
     merged["source_selection_date"] = str(preliminary.get("selection_date") or "")
+    merged["requested_top_n"] = requested_top_n
+    merged["selected_top_n"] = len(final_rows)
+    merged["top_slot_count"] = requested_top_n
     return merged
 
 
@@ -149,8 +154,9 @@ def _persist_refined_bundle(summary: dict, top_items: list[dict], *, selection_d
     if not selection_run_id:
         return {}
     generated_at = str(summary.get("refined_at") or datetime.now().isoformat())
-    requested_top_n = int(summary.get("requested_top_n") or 3)
-    slot_count = max(3, requested_top_n, len(top_items))
+    requested_top_n = max(1, int(summary.get("requested_top_n") or 3))
+    top_items = [dict(item or {}) for item in list(top_items or [])[:requested_top_n]]
+    slot_count = requested_top_n
     selection_state_payload = {
         "et_date": selection_date,
         "generated_at": generated_at,
@@ -166,6 +172,10 @@ def _persist_refined_bundle(summary: dict, top_items: list[dict], *, selection_d
         "top_sync_status": str(summary.get("top_sync_status") or "OK"),
         "top_sync_error": str(summary.get("top_sync_error") or ""),
         "disabled_slots": list(range(len(top_items) + 1, slot_count + 1)),
+        "requested_top_n": requested_top_n,
+        "selected_top_n": len(top_items),
+        "top_slot_count": requested_top_n,
+        "enabled_slots": list(range(1, len(top_items) + 1)),
         "synced_at": generated_at,
         "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
         "selection_bundle_version": str(summary.get("selection_bundle_version") or "selection_bundle_v1"),
@@ -182,6 +192,7 @@ def _persist_refined_bundle(summary: dict, top_items: list[dict], *, selection_d
         result_quality=str(summary.get("result_quality") or ""),
         research_admission=str(summary.get("research_admission") or ""),
         processing_phase=str(summary.get("processing_phase") or ""),
+        requested_top_n=requested_top_n,
         top_sync_status=str(summary.get("top_sync_status") or "OK"),
         top_sync_error=str(summary.get("top_sync_error") or ""),
     )
@@ -220,6 +231,13 @@ def main() -> None:
     os.environ.pop("AI_SELECTOR_FAST_START_ONLY", None)
 
     selector = AIStrategySelector()
+    requested_top_n = int(
+        latest.get("requested_top_n")
+        or (latest.get("settings") or {}).get("top_n")
+        or selector.selection_size
+        or 3
+    )
+    requested_top_n = max(1, requested_top_n)
     refined = selector.run_selection(write_configs=False)
     live_positions = selector_runner._live_equity_positions() or []
     refined["top10"] = selector_runner._merge_live_position_flags(list(refined.get("top10") or []), live_positions)
@@ -229,10 +247,10 @@ def main() -> None:
     refined_selected = selector_runner._pin_live_positions(
         refined_seed,
         live_positions,
-        limit=selector.selection_size,
+        limit=requested_top_n,
     )
     preliminary_selected = list(latest.get("top5") or latest.get("top3") or [])
-    merged_selected = _merge_refined_candidates(preliminary_selected, refined_selected, limit=selector.selection_size)
+    merged_selected = _merge_refined_candidates(preliminary_selected, refined_selected, limit=requested_top_n)
     if not merged_selected:
         return
     current_signature = _bundle_signature(_load_latest_report(), _load_current_manifest())
