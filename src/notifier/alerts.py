@@ -410,7 +410,7 @@ def _resolve_manifest_first_selection_payload(
 
     if source == "missing":
         if report.get("selection_date"):
-            source = "selection_bundle"
+            source = "report_payload"
         elif report.get("date"):
             source = "legacy_date"
 
@@ -662,9 +662,14 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     if not execution_status:
         execution_status = "COMPLETED" if top_items else "FAILED"
     if not result_quality:
-        result_quality = "DEGRADED" if fallback_used else "COMPLETE"
+        # Legacy payloads without explicit quality semantics are not proof of a
+        # complete result. Keep fallback-only reports usable for research, but
+        # fail closed for otherwise unclassified payloads.
+        result_quality = "DEGRADED" if fallback_used else "INVALID"
+        warnings.append("result_quality_missing")
     if not research_admission:
         research_admission = "RESEARCH_ONLY" if result_quality == "DEGRADED" else ("BLOCKED" if result_quality == "INVALID" else "RESEARCH_READY")
+        warnings.append("research_admission_missing")
     if not selection_date and selection_date_source == "missing":
         warnings.insert(0, "selection_date_missing")
     structured_warnings = list(report.get("warnings_structured") or quality_report.get("warnings_structured") or [])

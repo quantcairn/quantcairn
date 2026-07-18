@@ -9,8 +9,32 @@ from src.notifier import alerts
 
 
 @pytest.fixture(autouse=True)
-def _disable_real_committed_bundle(monkeypatch):
+def _isolate_notification_side_effects(monkeypatch):
+    class NetworkForbiddenNotifier:
+        def __init__(self, *args, **kwargs):
+            self._telegram_enabled = False
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            raise AssertionError("notification test attempted a remote send")
+
     monkeypatch.setattr(alerts, "load_committed_selection_bundle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(alerts, "_load_ai_selector_notification_config", lambda: {})
+    monkeypatch.setattr(alerts, "Notifier", NetworkForbiddenNotifier)
+    for name in (
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "TG_BOT_TOKEN",
+        "TG_CHAT_ID",
+        "WEBHOOK_URL",
+        "SOXS_AI_SELECTOR_WEBHOOK",
+        "AI_SELECTOR_WEBHOOK",
+        "SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN",
+        "SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID",
+        "SOXS_TELEGRAM_BOT_TOKEN",
+        "SOXS_TELEGRAM_CHAT_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _fixed_notification_time() -> datetime:
@@ -245,6 +269,7 @@ def test_ai_selection_message_includes_top3():
     monkeypatch.undo()
 
     assert title == "【AI 选股完成】"
+    assert "选股日期来源：report_payload" in body
     assert "TOP1：SOXS" in body
     assert "TOP2：AAPL" in body
     assert "TOP3：SOFI" in body
@@ -581,15 +606,24 @@ def test_ai_selection_message_marks_legacy_date_source(monkeypatch):
 
 
 def test_notify_ai_selection_without_telegram_does_not_raise(monkeypatch):
-    monkeypatch.setattr(alerts, "_load_notification_config", lambda: {})
-    monkeypatch.delenv("SOXS_TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("SOXS_TELEGRAM_CHAT_ID", raising=False)
-    monkeypatch.delenv("AI_SELECTOR_WEBHOOK", raising=False)
-
     alerts.notify_ai_selection_result(
         _sample_report(),
         [_sample_top(1, "SOXS"), _sample_top(2, "SOFI"), _sample_top(3, "AAPL")],
     )
+
+
+def test_ai_selection_message_fails_closed_without_quality_semantics(monkeypatch):
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+
+    _, body = alerts._build_ai_selection_message(
+        _sample_report(),
+        [_sample_top(1, "SOXS"), _sample_top(2, "SOFI"), _sample_top(3, "AAPL")],
+    )
+
+    assert "结果质量：无效 (INVALID)" in body
+    assert "研究准入：已阻止 (BLOCKED)" in body
+    assert "result_quality_missing" in body
+    assert "research_admission_missing" in body
 
 
 def test_ai_selection_message_truncates_long_reason():
