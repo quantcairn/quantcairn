@@ -123,6 +123,28 @@ class PortfolioConfig:
 
 
 @dataclass
+class PositionPolicyConfig:
+    mode: str = "legacy"
+    paper_only: bool = True
+    paper_position_policy_enabled: bool = False
+    live_position_policy_enabled: bool = False
+    research_top_n: int = 10
+    display_top_n: int = 5
+    requested_top_n: int = 3
+    max_open_positions: int = 3
+    max_gross_exposure_pct: float = 0.75
+    minimum_cash_reserve_pct: float = 0.25
+    rank_target_weights: dict[int, float] = field(default_factory=lambda: {1: 0.35, 2: 0.25, 3: 0.15})
+    max_common_stock_position_pct: float = 0.35
+    max_standard_etf_position_pct: float = 0.30
+    max_leveraged_inverse_position_pct: float = 0.15
+    max_leveraged_inverse_positions: int = 1
+    allow_partial_allocation: bool = True
+    redistribute_unused_weight: bool = False
+    allow_position_increase: bool = False
+
+
+@dataclass
 class AiSelectorConfig:
     allow_fallback_paper_entries: bool = False
     allow_fallback_live_entries: bool = False
@@ -155,6 +177,7 @@ class AppConfig:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+    position_policy: PositionPolicyConfig = field(default_factory=PositionPolicyConfig)
     ai_selector: AiSelectorConfig = field(default_factory=AiSelectorConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     signal_interval_seconds: int = 60
@@ -201,6 +224,36 @@ def _coerce_bool(value, default: bool = False) -> bool:
             return False
         return bool(default)
     return bool(value)
+
+
+def _coerce_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_float_value(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _coerce_rank_weights(value) -> dict[int, float]:
+    default = {1: 0.35, 2: 0.25, 3: 0.15}
+    if not isinstance(value, dict):
+        return default
+    weights: dict[int, float] = {}
+    for key, raw in value.items():
+        try:
+            rank = int(key)
+            weight = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if rank > 0 and 0.0 <= weight <= 1.0:
+            weights[rank] = weight
+    return weights or default
 
 
 def _load_trading_flags() -> dict:
@@ -415,6 +468,28 @@ def _parse_config(raw: dict) -> AppConfig:
         leveraged_etf_max_group_exposure=float(
             portfolio_raw.get("leveraged_etf_max_group_exposure", 0.50)
         ),
+    )
+
+    policy_raw = raw.get("position_policy", {}) or {}
+    config.position_policy = PositionPolicyConfig(
+        mode=str(policy_raw.get("mode", "legacy") or "legacy"),
+        paper_only=_coerce_bool(policy_raw.get("paper_only", True), True),
+        paper_position_policy_enabled=_coerce_bool(policy_raw.get("paper_position_policy_enabled", False)),
+        live_position_policy_enabled=_coerce_bool(policy_raw.get("live_position_policy_enabled", False)),
+        research_top_n=max(1, _coerce_int(policy_raw.get("research_top_n", 10), 10)),
+        display_top_n=max(1, _coerce_int(policy_raw.get("display_top_n", 5), 5)),
+        requested_top_n=max(1, _coerce_int(policy_raw.get("requested_top_n", 3), 3)),
+        max_open_positions=max(1, _coerce_int(policy_raw.get("max_open_positions", 3), 3)),
+        max_gross_exposure_pct=max(0.0, min(1.0, _coerce_float_value(policy_raw.get("max_gross_exposure_pct", 0.75), 0.75))),
+        minimum_cash_reserve_pct=max(0.0, min(1.0, _coerce_float_value(policy_raw.get("minimum_cash_reserve_pct", 0.25), 0.25))),
+        rank_target_weights=_coerce_rank_weights(policy_raw.get("rank_target_weights")),
+        max_common_stock_position_pct=max(0.0, min(1.0, _coerce_float_value(policy_raw.get("max_common_stock_position_pct", 0.35), 0.35))),
+        max_standard_etf_position_pct=max(0.0, min(1.0, _coerce_float_value(policy_raw.get("max_standard_etf_position_pct", 0.30), 0.30))),
+        max_leveraged_inverse_position_pct=max(0.0, min(1.0, _coerce_float_value(policy_raw.get("max_leveraged_inverse_position_pct", 0.15), 0.15))),
+        max_leveraged_inverse_positions=max(0, _coerce_int(policy_raw.get("max_leveraged_inverse_positions", 1), 1)),
+        allow_partial_allocation=_coerce_bool(policy_raw.get("allow_partial_allocation", True), True),
+        redistribute_unused_weight=_coerce_bool(policy_raw.get("redistribute_unused_weight", False)),
+        allow_position_increase=_coerce_bool(policy_raw.get("allow_position_increase", False)),
     )
 
     ai_selector_raw = raw.get("ai_selector", {}) or {}
