@@ -20,8 +20,7 @@ from src.ai_selector.universe_filter import load_universe_rules
 from src.ai_selector.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
-from src.broker.paper_broker import PaperBroker
-from src.broker.paper_portfolio_state import read_paper_portfolio_state
+from src.broker.paper_portfolio_state import default_paper_portfolio_state_path, read_paper_portfolio_state
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 from src.research_report.site import build_research_site
@@ -71,6 +70,8 @@ _LIVE_ACCOUNT_LOCK = threading.Lock()
 _READ_SNAPSHOT_CACHE_TTL = float(os.getenv("SOXS_DASHBOARD_SNAPSHOT_CACHE_TTL", "60"))
 _READ_SNAPSHOT_CACHE_LOCK = threading.Lock()
 _READ_SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
+_PAPER_PORTFOLIO_STATE_CACHE_LOCK = threading.Lock()
+_PAPER_PORTFOLIO_STATE_CACHE: dict[str, tuple[tuple[str, int, int] | None, dict[str, object] | None]] = {}
 _STATUS_CACHE: dict[int, dict] = {}
 _STATUS_FAILURES: dict[int, int] = {}
 _STATUS_OFFLINE_THRESHOLD = 3
@@ -195,6 +196,33 @@ def _cached_read_snapshot(key: str, builder) -> dict[str, object]:
     payload = builder()
     with _READ_SNAPSHOT_CACHE_LOCK:
         _READ_SNAPSHOT_CACHE[key] = (now, payload)
+    return payload
+
+
+def _paper_portfolio_state_signature() -> tuple[str, int, int] | None:
+    try:
+        path = default_paper_portfolio_state_path()
+        stat = path.stat()
+        return (str(path), int(stat.st_mtime_ns), int(stat.st_size))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _read_unified_paper_portfolio_state() -> dict[str, object] | None:
+    if "PYTEST_CURRENT_TEST" in os.environ or _READ_SNAPSHOT_CACHE_TTL <= 0:
+        state = read_paper_portfolio_state()
+        return state if isinstance(state, dict) else None
+    signature = _paper_portfolio_state_signature()
+    with _PAPER_PORTFOLIO_STATE_CACHE_LOCK:
+        cached = _PAPER_PORTFOLIO_STATE_CACHE.get("paper_portfolio_state")
+        if cached and cached[0] == signature:
+            return cached[1]
+    state = read_paper_portfolio_state()
+    payload = state if isinstance(state, dict) else None
+    with _PAPER_PORTFOLIO_STATE_CACHE_LOCK:
+        _PAPER_PORTFOLIO_STATE_CACHE["paper_portfolio_state"] = (signature, payload)
     return payload
 
 
@@ -605,50 +633,32 @@ def _selected_stock_positions_count(live_account: dict | None, selected_tickers:
     return count
 
 
-def _paper_account_summary_from_cards(cards: list[dict]) -> dict[str, object]:
-    cash = round(sum(float(card.get("cash", 0.0) or 0.0) for card in cards), 2)
-    equity = round(sum(float(card.get("equity", 0.0) or 0.0) for card in cards), 2)
-    position_rows: list[dict[str, object]] = []
-    for card in cards:
-        shares = int(card.get("shares", 0) or 0)
-        if shares <= 0:
-            continue
-        current_price = float(card.get("price", 0.0) or 0.0)
-        pnl = float(card.get("pnl", 0.0) or 0.0)
-        pnl_pct = float(card.get("pnl_pct", 0.0) or 0.0)
-        market_value = round(shares * current_price, 2)
-        avg_entry_price = float(card.get("avg_entry_price", 0.0) or 0.0)
-        if avg_entry_price <= 0 and shares > 0 and current_price > 0:
-            avg_entry_price = max(0.0, current_price - (pnl / shares))
-        position_rows.append(
-            {
-                "ticker": str(card.get("ticker") or "").strip().upper(),
-                "quantity": shares,
-                "avg_entry_price": avg_entry_price,
-                "current_price": current_price,
-                "market_value": market_value,
-                "unrealized_pnl": pnl,
-                "unrealized_pnl_pct": pnl_pct,
-            }
-        )
-    positions_count = len(position_rows)
+def _empty_paper_account_summary() -> dict[str, object]:
     return {
-        "cash": cash,
-        "equity": equity,
-        "buying_power": cash,
-        "positions_count": positions_count,
-        "positions": position_rows,
+        "cash": 0.0,
+        "equity": 0.0,
+        "buying_power": 0.0,
+        "market_value": 0.0,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "positions_count": 0,
+        "positions": [],
         "mode": "paper",
+        "execution_mode": "paper",
+        "broker": "PaperBroker",
         "data_stale": False,
         "account_error": False,
+        "state_available": False,
     }
 
 
 def _paper_account_summary_from_state_or_cards(cards: list[dict]) -> dict[str, object]:
-    state = read_paper_portfolio_state()
+    state = _read_unified_paper_portfolio_state()
     if isinstance(state, dict):
-        return state
-    return _paper_account_summary_from_cards(cards)
+        payload = dict(state)
+        payload["state_available"] = True
+        return payload
+    return _empty_paper_account_summary()
 
 
 def _normalize_symbol_list(values) -> list[str]:
@@ -5742,12 +5752,14 @@ def _api_status_payload() -> dict[str, object]:
     ai_selection_top3 = list(ai_selection.get("top3") or [])
     ai_selection_data_status = str(ai_selection.get("data_status") or "")
     ai_selection_notice_status = str((ai_selection_top3[0].get("data_status") if ai_selection_top3 else ai_selection_data_status) or "")
-    paper_account_summary = read_paper_portfolio_state() if dashboard_mode == "paper" else None
+    paper_account_summary = _read_unified_paper_portfolio_state() if dashboard_mode == "paper" else None
     api_account_summary = (
         live_account
         if isinstance(live_account, dict)
         else paper_account_summary
         if isinstance(paper_account_summary, dict)
+        else _empty_paper_account_summary()
+        if dashboard_mode == "paper"
         else _account_summary_from_top_engines(top_engines)
     )
     position_policy_snapshot = _paper_position_policy_snapshot(
@@ -6507,14 +6519,20 @@ def index():
     dashboard_execution_mode = _resolve_dashboard_execution_mode(trade_audit)
     runtime_account_mode = str(trade_audit.get("execution_mode") or "").strip().lower()
     effective_mode = runtime_account_mode if runtime_account_mode in {"paper", "sandbox", "live"} else runtime_mode
+    paper_account_summary = _paper_account_summary_from_state_or_cards([])
     live_account = _fetch_live_account_summary() if runtime_mode in {"sandbox", "live"} else None
-    account_positions = _position_lookup(live_account)
-    live_account_mode = str((live_account or {}).get("mode") or "").strip().lower()
-    use_external_account_positions = bool(
-        live_account
-        and live_account_mode in {"live", "sandbox"}
-        and not (live_account or {}).get("account_error")
-    )
+    if effective_mode == "paper":
+        account_positions = _position_lookup(paper_account_summary)
+        live_account_mode = ""
+        use_external_account_positions = True
+    else:
+        account_positions = _position_lookup(live_account)
+        live_account_mode = str((live_account or {}).get("mode") or "").strip().lower()
+        use_external_account_positions = bool(
+            live_account
+            and live_account_mode in {"live", "sandbox"}
+            and not (live_account or {}).get("account_error")
+        )
     dashboard_status_by_symbol: dict[str, dict | None] = {}
     for item in TICKERS:
         defaults = _load_config_defaults(item["config"])
@@ -6637,7 +6655,7 @@ def index():
                 if account_entry_price > 0.0 and account_pnl_pct == 0.0:
                     account_pnl_pct = round(((float(price or 0.0) - account_entry_price) / account_entry_price) * 100.0, 6)
                 if effective_mode == "paper":
-                    hold_source = "PaperBroker" if account_pos or account_summary else "PaperBroker / 引擎状态"
+                    hold_source = "PaperBroker" if account_pos else "PaperBroker / 无持仓"
                 elif effective_mode == "sandbox":
                     if live_account and live_account_mode == "sandbox":
                         hold_source = "LongBridge sandbox"
@@ -6685,12 +6703,16 @@ def index():
                 "ai_suggested_range": ai_range.get("suggested_range") or "暂无",
                 "initial_capital": d.get("initial_capital", 0),
                 "cash": d.get("cash", 0),
-                "shares": account_shares if account_pos else int(d.get("position_shares", 0) or 0),
-                "avg_entry_price": account_pos.get("avg_entry_price") if account_pos else entry_price,
+                "shares": account_shares if use_external_account_positions else int(d.get("position_shares", 0) or 0),
+                "avg_entry_price": account_pos.get("avg_entry_price") if account_pos else (0.0 if effective_mode == "paper" else entry_price),
                 "current_price_for_position": price,
-                "market_value": float((account_pos or {}).get("market_value", 0.0) or (position_shares * float(price or 0.0))),
-                "pnl": account_pnl if account_pos else unrealized_pnl,
-                "pnl_pct": account_pnl_pct if account_pos else unrealized_pnl_pct,
+                "market_value": (
+                    float((account_pos or {}).get("market_value", 0.0) or 0.0)
+                    if use_external_account_positions
+                    else float(position_shares * float(price or 0.0))
+                ),
+                "pnl": account_pnl if use_external_account_positions else unrealized_pnl,
+                "pnl_pct": account_pnl_pct if use_external_account_positions else unrealized_pnl_pct,
                 "hold_source": hold_source,
                 "reduce_only": defaults.get("reduce_only", False),
                 "equity": d.get("equity", 0),
@@ -6788,7 +6810,6 @@ def index():
             total_capital += initial_capital
             total_equity += initial_capital
 
-    paper_account_summary = _paper_account_summary_from_state_or_cards(cards)
     if live_account and live_account_mode in {"live", "sandbox"} and not live_account.get("account_error"):
         account_summary = live_account
         selected_positions_count = _selected_stock_positions_count(live_account, selected_tickers)

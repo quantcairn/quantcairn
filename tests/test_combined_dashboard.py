@@ -11,6 +11,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.config.loader import PositionPolicyConfig
+from src.broker.paper_portfolio_state import PaperPortfolioState, read_paper_portfolio_state, write_paper_portfolio_state
 from src.dashboard import combined
 
 
@@ -34,6 +35,25 @@ def test_dashboard_read_snapshot_cache_avoids_rebuilding(monkeypatch):
 
     assert first == second == {"state": "SAFE"}
     assert len(calls) == 1
+
+
+def test_dashboard_paper_portfolio_state_cache_invalidates_on_file_change(tmp_path, monkeypatch):
+    state_path = tmp_path / "paper_portfolio_state.json"
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(combined, "_READ_SNAPSHOT_CACHE_TTL", 60.0)
+    monkeypatch.setenv("SOXS_PAPER_PORTFOLIO_STATE_PATH", str(state_path))
+    monkeypatch.setattr(combined, "default_paper_portfolio_state_path", lambda: state_path)
+    monkeypatch.setattr(combined, "read_paper_portfolio_state", read_paper_portfolio_state)
+    combined._PAPER_PORTFOLIO_STATE_CACHE.clear()
+
+    write_paper_portfolio_state(PaperPortfolioState(cash=100.0, equity=110.0), path=state_path)
+    first = combined._read_unified_paper_portfolio_state()
+
+    write_paper_portfolio_state(PaperPortfolioState(cash=2200.0, equity=2300.0), path=state_path)
+    second = combined._read_unified_paper_portfolio_state()
+
+    assert first["cash"] == 100.0
+    assert second["cash"] == 2200.0
 
 class SimpleMonkeyPatch:
     def __init__(self):
@@ -395,6 +415,8 @@ def test_combined_dashboard_shows_lifecycle_result_cards(monkeypatch):
 
 
 def test_combined_dashboard_does_not_use_submit_order_from_page(monkeypatch):
+    assert not hasattr(combined, "PaperBroker")
+
     class ForbiddenBroker:
         def __init__(self, *args, **kwargs):
             self.submit_order = lambda *a, **k: (_ for _ in ()).throw(AssertionError("submit_order should not be called"))
@@ -413,7 +435,6 @@ def test_combined_dashboard_does_not_use_submit_order_from_page(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"})
     monkeypatch.setattr(combined, "_load_lifecycle_summary", lambda kind: {"available": False, "status_label": "unavailable", "detail": "no data", "generated_at": None})
-    monkeypatch.setattr(combined, "PaperBroker", ForbiddenBroker)
     monkeypatch.setattr(combined, "LongBridgeBroker", ForbiddenBroker, raising=False)
     monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "paper",
@@ -1038,6 +1059,16 @@ def test_combined_dashboard_shows_ranked_paper_position_policy(monkeypatch):
         "buying_power": 10_000.0 if port == 8091 else 0.0,
         "position_shares": 0,
     })
+    monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: {
+        "cash": 10_000.0,
+        "equity": 10_000.0,
+        "buying_power": 10_000.0,
+        "positions_count": 0,
+        "positions": [],
+        "mode": "paper",
+        "execution_mode": "paper",
+        "broker": "PaperBroker",
+    })
     monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
         "ok": True,
         "level": "green",
@@ -1063,7 +1094,7 @@ def test_combined_dashboard_shows_ranked_paper_position_policy(monkeypatch):
     assert "按排名目标分配" in html
 
 
-def test_combined_dashboard_uses_paper_account_summary_when_live_account_missing(monkeypatch):
+def test_combined_dashboard_does_not_backfill_paper_positions_from_engine_status(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
@@ -1129,12 +1160,11 @@ def test_combined_dashboard_uses_paper_account_summary_when_live_account_missing
         html = combined.index()
 
     assert "虚拟盘" in html
-    assert "$2100.00" in html
+    assert "$0.00" in html
     assert "精选持仓数量" in html
-    assert ">3<" in html or "3</span>" in html
+    assert ">0<" in html or "0</span>" in html
     assert "虚拟持仓" in html
-    assert "3 股" in html
-    assert "暂无" not in html.split("账户与持仓", 1)[1].split("虚拟持仓", 1)[0]
+    assert "3 股" not in html
 
 
 def test_combined_dashboard_uses_unified_paper_portfolio_state(monkeypatch):
@@ -1212,7 +1242,7 @@ def test_combined_dashboard_uses_unified_paper_portfolio_state(monkeypatch):
     assert payload["dashboard"]["summary"]["equity"] == 1030.0
 
 
-def test_combined_dashboard_shows_paper_position_pnl_from_engine_status(monkeypatch):
+def test_combined_dashboard_shows_paper_position_pnl_from_unified_state(monkeypatch):
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
@@ -1276,6 +1306,26 @@ def test_combined_dashboard_shows_paper_position_pnl_from_engine_status(monkeypa
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: {
+        "cash": 680.0,
+        "equity": 703.0,
+        "buying_power": 680.0,
+        "positions_count": 1,
+        "positions": [
+            {
+                "ticker": "TOP1",
+                "quantity": 3,
+                "avg_entry_price": 10.0,
+                "current_price": 11.0,
+                "market_value": 33.0,
+                "unrealized_pnl": 3.0,
+                "unrealized_pnl_pct": 10.0,
+            }
+        ],
+        "mode": "paper",
+        "execution_mode": "paper",
+        "broker": "PaperBroker",
+    })
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -1349,6 +1399,26 @@ def test_combined_dashboard_shows_negative_pnl_in_green(monkeypatch):
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: {
+        "cash": 698.0,
+        "equity": 698.0,
+        "buying_power": 698.0,
+        "positions_count": 1,
+        "positions": [
+            {
+                "ticker": "TOP1",
+                "quantity": 2,
+                "avg_entry_price": 10.0,
+                "current_price": 9.0,
+                "market_value": 18.0,
+                "unrealized_pnl": -2.0,
+                "unrealized_pnl_pct": -10.0,
+            }
+        ],
+        "mode": "paper",
+        "execution_mode": "paper",
+        "broker": "PaperBroker",
+    })
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -1443,7 +1513,7 @@ def test_combined_dashboard_paper_mode_ignores_live_account_positions(monkeypatc
 
     assert "虚拟持仓" in html
     assert "$4.20" in html or "$4.21" in html
-    assert "+$0.14" in html or "0.14" in html
+    assert "+$0.14" not in html
     assert "$699.90" not in html
 
 
