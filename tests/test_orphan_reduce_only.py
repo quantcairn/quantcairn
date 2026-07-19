@@ -117,6 +117,28 @@ def test_orphan_only_submits_sell():
         assert "orphan" in notes or "stop_loss" in notes or "reduce" in notes
 
 
+def test_soxs_orphan_special_exits_are_sell_only():
+    broker = FakeBroker(positions=[_position("SOXS", 5, 100.0, 105.0)])
+    monitor = OrphanPositionMonitor(broker=broker)
+    engine = monitor._engine_for_symbol("SOXS")
+    engine._pending_order_state_path = _tmpdir / "soxs-special-exit-pending.json"
+    engine._position_sync_state_path = _tmpdir / "soxs-special-exit-sync.json"
+    engine._sell_lock_path = _tmpdir / "soxs-special-exit.lock"
+    engine._pending_order_state_path.unlink(missing_ok=True)
+    engine._position_sync_state_path.unlink(missing_ok=True)
+    engine._sell_lock_path.unlink(missing_ok=True)
+    engine._pending_order = None
+    engine._position_sync_fence = None
+    engine._acquire_sell_lock = lambda reason: True
+
+    monitor._evaluate_symbol("SOXS", broker.get_positions()[0])
+
+    assert len(broker.orders) == 1
+    assert broker.orders[0]["side"] == OrderSide.SELL
+    assert broker.orders[0]["quantity"] == 5
+    assert broker.orders[0]["notes"] == "orphan:stop_loss"
+
+
 def test_orphan_monitor_never_buys():
     """Verify orphan monitor never submits a BUY order."""
     broker = FakeBroker(positions=[
@@ -156,5 +178,6 @@ def test_orphan_no_new_positions():
 def run_test_direct():
     test_orphan_engine_reduce_only()
     test_orphan_only_submits_sell()
+    test_soxs_orphan_special_exits_are_sell_only()
     test_orphan_monitor_never_buys()
     test_orphan_no_new_positions()

@@ -99,6 +99,24 @@ def is_inverse_etf_symbol(symbol: str) -> bool:
     return str(symbol or "").strip().upper().split(".")[0] in INVERSE_ETF_SYMBOLS
 
 
+def _positive_finite_float(value) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(result) or result <= 0:
+        return 0.0
+    return result
+
+
+def _positive_int(value) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return result if result > 0 else 0
+
+
 def check_exit_conditions(
     symbol,
     current_price,
@@ -107,26 +125,39 @@ def check_exit_conditions(
     is_inverse_etf=False,
     mode="normal",
 ):
+    symbol_norm = str(symbol or "").strip().upper().split(".")[0]
+    cost = _positive_finite_float(avg_cost)
+    price = _positive_finite_float(current_price)
     decision = {
         "should_exit": False,
         "reason": None,
         "trigger_price": None,
-        "avg_cost": float(avg_cost or 0.0),
-        "position_qty": int(position_qty or 0),
-        "symbol": str(symbol or "").strip().upper(),
+        "avg_cost": cost,
+        "position_qty": _positive_int(position_qty),
+        "symbol": symbol_norm,
         "mode": mode,
     }
     qty = decision["position_qty"]
-    cost = decision["avg_cost"]
-    price = float(current_price or 0.0)
     if qty <= 0 or cost <= 0 or price <= 0:
+        return decision
+
+    # Strategy-specific SOXS exit semantics:
+    # +5% from average cost is stop_loss; -10% is take_profit.
+    if symbol_norm == "SOXS":
+        stop_trigger = round(cost * 1.05, 6)
+        take_trigger = round(cost * 0.90, 6)
+        if price >= stop_trigger:
+            decision["should_exit"] = True
+            decision["reason"] = "stop_loss"
+            decision["trigger_price"] = stop_trigger
+        elif price <= take_trigger:
+            decision["should_exit"] = True
+            decision["reason"] = "take_profit"
+            decision["trigger_price"] = take_trigger
         return decision
 
     stop_trigger = round(cost * 0.95, 6)
     take_trigger = round(cost * 1.10, 6)
-    # The system only holds cash long positions, including inverse ETFs such as SOXS.
-    # Realized P&L for a held position still follows long-position math:
-    # price down from cost is a loss, price up from cost is a gain.
     if mode == "orphan":
         take_trigger = None
         stop_trigger = round(cost * 0.92, 6)

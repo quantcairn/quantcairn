@@ -1,6 +1,9 @@
 import tempfile
 from pathlib import Path
 import json
+import math
+
+import pytest
 
 from src.broker.base import AccountInfo, Order, OrderSide, OrderStatus, OrderType, Position
 from src.engine.orphan_monitor import OrphanPositionMonitor
@@ -78,28 +81,71 @@ def _position(ticker: str, qty: int, avg_cost: float, current_price: float) -> P
     )
 
 
-def test_normal_stock_stop_loss_triggers():
-    result = check_exit_conditions("AAPL", 95.0, 100.0, 10)
+@pytest.mark.parametrize(
+    ("price", "reason"),
+    [
+        (94.99, "stop_loss"),
+        (95.00, "stop_loss"),
+        (110.00, "take_profit"),
+        (110.01, "take_profit"),
+    ],
+)
+def test_normal_stock_exit_boundaries_trigger(price, reason):
+    result = check_exit_conditions("AAPL", price, 100.0, 10)
     assert result["should_exit"] is True
-    assert result["reason"] == "stop_loss"
+    assert result["reason"] == reason
 
 
-def test_normal_stock_take_profit_triggers():
-    result = check_exit_conditions("AAPL", 110.0, 100.0, 10)
+@pytest.mark.parametrize("price", [95.01, 109.99])
+def test_normal_stock_exit_boundaries_do_not_trigger(price):
+    result = check_exit_conditions("AAPL", price, 100.0, 10)
+    assert result["should_exit"] is False
+    assert result["reason"] is None
+
+
+@pytest.mark.parametrize(
+    ("symbol", "price", "reason"),
+    [
+        ("SOXS", 105.00, "stop_loss"),
+        ("SOXS", 105.01, "stop_loss"),
+        ("SOXS", 90.00, "take_profit"),
+        ("SOXS", 89.99, "take_profit"),
+        ("soxs", 105.00, "stop_loss"),
+        (" SOXS ", 90.00, "take_profit"),
+    ],
+)
+def test_soxs_special_exit_boundaries_trigger(symbol, price, reason):
+    result = check_exit_conditions(symbol, price, 100.0, 10, is_inverse_etf=True)
     assert result["should_exit"] is True
-    assert result["reason"] == "take_profit"
+    assert result["reason"] == reason
 
 
-def test_soxs_stop_loss_triggers():
-    result = check_exit_conditions("SOXS", 9.5, 10.0, 10, is_inverse_etf=True)
-    assert result["should_exit"] is True
-    assert result["reason"] == "stop_loss"
+@pytest.mark.parametrize("price", [104.99, 90.01])
+def test_soxs_special_exit_boundaries_do_not_trigger(price):
+    result = check_exit_conditions("SOXS", price, 100.0, 10, is_inverse_etf=True)
+    assert result["should_exit"] is False
+    assert result["reason"] is None
 
 
-def test_soxs_take_profit_triggers():
-    result = check_exit_conditions("SOXS", 11.0, 10.0, 10, is_inverse_etf=True)
-    assert result["should_exit"] is True
-    assert result["reason"] == "take_profit"
+@pytest.mark.parametrize(
+    ("current_price", "avg_cost"),
+    [
+        (None, 100.0),
+        (100.0, None),
+        (0, 100.0),
+        (100.0, 0),
+        (math.nan, 100.0),
+        (100.0, math.nan),
+        (-1.0, 100.0),
+        (100.0, -1.0),
+        ("not-a-price", 100.0),
+        (100.0, "not-a-cost"),
+    ],
+)
+def test_exit_conditions_ignore_invalid_price_inputs(current_price, avg_cost):
+    result = check_exit_conditions("SOXS", current_price, avg_cost, 10, is_inverse_etf=True)
+    assert result["should_exit"] is False
+    assert result["reason"] is None
 
 
 def test_orphan_normal_stock_stop_loss_triggers():
@@ -109,9 +155,15 @@ def test_orphan_normal_stock_stop_loss_triggers():
 
 
 def test_orphan_soxs_stop_loss_triggers():
-    result = check_exit_conditions("SOXS", 9.2, 10.0, 5, is_inverse_etf=True, mode="orphan")
+    result = check_exit_conditions("SOXS", 105.0, 100.0, 5, is_inverse_etf=True, mode="orphan")
     assert result["should_exit"] is True
     assert result["reason"] == "stop_loss"
+
+
+def test_orphan_soxs_take_profit_triggers():
+    result = check_exit_conditions("SOXS", 90.0, 100.0, 5, is_inverse_etf=True, mode="orphan")
+    assert result["should_exit"] is True
+    assert result["reason"] == "take_profit"
 
 
 def test_soxl_is_not_treated_as_inverse_etf():
@@ -131,6 +183,41 @@ def test_orphan_monitor_never_submits_buy():
 
     assert len(broker.orders) == 1
     assert broker.orders[0]["side"] == OrderSide.SELL
+
+
+@pytest.mark.parametrize(
+    ("current_price", "reason"),
+    [
+        (105.0, "stop_loss"),
+        (90.0, "take_profit"),
+    ],
+)
+def test_orphan_monitor_soxs_special_exits_submit_sell(current_price, reason):
+    broker = FakeBroker(positions=[_position("SOXS", 7, 100.0, current_price)])
+    monitor = OrphanPositionMonitor(broker=broker)
+    pos = _position("SOXS", 7, 100.0, current_price)
+    engine = monitor._engine_for_symbol("SOXS")
+    _use_test_state(engine, f"soxs-{reason}")
+
+    monitor._evaluate_symbol("SOXS", pos)
+
+    assert len(broker.orders) == 1
+    assert broker.orders[0]["side"] == OrderSide.SELL
+    assert broker.orders[0]["quantity"] == 7
+    assert broker.orders[0]["notes"] == f"orphan:{reason}"
+
+
+def test_orphan_monitor_soxs_pending_sell_does_not_repeat():
+    broker = FakeBroker(positions=[_position("SOXS", 7, 100.0, 105.0)])
+    monitor = OrphanPositionMonitor(broker=broker)
+    pos = _position("SOXS", 7, 100.0, 105.0)
+    engine = monitor._engine_for_symbol("SOXS")
+    _use_test_state(engine, "soxs-pending-sell")
+    engine._pending_order = {"side": "SELL", "order_id": "PENDING"}
+
+    monitor._evaluate_symbol("SOXS", pos)
+
+    assert broker.orders == []
 
 
 def test_orphan_monitor_does_not_take_profit():

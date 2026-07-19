@@ -316,7 +316,7 @@ class OrphanPositionMonitor:
         if confirmed <= 0:
             return
 
-        report_range = _load_report_exit_range(ticker)
+        report_range = None if ticker.split(".")[0].upper() == "SOXS" else _load_report_exit_range(ticker)
         if report_range:
             support = float(report_range["support"])
             resistance = float(report_range["resistance"])
