@@ -32,6 +32,7 @@ from ..broker.base import BrokerBase, OrderSide, OrderStatus, OrderType
 from ..broker.paper_broker import PaperBroker
 from ..notifier.alerts import Notifier
 from .position_sizing import determine_buy_quantity
+from .ranked_position_policy import calculate_ranked_target_allocations
 from ..order.order_state import OrderStateManager
 from ..safety.live_guard import LiveGuard
 from ..reports.pretrade_report import PretradeReport
@@ -76,6 +77,8 @@ class AISelectionDecision:
     allocation_weight: float = 0.0
     fallback_reason: str = ""
     fallback_used: bool = False
+    result_quality: str = ""
+    research_admission: str = ""
 
 
 def _audit_log_path() -> Path:
@@ -416,12 +419,18 @@ class TradingEngine:
         # Ordinary BUY sizing must stay cash-constrained; do not expand sizing
         # from margin buying power.
         available_cash = max(0.0, min(cash, buying_power) if buying_power > 0 else cash)
-        available_cash = self._cap_ai_available_cash(available_cash, acct)
+        if not self._ranked_position_policy_enabled():
+            available_cash = self._cap_ai_available_cash(available_cash, acct)
         execution_price = ask if ask > 0 else current_price
+        ranked_allocation = self._ranked_position_policy_allocation(acct)
+        configured_size = self.config.position.size_per_trade
+        if ranked_allocation is not None:
+            available_cash = min(available_cash, float(ranked_allocation.get("available_increment_notional") or 0.0))
+            configured_size = int(ranked_allocation.get("target_shares") or 0)
         original_target_shares = determine_buy_quantity(
             current_price=current_price,
             available_cash=available_cash,
-            configured_size=self.config.position.size_per_trade,
+            configured_size=configured_size,
             max_position=self.config.position.max_position,
             execution_price=execution_price,
         )
@@ -431,6 +440,54 @@ class TradingEngine:
             "available_cash": available_cash,
             "execution_price": execution_price,
             "original_target_shares": int(original_target_shares or 0),
+            "ranked_allocation": ranked_allocation,
+        }
+
+    def _ranked_position_policy_enabled(self) -> bool:
+        policy = getattr(self.config, "position_policy", None)
+        if policy is None:
+            return False
+        if self.mode != "paper":
+            return False
+        return (
+            str(getattr(policy, "mode", "") or "").strip().lower() == "ranked_aggressive"
+            and bool(getattr(policy, "paper_position_policy_enabled", False))
+        )
+
+    def _ranked_position_policy_allocation(self, acct) -> dict | None:
+        if not self._ranked_position_policy_enabled():
+            return None
+        top3 = list(getattr(self._ai_selection, "top3", None) or [])
+        if not top3:
+            return {
+                "allocation_status": "BLOCKED",
+                "allocation_reason": "selection_not_active",
+                "available_increment_notional": 0.0,
+            }
+        positions = getattr(acct, "positions", None)
+        if positions is None:
+            try:
+                positions = self.broker.get_positions()
+            except Exception:
+                positions = []
+        result = calculate_ranked_target_allocations(
+            top3,
+            account_equity=float(getattr(acct, "equity", 0.0) or 0.0),
+            current_positions=positions,
+            current_cash=float(getattr(acct, "cash", 0.0) or 0.0),
+            policy=getattr(self.config, "position_policy", None),
+            selection_mode=str(getattr(self._ai_selection, "selection_mode", "") or ""),
+            result_quality=str(getattr(self._ai_selection, "result_quality", "") or ""),
+            research_admission=str(getattr(self._ai_selection, "research_admission", "") or ""),
+        )
+        symbol = str(self.ticker or "").strip().upper().split(".")[0]
+        for row in result.get("target_allocations", []):
+            if str(row.get("symbol") or "").strip().upper().split(".")[0] == symbol:
+                return dict(row)
+        return {
+            "allocation_status": "BLOCKED",
+            "allocation_reason": "symbol_not_in_formal_top",
+            "available_increment_notional": 0.0,
         }
 
     def _emit_risk_decision(self, payload: dict) -> None:
@@ -988,7 +1045,11 @@ class TradingEngine:
                 shares = adjusted_shares
 
             if shares <= 0:
-                self._last_signal_reason = (
+                ranked_allocation = plan.get("ranked_allocation")
+                ranked_reason = ""
+                if isinstance(ranked_allocation, dict):
+                    ranked_reason = str(ranked_allocation.get("allocation_reason") or "").strip()
+                self._last_signal_reason = ranked_reason or (
                     f"买入数量为 0：购买力 ${buying_power:.2f} / 现金 ${cash:.2f} "
                     f"不足以买入 ${max(current_price, ask):.2f} 的标的"
                 )
@@ -1002,8 +1063,8 @@ class TradingEngine:
                         "allow_fallback_paper_entries": allow_paper,
                         "allow_fallback_live_entries": allow_live,
                         "risk_approved": False,
-                        "blocked_by": "position_sizing",
-                        "reason": "insufficient_shares",
+                        "blocked_by": "position_policy" if ranked_reason else "position_sizing",
+                        "reason": ranked_reason or "insufficient_shares",
                         "original_target_shares": int(plan["original_target_shares"]),
                         "adjusted_target_shares": int(shares),
                         "position_multiplier": multiplier if fallback_used else 1.0,
@@ -1018,6 +1079,7 @@ class TradingEngine:
                         "order_state_reason": self.order_state.blocked_reason,
                         "final_action": "blocked",
                         "reduce_only": self._reduce_only,
+                        "ranked_allocation": ranked_allocation,
                     }
                 )
                 return
@@ -1047,6 +1109,7 @@ class TradingEngine:
                     "order_state_reason": self.order_state.blocked_reason,
                     "final_action": "buy_candidate",
                     "reduce_only": self._reduce_only,
+                    "ranked_allocation": plan.get("ranked_allocation"),
                 }
             )
 
@@ -1641,6 +1704,8 @@ class TradingEngine:
         regime = self._detect_market_regime(top3, signal_for_ticker)
         strategy = self._route_strategy(regime, signal_for_ticker)
         allocation_weight = self._allocate_portfolio_weight(top3, signal_for_ticker)
+        result_quality = str(ai_meta.get("result_quality") or "").strip().upper()
+        research_admission = str(ai_meta.get("research_admission") or "").strip().upper()
         risk_approved = self._preapprove_ai_risk(
             regime,
             allocation_weight,
@@ -1659,6 +1724,8 @@ class TradingEngine:
             risk_approved=risk_approved,
             allocation_weight=allocation_weight,
             fallback_used=bool(ai_meta.get("fallback_used", False)),
+            result_quality=result_quality,
+            research_admission=research_admission,
         )
         logger.info("AI selector top10 candidates: %s", [item.get("ticker") for item in top10])
         logger.info("AI selector selected top3: %s", [item.get("ticker") for item in top3])
@@ -1683,6 +1750,8 @@ class TradingEngine:
             strategy=strategy,
             risk_approved=risk_approved,
             fallback_used=bool(ai_meta.get("fallback_used", False)),
+            result_quality=result_quality,
+            research_admission=research_admission,
         )
 
     def _ai_selection_signature_for_runtime(self, runtime) -> tuple[str, ...]:

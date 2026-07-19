@@ -5,8 +5,8 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from src.broker.base import Order, OrderSide, OrderStatus, OrderType
-from src.config.loader import AppConfig, PositionConfig
-from src.engine.trading_engine import TradingEngine
+from src.config.loader import AppConfig, PositionConfig, PositionPolicyConfig
+from src.engine.trading_engine import AISelectionDecision, TradingEngine
 
 
 class FakeStrategy:
@@ -43,6 +43,50 @@ class FakeRisk:
 
     def update_equity(self, equity: float):
         self.equity_updates.append(equity)
+
+
+def _active_selection(top3, *, result_quality="COMPLETE", research_admission="RESEARCH_READY"):
+    return AISelectionDecision(
+        enabled=True,
+        active=True,
+        selection_mode="ACTIVE",
+        top3=top3,
+        top10=top3,
+        signal_for_ticker=top3[0] if top3 else None,
+        regime="NORMAL",
+        strategy="range_detector",
+        risk_approved=True,
+        allocation_weight=1.0,
+        fallback_used=False,
+        result_quality=result_quality,
+        research_admission=research_admission,
+    )
+
+
+def _ranked_policy_config(ticker="SOFI", mode="paper"):
+    return AppConfig(
+        ticker=ticker,
+        mode=mode,
+        position=PositionConfig(size_per_trade=9999, max_position=9999),
+        position_policy=PositionPolicyConfig(
+            mode="ranked_aggressive",
+            paper_position_policy_enabled=True,
+            live_position_policy_enabled=False,
+        ),
+    )
+
+
+def _candidate(symbol, *, asset_type="common_stock", price=10.0):
+    return {
+        "ticker": symbol,
+        "symbol": symbol,
+        "asset_type": asset_type,
+        "current_price": price,
+        "data_status": "COMPLETE",
+        "scoring_eligible": True,
+        "candidate_score": 90.0,
+        "score_reason": "ranked",
+    }
 
 
 def use_test_pending_path(engine: TradingEngine, name: str) -> None:
@@ -213,6 +257,70 @@ def test_buy_sizing_does_not_use_margin_buying_power():
 
     assert place_calls == []
     assert "现金 $50.00" in engine._last_signal_reason
+
+
+def test_ranked_paper_policy_caps_top1_common_stock_to_35_percent():
+    engine = TradingEngine(_ranked_policy_config("SOFI"), ignore_trading_hours=True)
+    use_test_pending_path(engine, "ranked-common")
+    engine._ai_selection = _active_selection([
+        _candidate("SOFI", price=10.0),
+        _candidate("AAPL", price=10.0),
+        _candidate("NVDA", price=10.0),
+    ])
+    account = SimpleNamespace(cash=10_000.0, buying_power=10_000.0, equity=10_000.0, positions=[])
+
+    plan = engine._build_ai_buy_plan(account, current_price=10.0, ask=10.0)
+
+    assert plan["ranked_allocation"]["capped_target_weight"] == 0.35
+    assert plan["ranked_allocation"]["available_increment_notional"] == 3500.0
+    assert plan["original_target_shares"] == 349
+
+
+def test_ranked_paper_policy_caps_soxs_to_15_percent():
+    engine = TradingEngine(_ranked_policy_config("SOXS"), ignore_trading_hours=True)
+    use_test_pending_path(engine, "ranked-soxs")
+    engine._ai_selection = _active_selection([
+        _candidate("SOXS", asset_type="inverse_etf", price=10.0),
+        _candidate("SOFI", price=10.0),
+        _candidate("AAPL", price=10.0),
+    ])
+    account = SimpleNamespace(cash=10_000.0, buying_power=10_000.0, equity=10_000.0, positions=[])
+
+    plan = engine._build_ai_buy_plan(account, current_price=10.0, ask=10.0)
+
+    assert plan["ranked_allocation"]["capped_target_weight"] == 0.15
+    assert plan["ranked_allocation"]["allocation_reason"] == "leveraged_inverse_position_limit"
+    assert plan["original_target_shares"] == 149
+
+
+def test_ranked_paper_policy_blocks_degraded_research_only_entries():
+    engine = TradingEngine(_ranked_policy_config("SOFI"), ignore_trading_hours=True)
+    use_test_pending_path(engine, "ranked-degraded")
+    engine._ai_selection = _active_selection(
+        [_candidate("SOFI", price=10.0)],
+        result_quality="DEGRADED",
+        research_admission="RESEARCH_ONLY",
+    )
+    account = SimpleNamespace(cash=10_000.0, buying_power=10_000.0, equity=10_000.0, positions=[])
+
+    plan = engine._build_ai_buy_plan(account, current_price=10.0, ask=10.0)
+
+    assert plan["ranked_allocation"]["allocation_status"] == "BLOCKED"
+    assert plan["ranked_allocation"]["allocation_reason"] == "result_quality_not_complete"
+    assert plan["original_target_shares"] == 0
+
+
+def test_ranked_policy_is_not_enabled_for_live_by_default():
+    engine = TradingEngine(_ranked_policy_config("SOFI", mode="live"), ignore_trading_hours=True)
+    use_test_pending_path(engine, "ranked-live-disabled")
+    engine._ai_selection = _active_selection([_candidate("SOFI", price=10.0)])
+    account = SimpleNamespace(cash=10_000.0, buying_power=10_000.0, equity=10_000.0, positions=[])
+
+    plan = engine._build_ai_buy_plan(account, current_price=10.0, ask=10.0)
+
+    assert plan["ranked_allocation"] is None
+    assert plan["available_cash"] == 3000.0
+    assert plan["original_target_shares"] == 299
 
 
 def test_adopt_active_live_order_retries_after_rate_limit():
