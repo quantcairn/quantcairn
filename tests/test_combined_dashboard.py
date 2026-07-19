@@ -10,6 +10,23 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.dashboard import combined
 
+
+def test_dashboard_read_snapshot_cache_avoids_rebuilding(monkeypatch):
+    calls = []
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(combined, "_READ_SNAPSHOT_CACHE_TTL", 60.0)
+    combined._READ_SNAPSHOT_CACHE.clear()
+
+    def builder():
+        calls.append(True)
+        return {"state": "SAFE"}
+
+    first = combined._cached_read_snapshot("unit-test", builder)
+    second = combined._cached_read_snapshot("unit-test", builder)
+
+    assert first == second == {"state": "SAFE"}
+    assert len(calls) == 1
+
 class SimpleMonkeyPatch:
     def __init__(self):
         self._originals = {}

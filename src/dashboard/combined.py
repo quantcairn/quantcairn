@@ -66,6 +66,9 @@ _LIVE_ACCOUNT_CACHE = None
 _LIVE_ACCOUNT_CACHE_AT = 0.0
 _LIVE_ACCOUNT_CACHE_TTL = float(os.getenv("SOXS_LIVE_ACCOUNT_CACHE_TTL", "60"))
 _LIVE_ACCOUNT_LOCK = threading.Lock()
+_READ_SNAPSHOT_CACHE_TTL = float(os.getenv("SOXS_DASHBOARD_SNAPSHOT_CACHE_TTL", "60"))
+_READ_SNAPSHOT_CACHE_LOCK = threading.Lock()
+_READ_SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 _STATUS_CACHE: dict[int, dict] = {}
 _STATUS_FAILURES: dict[int, int] = {}
 _STATUS_OFFLINE_THRESHOLD = 3
@@ -177,6 +180,20 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "warnings": list(ai_selection.get("warnings_structured") or ai_selection.get("warnings") or []),
         "mismatch_reason": format_optional(mismatch_reason),
     }
+
+
+def _cached_read_snapshot(key: str, builder) -> dict[str, object]:
+    if "PYTEST_CURRENT_TEST" in os.environ or _READ_SNAPSHOT_CACHE_TTL <= 0:
+        return builder()
+    now = time.monotonic()
+    with _READ_SNAPSHOT_CACHE_LOCK:
+        cached = _READ_SNAPSHOT_CACHE.get(key)
+        if cached and (now - cached[0]) < _READ_SNAPSHOT_CACHE_TTL:
+            return cached[1]
+    payload = builder()
+    with _READ_SNAPSHOT_CACHE_LOCK:
+        _READ_SNAPSHOT_CACHE[key] = (now, payload)
+    return payload
 
 
 def _combined_pid_file_path() -> Path:
@@ -1276,8 +1293,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             "history_count": 0,
             "latest_candidate": {},
             "candidate_validation_rows": [],
-            "performance": _candidate_performance_snapshot(),
-            "research_report": _candidate_research_report_snapshot(),
+            "performance": _candidate_performance_payload(),
+            "research_report": _candidate_research_report_payload(),
             "last_updated": None,
             "status_issue": None,
             "validation_status": "AI_CANDIDATE",
@@ -1297,8 +1314,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             "history_count": 0,
             "latest_candidate": {},
             "candidate_validation_rows": [],
-            "performance": _candidate_performance_snapshot(),
-            "research_report": _candidate_research_report_snapshot(),
+            "performance": _candidate_performance_payload(),
+            "research_report": _candidate_research_report_payload(),
             "last_updated": None,
             "status_issue": "data_invalid",
             "validation_status": "REJECTED",
@@ -1315,8 +1332,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             "history_count": 0,
             "latest_candidate": {},
             "candidate_validation_rows": [],
-            "performance": _candidate_performance_snapshot(),
-            "research_report": _candidate_research_report_snapshot(),
+            "performance": _candidate_performance_payload(),
+            "research_report": _candidate_research_report_payload(),
             "last_updated": None,
             "status_issue": None,
             "validation_status": "AI_CANDIDATE",
@@ -1435,8 +1452,8 @@ def _candidate_validation_snapshot() -> dict[str, object]:
             },
         } if latest is not None else {},
         "candidate_validation_rows": [record.to_dict() for record in candidates[:5]],
-        "performance": _candidate_performance_snapshot(),
-        "research_report": _candidate_research_report_snapshot(),
+        "performance": _candidate_performance_payload(),
+        "research_report": _candidate_research_report_payload(),
         "last_updated": latest_updated,
         "status_issue": invalid_issue,
         "validation_status": latest.validation_status if latest is not None else "AI_CANDIDATE",
@@ -1465,11 +1482,11 @@ def _candidate_validation_snapshot() -> dict[str, object]:
 
 
 def _candidate_validation_payload() -> dict[str, object]:
-    return _candidate_validation_snapshot()
+    return _cached_read_snapshot("candidate_validation", _candidate_validation_snapshot)
 
 
 def _candidate_performance_payload() -> dict[str, object]:
-    return _candidate_performance_snapshot() or {
+    return _cached_read_snapshot("candidate_performance", _candidate_performance_snapshot) or {
         "available": False,
         "state": "STALE",
         "status_label": "STALE",
@@ -1487,7 +1504,7 @@ def _candidate_performance_payload() -> dict[str, object]:
 
 
 def _candidate_research_report_payload() -> dict[str, object]:
-    return _candidate_research_report_snapshot() or {
+    return _cached_read_snapshot("candidate_research_report", _candidate_research_report_snapshot) or {
         "available": False,
         "state": "STALE",
         "status_label": "STALE",
@@ -1512,7 +1529,7 @@ def _candidate_research_report_payload() -> dict[str, object]:
 
 
 def _candidate_model_evaluation_payload() -> dict[str, object]:
-    return _candidate_model_evaluation_snapshot() or {
+    return _cached_read_snapshot("candidate_model_evaluation", _candidate_model_evaluation_snapshot) or {
         "title": "Candidate Model Evaluation",
         "generated_at": None,
         "active_model_version": None,
