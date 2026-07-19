@@ -18,7 +18,8 @@ from src.utils.market_calendar import required_selection_date
 def _project_dir() -> Path:
     from src.ai_selector.selection_state import PROJECT_DIR
 
-    return PROJECT_DIR
+    configured = str(os.environ.get("SOXS_PROJECT_DIR") or "").strip()
+    return Path(configured).expanduser().resolve() if configured else Path(PROJECT_DIR).resolve()
 
 
 def _state_dir() -> Path:

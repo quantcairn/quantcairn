@@ -214,7 +214,7 @@ def test_universe_filter_rejects_only_rule_violations():
     assert "price_missing" in rejected_by_ticker["NONE"]["rejection_reason"]
 
 
-def test_main_drops_out_of_band_tickers_before_writing_top_configs():
+def test_main_drops_out_of_band_tickers_before_writing_top_configs(monkeypatch):
     module = _load_module()
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
@@ -223,11 +223,15 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs():
         (tmpdir / "configs" / "TOP3.yaml").write_text("ticker: OLD\nmode: paper\n", encoding="utf-8")
 
         from src.ai_selector import config_writer
+        from src.ai_selector import selection_state
 
         original_base = config_writer.BASE
         captured_bundles: list[dict] = []
         original_bundle_writer = module.write_selection_bundle_atomic
         try:
+            monkeypatch.setenv("SOXS_PROJECT_DIR", str(tmpdir))
+            monkeypatch.setenv("SOXS_STATE_DIR", str(tmpdir / "state"))
+            monkeypatch.setattr(selection_state, "PROJECT_DIR", tmpdir)
             config_writer.BASE = str(tmpdir)
             _patch_common(module, tmpdir)
             try:

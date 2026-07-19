@@ -13,6 +13,7 @@ from src.ai_selector.selection_report import load_latest_ai_selection_state
 def _patch_bundle_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(selection_state, "PROJECT_DIR", tmp_path)
     monkeypatch.setattr(config_writer, "BASE", str(tmp_path))
+    monkeypatch.setenv("SOXS_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("SOXS_STATE_DIR", str(tmp_path / "state"))
     (tmp_path / "configs").mkdir(parents=True, exist_ok=True)
     (tmp_path / "reports").mkdir(parents=True, exist_ok=True)
