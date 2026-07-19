@@ -9,15 +9,27 @@ import os
 import tempfile
 from pathlib import Path
 
-# Redirect state/log dirs to temp so sandbox doesn't block writes
+# Redirect module initialization to temp paths without leaking environment
+# overrides into unrelated tests in the same pytest process.
 _tmpdir = Path(tempfile.mkdtemp(prefix="orphan_test_"))
-os.environ["SOXS_STATE_DIR"] = str(_tmpdir / "state")
-os.environ["SOXS_RUNTIME_AUDIT_DIR"] = str(_tmpdir / "audit")
+_saved_test_env = {
+    "SOXS_STATE_DIR": os.environ.get("SOXS_STATE_DIR"),
+    "SOXS_RUNTIME_AUDIT_DIR": os.environ.get("SOXS_RUNTIME_AUDIT_DIR"),
+}
+try:
+    os.environ["SOXS_STATE_DIR"] = str(_tmpdir / "state")
+    os.environ["SOXS_RUNTIME_AUDIT_DIR"] = str(_tmpdir / "audit")
 
-from src.broker.base import (
-    AccountInfo, Order, OrderSide, OrderStatus, OrderType, Position,
-)
-from src.engine.orphan_monitor import OrphanPositionMonitor
+    from src.broker.base import (
+        AccountInfo, Order, OrderSide, OrderStatus, OrderType, Position,
+    )
+    from src.engine.orphan_monitor import OrphanPositionMonitor
+finally:
+    for _name, _value in _saved_test_env.items():
+        if _value is None:
+            os.environ.pop(_name, None)
+        else:
+            os.environ[_name] = _value
 
 
 class FakeBroker:

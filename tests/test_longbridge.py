@@ -36,13 +36,26 @@ def test_longbridge_validates_order(tmp_path):
         raise AssertionError("invalid side should fail")
 
 
-def test_longbridge_live_buy_is_blocked_by_global_reduce_only(tmp_path):
+def test_longbridge_live_buy_is_blocked_by_global_reduce_only(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "trading_flags.json").write_text(
+        json.dumps({"reduce_only_all": True}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+
+    class NoNetworkSession:
+        def request(self, *args, **kwargs):
+            raise AssertionError("reduce-only rejection must happen before network access")
+
     broker = LongBridgeBroker(
         dry_run=False,
         log_dir=str(tmp_path),
         api_key="key",
         api_secret="secret",
         base_url="https://example.invalid",
+        session=NoNetworkSession(),
     )
 
     response = broker.place_order(
@@ -54,7 +67,13 @@ def test_longbridge_live_buy_is_blocked_by_global_reduce_only(tmp_path):
 
 
 def run_test_direct():
+    from pytest import MonkeyPatch
+
     tmp_root = Path(tempfile.mkdtemp(prefix="longbridge-legacy-test-"))
     test_longbridge_dry_run_audit_log(tmp_root)
     test_longbridge_validates_order(tmp_root)
-    test_longbridge_live_buy_is_blocked_by_global_reduce_only(tmp_root)
+    monkeypatch = MonkeyPatch()
+    try:
+        test_longbridge_live_buy_is_blocked_by_global_reduce_only(tmp_root, monkeypatch)
+    finally:
+        monkeypatch.undo()
