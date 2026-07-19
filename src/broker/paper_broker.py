@@ -10,6 +10,7 @@ Features:
 - Trade history
 """
 import logging
+import os
 import random
 import uuid
 from dataclasses import dataclass, field
@@ -21,7 +22,12 @@ from .base import (
     BrokerBase, Order, OrderSide, OrderType, OrderStatus,
     Position, AccountInfo,
 )
-from .paper_portfolio_state import PaperPortfolioState, write_paper_portfolio_state
+from .paper_portfolio_state import (
+    PaperPortfolioState,
+    PaperPortfolioStateError,
+    PaperPortfolioStateStore,
+    new_writer_run_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,9 @@ class PaperBroker(BrokerBase):
         portfolio_state_path: str | Path | None = None,
         persist_portfolio_state: bool = False,
         account_id: str = "paper-default",
+        writer_port: int | None = None,
+        writer_mode: str = "paper",
+        writer_run_id: str | None = None,
     ):
         self._initial_cash = initial_cash
         self._cash = initial_cash
@@ -69,10 +78,23 @@ class PaperBroker(BrokerBase):
         self._positions: dict[str, Position] = {}
         self._connected = False
         self._current_prices: dict[str, float] = {}
-        self._portfolio_state_path = Path(portfolio_state_path) if portfolio_state_path is not None else None
         self._persist_portfolio_state_enabled = bool(persist_portfolio_state)
         self._account_id = account_id
         self._processed_fill_ids: set[str] = set()
+        self._writer_port = writer_port
+        self._writer_mode = writer_mode
+        self._writer_run_id = writer_run_id or new_writer_run_id()
+        self._state_store = (
+            PaperPortfolioStateStore(
+                path=portfolio_state_path,
+                account_id=account_id,
+                writer_port=writer_port,
+                writer_mode=writer_mode,
+                writer_run_id=self._writer_run_id,
+            )
+            if self._persist_portfolio_state_enabled
+            else None
+        )
 
         # --- New tracking fields ---
         self._trade_history: list[TradeRecord] = []
@@ -82,7 +104,8 @@ class PaperBroker(BrokerBase):
         self._losses: int = 0
         self._total_win_amount: float = 0.0
         self._total_loss_amount: float = 0.0
-        self._persist_portfolio_state()
+        if self._persist_portfolio_state_enabled:
+            self._load_or_create_portfolio_state()
 
     # ---- BrokerBase Implementation ----
 
@@ -137,6 +160,49 @@ class PaperBroker(BrokerBase):
         )
         self._trade_history.append(record)
 
+    def _load_or_create_portfolio_state(self) -> None:
+        if self._state_store is None:
+            return
+        initial_state = PaperPortfolioState.initial(
+            account_id=self._account_id,
+            initial_cash=self._initial_cash,
+            execution_mode="paper",
+            writer_mode=self._writer_mode,
+            writer_run_id=self._writer_run_id,
+            writer_port=self._writer_port,
+        )
+        with self._state_store.locked():
+            state = self._state_store.load_or_create(initial_state)
+        self._sync_from_portfolio_state(state)
+
+    def _sync_from_portfolio_state(self, state: PaperPortfolioState) -> None:
+        self._cash = float(state.cash or 0.0)
+        self._realized_pnl = float(state.realized_pnl or 0.0)
+        self._total_commission = float(state.total_commission or 0.0)
+        self._processed_fill_ids = set(str(item) for item in (state.processed_fill_ids or []) if str(item))
+        self._positions = {}
+        self._current_prices = {}
+        for item in state.positions or []:
+            if not isinstance(item, dict):
+                continue
+            ticker = str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+            quantity = int(item.get("quantity") or 0)
+            if not ticker or quantity <= 0:
+                continue
+            avg_entry_price = float(item.get("avg_entry_price", item.get("average_cost")) or 0.0)
+            current_price = float(item.get("current_price", item.get("market_price")) or 0.0)
+            position = Position(
+                ticker=ticker,
+                quantity=quantity,
+                avg_entry_price=avg_entry_price,
+                current_price=current_price,
+                market_value=float(item.get("market_value") or quantity * current_price),
+                unrealized_pnl=float(item.get("unrealized_pnl") or 0.0),
+                unrealized_pnl_pct=float(item.get("unrealized_pnl_pct") or 0.0),
+            )
+            self._positions[ticker] = position
+            self._current_prices[ticker] = current_price
+
     def _persist_portfolio_state(
         self,
         *,
@@ -146,8 +212,8 @@ class PaperBroker(BrokerBase):
     ) -> None:
         if not self._persist_portfolio_state_enabled:
             return
-        if last_fill_id:
-            self._processed_fill_ids.add(str(last_fill_id))
+        if self._state_store is None:
+            raise PaperPortfolioStateError("portfolio_state_store_unavailable")
         state = PaperPortfolioState.from_account(
             self.get_account(),
             account_id=self._account_id,
@@ -156,8 +222,20 @@ class PaperBroker(BrokerBase):
             last_fill_id=last_fill_id,
             last_order_id=last_order_id,
             last_event_id=last_event_id,
+            writer_pid=os.getpid(),
+            writer_port=self._writer_port,
+            writer_mode=self._writer_mode,
+            writer_run_id=self._writer_run_id,
+            execution_mode="paper",
         )
-        write_paper_portfolio_state(state, path=self._portfolio_state_path)
+        with self._state_store.locked():
+            saved = self._state_store.save(
+                state,
+                last_fill_id=last_fill_id,
+                last_order_id=last_order_id,
+                last_event_id=last_event_id,
+            )
+        self._sync_from_portfolio_state(saved)
 
     def place_order(
         self,
@@ -169,8 +247,50 @@ class PaperBroker(BrokerBase):
         current_bid: float = 0,
         current_ask: float = 0,
     ) -> Order:
+        if self._persist_portfolio_state_enabled and self._state_store is not None:
+            with self._state_store.locked():
+                latest = self._state_store.load()
+                if latest is not None:
+                    self._sync_from_portfolio_state(latest)
+                return self._place_order_unlocked(
+                    ticker=ticker,
+                    side=side,
+                    quantity=quantity,
+                    order_type=order_type,
+                    limit_price=limit_price,
+                    current_bid=current_bid,
+                    current_ask=current_ask,
+                )
+        return self._place_order_unlocked(
+            ticker=ticker,
+            side=side,
+            quantity=quantity,
+            order_type=order_type,
+            limit_price=limit_price,
+            current_bid=current_bid,
+            current_ask=current_ask,
+        )
+
+    def _place_order_unlocked(
+        self,
+        ticker: str,
+        side: OrderSide,
+        quantity: int,
+        order_type: OrderType = OrderType.MARKET,
+        limit_price: Optional[float] = None,
+        current_bid: float = 0,
+        current_ask: float = 0,
+    ) -> Order:
         """Place a simulated order with realistic fill prices."""
         order_id = f"paper-{uuid.uuid4().hex[:8]}"
+
+        if quantity <= 0:
+            return Order(
+                order_id=order_id, ticker=ticker, side=side,
+                order_type=order_type, quantity=quantity,
+                status=OrderStatus.REJECTED,
+                notes="Invalid quantity",
+            )
 
         # Guard: require at least one valid price to avoid free trades
         if current_bid <= 0 and current_ask <= 0:
@@ -277,6 +397,7 @@ class PaperBroker(BrokerBase):
         else:
             pos.unrealized_pnl = 0
             pos.unrealized_pnl_pct = 0
+            self._positions.pop(ticker, None)
 
         # Store current price
         self._current_prices[ticker] = fill_price
@@ -300,11 +421,17 @@ class PaperBroker(BrokerBase):
             commission=commission,
         )
         self._orders[order_id] = order
-        self._persist_portfolio_state(
-            last_fill_id=order_id,
-            last_order_id=order_id,
-            last_event_id=f"paper:{order_id}",
-        )
+        try:
+            self._persist_portfolio_state(
+                last_fill_id=order_id,
+                last_order_id=order_id,
+                last_event_id=f"paper:{order_id}",
+            )
+        except PaperPortfolioStateError as exc:
+            logger.error("[PAPER] Filled order persistence failed: %s", exc)
+            order.status = OrderStatus.REJECTED
+            order.notes = f"PERSIST_FAILED:{exc}"
+            return order
 
         logger.info(
             f"[PAPER] {side.value} {quantity} {ticker} @ ${fill_price:.2f} "

@@ -46,10 +46,10 @@ def test_dashboard_paper_portfolio_state_cache_invalidates_on_file_change(tmp_pa
     monkeypatch.setattr(combined, "read_paper_portfolio_state", read_paper_portfolio_state)
     combined._PAPER_PORTFOLIO_STATE_CACHE.clear()
 
-    write_paper_portfolio_state(PaperPortfolioState(cash=100.0, equity=110.0), path=state_path)
+    write_paper_portfolio_state(PaperPortfolioState(cash=100.0, equity=100.0), path=state_path)
     first = combined._read_unified_paper_portfolio_state()
 
-    write_paper_portfolio_state(PaperPortfolioState(cash=2200.0, equity=2300.0), path=state_path)
+    write_paper_portfolio_state(PaperPortfolioState(cash=2200.0, equity=2200.0), path=state_path)
     second = combined._read_unified_paper_portfolio_state()
 
     assert first["cash"] == 100.0
