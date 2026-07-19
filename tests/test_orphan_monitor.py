@@ -10,6 +10,16 @@ from src.engine.orphan_monitor import OrphanPositionMonitor
 from src.engine.trading_engine import TradingEngine, check_exit_conditions
 
 
+@pytest.fixture(autouse=True)
+def _isolate_remote_trade_notifications(monkeypatch):
+    for name in (
+        "SOXS_TELEGRAM_BOT_TOKEN",
+        "SOXS_TELEGRAM_CHAT_ID",
+        "SOXS_WEBHOOK_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _use_test_state(engine: TradingEngine, name: str) -> None:
     pending = Path(tempfile.gettempdir()) / f"soxs-orphan-pending-{name}.json"
     sync = Path(tempfile.gettempdir()) / f"soxs-orphan-sync-{name}.json"
@@ -64,6 +74,31 @@ class FakeBroker:
             avg_fill_price=float(kwargs.get("current_bid") or kwargs.get("current_ask") or 0.0),
             status=OrderStatus.FILLED,
         )
+
+
+class FakeNotifier:
+    def __init__(self):
+        self.trades = []
+        self.order_submitted_calls = []
+        self.alerts = []
+
+    def trade(self, ticker, side, quantity, price, pnl=None, mode=None, **kwargs):
+        self.trades.append(
+            {
+                "ticker": ticker,
+                "side": side,
+                "quantity": quantity,
+                "price": price,
+                "pnl": pnl,
+                "mode": mode,
+            }
+        )
+
+    def order_submitted(self, *args, **kwargs):
+        self.order_submitted_calls.append((args, kwargs))
+
+    def alert(self, message, level="info"):
+        self.alerts.append((message, level))
 
 
 def _position(ticker: str, qty: int, avg_cost: float, current_price: float) -> Position:
@@ -205,6 +240,20 @@ def test_orphan_monitor_soxs_special_exits_submit_sell(current_price, reason):
     assert broker.orders[0]["side"] == OrderSide.SELL
     assert broker.orders[0]["quantity"] == 7
     assert broker.orders[0]["notes"] == f"orphan:{reason}"
+
+
+def test_orphan_exit_trade_notification_uses_live_mode():
+    broker = FakeBroker(positions=[_position("SOXS", 7, 100.0, 105.0)])
+    monitor = OrphanPositionMonitor(broker=broker)
+    pos = _position("SOXS", 7, 100.0, 105.0)
+    engine = monitor._engine_for_symbol("SOXS")
+    engine.notifier = FakeNotifier()
+    _use_test_state(engine, "soxs-live-mode-notification")
+
+    monitor._evaluate_symbol("SOXS", pos)
+
+    assert engine.notifier.trades
+    assert engine.notifier.trades[0]["mode"] == "live"
 
 
 def test_orphan_monitor_soxs_pending_sell_does_not_repeat():

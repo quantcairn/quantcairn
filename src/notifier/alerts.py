@@ -3,6 +3,7 @@ Notification system: sends alerts via console, macOS notifications, webhooks, an
 """
 import json
 import logging
+import math
 import os
 import subprocess
 import time
@@ -78,15 +79,26 @@ class Notifier:
 
     def trade(self, ticker: str, side: str, quantity: int, price: float, pnl: Optional[float] = None, mode: str = "paper") -> None:
         """Notify about an executed trade."""
+        side_upper = str(side or "").upper()
+        try:
+            quantity_int = int(quantity)
+            price_float = float(price)
+        except (TypeError, ValueError):
+            logger.warning("Rejected trade notification with malformed fill: %s %s qty=%r price=%r", ticker, side, quantity, price)
+            return
+        if quantity_int <= 0 or price_float <= 0 or not math.isfinite(price_float):
+            logger.warning("Rejected trade notification with invalid fill: %s %s qty=%r price=%r", ticker, side, quantity, price)
+            return
+
         prefix = "实盘" if mode == "live" else "模拟"
-        side_cn = "买入" if side.upper() == "BUY" else "卖出"
-        emoji = "🟢" if side.upper() == "BUY" else "🔴"
-        trade_value = price * quantity
-        sign = "+" if side.upper() == "BUY" else "-"
+        side_cn = "买入" if side_upper == "BUY" else "卖出"
+        emoji = "🟢" if side_upper == "BUY" else "🔴"
+        trade_value = price_float * quantity_int
+        sign = "+" if side_upper == "BUY" else "-"
 
         pnl_str = f" | 盈亏 ${pnl:+.2f}" if pnl is not None else ""
-        title = f"{emoji} {prefix}{side_cn} {ticker} {quantity}股"
-        body = f"{sign}${trade_value:,.2f} @ ${price:.2f}{pnl_str}"
+        title = f"{emoji} {prefix}{side_cn} {ticker} {quantity_int}股"
+        body = f"{sign}${trade_value:,.2f} @ ${price_float:.2f}{pnl_str}"
 
         # External notifications are intentionally limited to filled trades
         # so the desktop / Telegram channels stay quiet during scans, signals,

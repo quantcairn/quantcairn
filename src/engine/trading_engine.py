@@ -2348,7 +2348,7 @@ class TradingEngine:
                 filled_qty = int(order.filled_quantity or 0)
                 pnl = self._calculate_pnl(order.avg_fill_price, filled_qty)
                 self.notifier.trade(
-                    self.ticker, "SELL", filled_qty, order.avg_fill_price, pnl
+                    self.ticker, "SELL", filled_qty, order.avg_fill_price, pnl, mode=self.mode
                 )
                 if self._entry_price and order.avg_fill_price:
                     self.risk.record_trade(TradeRecord(

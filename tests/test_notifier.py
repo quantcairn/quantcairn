@@ -1,6 +1,32 @@
 from src.notifier.alerts import Notifier
 
 
+def test_trade_notification_rejects_invalid_fill(monkeypatch):
+    notifier = Notifier(console=False, macos_notification=True, webhook_url="https://example.invalid")
+    calls = []
+    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    notifier.trade("SOXS", "SELL", 0, 100.0, mode="paper")
+    notifier.trade("SOXS", "SELL", 5, 0.0, pnl=-500.0, mode="paper")
+    notifier.trade("SOXS", "SELL", "bad-qty", 100.0, mode="paper")
+    notifier.trade("SOXS", "SELL", 5, "bad-price", mode="paper")
+
+    assert calls == []
+    assert notifier._trade_count_since_summary == 0
+    assert notifier._last_trades == []
+
+
+def test_trade_notification_uses_explicit_mode_label(monkeypatch):
+    notifier = Notifier(console=False, macos_notification=True, webhook_url=None)
+    calls = []
+    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    notifier.trade("SOXS", "SELL", 5, 105.0, pnl=25.0, mode="live")
+
+    assert calls
+    assert "实盘卖出" in calls[0][0][0]
+
+
 def test_only_trade_notifications_reach_macos():
     notifier = Notifier(console=False, macos_notification=True, webhook_url=None)
     calls = []

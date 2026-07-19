@@ -8,6 +8,7 @@ Verifies that the orphan monitor:
 import os
 import tempfile
 from pathlib import Path
+import pytest
 
 # Redirect module initialization to temp paths without leaking environment
 # overrides into unrelated tests in the same pytest process.
@@ -30,6 +31,16 @@ finally:
             os.environ.pop(_name, None)
         else:
             os.environ[_name] = _value
+
+
+@pytest.fixture(autouse=True)
+def _isolate_remote_trade_notifications(monkeypatch):
+    for name in (
+        "SOXS_TELEGRAM_BOT_TOKEN",
+        "SOXS_TELEGRAM_CHAT_ID",
+        "SOXS_WEBHOOK_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 class FakeBroker:
