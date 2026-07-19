@@ -137,7 +137,12 @@ def test_reconcile_pending_buy_fill_updates_local_state():
     assert engine._entry_price == 7.25
     assert engine._position_shares == 5
     assert engine.strategy.recorded_entries == [7.25]
-    assert engine.notifier.trades == [("SOFI", "BUY", 5, 7.25, None, "paper", {})]
+    assert engine.notifier.trades[0][:6] == ("SOFI", "BUY", 5, 7.25, None, "paper")
+    assert engine.notifier.trades[0][6] == {
+        "fill_id": "LB-BUY-1:5",
+        "event_id": "paper:SOFI:BUY:LB-BUY-1:5",
+        "notification_key": "paper:SOFI:BUY:LB-BUY-1:5",
+    }
 
 
 def test_reconcile_partial_buy_fill_keeps_pending_order():
@@ -174,7 +179,12 @@ def test_reconcile_partial_buy_fill_keeps_pending_order():
     assert engine._pending_order is not None
     assert engine._pending_order["acknowledged_filled_quantity"] == 2
     assert engine._position_shares == 2
-    assert engine.notifier.trades == [("SOFI", "BUY", 2, 7.2, None, "paper", {})]
+    assert engine.notifier.trades[0][:6] == ("SOFI", "BUY", 2, 7.2, None, "paper")
+    assert engine.notifier.trades[0][6] == {
+        "fill_id": "LB-BUY-2:2",
+        "event_id": "paper:SOFI:BUY:LB-BUY-2:2",
+        "notification_key": "paper:SOFI:BUY:LB-BUY-2:2",
+    }
 
 
 def test_reconcile_pending_sell_fill_records_trade():

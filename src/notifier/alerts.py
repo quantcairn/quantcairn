@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,9 @@ ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 # Rate limiting for Telegram: max 1 msg/sec
 _telegram_last_send = 0.0
+_trade_notification_lock = threading.Lock()
+_TRADE_NOTIFICATION_SCHEMA_VERSION = "trade_notification_state.v1"
+_MAX_TRADE_NOTIFICATION_KEYS = 5000
 
 
 def _telegram_rate_limit():
@@ -35,6 +39,84 @@ def _telegram_rate_limit():
     if elapsed < 1.0:
         time.sleep(1.0 - elapsed)
     _telegram_last_send = time.time()
+
+
+def default_trade_notification_state_path() -> Path:
+    """Runtime state used to suppress replayed filled-trade notifications."""
+    override = os.environ.get("SOXS_TRADE_NOTIFICATION_STATE_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
+    state_dir = os.environ.get("SOXS_STATE_DIR")
+    if state_dir:
+        return (Path(state_dir).expanduser().resolve() / "trade_notification_state.json")
+    return PROJECT_DIR / "state" / "trade_notification_state.json"
+
+
+def _load_trade_notification_state(path: Path) -> dict:
+    if not path.exists():
+        return {
+            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
+            "sent_keys": [],
+            "notifications": {},
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Trade notification dedupe state unavailable: %s", exc)
+        return {
+            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
+            "sent_keys": [],
+            "notifications": {},
+        }
+    if not isinstance(payload, dict):
+        return {
+            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
+            "sent_keys": [],
+            "notifications": {},
+        }
+    sent_keys = [str(item) for item in payload.get("sent_keys") or [] if str(item)]
+    notifications = payload.get("notifications")
+    if not isinstance(notifications, dict):
+        notifications = {}
+    return {
+        "schema_version": payload.get("schema_version") or _TRADE_NOTIFICATION_SCHEMA_VERSION,
+        "sent_keys": sent_keys,
+        "notifications": notifications,
+    }
+
+
+def _record_trade_notification_key(path: Path, notification_key: str, metadata: dict) -> bool:
+    """Return True only for the first observed notification key."""
+    key = str(notification_key or "").strip()
+    if not key:
+        return True
+    with _trade_notification_lock:
+        state = _load_trade_notification_state(path)
+        sent_keys = [str(item) for item in state.get("sent_keys") or [] if str(item)]
+        if key in set(sent_keys):
+            logger.info("Skipped duplicate trade notification: %s", key)
+            return False
+        sent_keys.append(key)
+        if len(sent_keys) > _MAX_TRADE_NOTIFICATION_KEYS:
+            sent_keys = sent_keys[-_MAX_TRADE_NOTIFICATION_KEYS:]
+        notifications = state.get("notifications") or {}
+        notifications = {str(k): v for k, v in notifications.items() if str(k) in set(sent_keys)}
+        notifications[key] = dict(metadata)
+        payload = {
+            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
+            "updated_at": datetime.now(US_EASTERN).isoformat(),
+            "sent_keys": sent_keys,
+            "notifications": notifications,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.warning("Trade notification dedupe state write failed: %s", exc)
+            return True
+        return True
 
 
 class Notifier:
@@ -48,6 +130,7 @@ class Notifier:
         trade_summary_interval: int = 5,
         telegram_bot_token: str = "",
         telegram_chat_id: str = "",
+        trade_notification_state_path: str | Path | None = None,
     ):
         self.console_enabled = console
         self.macos_enabled = macos_notification
@@ -59,6 +142,11 @@ class Notifier:
 
         self._trade_count_since_summary = 0
         self._last_trades: list[str] = []
+        self._trade_notification_state_path = (
+            Path(trade_notification_state_path).expanduser().resolve()
+            if trade_notification_state_path is not None
+            else default_trade_notification_state_path()
+        )
 
     # ---- Public API ----
 
@@ -78,7 +166,18 @@ class Notifier:
         body = f"已提交{suffix}"
         self._send(title, body, "trade", macos=False, remote=False)
 
-    def trade(self, ticker: str, side: str, quantity: int, price: float, pnl: Optional[float] = None, mode: str = "paper") -> None:
+    def trade(
+        self,
+        ticker: str,
+        side: str,
+        quantity: int,
+        price: float,
+        pnl: Optional[float] = None,
+        mode: str = "paper",
+        notification_key: str | None = None,
+        fill_id: str | None = None,
+        event_id: str | None = None,
+    ) -> None:
         """Notify about an executed trade."""
         side_upper = str(side or "").upper()
         try:
@@ -90,6 +189,32 @@ class Notifier:
         if quantity_int <= 0 or price_float <= 0 or not math.isfinite(price_float):
             logger.warning("Rejected trade notification with invalid fill: %s %s qty=%r price=%r", ticker, side, quantity, price)
             return
+
+        dedupe_key = self._build_trade_notification_key(
+            mode=mode,
+            ticker=ticker,
+            side=side_upper,
+            notification_key=notification_key,
+            fill_id=fill_id,
+            event_id=event_id,
+        )
+        if dedupe_key:
+            first_seen = _record_trade_notification_key(
+                self._trade_notification_state_path,
+                dedupe_key,
+                {
+                    "ticker": str(ticker or ""),
+                    "side": side_upper,
+                    "quantity": quantity_int,
+                    "price": price_float,
+                    "mode": str(mode or ""),
+                    "fill_id": fill_id,
+                    "event_id": event_id,
+                    "created_at": datetime.now(US_EASTERN).isoformat(),
+                },
+            )
+            if not first_seen:
+                return
 
         prefix = "实盘" if mode == "live" else "模拟"
         side_cn = "买入" if side_upper == "BUY" else "卖出"
@@ -116,6 +241,30 @@ class Notifier:
         # Track for summary
         self._trade_count_since_summary += 1
         self._last_trades.append(body)
+
+    @staticmethod
+    def _build_trade_notification_key(
+        *,
+        mode: str,
+        ticker: str,
+        side: str,
+        notification_key: str | None = None,
+        fill_id: str | None = None,
+        event_id: str | None = None,
+    ) -> str | None:
+        explicit_key = str(notification_key or "").strip()
+        if explicit_key:
+            return explicit_key
+        mode_part = str(mode or "paper").strip().lower() or "paper"
+        ticker_part = str(ticker or "").strip().upper()
+        side_part = str(side or "").strip().upper()
+        fill_part = str(fill_id or "").strip()
+        if fill_part:
+            return f"{mode_part}:{ticker_part}:{side_part}:fill:{fill_part}"
+        event_part = str(event_id or "").strip()
+        if event_part:
+            return f"{mode_part}:{ticker_part}:{side_part}:event:{event_part}"
+        return None
 
     def alert(self, message: str, level: str = "info") -> None:
         """General alert (errors, warnings, halts)."""

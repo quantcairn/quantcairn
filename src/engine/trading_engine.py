@@ -1432,8 +1432,16 @@ class TradingEngine:
                 if self._entry_price is not None:
                     self._position_shares += order.filled_quantity
                 self.strategy.record_entry(order.avg_fill_price)  # Quick stop tracking
+                order_id = str(getattr(order, "order_id", "") or "")
                 self.notifier.trade(
-                    self.ticker, "BUY", order.filled_quantity, order.avg_fill_price, mode=self.mode
+                    self.ticker,
+                    "BUY",
+                    order.filled_quantity,
+                    order.avg_fill_price,
+                    mode=self.mode,
+                    fill_id=order_id or None,
+                    event_id=f"{self.mode}:{self.ticker}:BUY:{order_id}" if order_id else None,
+                    notification_key=f"{self.mode}:{self.ticker}:BUY:{order_id}" if order_id else None,
                 )
                 self._last_signal_reason = (
                     f"已买入 {order.filled_quantity} 股 @ ${order.avg_fill_price:.2f}"
@@ -1540,8 +1548,17 @@ class TradingEngine:
                 pnl = self._calculate_pnl(
                     order.avg_fill_price, int(order.filled_quantity or 0)
                 )
+                order_id = str(getattr(order, "order_id", "") or "")
                 self.notifier.trade(
-                    self.ticker, "SELL", order.filled_quantity, order.avg_fill_price, pnl, mode=self.mode
+                    self.ticker,
+                    "SELL",
+                    order.filled_quantity,
+                    order.avg_fill_price,
+                    pnl,
+                    mode=self.mode,
+                    fill_id=order_id or None,
+                    event_id=f"{self.mode}:{self.ticker}:SELL:{order_id}" if order_id else None,
+                    notification_key=f"{self.mode}:{self.ticker}:SELL:{order_id}" if order_id else None,
                 )
 
                 # Record the trade
@@ -2351,7 +2368,15 @@ class TradingEngine:
                 filled_qty = int(order.filled_quantity or 0)
                 pnl = self._calculate_pnl(order.avg_fill_price, filled_qty)
                 self.notifier.trade(
-                    self.ticker, "SELL", filled_qty, order.avg_fill_price, pnl, mode=self.mode
+                    self.ticker,
+                    "SELL",
+                    filled_qty,
+                    order.avg_fill_price,
+                    pnl,
+                    mode=self.mode,
+                    fill_id=order_id or None,
+                    event_id=f"{self.mode}:{self.ticker}:SELL:{order_id}" if order_id else None,
+                    notification_key=f"{self.mode}:{self.ticker}:SELL:{order_id}" if order_id else None,
                 )
                 if self._entry_price and order.avg_fill_price:
                     self.risk.record_trade(TradeRecord(
@@ -2708,8 +2733,22 @@ class TradingEngine:
             self._entry_price = fill_price
             self.strategy.record_entry(fill_price)
         self._position_shares = max(self._position_shares, int(order.filled_quantity or 0))
+        order_id = str(getattr(order, "order_id", "") or "")
+        fill_total = int(getattr(order, "filled_quantity", 0) or filled_quantity or 0)
+        notification_key = (
+            f"{self.mode}:{self.ticker}:BUY:{order_id}:{fill_total}"
+            if order_id
+            else None
+        )
         self.notifier.trade(
-            self.ticker, "BUY", filled_quantity, fill_price or 0.0, mode=self.mode
+            self.ticker,
+            "BUY",
+            filled_quantity,
+            fill_price or 0.0,
+            mode=self.mode,
+            fill_id=f"{order_id}:{fill_total}" if order_id else None,
+            event_id=notification_key,
+            notification_key=notification_key,
         )
         self._last_signal_reason = (
             f"买单已成交 {filled_quantity} 股 @ ${fill_price:.2f}"
@@ -2722,8 +2761,23 @@ class TradingEngine:
         entry_price = float(pending.get("entry_price_before") or self._entry_price or 0.0)
         pnl = ((fill_price - entry_price) * filled_quantity) if entry_price > 0 and fill_price > 0 else None
 
+        order_id = str(getattr(order, "order_id", "") or "")
+        fill_total = int(getattr(order, "filled_quantity", 0) or filled_quantity or 0)
+        notification_key = (
+            f"{self.mode}:{self.ticker}:SELL:{order_id}:{fill_total}"
+            if order_id
+            else None
+        )
         self.notifier.trade(
-            self.ticker, "SELL", filled_quantity, fill_price or 0.0, pnl, mode=self.mode
+            self.ticker,
+            "SELL",
+            filled_quantity,
+            fill_price or 0.0,
+            pnl,
+            mode=self.mode,
+            fill_id=f"{order_id}:{fill_total}" if order_id else None,
+            event_id=notification_key,
+            notification_key=notification_key,
         )
 
         if entry_price > 0 and fill_price > 0:
