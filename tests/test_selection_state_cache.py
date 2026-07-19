@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -36,6 +37,100 @@ class SimpleMonkeyPatch:
                     os.environ[name] = original
             else:
                 setattr(obj, name, original)
+
+
+def test_cached_selection_uses_committed_bundle_instead_of_latest_report():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            contaminated_latest = root / "reports" / "ai_selection_latest.json"
+            contaminated_latest.parent.mkdir(parents=True)
+            contaminated_latest.write_text(
+                json.dumps({
+                    "selection_date": "2026-07-17",
+                    "top3": [{"ticker": "UNPINNED"}],
+                    "top10": [{"ticker": "UNPINNED"}],
+                }),
+                encoding="utf-8",
+            )
+
+            class FakeDateTime:
+                @classmethod
+                def now(cls, tz=None):
+                    from datetime import datetime
+                    return datetime(2026, 7, 17, 10, 0, 0)
+
+            monkeypatch.setattr(engine_module, "datetime", FakeDateTime)
+            engine = object.__new__(TradingEngine)
+            engine._ny_tz = object()
+            engine._write_runtime_audit = lambda *args, **kwargs: None
+            bundle = {
+                "bundle_root": root / "state" / "selection_bundles" / "run-pinned" / "v1",
+                "manifest": {"selection_run_id": "run-pinned"},
+                "state": {"selection_run_id": "run-pinned", "et_date": "2026-07-17"},
+                "report": {
+                    "selection_run_id": "run-pinned",
+                    "selection_date": "2026-07-17",
+                    "top3": [{"ticker": "PINNED"}],
+                    "top10": [{"ticker": "PINNED"}],
+                },
+            }
+
+            cached = engine._load_cached_ai_selection(SimpleNamespace(enabled=True), bundle=bundle)
+
+            assert cached is not None
+            assert [item["ticker"] for item in cached[0]] == ["PINNED"]
+    finally:
+        monkeypatch.restore()
+
+
+def test_cached_selection_rejects_bundle_run_id_mismatch():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        class FakeDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                from datetime import datetime
+                return datetime(2026, 7, 17, 10, 0, 0)
+
+        monkeypatch.setattr(engine_module, "datetime", FakeDateTime)
+        engine = object.__new__(TradingEngine)
+        engine._ny_tz = object()
+        bundle = {
+            "manifest": {"selection_run_id": "run-a"},
+            "state": {"selection_run_id": "run-a", "et_date": "2026-07-17"},
+            "report": {
+                "selection_run_id": "run-b",
+                "selection_date": "2026-07-17",
+                "top3": [{"ticker": "SOFI"}],
+            },
+        }
+
+        assert engine._load_cached_ai_selection(object(), bundle=bundle) is None
+    finally:
+        monkeypatch.restore()
+
+
+def test_manifest_without_readable_committed_bundle_fails_closed():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state_dir = root / "state"
+            state_dir.mkdir(parents=True)
+            (state_dir / "selection_bundle_manifest.json").write_text("{}", encoding="utf-8")
+            monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+            monkeypatch.setattr(engine_module, "load_committed_selection_bundle", lambda _root: None)
+            monkeypatch.setattr(engine_module, "load_selection_state", lambda: {"et_date": "2026-07-17"})
+            engine = object.__new__(TradingEngine)
+
+            context = engine._load_ai_selection_context(SimpleNamespace(enabled=True))
+
+            assert context["selection_mode"] == "INVALID"
+            assert context["selection_reason"] == "committed_selection_bundle_unavailable"
+    finally:
+        monkeypatch.restore()
 
 
 def test_trading_engine_uses_fresh_selection_state_cache():

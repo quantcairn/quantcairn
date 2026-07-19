@@ -26,7 +26,6 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 TOP_CONFIGS = [PROJECT_DIR / "configs" / f"TOP{idx}.yaml" for idx in range(1, 6)]
 TOP_PORTS = [8091, 8092, 8093, 8094, 8095]
-AI_SELECTION_REPORT = PROJECT_DIR / "reports" / "ai_selection_latest.json"
 
 
 def _normalize_ticker(value: str) -> str:
@@ -64,14 +63,7 @@ def _is_equity_position(position: Position) -> bool:
 
 
 def _load_report_exit_range(symbol: str) -> dict | None:
-    payload = None
-    if AI_SELECTION_REPORT.exists():
-        try:
-            payload = json.loads(AI_SELECTION_REPORT.read_text(encoding="utf-8"))
-        except Exception:
-            payload = None
-    if not isinstance(payload, dict):
-        payload = load_latest_ai_selection_state(PROJECT_DIR)
+    payload = load_latest_ai_selection_state(PROJECT_DIR)
     if not isinstance(payload, dict):
         return None
 

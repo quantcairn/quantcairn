@@ -47,6 +47,7 @@ from ..ai_selector.selection_state import (
 )
 from ..ai_selector import selection_state as selection_state_module
 from ..ai_selector.selection_bundle import load_committed_selection_bundle
+from ..ai_selector.selection_report import load_latest_ai_selection_state
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -341,11 +342,8 @@ class TradingEngine:
         logger.warning("Could not seed auto range — waiting for live data")
 
     def _seed_auto_range_from_report(self) -> bool:
-        report_path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
-        if not report_path.exists():
-            return False
         try:
-            data = json.loads(report_path.read_text(encoding="utf-8"))
+            data = load_latest_ai_selection_state(PROJECT_DIR)
         except Exception:
             return False
         candidates = data.get("top5") if isinstance(data, dict) else None
@@ -1661,7 +1659,7 @@ class TradingEngine:
         bundle = load_committed_selection_bundle(PROJECT_DIR)
         state_path = selection_state_path()
         state_mtime = str(state_path.stat().st_mtime_ns) if state_path.exists() else "0"
-        manifest_path = PROJECT_DIR / "state" / "selection_bundle_manifest.json"
+        manifest_path = selection_state_path().parent / "selection_bundle_manifest.json"
         manifest_mtime = str(manifest_path.stat().st_mtime_ns) if manifest_path.exists() else "0"
         report_path = None
         if isinstance(bundle, dict):
@@ -1687,6 +1685,13 @@ class TradingEngine:
     def _load_ai_selection_context(self, runtime) -> dict[str, object]:
         bundle = load_committed_selection_bundle(PROJECT_DIR)
         state = load_selection_state()
+        manifest_path = selection_state_path().parent / "selection_bundle_manifest.json"
+        if manifest_path.exists() and not isinstance(bundle, dict):
+            return {
+                "selection_mode": "INVALID",
+                "selection_reason": "committed_selection_bundle_unavailable",
+                "cached_selection": None,
+            }
         if not isinstance(state, dict) and not isinstance(bundle, dict):
             return {
                 "selection_mode": "UNAVAILABLE",
@@ -1797,7 +1802,7 @@ class TradingEngine:
                 "cached_selection": None,
             }
 
-        cached_selection = self._load_cached_ai_selection(runtime)
+        cached_selection = self._load_cached_ai_selection(runtime, bundle=bundle)
         if cached_selection is None:
             return {
                 "selection_mode": "BLOCKED",
@@ -1815,8 +1820,9 @@ class TradingEngine:
     def _load_cached_ai_selection(
         self,
         runtime,
+        bundle: dict[str, object] | None = None,
     ) -> tuple[list[dict], list[dict], dict] | None:
-        state = load_selection_state()
+        state = bundle.get("state") if isinstance(bundle, dict) else load_selection_state()
         if not isinstance(state, dict):
             return None
         if not HAS_PYTZ or self._ny_tz is None:
@@ -1824,15 +1830,31 @@ class TradingEngine:
         required_day = datetime.now(self._ny_tz).date().isoformat()
         if str(state.get("et_date") or "").strip() != required_day:
             return None
-        report_path = self._resolve_selection_report_path(state)
-        if not report_path.exists():
-            return None
-        try:
-            payload = json.loads(report_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
+        report_path: Path | None = None
+        payload = bundle.get("report") if isinstance(bundle, dict) else None
+        if isinstance(bundle, dict):
+            bundle_root = bundle.get("bundle_root")
+            if isinstance(bundle_root, Path):
+                report_path = bundle_root / "ai_selection_report.json"
+        if not isinstance(payload, dict):
+            report_path = report_path or self._resolve_selection_report_path(state)
+            if not report_path.exists():
+                return None
+            try:
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+            except Exception:
+                return None
         if not isinstance(payload, dict):
             return None
+        if isinstance(bundle, dict):
+            manifest = bundle.get("manifest")
+            run_ids = {
+                str(source.get("selection_run_id") or "").strip()
+                for source in (manifest, state, payload)
+                if isinstance(source, dict) and str(source.get("selection_run_id") or "").strip()
+            }
+            if len(run_ids) > 1:
+                return None
         selection_date = str(payload.get("selection_date") or "").strip()
         if selection_date and selection_date != required_day:
             return None
@@ -1847,12 +1869,12 @@ class TradingEngine:
         logger.info(
             "AI selector reused cached daily selection for %s from %s",
             required_day,
-            report_path,
+            report_path or "committed_bundle",
         )
         self._write_runtime_audit(
             "ai_selector_cache_hit",
             ai_selector_enabled=runtime.enabled,
-            cache_report_path=str(report_path),
+            cache_report_path=str(report_path or "committed_bundle"),
             cache_et_date=required_day,
             cached_top3=[item.get("ticker") for item in top3],
             fallback_used=bool(payload.get("fallback_used", False)),
