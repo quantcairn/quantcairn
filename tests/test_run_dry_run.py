@@ -6,6 +6,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from scripts import ai_selector_wrapper
 from scripts.ai_selector_wrapper import is_market_time, is_trading_day
 
 
@@ -50,6 +51,21 @@ def test_ai_selector_does_not_run_on_market_holiday():
     assert is_market_time(datetime(2026, 7, 3, 9, 0)) is False
     assert is_market_time(datetime(2026, 7, 2, 9, 0)) is True
     assert is_market_time(datetime(2026, 7, 2, 9, 25)) is False
+
+
+def test_ai_selector_wrapper_is_quiet_when_not_due(monkeypatch, capsys):
+    class FakeDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 18, 9, 0)
+
+    monkeypatch.setattr(ai_selector_wrapper, "datetime", FakeDateTime)
+    monkeypatch.delenv("FORCE_AI_RUN", raising=False)
+    monkeypatch.delenv("AI_SELECTOR_WRAPPER_VERBOSE", raising=False)
+
+    ai_selector_wrapper._run_selection_if_due()
+
+    assert capsys.readouterr().out == ""
 
 
 def run_test_direct():

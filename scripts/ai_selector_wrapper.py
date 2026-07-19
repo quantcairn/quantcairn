@@ -30,7 +30,6 @@ if (
     env["SOXS_SKIP_VENV_REEXEC"] = "1"
     os.execve(VENV_PY, [VENV_PY, __file__, *sys.argv[1:]], env)
 
-print(f"Using Python: {sys.executable}")
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
@@ -42,6 +41,11 @@ OUT_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.out.log')
 ERR_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.err.log')
 STATE_DIR = os.environ.get("SOXS_STATE_DIR") or os.path.join(PROJECT_DIR, 'state')
 LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
+
+
+def _verbose(message: str) -> None:
+    if str(os.environ.get("AI_SELECTOR_WRAPPER_VERBOSE") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        print(message)
 
 
 def is_trading_day(now_et: datetime) -> bool:
@@ -73,7 +77,7 @@ def _run_selection_if_due():
     force = os.environ.get('FORCE_AI_RUN') == '1'
 
     if ZoneInfo is None:
-        print('zoneinfo not available; running selector only if FORCE_AI_RUN=1')
+        _verbose('zoneinfo not available; running selector only if FORCE_AI_RUN=1')
         if not force:
             return
         now_et = datetime.utcnow()
@@ -81,16 +85,16 @@ def _run_selection_if_due():
         now_et = datetime.now(ZoneInfo('America/New_York'))
 
     if not is_trading_day(now_et):
-        print(f'Not a US trading day (ET now={now_et}). Exiting.')
+        _verbose(f'Not a US trading day (ET now={now_et}). Exiting.')
         if force and os.environ.get("FORCE_AI_RUN_ON_NON_TRADING_DAY") != "1":
             sys.exit(2)
         if not force:
             return
     if not force and not is_market_time(now_et):
-        print(f'Not market time (ET now={now_et}). Exiting.')
+        _verbose(f'Not market time (ET now={now_et}). Exiting.')
         return
     if not force and already_ran_today(now_et):
-        print(f'AI selector already ran for ET date {now_et.date().isoformat()}. Exiting.')
+        _verbose(f'AI selector already ran for ET date {now_et.date().isoformat()}. Exiting.')
         return
 
     # execute selector
