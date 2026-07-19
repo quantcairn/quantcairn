@@ -187,12 +187,11 @@ def test_candidate_model_evaluation_snapshot_is_read_only_and_exposed_in_dashboa
     assert api_status["candidate_model_evaluation"]["title"] == "Candidate Model Evaluation"
     assert api_status["candidate_model_evaluation"]["baseline_version"] == "baseline_v1"
     html = client.get("/").data.decode("utf-8")
-    assert "Candidate Model Evaluation" in html
-    assert "Baseline Metrics" in html
-    assert "Challenger Metrics" in html
-    assert "Calibration Curve" in html
-    assert "Candidate Weights" in html
-    assert "Candidate Model Evaluation" in html
+    assert "候选模型评估" in html
+    assert "基准模型完整指标" in html
+    assert "挑战模型完整指标" in html
+    assert "校准曲线" in html
+    assert "候选权重" in html
     assert "submit_order" not in html
     assert "APP_KEY" not in response.get_data(as_text=True)
 

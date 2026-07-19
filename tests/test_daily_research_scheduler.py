@@ -191,4 +191,4 @@ def test_daily_research_scheduler_status_api_reads_latest_run(monkeypatch, tmp_p
     assert api_status["research_status"]["status_label"] == "SAFE"
     assert api_status["research_status"]["candidate_count"] == 2
     assert api_status["research_status"]["report_status"] == "completed"
-    assert "AI Research Scheduler" in client.get("/").data.decode("utf-8")
+    assert "AI 研究调度" in client.get("/").data.decode("utf-8")

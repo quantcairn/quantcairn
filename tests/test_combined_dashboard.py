@@ -90,7 +90,8 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
     assert "$425.00" in html
     assert "风控运行状态" not in html
     assert "风控与交易审计" not in html
-    assert "仅减仓" not in html
+    assert "全局仅减仓" in html
+    assert "已开启（ENABLED）" in html
     assert "low_funds" not in html
     assert "账户现金" in html
     assert "$850.00" in html
@@ -219,8 +220,8 @@ def test_combined_dashboard_shows_system_status_and_missing_data_labels(monkeypa
     assert "PAPER" in html
     assert "PaperBroker" in html
     assert "PaperBroker / TOP engine runtime" in html
-    assert "no data" in html
-    assert "unavailable" in html
+    assert "AI 选股结果总览" in html
+    assert "展开技术详情" in html
 
 
 def test_combined_dashboard_uses_sandbox_account_snapshot_without_paper_fallback(monkeypatch):
@@ -361,10 +362,10 @@ def test_combined_dashboard_shows_lifecycle_result_cards(monkeypatch):
     with combined.app.test_request_context("/"):
         html = combined.index()
 
-    assert "最近一次 weekend paper lifecycle" in html
-    assert "PASS" in html
+    assert "最近一次周末虚拟盘检查" in html
+    assert "通过（PASS）" in html
     assert "BUY FILLED · SELL FILLED · position 0" in html
-    assert "最近一次 LongBridge sandbox lifecycle" in html
+    assert "最近一次 LongBridge 沙盒检查" in html
     assert "FAIL" in html
 
 
@@ -562,11 +563,11 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
 
     assert "AI 区间选股" in html
     assert "最新选股时间：2026-06-30T09:29:00" in html
-    assert "Universe筛选：普通股 $5-$200 / ETF $5-$300 / 杠杆与反向ETF $5-$100" in html
+    assert "股票池筛选：普通股 $5-$200 / ETF $5-$300 / 杠杆与反向ETF $5-$100" in html
     assert "自动刷新：5 分钟" in html
     assert "扫描数量：50" in html
-    assert "数据模式：live" in html
-    assert "启动阶段：fast_preliminary" in html
+    assert "数据模式：实盘（live）" in html
+    assert "启动阶段：快速初选（fast_preliminary）" in html
     assert "后台精筛：background_fast_preliminary" in html
     assert "（fast_preliminary）" in html
     assert "研究简报" in html
@@ -583,7 +584,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "保护持仓" in html
     assert "这里显示新的 TOP3 工具" in html
     assert "但不挤占新选股 TOP3" in html
-    assert "前台阶段：fast_preliminary" in html
+    assert "前台阶段：快速初选（fast_preliminary）" in html
     assert "后台精筛：background_fast_preliminary / fast_preliminary" in html
     assert "AI 运行状态：" in html
     assert "部分降级" in html

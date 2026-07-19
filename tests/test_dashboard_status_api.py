@@ -228,6 +228,13 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
             "mismatch_reason": "",
         },
         ai_selection={
+            "selection_run_id": "1234567890abcdef1234567890abcdef",
+            "bundle_version": "selection_bundle_v1",
+            "bundle_hash": "abcdef1234567890abcdef1234567890",
+            "selection_date": "2026-07-09",
+            "selection_stage": "FINALIZED",
+            "selected_top_n": 1,
+            "requested_top_n": 3,
             "execution_status": "COMPLETED",
             "result_quality": "DEGRADED",
             "research_admission": "RESEARCH_ONLY",
@@ -364,6 +371,18 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert payload["shadow"]["title"] == "SOXS Shadow Observer"
     assert payload["shadow"]["symbol"] == "SOXS.US"
     assert payload["shadow"]["timeframe"] == "15m"
+
+    html = client.get("/").get_data(as_text=True)
+    assert "AI 选股结果总览" in html
+    assert "已入选 1 / 目标 3" in html
+    assert "降级（DEGRADED）" in html
+    assert "仅供研究（RESEARCH_ONLY）" in html
+    assert "正式候选不足" in html
+    assert "展开技术详情" in html
+    assert "已尝试数据源" in html
+    assert "Provider Fallback" not in html
+    assert "12345678…abcdef" in html
+    assert 'title="1234567890abcdef1234567890abcdef"' in html
 
 
 def test_api_status_handles_offline_top_engine(monkeypatch):
@@ -654,25 +673,25 @@ def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch,
     assert research_status_payload["status_label"] == "unavailable"
 
     html = client.get("/").data.decode("utf-8")
-    assert "AI Candidate Validation" in html
+    assert "AI 候选验证" in html
     assert "AAPL.US" in html
-    assert "Candidate Score" in html
-    assert "Data Mode" in html
-    assert "Universe Filter" in html
-    assert "Data Sufficiency" in html
-    assert "Scoring Eligible" in html
-    assert "Trade Admission" in html
-    assert "Scoring Block Reason" in html
-    assert "Liquidity Score" in html
-    assert "Candidate Ranking Performance" in html
-    assert "AI Research Report" in html
-    assert "AI Research Scheduler" in html
-    assert "Last Research Run" in html
-    assert "Recommended Strategy" in html
-    assert "AI Ranking Reason" in html
-    assert "Provider 尝试" in html
-    assert "Provider 成功" in html
-    assert "Provider 超时" in html
+    assert "候选总分" in html
+    assert "数据模式" in html
+    assert "股票池筛选" in html
+    assert "数据完整度" in html
+    assert "是否可评分" in html
+    assert "交易准入" in html
+    assert "评分阻断原因" in html
+    assert "流动性评分" in html
+    assert "候选评分效果" in html
+    assert "AI 研究日报" in html
+    assert "AI 研究调度" in html
+    assert "上次运行时间（北京时间）" in html
+    assert "推荐策略" in html
+    assert "AI 排名原因" in html
+    assert "已尝试数据源" in html
+    assert "成功数据源" in html
+    assert "超时数据源" in html
     assert "候选可进入独立数据验证" in html
     assert "启动 Shadow" not in html
     assert "批准 Paper" not in html
@@ -803,9 +822,9 @@ def test_shadow_status_api_is_get_only_and_page_stays_read_only(monkeypatch, tmp
     payload = response.get_json()
     assert "shadow" in payload
     html = client.get("/").data.decode("utf-8")
-    assert "SOXS Shadow Observer" in html
+    assert "SOXS 只读模拟观察" in html
     assert "READ-ONLY SHADOW" in html
-    assert "AI Candidate Validation" in html
+    assert "AI 候选验证" in html
     assert "提交订单" not in html
     assert "一键实盘" not in html
     assert "切换 Prod" not in html
@@ -842,5 +861,5 @@ def test_shadow_status_api_uses_dynamic_title_for_custom_symbol(monkeypatch, tmp
     assert payload["shadow"]["title"] == "AAPL Shadow Observer"
     assert payload["shadow"]["benchmark_symbols"] == ["QQQ.US", "SPY.US"]
     html = client.get("/").data.decode("utf-8")
-    assert "AAPL Shadow Observer" in html
-    assert "SOXS Shadow Observer" not in html
+    assert "AAPL 只读模拟观察" in html
+    assert "SOXS 只读模拟观察" not in html

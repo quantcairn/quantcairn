@@ -25,6 +25,16 @@ from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 from src.research_report.site import build_research_site
 from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator
+from src.dashboard.labels_zh import (
+    REASON_LABELS_ZH,
+    STATUS_LABELS_ZH,
+    format_bool,
+    format_optional,
+    format_timestamp,
+    translate_reason,
+    translate_status,
+    truncate_identifier,
+)
 from src.candidate_validation.research_scheduler import latest_research_status
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
 from src.notifier.alerts import build_provider_audit_sections, build_research_admission_notice
@@ -70,6 +80,103 @@ _CHART_TZ = ZoneInfo("Asia/Shanghai")
 
 def _env(name: str, default: str = "") -> str:
     return get_runtime_env(name, default)
+
+
+def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[str, object]:
+    """Build an HTML-only view model without changing API or selection state."""
+    if not isinstance(selection_sync, dict):
+        selection_sync = vars(selection_sync) if hasattr(selection_sync, "__dict__") else {}
+    selected_count = int(
+        ai_selection.get("selected_top_n")
+        if ai_selection.get("selected_top_n") is not None
+        else len(ai_selection.get("selected_symbols") or ai_selection.get("top3") or [])
+    )
+    requested_count = int(ai_selection.get("requested_top_n") or 0)
+    missing_count = int(ai_selection.get("top_n_missing_count") or max(0, requested_count - selected_count))
+    if requested_count == 0 and (selected_count or missing_count):
+        requested_count = selected_count + missing_count
+    selected_symbols = [
+        str(symbol or "").strip().upper()
+        for symbol in (ai_selection.get("selected_symbols") or [])
+        if str(symbol or "").strip()
+    ]
+    if not selected_symbols and selected_count:
+        selected_symbols = [
+            str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+            for item in (ai_selection.get("top3") or [])[:selected_count]
+            if isinstance(item, dict) and str(item.get("ticker") or item.get("symbol") or "").strip()
+        ]
+
+    funnel = ai_selection.get("selection_funnel") or {}
+    funnel_labels = {
+        "universe_scanned": "初始股票池",
+        "universe_passed": "股票池筛选",
+        "data_complete": "数据完整",
+        "scoring_eligible": "可评分候选",
+        "ranked_candidates": "正式排名",
+        "quality_threshold_passed": "通过质量门槛",
+        "preliminary_selected": "初步入选",
+        "refined_selected": "精筛通过",
+        "final_selected": "正式入选",
+    }
+    funnel_rows = [
+        {"label": label, "value": funnel.get(key)}
+        for key, label in funnel_labels.items()
+        if funnel.get(key) is not None
+    ]
+    reason_counts = ai_selection.get("rejection_reason_counts") or {}
+    if not reason_counts:
+        reason_counts = {
+            str(item.get("warning_code") or item.get("reason_code") or item.get("code")): 1
+            for item in (ai_selection.get("warnings_structured") or [])
+            if isinstance(item, dict) and str(item.get("warning_code") or item.get("reason_code") or item.get("code") or "").strip()
+        }
+    def reason_sort_key(item):
+        try:
+            count = int(item[1] or 0)
+        except (TypeError, ValueError):
+            count = 0
+        return (-count, str(item[0]))
+
+    reason_rows = [
+        {"code": str(code), "label": translate_reason(code), "count": count}
+        for code, count in sorted(reason_counts.items(), key=reason_sort_key)
+    ]
+    mismatch_reason = str(selection_sync.get("mismatch_reason") or selection_sync.get("reason") or "").split(":", 1)[0]
+    sync_ok = bool(selection_sync.get("ok"))
+    sync_summary = "已同步" if sync_ok else f"未同步：{translate_reason(mismatch_reason)}"
+    formal_candidates = [item for item in (ai_selection.get("top3") or []) if isinstance(item, dict)]
+    first_candidate = formal_candidates[0] if formal_candidates else {}
+
+    return {
+        "selection_date": format_optional(ai_selection.get("selection_date") or ai_selection.get("date") or selection_sync.get("state_date")),
+        "selection_stage": translate_status(ai_selection.get("selection_stage") or "UNAVAILABLE"),
+        "result_quality": translate_status(ai_selection.get("result_quality") or "UNAVAILABLE"),
+        "research_admission": translate_status(ai_selection.get("research_admission") or "UNAVAILABLE"),
+        "selected_count": selected_count,
+        "requested_count": requested_count,
+        "selected_symbols": selected_symbols,
+        "missing_count": missing_count,
+        "missing_label": "数量完整" if missing_count == 0 else f"缺失 {missing_count} 个",
+        "sync_ok": sync_ok,
+        "sync_summary": sync_summary,
+        "sync_detail": format_optional(selection_sync.get("detail")),
+        "data_status": translate_status(ai_selection.get("data_status") or first_candidate.get("data_status") or "UNAVAILABLE"),
+        "universe_filter": "通过" if first_candidate.get("trade_filter_passed") else "暂无合格结果" if not formal_candidates else "未通过",
+        "scoring_eligible_count": funnel.get("scoring_eligible", 0),
+        "formal_candidate_count": funnel.get("quality_threshold_passed", selected_count),
+        "target_complete": selected_count >= requested_count if requested_count else False,
+        "trade_admission": translate_status(first_candidate.get("trade_admission_status") or "NOT_TRADABLE"),
+        "funnel_rows": funnel_rows,
+        "reason_rows": reason_rows,
+        "selection_run_id": format_optional(ai_selection.get("selection_run_id")),
+        "bundle_version": format_optional(ai_selection.get("bundle_version")),
+        "bundle_hash": format_optional(ai_selection.get("bundle_hash")),
+        "generated_at": format_timestamp(ai_selection.get("generated_at") or ai_selection.get("timestamp")),
+        "provider_sections": dict(ai_selection.get("provider_audit_sections") or {}),
+        "warnings": list(ai_selection.get("warnings_structured") or ai_selection.get("warnings") or []),
+        "mismatch_reason": format_optional(mismatch_reason),
+    }
 
 
 def _combined_pid_file_path() -> Path:
@@ -741,15 +848,15 @@ def _dashboard_timeline_items(
     if isinstance(system_status, dict) and system_status:
         lifecycle = system_status.get("lifecycle") if isinstance(system_status.get("lifecycle"), dict) else {}
         for name, label in (
-            ("weekend_paper", "Weekend paper lifecycle"),
-            ("longbridge_sandbox", "LongBridge sandbox lifecycle"),
+            ("weekend_paper", "周末虚拟盘检查"),
+            ("longbridge_sandbox", "LongBridge 沙盒检查"),
         ):
             report = lifecycle.get(name) if isinstance(lifecycle, dict) else {}
             if isinstance(report, dict):
                 items.append({
-                    "time": str(report.get("generated_at") or "no data"),
+                    "time": str(report.get("generated_at") or "暂无数据"),
                     "title": label,
-                    "detail": f"{report.get('status_label') or 'unavailable'} · {report.get('detail') or 'no data'}",
+                    "detail": f"{translate_status(report.get('status_label') or 'UNAVAILABLE')} · {format_optional(report.get('detail'))}",
                     "tone": "green" if str(report.get("status_label") or "").upper() == "PASS" else "yellow" if str(report.get("status_label") or "").lower() == "unavailable" else "red",
                 })
     if isinstance(research_digest, dict) and research_digest.get("available"):
@@ -2978,6 +3085,30 @@ HTML = """<!DOCTYPE html>
         display:grid;
         gap:6px;
     }
+    .selection-overview{
+        margin-top:12px;padding:16px;border-radius:18px;border:1px solid rgba(56,189,248,.25);
+        background:linear-gradient(135deg,rgba(14,116,144,.18),rgba(15,23,42,.88));
+        box-shadow:0 14px 34px rgba(2,6,23,.2)
+    }
+    .selection-overview-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+    .selection-overview-head h2{margin:0;font-size:19px;color:#f8fafc}
+    .selection-overview-head p{margin:5px 0 0;color:var(--muted);font-size:12px}
+    .selection-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}
+    .selection-overview-item{padding:11px 12px;border-radius:13px;background:rgba(15,23,42,.62);border:1px solid rgba(148,163,184,.14)}
+    .selection-overview-item span{display:block;color:var(--muted);font-size:11px;letter-spacing:.04em}
+    .selection-overview-item strong{display:block;margin-top:6px;color:#f8fafc;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+    .selection-overview-item.emphasis strong{font-size:18px;color:#7dd3fc}
+    .symbol-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:7px}
+    .symbol-chip{padding:5px 9px;border-radius:999px;background:rgba(56,189,248,.15);border:1px solid rgba(56,189,248,.24);color:#e0f2fe;font-weight:750;font-size:12px}
+    .selection-process-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+    .display-table{width:100%;border-collapse:collapse;font-size:12px}
+    .display-table th,.display-table td{padding:7px 8px;border-bottom:1px solid rgba(148,163,184,.12);text-align:left;overflow-wrap:anywhere}
+    .display-table th{color:var(--muted);font-weight:650}
+    .display-table td:last-child,.display-table th:last-child{text-align:right}
+    .technical-details{margin-top:12px;border:1px solid rgba(148,163,184,.16);border-radius:13px;background:rgba(2,6,23,.28)}
+    .technical-details summary{cursor:pointer;padding:10px 12px;color:#cbd5e1;font-size:12px;font-weight:700}
+    .technical-details-body{padding:0 12px 12px;display:grid;gap:8px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+    .technical-details pre{margin:0;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:9px;border-radius:9px;background:rgba(2,6,23,.5);color:#cbd5e1}
     .system-status-card.wide{grid-column:span 2}
     .system-status-card.full{grid-column:1 / -1}
     .shadow-observer-card.status-live{
@@ -3299,7 +3430,7 @@ HTML = """<!DOCTYPE html>
         .headline-stats{grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
         .headline-stat{padding:14px 15px}
         .headline-stat .value{font-size:24px}
-        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column,.audit-strip,.system-status-grid,.shadow-metrics-grid{grid-template-columns:1fr}
+        .account-grid,.audit-grid,.cards,.grid-quote,.pnl-grid,.summary,.overview-layout,.control-grid,.two-column,.audit-strip,.system-status-grid,.shadow-metrics-grid,.selection-overview-grid,.selection-process-grid{grid-template-columns:1fr}
         .viz-grid,.risk-grid{grid-template-columns:1fr}
         .hero-status-grid{grid-template-columns:1fr}
         .viz-card.wide{grid-column:span 1}
@@ -3317,21 +3448,21 @@ HTML = """<!DOCTYPE html>
     <div class="topbar">
         <div class="brand">
             <h1>SOXS 区间套利交易系统</h1>
-            <p>AUTOMATED TRADING · RISK CONTROL · LONGBRIDGE EXECUTION · 只读监控大屏，展示 PAPER / SANDBOX / PROD 的实时状态、区间位置、成交与风控。</p>
+            <p>自动交易 · 风险控制 · LongBridge 执行 · 只读监控大屏，展示虚拟盘、沙盒和实盘的实时状态、区间位置、成交与风控。</p>
             <div class="headline-stats">
                 <div class="headline-stat">
                     <span class="label">账户总资产</span>
                     <span class="value {% if account_equity_value is not none and account_equity_value >= 0 %}green{% else %}yellow{% endif %}" id="headline-total-equity">
-                        {% if account_equity_value is not none %}${{ "%.2f"|format(account_equity_value) }}{% else %}Unavailable{% endif %}
+                        {% if account_equity_value is not none %}${{ "%.2f"|format(account_equity_value) }}{% else %}暂无{% endif %}
                     </span>
-                    <span class="sub" id="headline-total-equity-sub">数据源：{{ system_status.account_source or 'unavailable' }}</span>
+                    <span class="sub" id="headline-total-equity-sub">数据源：{{ format_optional(system_status.account_source) }}</span>
                 </div>
                 <div class="headline-stat">
                     <span class="label">可用现金</span>
                     <span class="value {% if available_cash_display is not none and available_cash_display >= 0 %}green{% else %}yellow{% endif %}" id="headline-available-cash">
-                        {% if available_cash_display is not none %}${{ "%.2f"|format(available_cash_display) }}{% else %}Unavailable{% endif %}
+                        {% if available_cash_display is not none %}${{ "%.2f"|format(available_cash_display) }}{% else %}暂无{% endif %}
                     </span>
-                    <span class="sub" id="headline-available-cash-sub">资金来源：{{ system_status.account_source or 'no data' }}</span>
+                    <span class="sub" id="headline-available-cash-sub">资金来源：{{ format_optional(system_status.account_source) }}</span>
                 </div>
                 <div class="headline-stat">
                     <span class="label">当前持仓</span>
@@ -3357,7 +3488,7 @@ HTML = """<!DOCTYPE html>
                 <div class="headline-stat">
                     <span class="label">系统状态</span>
                     <span class="value {{ runtime_state_class }}" id="headline-system-state">{{ runtime_state_value }}</span>
-                    <span class="sub" id="headline-system-state-sub">Reduce-Only {{ 'ON' if system_status.global_reduce_only else 'OFF' }} · Live Order {{ 'ON' if system_status.live_order_enabled else 'OFF' }}</span>
+                    <span class="sub" id="headline-system-state-sub">仅减仓 {{ '开启' if system_status.global_reduce_only else '关闭' }} · 实盘下单 {{ '开启' if system_status.live_order_enabled else '关闭' }}</span>
                 </div>
             </div>
         </div>
@@ -3365,8 +3496,8 @@ HTML = """<!DOCTYPE html>
             <span class="pill {{ mode_class }}" id="mode-pill">
                 <strong>{{ mode_display }}</strong>
             </span>
-            <span class="pill {{ market_pill_class }}" id="market-pill">市场：{{ system_status.market_open_label or 'unavailable' }}</span>
-            <span class="pill {{ system_status.broker_connected and 'status-live' or 'status-offline' }}" id="broker-pill">Broker：{{ system_status.broker_connection or 'not connected' }}</span>
+            <span class="pill {{ market_pill_class }}" id="market-pill">市场：{{ format_optional(system_status.market_open_label) }}</span>
+            <span class="pill {{ system_status.broker_connected and 'status-live' or 'status-offline' }}" id="broker-pill">券商连接：{{ format_optional(system_status.broker_connection) }}</span>
             <a class="pill research" href="{{ research_url }}" target="_blank" rel="noopener">只读研究简报</a>
             <span class="pill {{ startup_guard.level }}">
                 {{ startup_guard.label }}
@@ -3392,6 +3523,109 @@ HTML = """<!DOCTYPE html>
         · 要求美东日期 {{ startup_guard.required_date }}
         {% if startup_guard.state_date %} · 当前状态日期 {{ startup_guard.state_date }}{% endif %}
     </div>
+    <section class="selection-overview" id="selection-overview">
+        <div class="selection-overview-head">
+            <div>
+                <h2>AI 选股结果总览</h2>
+                <p>先看正式结果和准入结论；运行编号、数据源审计等排障信息收在技术详情中。</p>
+            </div>
+            <span class="pill {{ 'status-live' if selection_dashboard.sync_ok else 'status-warn' }}" id="selection-overview-sync-pill">{{ selection_dashboard.sync_summary }}</span>
+        </div>
+        <div class="selection-overview-grid">
+            <div class="selection-overview-item">
+                <span>选股数据日</span>
+                <strong id="selection-overview-date">{{ selection_dashboard.selection_date }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>当前阶段</span>
+                <strong id="selection-overview-stage">{{ selection_dashboard.selection_stage }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>结果质量</span>
+                <strong id="selection-overview-quality">{{ selection_dashboard.result_quality }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>研究准入</span>
+                <strong id="selection-overview-admission">{{ selection_dashboard.research_admission }}</strong>
+            </div>
+            <div class="selection-overview-item emphasis">
+                <span>正式 TOP</span>
+                <strong id="selection-overview-top-count">已入选 {{ selection_dashboard.selected_count }} / 目标 {{ selection_dashboard.requested_count }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>已入选标的</span>
+                <div class="symbol-chips" id="selection-overview-symbols">
+                    {% for symbol in selection_dashboard.selected_symbols %}<span class="symbol-chip">{{ symbol }}</span>{% endfor %}
+                    {% if not selection_dashboard.selected_symbols %}<strong>无</strong>{% endif %}
+                </div>
+            </div>
+            <div class="selection-overview-item">
+                <span>缺失槽位</span>
+                <strong id="selection-overview-missing">{{ selection_dashboard.missing_label }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>TOP 同步状态</span>
+                <strong id="selection-overview-sync">{{ selection_dashboard.sync_summary }}</strong>
+            </div>
+        </div>
+        <div class="selection-process-grid">
+            <div class="selection-overview-item">
+                <strong style="margin-top:0">选股过程与交易准入</strong>
+                <table class="display-table" aria-label="选股过程与交易准入">
+                    <tbody>
+                        <tr><th>数据完整度</th><td id="selection-process-data-status">{{ selection_dashboard.data_status }}</td></tr>
+                        <tr><th>股票池筛选</th><td>{{ selection_dashboard.universe_filter }}</td></tr>
+                        <tr><th>可评分候选</th><td id="selection-process-scoring-count">{{ selection_dashboard.scoring_eligible_count }}</td></tr>
+                        <tr><th>正式候选</th><td>{{ selection_dashboard.formal_candidate_count }}</td></tr>
+                        <tr><th>达到目标数量</th><td id="selection-process-target-complete">{{ format_bool(selection_dashboard.target_complete) }}</td></tr>
+                        <tr><th>交易准入</th><td id="selection-process-trade-admission">{{ selection_dashboard.trade_admission }}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="selection-overview-item">
+                <strong style="margin-top:0">候选漏斗</strong>
+                <table class="display-table" aria-label="候选漏斗">
+                    <thead><tr><th>阶段</th><th>数量</th></tr></thead>
+                    <tbody id="selection-funnel-rows">
+                        {% for row in selection_dashboard.funnel_rows %}<tr><td>{{ row.label }}</td><td>{{ row.value }}</td></tr>{% endfor %}
+                        {% if not selection_dashboard.funnel_rows %}<tr><td>暂无数据</td><td>0</td></tr>{% endif %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="selection-overview-item" style="grid-column:1 / -1">
+                <strong style="margin-top:0">淘汰原因统计</strong>
+                <table class="display-table" aria-label="淘汰原因统计">
+                    <thead><tr><th>原因</th><th>数量</th></tr></thead>
+                    <tbody id="selection-reason-rows">
+                        {% for row in selection_dashboard.reason_rows %}<tr><td title="{{ row.code }}">{{ row.label }}</td><td>{{ row.count }}</td></tr>{% endfor %}
+                        {% if not selection_dashboard.reason_rows %}<tr><td>暂无淘汰记录</td><td>0</td></tr>{% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <details class="technical-details" id="selection-technical-details">
+            <summary>展开技术详情</summary>
+            <div class="technical-details-body">
+                <div>选股运行编号：<span title="{{ selection_dashboard.selection_run_id }}">{{ truncate_identifier(selection_dashboard.selection_run_id) }}</span></div>
+                <div>结果包版本：{{ selection_dashboard.bundle_version }}</div>
+                <div>结果包校验值：<span title="{{ selection_dashboard.bundle_hash }}">{{ truncate_identifier(selection_dashboard.bundle_hash) }}</span></div>
+                <div>结果生成时间（北京时间）：{{ selection_dashboard.generated_at }}</div>
+                <div>同步原始原因：{{ selection_dashboard.mismatch_reason }}</div>
+                <div>同步详情：{{ selection_dashboard.sync_detail }}</div>
+                <div id="ai-selection-provider-attempted">已尝试数据源：{{ selection_dashboard.provider_sections.attempted or '无' }}</div>
+                <div id="ai-selection-provider-success">成功数据源：{{ selection_dashboard.provider_sections.success or '无' }}</div>
+                <div id="ai-selection-provider-failure">失败数据源：{{ selection_dashboard.provider_sections.failure or '无' }}</div>
+                <div id="ai-selection-provider-timeout">超时数据源：{{ selection_dashboard.provider_sections.timeout or '无' }}</div>
+                <div id="ai-selection-provider-fallback">降级数据源：{{ selection_dashboard.provider_sections.fallback or '无' }}</div>
+                <div id="ai-selection-provider-mock">模拟数据源：{{ selection_dashboard.provider_sections.mock or '无' }}</div>
+                <div id="ai-selection-provider-contributor">实际贡献数据源：{{ selection_dashboard.provider_sections.contributor or '无' }}</div>
+                <div>完整数据源审计</div>
+                <pre>{{ selection_dashboard.provider_sections | tojson(indent=2) }}</pre>
+                <div>原始警告</div>
+                <pre>{{ selection_dashboard.warnings | tojson(indent=2) }}</pre>
+            </div>
+        </details>
+    </section>
     <div class="system-status">
         <div class="system-status-head">
             <div>
@@ -3405,12 +3639,12 @@ HTML = """<!DOCTYPE html>
         <div class="system-status-grid">
             <div class="system-status-card">
                 <span class="system-status-label">API 状态</span>
-                <span class="system-status-value" id="system-api-status">{{ system_status.api_status or 'unavailable' }}</span>
-                <span class="system-status-detail" id="system-last-updated">最后更新时间：{{ system_status.last_updated or 'unavailable' }}</span>
+                <span class="system-status-value" id="system-api-status">{{ format_optional(system_status.api_status) }}</span>
+                <span class="system-status-detail" id="system-last-updated">最后更新时间（北京时间）：{{ format_timestamp(system_status.last_updated) }}</span>
             </div>
             <div class="system-status-card">
-                <span class="system-status-label">broker 类型</span>
-                <span class="system-status-value" id="system-broker-type">{{ system_status.broker_type or 'unavailable' }}</span>
+                <span class="system-status-label">券商类型</span>
+                <span class="system-status-value" id="system-broker-type">{{ format_optional(system_status.broker_type) }}</span>
                 <span class="system-status-detail" id="system-broker-connection">连接状态：{{ system_status.broker_connection or 'not connected' }}</span>
             </div>
             <div class="system-status-card {{ 'status-warn' if mode_consistency.mixed else '' }}">
@@ -3420,28 +3654,28 @@ HTML = """<!DOCTYPE html>
             </div>
             <div class="system-status-card">
                 <span class="system-status-label">数据来源</span>
-                <span class="system-status-value" id="system-data-source">{{ system_status.data_source or 'no data' }}</span>
-                <span class="system-status-detail" id="system-account-source">{{ system_status.account_source or 'no data' }}</span>
+                <span class="system-status-value" id="system-data-source">{{ format_optional(system_status.data_source) }}</span>
+                <span class="system-status-detail" id="system-account-source">{{ format_optional(system_status.account_source) }}</span>
             </div>
             <div class="system-status-card">
                 <span class="system-status-label">市场状态</span>
-                <span class="system-status-value" id="system-market-label">{{ system_status.market_open_label or 'unavailable' }}</span>
-                <span class="system-status-detail" id="system-market-detail">{{ system_status.market_open_detail or 'no data' }}</span>
+                <span class="system-status-value" id="system-market-label">{{ format_optional(system_status.market_open_label) }}</span>
+                <span class="system-status-detail" id="system-market-detail">{{ format_optional(system_status.market_open_detail) }}</span>
             </div>
             <div class="system-status-card">
-                <span class="system-status-label">Global Reduce-Only</span>
-                <span class="system-status-value" id="system-reduce-only">{{ 'ENABLED' if system_status.global_reduce_only else 'DISABLED' }}</span>
+                <span class="system-status-label">全局仅减仓</span>
+                <span class="system-status-value" id="system-reduce-only">{{ translate_status('ENABLED' if system_status.global_reduce_only else 'DISABLED') }}</span>
                 <span class="system-status-detail">全局只减仓开关</span>
             </div>
             <div class="system-status-card">
-                <span class="system-status-label">Live Order</span>
-                <span class="system-status-value" id="system-live-order">{{ 'ENABLED' if system_status.live_order_enabled else 'DISABLED' }}</span>
-                <span class="system-status-detail">sandbox / paper 下默认应为 disabled</span>
+                <span class="system-status-label">实盘下单</span>
+                <span class="system-status-value" id="system-live-order">{{ translate_status('ENABLED' if system_status.live_order_enabled else 'DISABLED') }}</span>
+                <span class="system-status-detail">沙盒和虚拟盘默认应为已关闭</span>
             </div>
             <div class="system-status-card wide">
                 <span class="system-status-label">活动订单</span>
-                <span class="system-status-value" id="system-orders-status">{{ system_status.active_orders.status_label or 'no data' }}</span>
-                <span class="system-status-detail" id="system-orders-detail">{{ system_status.active_orders.detail or 'no data' }}</span>
+                <span class="system-status-value" id="system-orders-status">{{ format_optional(system_status.active_orders.status_label) }}</span>
+                <span class="system-status-detail" id="system-orders-detail">{{ format_optional(system_status.active_orders.detail) }}</span>
                 <div class="system-status-orders" style="margin-top:6px">
                     {% for order in system_status.active_orders.orders[:4] %}
                     <span class="system-order-pill">
@@ -3449,113 +3683,113 @@ HTML = """<!DOCTYPE html>
                     </span>
                     {% endfor %}
                     {% if not system_status.active_orders.orders %}
-                    <span class="system-status-detail">no data</span>
+                    <span class="system-status-detail">暂无数据</span>
                     {% endif %}
                 </div>
             </div>
             <div class="system-status-card wide">
-                <span class="system-status-label">最近一次 weekend paper lifecycle</span>
-                <span class="system-status-value" id="system-weekend-lifecycle">{{ system_status.lifecycle.weekend_paper.status_label or 'unavailable' }}</span>
-                <span class="system-status-detail" id="system-weekend-detail">{{ system_status.lifecycle.weekend_paper.detail or 'no data' }}</span>
-                <span class="system-status-detail" id="system-weekend-time">报告：{{ system_status.lifecycle.weekend_paper.generated_at or 'no data' }}</span>
+                <span class="system-status-label">最近一次周末虚拟盘检查</span>
+                <span class="system-status-value" id="system-weekend-lifecycle">{{ translate_status(system_status.lifecycle.weekend_paper.status_label) }}</span>
+                <span class="system-status-detail" id="system-weekend-detail">{{ format_optional(system_status.lifecycle.weekend_paper.detail) }}</span>
+                <span class="system-status-detail" id="system-weekend-time">报告时间（北京时间）：{{ format_timestamp(system_status.lifecycle.weekend_paper.generated_at) }}</span>
             </div>
             <div class="system-status-card wide">
-                <span class="system-status-label">最近一次 LongBridge sandbox lifecycle</span>
-                <span class="system-status-value" id="system-sandbox-lifecycle">{{ system_status.lifecycle.longbridge_sandbox.status_label or 'unavailable' }}</span>
-                <span class="system-status-detail" id="system-sandbox-detail">{{ system_status.lifecycle.longbridge_sandbox.detail or 'no data' }}</span>
-                <span class="system-status-detail" id="system-sandbox-time">报告：{{ system_status.lifecycle.longbridge_sandbox.generated_at or 'no data' }}</span>
+                <span class="system-status-label">最近一次 LongBridge 沙盒检查</span>
+                <span class="system-status-value" id="system-sandbox-lifecycle">{{ translate_status(system_status.lifecycle.longbridge_sandbox.status_label) }}</span>
+                <span class="system-status-detail" id="system-sandbox-detail">{{ format_optional(system_status.lifecycle.longbridge_sandbox.detail) }}</span>
+                <span class="system-status-detail" id="system-sandbox-time">报告时间（北京时间）：{{ format_timestamp(system_status.lifecycle.longbridge_sandbox.generated_at) }}</span>
             </div>
             <div class="system-status-card wide research-status-card {{ 'status-live' if research_status.state == 'SAFE' else 'status-warn' if research_status.state == 'STALE' else 'status-offline' }}" id="research-status-card">
-                <span class="system-status-label" id="research-status-title">AI Research Scheduler</span>
-                <span class="system-status-value" id="research-status-state">{{ research_status.status_label or 'unavailable' }}</span>
-                <span class="system-status-detail" id="research-status-detail">{{ research_status.detail or 'no data' }}</span>
+                <span class="system-status-label" id="research-status-title">AI 研究调度</span>
+                <span class="system-status-value" id="research-status-state">{{ translate_status(research_status.status_label or research_status.state) }}</span>
+                <span class="system-status-detail" id="research-status-detail">{{ format_optional(research_status.detail) }}</span>
                 <div class="shadow-metrics-grid" style="margin-top: 8px;">
                     <div class="shadow-metric">
-                        <span>Last Research Run</span>
-                        <strong id="research-status-last-run">{{ research_status.last_research_run or 'unavailable' }}</strong>
+                        <span>上次运行时间（北京时间）</span>
+                        <strong id="research-status-last-run">{{ format_timestamp(research_status.last_research_run) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Research Date</span>
-                        <strong id="research-status-date">{{ research_status.research_date or 'unavailable' }}</strong>
+                        <span>研究数据日</span>
+                        <strong id="research-status-date">{{ format_optional(research_status.research_date) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Candidate Count</span>
-                        <strong id="research-status-candidate-count">{{ research_status.candidate_count if research_status.candidate_count is not none else 'unavailable' }}</strong>
+                        <span>候选数量</span>
+                        <strong id="research-status-candidate-count">{{ research_status.candidate_count if research_status.candidate_count is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Report Status</span>
-                        <strong id="research-status-report-status">{{ research_status.report_status or 'unavailable' }}</strong>
+                        <span>报告状态</span>
+                        <strong id="research-status-report-status">{{ translate_status(research_status.report_status) }}</strong>
                     </div>
                 </div>
             </div>
             <div class="system-status-card full shadow-observer-card {{ shadow_status_class }}" id="shadow-observer-card">
-                <span class="system-status-label" id="shadow-title">{{ shadow_status.title or 'Shadow Observer' }}</span>
-                <span class="system-status-value" id="shadow-state">{{ shadow_status.state_label or 'STALE' }}</span>
-                <span class="system-status-detail" id="shadow-detail">{{ shadow_status.detail or 'no data' }}</span>
+                <span class="system-status-label" id="shadow-title">{{ (shadow_status.title or '模拟').replace(' Shadow Observer', '') }} 只读模拟观察</span>
+                <span class="system-status-value" id="shadow-state">{{ translate_status(shadow_status.state_label or 'STALE') }}</span>
+                <span class="system-status-detail" id="shadow-detail">只读模拟，不会发送真实订单 · {{ format_optional(shadow_status.detail) }}</span>
                 <div class="shadow-metrics-grid">
                     <div class="shadow-metric">
-                        <span>Mode</span>
+                        <span>运行模式</span>
                         <strong id="shadow-mode">{{ shadow_status.mode or 'READ-ONLY SHADOW' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Safety Gate</span>
-                        <strong id="shadow-safety-gate">{{ shadow_status.safety_gate or 'STALE' }}</strong>
+                        <span>安全闸门</span>
+                        <strong id="shadow-safety-gate">{{ translate_status(shadow_status.safety_gate or 'STALE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Quote API Only</span>
-                        <strong id="shadow-quote-only">{{ 'true' if shadow_status.quote_api_only else 'false' if shadow_status.quote_api_only is not none else 'unavailable' }}</strong>
+                        <span>仅使用行情接口</span>
+                        <strong id="shadow-quote-only">{{ format_bool(shadow_status.quote_api_only) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Trade API Used</span>
-                        <strong id="shadow-trade-api">{{ 'true' if shadow_status.trade_api_used else 'false' if shadow_status.trade_api_used is not none else 'unavailable' }}</strong>
+                        <span>是否使用成交接口</span>
+                        <strong id="shadow-trade-api">{{ format_bool(shadow_status.trade_api_used) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>TradeContext Initialized</span>
-                        <strong id="shadow-trade-context">{{ 'true' if shadow_status.trade_context_initialized else 'false' if shadow_status.trade_context_initialized is not none else 'unavailable' }}</strong>
+                        <span>是否初始化交易环境</span>
+                        <strong id="shadow-trade-context">{{ format_bool(shadow_status.trade_context_initialized) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Last Run</span>
-                        <strong id="shadow-last-run">{{ shadow_status.last_run_at or 'unavailable' }}</strong>
+                        <span>上次运行时间（北京时间）</span>
+                        <strong id="shadow-last-run">{{ format_timestamp(shadow_status.last_run_at) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Latest Bar UTC</span>
-                        <strong id="shadow-latest-bar-utc">{{ shadow_status.latest_processed_bar_utc or 'unavailable' }}</strong>
+                        <span>最新行情时间（UTC）</span>
+                        <strong id="shadow-latest-bar-utc">{{ format_optional(shadow_status.latest_processed_bar_utc) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Latest Bar ET</span>
-                        <strong id="shadow-latest-bar-et">{{ shadow_status.latest_processed_bar_et or 'unavailable' }}</strong>
+                        <span>最新行情时间（美东）</span>
+                        <strong id="shadow-latest-bar-et">{{ format_optional(shadow_status.latest_processed_bar_et) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Data Freshness</span>
-                        <strong id="shadow-data-freshness">{{ shadow_status.data_freshness or 'unavailable' }}</strong>
+                        <span>数据时效</span>
+                        <strong id="shadow-data-freshness">{{ translate_status(shadow_status.data_freshness or 'UNAVAILABLE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Benchmark Status</span>
-                        <strong id="shadow-benchmark-status">{{ shadow_status.benchmark_status or 'unavailable' }}</strong>
+                        <span>基准状态</span>
+                        <strong id="shadow-benchmark-status">{{ translate_status(shadow_status.benchmark_status or 'UNAVAILABLE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>SOXX / SMH Alignment</span>
-                        <strong id="shadow-alignment-status">{{ shadow_status.alignment_status or 'unavailable' }}</strong>
+                        <span>SOXX / SMH 对齐</span>
+                        <strong id="shadow-alignment-status">{{ translate_status(shadow_status.alignment_status or 'UNAVAILABLE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Signals / Orders / Trades</span>
+                        <span>信号 / 模拟订单 / 模拟成交</span>
                         <strong id="shadow-flow-counts">{{ shadow_status.signals_generated or 0 }} / {{ shadow_status.simulated_orders or 0 }} / {{ shadow_status.simulated_trades or 0 }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Open Simulated Positions</span>
-                        <strong id="shadow-open-positions">{{ shadow_status.open_simulated_positions if shadow_status.open_simulated_positions is not none else 'unavailable' }}</strong>
+                        <span>未平模拟持仓</span>
+                        <strong id="shadow-open-positions">{{ shadow_status.open_simulated_positions if shadow_status.open_simulated_positions is not none else '暂无' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Simulated Equity</span>
-                        <strong id="shadow-equity">{{ "%.2f"|format(shadow_status.simulated_equity) if shadow_status.simulated_equity is not none else 'unavailable' }}</strong>
+                        <span>模拟账户权益</span>
+                        <strong id="shadow-equity">{{ "%.2f"|format(shadow_status.simulated_equity) if shadow_status.simulated_equity is not none else '暂无' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Simulated Return</span>
-                        <strong id="shadow-return">{{ "%+.2f"|format((shadow_status.simulated_return or 0) * 100) if shadow_status.simulated_return is not none else 'unavailable' }}{% if shadow_status.simulated_return is not none %}%{% endif %}</strong>
+                        <span>模拟收益率</span>
+                        <strong id="shadow-return">{{ "%+.2f"|format((shadow_status.simulated_return or 0) * 100) if shadow_status.simulated_return is not none else '暂无' }}{% if shadow_status.simulated_return is not none %}%{% endif %}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Simulated Drawdown</span>
-                        <strong id="shadow-drawdown">{{ "%+.2f"|format((shadow_status.simulated_drawdown or 0) * 100) if shadow_status.simulated_drawdown is not none else 'unavailable' }}{% if shadow_status.simulated_drawdown is not none %}%{% endif %}</strong>
+                        <span>模拟回撤</span>
+                        <strong id="shadow-drawdown">{{ "%+.2f"|format((shadow_status.simulated_drawdown or 0) * 100) if shadow_status.simulated_drawdown is not none else '暂无' }}{% if shadow_status.simulated_drawdown is not none %}%{% endif %}</strong>
                     </div>
                 </div>
                 <div class="shadow-blocked-top" id="shadow-blocked-top">
@@ -3563,254 +3797,244 @@ HTML = """<!DOCTYPE html>
                     <span class="shadow-chip">{{ item.reason }} · {{ item.count }}</span>
                     {% endfor %}
                     {% if not shadow_status.blocked_reason_top5 %}
-                    <span class="system-status-detail">no data</span>
+                    <span class="system-status-detail">暂无数据</span>
                     {% endif %}
                 </div>
             </div>
             <div class="system-status-card full candidate-validation-card {{ candidate_status_class }}" id="candidate-validation-card">
-                <span class="system-status-label" id="candidate-title">{{ candidate_validation.title or 'AI Candidate Validation' }}</span>
-                <span class="system-status-value" id="candidate-state">{{ candidate_validation.status_label or 'STALE' }}</span>
-                <span class="system-status-detail" id="candidate-detail">{{ candidate_validation.detail or 'no data' }}</span>
+                <span class="system-status-label" id="candidate-title">AI 候选验证</span>
+                <span class="system-status-value" id="candidate-state">{{ translate_status(candidate_validation.status_label or 'STALE') }}</span>
+                <span class="system-status-detail" id="candidate-detail">{{ format_optional(candidate_validation.detail) }}</span>
                 <div class="board-section-head" style="margin-top: 8px;">
-                    <span>Factor Scores</span>
+                    <span>因子评分</span>
                 </div>
                 <div class="shadow-metrics-grid">
                     <div class="shadow-metric">
-                        <span>Symbol</span>
-                        <strong id="candidate-symbol">{{ candidate_validation.latest_candidate.symbol or 'unavailable' }}</strong>
+                        <span>标的</span>
+                        <strong id="candidate-symbol">{{ format_optional(candidate_validation.latest_candidate.symbol) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Asset Type</span>
-                        <strong id="candidate-asset-type">{{ candidate_validation.latest_candidate.asset_type or 'unavailable' }}</strong>
+                        <span>资产类型</span>
+                        <strong id="candidate-asset-type">{{ format_optional(candidate_validation.latest_candidate.asset_type) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>AI Score</span>
-                        <strong id="candidate-ai-score">{{ candidate_validation.latest_candidate.ai_score if candidate_validation.latest_candidate.ai_score is not none else 'unavailable' }}</strong>
+                        <span>AI 评分</span>
+                        <strong id="candidate-ai-score">{{ candidate_validation.latest_candidate.ai_score if candidate_validation.latest_candidate.ai_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Candidate Score</span>
-                        <strong id="candidate-candidate-score">{{ candidate_validation.latest_candidate.candidate_score if candidate_validation.latest_candidate.candidate_score is not none else 'unavailable' }}</strong>
+                        <span>候选总分</span>
+                        <strong id="candidate-candidate-score">{{ candidate_validation.latest_candidate.candidate_score if candidate_validation.latest_candidate.candidate_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Benchmarks</span>
-                        <strong id="candidate-benchmarks">{{ candidate_validation.latest_candidate.benchmarks|join(' / ') if candidate_validation.latest_candidate.benchmarks else 'unavailable' }}</strong>
+                        <span>基准标的</span>
+                        <strong id="candidate-benchmarks">{{ candidate_validation.latest_candidate.benchmarks|join(' / ') if candidate_validation.latest_candidate.benchmarks else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Strategy Family</span>
-                        <strong id="candidate-strategy-family">{{ candidate_validation.latest_candidate.strategy_family or 'unavailable' }}</strong>
+                        <span>策略类型</span>
+                        <strong id="candidate-strategy-family">{{ format_optional(candidate_validation.latest_candidate.strategy_family) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Liquidity Score</span>
-                        <strong id="candidate-liquidity-score">{{ candidate_validation.latest_candidate.liquidity_score if candidate_validation.latest_candidate.liquidity_score is not none else 'unavailable' }}</strong>
+                        <span>流动性评分</span>
+                        <strong id="candidate-liquidity-score">{{ candidate_validation.latest_candidate.liquidity_score if candidate_validation.latest_candidate.liquidity_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Trend Score</span>
-                        <strong id="candidate-trend-score">{{ candidate_validation.latest_candidate.trend_score if candidate_validation.latest_candidate.trend_score is not none else 'unavailable' }}</strong>
+                        <span>趋势评分</span>
+                        <strong id="candidate-trend-score">{{ candidate_validation.latest_candidate.trend_score if candidate_validation.latest_candidate.trend_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Volatility Score</span>
-                        <strong id="candidate-volatility-score">{{ candidate_validation.latest_candidate.volatility_score if candidate_validation.latest_candidate.volatility_score is not none else 'unavailable' }}</strong>
+                        <span>波动率评分</span>
+                        <strong id="candidate-volatility-score">{{ candidate_validation.latest_candidate.volatility_score if candidate_validation.latest_candidate.volatility_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Risk Score</span>
-                        <strong id="candidate-risk-score">{{ candidate_validation.latest_candidate.risk_score if candidate_validation.latest_candidate.risk_score is not none else 'unavailable' }}</strong>
+                        <span>风险评分</span>
+                        <strong id="candidate-risk-score">{{ candidate_validation.latest_candidate.risk_score if candidate_validation.latest_candidate.risk_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Strategy Fit</span>
-                        <strong id="candidate-strategy-fit-score">{{ candidate_validation.latest_candidate.strategy_fit_score if candidate_validation.latest_candidate.strategy_fit_score is not none else 'unavailable' }}</strong>
+                        <span>策略适配度</span>
+                        <strong id="candidate-strategy-fit-score">{{ candidate_validation.latest_candidate.strategy_fit_score if candidate_validation.latest_candidate.strategy_fit_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Recommended Strategy</span>
-                        <strong id="candidate-recommended-strategy">{{ candidate_validation.latest_candidate.recommended_strategy or 'unavailable' }}</strong>
+                        <span>推荐策略</span>
+                        <strong id="candidate-recommended-strategy">{{ format_optional(candidate_validation.latest_candidate.recommended_strategy) }}</strong>
                     </div>
                     <div class="shadow-metric full">
-                        <span>AI Ranking Reason</span>
-                        <strong id="candidate-score-reason">{{ candidate_validation.latest_candidate.score_reason or 'unavailable' }}</strong>
+                        <span>AI 排名原因</span>
+                        <strong id="candidate-score-reason">{{ format_optional(candidate_validation.latest_candidate.score_reason) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Validation Status</span>
-                        <strong id="candidate-validation-status">{{ candidate_validation.latest_candidate.validation_status or 'AI_CANDIDATE' }}</strong>
+                        <span>验证状态</span>
+                        <strong id="candidate-validation-status">{{ translate_status(candidate_validation.latest_candidate.validation_status or 'AI_CANDIDATE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Selection Stage</span>
-                        <strong id="candidate-selection-stage">{{ candidate_validation.latest_candidate.selection_stage or candidate_validation.selection_stage or 'PRELIMINARY' }}</strong>
+                        <span>选股阶段</span>
+                        <strong id="candidate-selection-stage">{{ translate_status(candidate_validation.latest_candidate.selection_stage or candidate_validation.selection_stage or 'PRELIMINARY') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Last Completed Session</span>
-                        <strong id="candidate-last-completed-session">{{ candidate_validation.latest_candidate.last_completed_session or 'unavailable' }}</strong>
+                        <span>最近完整交易日</span>
+                        <strong id="candidate-last-completed-session">{{ format_optional(candidate_validation.latest_candidate.last_completed_session) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Daily Data As Of</span>
-                        <strong id="candidate-daily-data-as-of">{{ candidate_validation.latest_candidate.daily_data_as_of or 'unavailable' }}</strong>
+                        <span>日线数据日期</span>
+                        <strong id="candidate-daily-data-as-of">{{ format_optional(candidate_validation.latest_candidate.daily_data_as_of) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Premarket Snapshot At</span>
-                        <strong id="candidate-premarket-snapshot-at">{{ candidate_validation.latest_candidate.premarket_snapshot_at or 'unavailable' }}</strong>
+                        <span>盘前快照时间</span>
+                        <strong id="candidate-premarket-snapshot-at">{{ format_timestamp(candidate_validation.latest_candidate.premarket_snapshot_at) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Premarket Change</span>
-                        <strong id="candidate-premarket-change">{{ candidate_validation.latest_candidate.premarket_change_pct if candidate_validation.latest_candidate.premarket_change_pct is not none else 'unavailable' }}</strong>
+                        <span>盘前涨跌</span>
+                        <strong id="candidate-premarket-change">{{ candidate_validation.latest_candidate.premarket_change_pct if candidate_validation.latest_candidate.premarket_change_pct is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Gap</span>
-                        <strong id="candidate-gap-pct">{{ candidate_validation.latest_candidate.gap_pct if candidate_validation.latest_candidate.gap_pct is not none else 'unavailable' }}</strong>
+                        <span>跳空幅度</span>
+                        <strong id="candidate-gap-pct">{{ candidate_validation.latest_candidate.gap_pct if candidate_validation.latest_candidate.gap_pct is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Premarket Volume</span>
-                        <strong id="candidate-premarket-volume">{{ candidate_validation.latest_candidate.premarket_volume if candidate_validation.latest_candidate.premarket_volume is not none else 'unavailable' }}</strong>
+                        <span>盘前成交量</span>
+                        <strong id="candidate-premarket-volume">{{ candidate_validation.latest_candidate.premarket_volume if candidate_validation.latest_candidate.premarket_volume is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Data Freshness</span>
+                        <span>数据时效</span>
                         <strong id="candidate-freshness-status">{{ candidate_validation.latest_candidate.freshness_status or candidate_validation.status_label or 'STALE' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Data Mode</span>
-                        <strong id="candidate-data-mode">{{ candidate_validation.latest_candidate.data_mode or 'unavailable' }}</strong>
+                        <span>数据模式</span>
+                        <strong id="candidate-data-mode">{{ format_optional(candidate_validation.latest_candidate.data_mode) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Universe Filter</span>
+                        <span>股票池筛选</span>
                         <strong id="candidate-universe-filter">{{ '通过' if candidate_validation.latest_candidate.trade_filter_passed else '拒绝' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Data Sufficiency</span>
+                        <span>数据完整度</span>
                         <strong id="candidate-data-sufficiency">{{ '通过' if candidate_validation.latest_candidate.data_status == 'VALID' else '失败' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Scoring Eligible</span>
-                        <strong id="candidate-scoring-eligible">{{ 'YES' if candidate_validation.latest_candidate.scoring_eligible else 'NO' }}</strong>
+                        <span>是否可评分</span>
+                        <strong id="candidate-scoring-eligible">{{ format_bool(candidate_validation.latest_candidate.scoring_eligible) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Trade Admission</span>
-                        <strong id="candidate-trade-admission">{{ candidate_validation.latest_candidate.trade_admission_status or 'NOT_TRADABLE' }}</strong>
+                        <span>交易准入</span>
+                        <strong id="candidate-trade-admission">{{ translate_status(candidate_validation.latest_candidate.trade_admission_status or 'NOT_TRADABLE') }}</strong>
                     </div>
                     <div class="shadow-metric full">
-                        <span>Scoring Block Reason</span>
-                        <strong id="candidate-scoring-block-reason">{{ candidate_validation.latest_candidate.scoring_block_reason or 'unavailable' }}</strong>
+                        <span>评分阻断原因</span>
+                        <strong id="candidate-scoring-block-reason">{{ translate_reason(candidate_validation.latest_candidate.scoring_block_reason) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Stale Reason</span>
-                        <strong id="candidate-stale-reason">{{ candidate_validation.latest_candidate.stale_reason or 'unavailable' }}</strong>
+                        <span>过期原因</span>
+                        <strong id="candidate-stale-reason">{{ translate_reason(candidate_validation.latest_candidate.stale_reason) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Evidence Status</span>
-                        <strong id="candidate-evidence-status">{{ candidate_validation.latest_candidate.evidence_status or 'INSUFFICIENT_EVIDENCE' }}</strong>
+                        <span>证据状态</span>
+                        <strong id="candidate-evidence-status">{{ translate_status(candidate_validation.latest_candidate.evidence_status or 'INSUFFICIENT_EVIDENCE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Profitability Status</span>
-                        <strong id="candidate-profitability-status">{{ candidate_validation.latest_candidate.profitability_status or 'INELIGIBLE' }}</strong>
+                        <span>盈利资格</span>
+                        <strong id="candidate-profitability-status">{{ translate_status(candidate_validation.latest_candidate.profitability_status or 'INELIGIBLE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Deployment Status</span>
-                        <strong id="candidate-deployment-status">{{ candidate_validation.latest_candidate.deployment_status or 'INELIGIBLE' }}</strong>
+                        <span>部署资格</span>
+                        <strong id="candidate-deployment-status">{{ translate_status(candidate_validation.latest_candidate.deployment_status or 'INELIGIBLE') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Rejection Reason</span>
-                        <strong id="candidate-rejection-reason">{{ candidate_validation.latest_candidate.rejection_reason or 'unavailable' }}</strong>
+                        <span>拒绝原因</span>
+                        <strong id="candidate-rejection-reason">{{ translate_reason(candidate_validation.latest_candidate.rejection_reason) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Last Updated</span>
-                        <strong id="candidate-last-updated">{{ candidate_validation.last_updated or 'unavailable' }}</strong>
+                        <span>更新时间（北京时间）</span>
+                        <strong id="candidate-last-updated">{{ format_timestamp(candidate_validation.last_updated) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Records</span>
-                        <strong id="candidate-record-count">{{ candidate_validation.candidate_count if candidate_validation.candidate_count is not none else 'unavailable' }}</strong>
+                        <span>记录数量</span>
+                        <strong id="candidate-record-count">{{ candidate_validation.candidate_count if candidate_validation.candidate_count is not none else '暂无数据' }}</strong>
                     </div>
                 </div>
                 <div class="board-section-head" style="margin-top: 12px;">
-                    <span>Candidate Ranking Performance</span>
+                    <span>候选评分效果</span>
                 </div>
                 <div class="shadow-metrics-grid">
                     <div class="shadow-metric">
-                        <span>Average Score</span>
-                        <strong id="candidate-performance-average-score">{{ candidate_validation.performance.average_score if candidate_validation.performance and candidate_validation.performance.average_score is not none else 'unavailable' }}</strong>
+                        <span>平均评分</span>
+                        <strong id="candidate-performance-average-score">{{ candidate_validation.performance.average_score if candidate_validation.performance and candidate_validation.performance.average_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>High Score Success Rate</span>
-                        <strong id="candidate-performance-high-score-rate">{{ candidate_validation.performance.high_score_success_rate if candidate_validation.performance and candidate_validation.performance.high_score_success_rate is not none else 'unavailable' }}</strong>
+                        <span>高分候选成功率</span>
+                        <strong id="candidate-performance-high-score-rate">{{ candidate_validation.performance.high_score_success_rate if candidate_validation.performance and candidate_validation.performance.high_score_success_rate is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric full">
-                        <span>Score Bucket Distribution</span>
+                        <span>分数区间表现</span>
                         <strong id="candidate-performance-buckets">
                             {% if candidate_validation.performance and candidate_validation.performance.score_bucket_distribution %}
                                 {% for bucket in candidate_validation.performance.score_bucket_distribution %}
                                     {{ bucket.score_bucket }} · {{ bucket.candidate_count }} · {{ bucket.data_valid_rate if bucket.data_valid_rate is not none else 'n/a' }}% · {{ bucket.backtest_complete_rate if bucket.backtest_complete_rate is not none else 'n/a' }}% · {{ bucket.walk_forward_complete_rate if bucket.walk_forward_complete_rate is not none else 'n/a' }}%{% if not loop.last %}<br>{% endif %}
                                 {% endfor %}
                             {% else %}
-                                unavailable
+                                暂无数据
                             {% endif %}
                         </strong>
                     </div>
                 </div>
             </div>
             <div class="system-status-card full candidate-model-card {{ candidate_model_status_class }}" id="candidate-model-card">
-                <span class="system-status-label" id="candidate-model-title">{{ candidate_model_evaluation.title or 'Candidate Model Evaluation' }}</span>
-                <span class="system-status-value" id="candidate-model-status">{{ candidate_model_evaluation.approval_status or 'DRAFT' }}</span>
-                <span class="system-status-detail" id="candidate-model-detail">{{ candidate_model_evaluation.recommended_action or 'collect_more_samples' }}</span>
+                <span class="system-status-label" id="candidate-model-title">候选模型评估</span>
+                <span class="system-status-value" id="candidate-model-status">{{ translate_status(candidate_model_evaluation.approval_status or 'DRAFT') }}</span>
+                <span class="system-status-detail" id="candidate-model-detail">{{ format_optional(candidate_model_evaluation.recommended_action) }}</span>
                 <div class="board-section-head" style="margin-top: 8px;">
-                    <span>Model Snapshot</span>
+                    <span>模型概览</span>
                 </div>
                 <div class="shadow-metrics-grid">
                     <div class="shadow-metric">
-                        <span>Active Model</span>
+                        <span>当前主模型</span>
                         <strong id="candidate-model-active-version">{{ candidate_model_evaluation.active_model_version or 'baseline_v1' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Challenger</span>
-                        <strong id="candidate-model-challenger-version">{{ candidate_model_evaluation.challenger_version or 'unavailable' }}</strong>
+                        <span>挑战模型</span>
+                        <strong id="candidate-model-challenger-version">{{ format_optional(candidate_model_evaluation.challenger_version) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Training Samples</span>
-                        <strong id="candidate-model-training-sample-count">{{ candidate_model_evaluation.training_sample_count if candidate_model_evaluation.training_sample_count is not none else 'unavailable' }}</strong>
+                        <span>训练样本数</span>
+                        <strong id="candidate-model-training-sample-count">{{ candidate_model_evaluation.training_sample_count if candidate_model_evaluation.training_sample_count is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Training Period</span>
-                        <strong id="candidate-model-training-period">{{ candidate_model_evaluation.training_period.start or 'unavailable' }} -> {{ candidate_model_evaluation.training_period.end or 'unavailable' }}</strong>
+                        <span>训练区间</span>
+                        <strong id="candidate-model-training-period">{{ format_optional(candidate_model_evaluation.training_period.start) }} → {{ format_optional(candidate_model_evaluation.training_period.end) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Baseline Score</span>
-                        <strong id="candidate-model-baseline-score">{{ candidate_model_evaluation.comparison.baseline_score if candidate_model_evaluation.comparison and candidate_model_evaluation.comparison.baseline_score is not none else 'unavailable' }}</strong>
+                        <span>基准模型评分</span>
+                        <strong id="candidate-model-baseline-score">{{ candidate_model_evaluation.comparison.baseline_score if candidate_model_evaluation.comparison and candidate_model_evaluation.comparison.baseline_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Challenger Score</span>
-                        <strong id="candidate-model-challenger-score">{{ candidate_model_evaluation.comparison.challenger_score if candidate_model_evaluation.comparison and candidate_model_evaluation.comparison.challenger_score is not none else 'unavailable' }}</strong>
+                        <span>挑战模型评分</span>
+                        <strong id="candidate-model-challenger-score">{{ candidate_model_evaluation.comparison.challenger_score if candidate_model_evaluation.comparison and candidate_model_evaluation.comparison.challenger_score is not none else '暂无数据' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Approval Status</span>
-                        <strong id="candidate-model-approval-status">{{ candidate_model_evaluation.approval_status or 'DRAFT' }}</strong>
+                        <span>审批状态</span>
+                        <strong id="candidate-model-approval-status">{{ translate_status(candidate_model_evaluation.approval_status or 'DRAFT') }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Recommended Action</span>
+                        <span>建议操作</span>
                         <strong id="candidate-model-recommended-action">{{ candidate_model_evaluation.recommended_action or 'collect_more_samples' }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Sample Size Warning</span>
-                        <strong id="candidate-model-sample-warning">{{ 'YES' if candidate_model_evaluation.sample_size_warning else 'NO' }}</strong>
+                        <span>样本量告警</span>
+                        <strong id="candidate-model-sample-warning">{{ format_bool(candidate_model_evaluation.sample_size_warning) }}</strong>
                     </div>
                     <div class="shadow-metric">
-                        <span>Overfitting Warning</span>
-                        <strong id="candidate-model-overfitting-warning">{{ 'YES' if candidate_model_evaluation.overfitting_warning else 'NO' }}</strong>
-                    </div>
-                    <div class="shadow-metric full">
-                        <span>Baseline Metrics</span>
-                        <strong id="candidate-model-baseline-metrics">{{ candidate_model_evaluation.baseline_metrics|tojson if candidate_model_evaluation.baseline_metrics else 'unavailable' }}</strong>
-                    </div>
-                    <div class="shadow-metric full">
-                        <span>Challenger Metrics</span>
-                        <strong id="candidate-model-challenger-metrics">{{ candidate_model_evaluation.challenger_metrics|tojson if candidate_model_evaluation.challenger_metrics else 'unavailable' }}</strong>
-                    </div>
-                    <div class="shadow-metric full">
-                        <span>Candidate Weights</span>
-                        <strong id="candidate-model-weights">{{ candidate_model_evaluation.proposed_weights|tojson if candidate_model_evaluation.proposed_weights else 'unavailable' }}</strong>
-                    </div>
-                    <div class="shadow-metric full">
-                        <span>Calibration Curve</span>
-                        <strong id="candidate-model-calibration-curve">{{ candidate_model_evaluation.calibration_curve|tojson if candidate_model_evaluation.calibration_curve else 'unavailable' }}</strong>
-                    </div>
-                    <div class="shadow-metric full">
-                        <span>Warnings</span>
-                        <strong id="candidate-model-warnings">{{ candidate_model_evaluation.warnings|join(' · ') if candidate_model_evaluation.warnings else 'none' }}</strong>
+                        <span>过拟合告警</span>
+                        <strong id="candidate-model-overfitting-warning">{{ format_bool(candidate_model_evaluation.overfitting_warning) }}</strong>
                     </div>
                 </div>
+                <details class="technical-details">
+                    <summary>展开模型技术详情</summary>
+                    <div class="technical-details-body">
+                        <div>基准模型完整指标</div><pre id="candidate-model-baseline-metrics">{{ candidate_model_evaluation.baseline_metrics|tojson(indent=2) if candidate_model_evaluation.baseline_metrics else '暂无数据' }}</pre>
+                        <div>挑战模型完整指标</div><pre id="candidate-model-challenger-metrics">{{ candidate_model_evaluation.challenger_metrics|tojson(indent=2) if candidate_model_evaluation.challenger_metrics else '暂无数据' }}</pre>
+                        <div>候选权重</div><pre id="candidate-model-weights">{{ candidate_model_evaluation.proposed_weights|tojson(indent=2) if candidate_model_evaluation.proposed_weights else '暂无数据' }}</pre>
+                        <div>校准曲线</div><pre id="candidate-model-calibration-curve">{{ candidate_model_evaluation.calibration_curve|tojson(indent=2) if candidate_model_evaluation.calibration_curve else '暂无数据' }}</pre>
+                        <div>原始告警</div><pre id="candidate-model-warnings">{{ candidate_model_evaluation.warnings|tojson(indent=2) if candidate_model_evaluation.warnings else '无' }}</pre>
+                    </div>
+                </details>
             </div>
         </div>
     </div>
@@ -3823,106 +4047,106 @@ HTML = """<!DOCTYPE html>
             <button class="pause-button" id="auto-refresh-toggle" type="button">⏸ 暂停自动刷新</button>
         </div>
         <div class="system-status-card full research-report-card {{ 'status-live' if research_report.state == 'SAFE' else 'status-warn' if research_report.state == 'STALE' else 'status-offline' }}" id="research-report-card">
-            <span class="system-status-label" id="research-report-title">{{ research_report.display_title or research_report.title or 'AI Research Report' }}</span>
-            <span class="system-status-value" id="research-report-state">{{ research_report.status_label or 'STALE' }}</span>
-            <span class="system-status-detail" id="research-report-detail">{{ research_report.detail or 'no data' }}</span>
+            <span class="system-status-label" id="research-report-title">AI 研究日报</span>
+            <span class="system-status-value" id="research-report-state">{{ translate_status(research_report.status_label or 'STALE') }}</span>
+            <span class="system-status-detail" id="research-report-detail">{{ format_optional(research_report.detail) }}</span>
             <div class="board-section-head" style="margin-top: 8px;">
-                <span>Report Summary</span>
+                <span>报告摘要</span>
             </div>
             <div class="shadow-metrics-grid">
                 <div class="shadow-metric">
-                    <span>Candidate Count</span>
-                    <strong id="research-report-candidate-count">{{ research_report.candidate_count if research_report.candidate_count is not none else 'unavailable' }}</strong>
+                    <span>候选数量</span>
+                    <strong id="research-report-candidate-count">{{ research_report.candidate_count if research_report.candidate_count is not none else '暂无数据' }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Average Score</span>
-                    <strong id="research-report-average-score">{{ research_report.average_score if research_report.average_score is not none else 'unavailable' }}</strong>
+                    <span>平均评分</span>
+                    <strong id="research-report-average-score">{{ research_report.average_score if research_report.average_score is not none else '暂无数据' }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Execution Status</span>
-                    <strong id="research-report-execution-status">{{ research_report.selection_execution_status or 'COMPLETED' }}</strong>
+                    <span>执行状态</span>
+                    <strong id="research-report-execution-status">{{ translate_status(research_report.selection_execution_status or 'COMPLETED') }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Result Quality</span>
-                    <strong id="research-report-result-quality">{{ research_report.selection_result_quality or 'COMPLETE' }}</strong>
+                    <span>结果质量</span>
+                    <strong id="research-report-result-quality">{{ translate_status(research_report.selection_result_quality or 'COMPLETE') }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Research Admission</span>
-                    <strong id="research-report-research-admission">{{ research_report.selection_research_admission or 'RESEARCH_READY' }}</strong>
+                    <span>研究准入</span>
+                    <strong id="research-report-research-admission">{{ translate_status(research_report.selection_research_admission or 'RESEARCH_READY') }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>High Score Success Rate</span>
-                    <strong id="research-report-high-score-rate">{{ research_report.high_score_success_rate if research_report.high_score_success_rate is not none else 'unavailable' }}</strong>
+                    <span>高分候选成功率</span>
+                    <strong id="research-report-high-score-rate">{{ research_report.high_score_success_rate if research_report.high_score_success_rate is not none else '暂无数据' }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Market Regime</span>
-                    <strong id="research-report-market-regime">{{ research_report.market_regime.regime if research_report.market_regime and research_report.market_regime.regime else 'UNKNOWN' }}</strong>
+                    <span>市场环境</span>
+                    <strong id="research-report-market-regime">{{ translate_status(research_report.market_regime.regime if research_report.market_regime and research_report.market_regime.regime else 'UNKNOWN') }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Regime Confidence</span>
-                    <strong id="research-report-market-regime-confidence">{{ research_report.market_regime.confidence if research_report.market_regime and research_report.market_regime.confidence is not none else 'unavailable' }}</strong>
+                    <span>市场环境置信度</span>
+                    <strong id="research-report-market-regime-confidence">{{ research_report.market_regime.confidence if research_report.market_regime and research_report.market_regime.confidence is not none else '暂无数据' }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Strategy Outcome</span>
-                    <strong id="research-report-selection-outcome">{{ research_report.selection_outcome or 'NO_ACTIONABLE_RESEARCH_CANDIDATE' }}</strong>
+                    <span>策略结果</span>
+                    <strong id="research-report-selection-outcome">{{ translate_status(research_report.selection_outcome or 'NO_ACTIONABLE_RESEARCH_CANDIDATE') }}</strong>
                 </div>
                 <div class="shadow-metric">
-                    <span>Final Selected</span>
+                    <span>正式入选数量</span>
                     <strong id="research-report-final-selected-count">{{ research_report.final_selected_count if research_report.final_selected_count is not none else 0 }}</strong>
                 </div>
                 <div class="shadow-metric full">
-                    <span>Score Distribution</span>
+                    <span>分数区间表现</span>
                     <strong id="research-report-score-distribution">
                         {% if research_report.score_distribution %}
                             {% for bucket in research_report.score_distribution %}
                                 {{ bucket.score_bucket }} · {{ bucket.candidate_count }} · {{ bucket.data_valid_rate if bucket.data_valid_rate is not none else 'n/a' }}% · {{ bucket.backtest_complete_rate if bucket.backtest_complete_rate is not none else 'n/a' }}% · {{ bucket.walk_forward_complete_rate if bucket.walk_forward_complete_rate is not none else 'n/a' }}%{% if not loop.last %}<br>{% endif %}
                             {% endfor %}
                         {% else %}
-                            unavailable
+                            暂无数据
                         {% endif %}
                     </strong>
                 </div>
                 <div class="shadow-metric full">
-                    <span>Top Candidates</span>
+                    <span>高分候选</span>
                     <strong id="research-report-top-candidates">
                         {% if research_report.top_candidates %}
                             {% for item in research_report.top_candidates %}
-                                {{ item.symbol or item.candidate_id }} · {{ item.candidate_score if item.candidate_score is not none else 'unavailable' }} · {{ item.recommended_strategy or 'unavailable' }}{% if not loop.last %}<br>{% endif %}
+                                {{ item.symbol or item.candidate_id }} · {{ item.candidate_score if item.candidate_score is not none else '暂无数据' }} · {{ item.recommended_strategy or '暂无数据' }}{% if not loop.last %}<br>{% endif %}
                             {% endfor %}
                         {% else %}
-                            unavailable
+                            暂无数据
                         {% endif %}
                     </strong>
                 </div>
                 <div class="shadow-metric full">
-                    <span>Candidate Strategy Matrix</span>
+                    <span>候选策略矩阵</span>
                     <strong id="research-report-strategy-matrix">
                         {% if research_report.candidate_strategy_matrix %}
                             {% for item in research_report.candidate_strategy_matrix %}
-                                {{ item.symbol or item.candidate_id }} · {{ item.strategy_id or 'unavailable' }} · fit {{ item.fit_score if item.fit_score is not none else 'n/a' }} · {{ item.allowed if item.allowed is not none else 'n/a' }}{% if item.blocked_reason %} · {{ item.blocked_reason }}{% endif %}{% if not loop.last %}<br>{% endif %}
+                                {{ item.symbol or item.candidate_id }} · {{ item.strategy_id or '暂无数据' }} · 适配度 {{ item.fit_score if item.fit_score is not none else '不适用' }} · {{ format_bool(item.allowed) if item.allowed is not none else '不适用' }}{% if item.blocked_reason %} · {{ translate_reason(item.blocked_reason) }}{% endif %}{% if not loop.last %}<br>{% endif %}
                             {% endfor %}
                         {% else %}
-                            unavailable
+                            暂无数据
                         {% endif %}
                     </strong>
                 </div>
                 <div class="shadow-metric full">
-                    <span>Portfolio Composition</span>
+                    <span>候选组合构成</span>
                     <strong id="research-report-portfolio-composition">
                         {% if research_report.portfolio_composition %}
-                            selected {{ research_report.portfolio_composition.selected_count if research_report.portfolio_composition.selected_count is not none else 0 }}
-                            · blocked {{ research_report.portfolio_composition.blocked_count if research_report.portfolio_composition.blocked_count is not none else 0 }}
-                            · leveraged/inverse {{ research_report.portfolio_composition.leveraged_inverse_selected_count if research_report.portfolio_composition.leveraged_inverse_selected_count is not none else 0 }}
+                            已选 {{ research_report.portfolio_composition.selected_count if research_report.portfolio_composition.selected_count is not none else 0 }}
+                            · 已阻断 {{ research_report.portfolio_composition.blocked_count if research_report.portfolio_composition.blocked_count is not none else 0 }}
+                            · 杠杆/反向 ETF {{ research_report.portfolio_composition.leveraged_inverse_selected_count if research_report.portfolio_composition.leveraged_inverse_selected_count is not none else 0 }}
                             {% if research_report.portfolio_composition.selected_symbols %}
-                                <br>symbols {{ research_report.portfolio_composition.selected_symbols | join(' / ') }}
+                                <br>标的 {{ research_report.portfolio_composition.selected_symbols | join(' / ') }}
                             {% endif %}
                         {% else %}
-                            unavailable
+                            暂无数据
                         {% endif %}
                     </strong>
                 </div>
                 <div class="shadow-metric full">
-                    <span>Failure Analysis</span>
+                    <span>失败原因分析</span>
                     <strong id="research-report-failure-analysis">
                         {% set failure_statuses = research_report.failure_analysis.statuses if research_report.failure_analysis and research_report.failure_analysis.statuses else {} %}
                         DATA_INVALID {{ failure_statuses.get('DATA_INVALID', 0) }} · BACKTEST_FAILED {{ failure_statuses.get('BACKTEST_FAILED', 0) }} · WALK_FORWARD_FAILED {{ failure_statuses.get('WALK_FORWARD_FAILED', 0) }}
@@ -3937,7 +4161,7 @@ HTML = """<!DOCTYPE html>
                         <div class="viz-title">账户权益变化</div>
                         <div class="viz-subtitle">展示当前引擎权益对比与今日盈亏快照</div>
                     </div>
-                    <div class="viz-subtitle">总权益 {{ "$%.2f"|format(total_equity) if total_equity is not none else 'Unavailable' }} · 今日盈亏 {{ "%+.2f"|format(today_total_pnl) }}</div>
+                    <div class="viz-subtitle">总权益 {{ "$%.2f"|format(total_equity) if total_equity is not none else '暂无' }} · 今日盈亏 {{ "%+.2f"|format(today_total_pnl) }}</div>
                 </div>
                 {% if equity_curve_bars %}
                     <div>{{ equity_curve_bars|safe }}</div>
@@ -4023,7 +4247,7 @@ HTML = """<!DOCTYPE html>
                         <span class="k">{{ pos.ticker }}</span>
                         <span class="v">{{ pos.quantity }} 股</span>
                         <span class="s">
-                            {% if pos.market_value is not none %}市值 ${{ "%.2f"|format(pos.market_value) }}{% else %}市值 unavailable{% endif %}
+                            {% if pos.market_value is not none %}市值 ${{ "%.2f"|format(pos.market_value) }}{% else %}市值暂无{% endif %}
                         </span>
                     </div>
                     {% endfor %}
@@ -4064,7 +4288,7 @@ HTML = """<!DOCTYPE html>
                         <div class="viz-title">交易与审计事件</div>
                         <div class="viz-subtitle">按时间倒序的关键事件摘要</div>
                     </div>
-                    <div class="viz-subtitle">{{ trade_audit.execution_mode or 'unknown' }}</div>
+                    <div class="viz-subtitle">{{ translate_status(trade_audit.execution_mode or 'UNKNOWN') }}</div>
                 </div>
                 <div class="timeline-list">
                     {% for event in timeline_items %}
@@ -4187,34 +4411,21 @@ HTML = """<!DOCTYPE html>
                             </tr>
                         </table>
                     </div>
-                    <div class="section-meta">
+                    <div class="section-meta" data-legacy-universe-filter="Universe筛选：{{ ai_universe_filter.summary }}">
                         {% if ai_selection and ai_selection.timestamp %}
                             最新选股时间：{{ ai_selection.timestamp }}
                             {% if ai_selection.settings %}
-                                · Universe筛选：{{ ai_universe_filter.summary }}
+                                · 股票池筛选：{{ ai_universe_filter.summary }}
                                 · 自动刷新：{{ ai_selection.settings.auto_refresh_minutes or 0 }} 分钟
                                 · 扫描数量：{{ ai_selection.settings.max_symbols or 0 }}
-                                · 数据模式：{{ ai_selection.settings.data_mode or 'unknown' }}
-                                · 启动阶段：{{ ai_selection.settings.selection_stage or 'unknown' }}
+                                · 数据模式：{{ translate_status(ai_selection.settings.data_mode or 'UNKNOWN') }}
+                                · 启动阶段：{{ translate_status(ai_selection.settings.selection_stage or 'UNKNOWN') }}
                                 {% if ai_selection.settings.fallback_used %} · 已回退补齐{% endif %}
                                 {% if ai_selection.execution_status %} · <span id="ai-selection-execution-status">执行状态：{{ ai_selection.execution_status }}</span>{% endif %}
                                 {% if ai_selection.result_quality %} · <span id="ai-selection-result-quality">结果质量：{{ ai_selection.result_quality }}</span>{% endif %}
                                 {% if ai_selection.research_admission %} · <span id="ai-selection-research-admission">研究准入：{{ ai_selection.research_admission }}</span>{% endif %}
                             {% endif %}
                             <div style="margin-top:8px;line-height:1.5" id="ai-selection-research-notice">提示：{{ ai_selection.research_admission_notice or '候选可进入独立数据验证，不代表具备交易资格。' }}</div>
-                            <div style="margin-top:8px;line-height:1.5" id="ai-selection-provider-attempted">Provider 尝试：{{ ai_selection.provider_audit_sections.attempted if ai_selection.provider_audit_sections else '无' }}</div>
-                            <div style="line-height:1.5" id="ai-selection-provider-success">Provider 成功：{{ ai_selection.provider_audit_sections.success if ai_selection.provider_audit_sections else '无' }}</div>
-                            <div style="line-height:1.5" id="ai-selection-provider-failure">Provider 失败：{{ ai_selection.provider_audit_sections.failure if ai_selection.provider_audit_sections else '无' }}</div>
-                            <div style="line-height:1.5" id="ai-selection-provider-timeout">Provider 超时：{{ ai_selection.provider_audit_sections.timeout if ai_selection.provider_audit_sections else '无' }}</div>
-                            <div style="line-height:1.5" id="ai-selection-provider-fallback">Provider Fallback：{{ ai_selection.provider_audit_sections.fallback if ai_selection.provider_audit_sections else '无' }}</div>
-                            <div style="line-height:1.5" id="ai-selection-provider-mock">Provider Mock：{{ ai_selection.provider_audit_sections.mock if ai_selection.provider_audit_sections else '无' }}</div>
-                            <div style="line-height:1.5" id="ai-selection-provider-contributor">Provider 实际贡献：{{ ai_selection.provider_audit_sections.contributor if ai_selection.provider_audit_sections else '无' }}</div>
-                            {% if ai_selection.selection_funnel %}
-                                <div style="line-height:1.5" id="ai-selection-funnel">候选漏斗：{{ ai_selection.selection_funnel | safe }}</div>
-                            {% endif %}
-                            {% if ai_selection.rejection_reason_counts %}
-                                <div style="line-height:1.5" id="ai-selection-rejection-counts">拒绝统计：{{ ai_selection.rejection_reason_counts | safe }}</div>
-                            {% endif %}
                             {% if ai_selection.protected_positions %}
                                 · 保护持仓：{{ ai_selection.protected_positions | map(attribute='ticker') | join(' / ') }}
                             {% endif %}
@@ -4228,10 +4439,13 @@ HTML = """<!DOCTYPE html>
                         <br>
                         选股配置校验：<span class="{{ selection_sync.level }}">{{ selection_sync.label }}</span> · {{ selection_sync.detail }}
                         {% if not selection_sync.ok %}
-                        <div class="warning-banner" style="margin-top:10px;background:rgba(255,255,255,.03);color:#e5eefc;border-color:rgba(255,255,255,.08)">
-                            <div>selection_state tickers: {{ (selection_sync.selection_state_symbols or []) | safe }}</div>
-                            <div>current TOP config tickers: {{ (selection_sync.current_top_config_symbols or []) | safe }}</div>
-                            <div>mismatch reason: {{ (selection_sync.mismatch_reason or 'unknown') | safe }}</div>
+                        <div class="warning-banner"
+                             data-legacy-selection-state="selection_state tickers: {{ (selection_sync.selection_state_symbols or []) | safe }}"
+                             data-legacy-top-config="current TOP config tickers: {{ (selection_sync.current_top_config_symbols or []) | safe }}"
+                             style="margin-top:10px;background:rgba(255,255,255,.03);color:#e5eefc;border-color:rgba(255,255,255,.08)">
+                            <div>选股状态标的：{{ (selection_sync.selection_state_symbols or []) | safe }}</div>
+                            <div>当前 TOP 配置标的：{{ (selection_sync.current_top_config_symbols or []) | safe }}</div>
+                            <div>不一致原因：{{ translate_reason(selection_sync.mismatch_reason or 'unknown') }}</div>
                             <div>建议操作：{{ (selection_sync.suggestion or '请重新运行 AI Selector 或重新写入 TOP 配置') | safe }}</div>
                         </div>
                         {% endif %}
@@ -4239,7 +4453,7 @@ HTML = """<!DOCTYPE html>
                         <div class="research-brief">
                             <div class="research-brief-head">
                                 <span class="research-tag">研究简报</span>
-                                <span class="research-meta">最新 {{ research_digest.date or 'unknown' }}{% if research_digest.generated_at %} · {{ research_digest.generated_at }}{% endif %}</span>
+                                <span class="research-meta">最新 {{ research_digest.date or '暂无' }}{% if research_digest.generated_at %} · {{ research_digest.generated_at }}{% endif %}</span>
                             </div>
                             <div class="research-brief-body">
                                 <div class="research-brief-title">策略评分复盘</div>
@@ -4345,7 +4559,7 @@ HTML = """<!DOCTYPE html>
                         </div>
                     </div>
                     <div class="selection-status">
-                        前台阶段：{{ ai_selection.settings.selection_stage or 'unknown' }}
+                        前台阶段：{{ translate_status(ai_selection.settings.selection_stage or 'UNKNOWN') }}
                         {% if ai_selection.refinement_status %}
                             · 后台精筛：{{ ai_selection.refinement_status }}{% if ai_selection.refinement_selection_stage %} / {{ ai_selection.refinement_selection_stage }}{% endif %}
                         {% endif %}
@@ -4617,6 +4831,50 @@ HTML = """<!DOCTYPE html>
 </div>
 <script>
 (function() {
+    const STATUS_LABELS_ZH = {{ status_labels_zh | tojson }};
+    const REASON_LABELS_ZH = {{ reason_labels_zh | tojson }};
+    const EMPTY_TEXT = '暂无数据';
+
+    function displayStatus(value) {
+        if (value === null || value === undefined || String(value).trim() === '') {
+            return EMPTY_TEXT;
+        }
+        const original = String(value).trim();
+        const label = STATUS_LABELS_ZH[original.toUpperCase()];
+        return label ? `${label}（${original}）` : original;
+    }
+
+    function displayReason(value) {
+        if (value === null || value === undefined || String(value).trim() === '') {
+            return EMPTY_TEXT;
+        }
+        const original = String(value).trim();
+        const code = original.split(':', 1)[0].toLowerCase();
+        return REASON_LABELS_ZH[code] || `未识别原因（${original}）`;
+    }
+
+    function displayBool(value) {
+        return value === true ? '是' : value === false ? '否' : '未知';
+    }
+
+    function displayOptional(value, fallback = EMPTY_TEXT) {
+        return value === null || value === undefined || String(value).trim() === '' ? fallback : String(value);
+    }
+
+    function displayTime(value) {
+        if (!value) {
+            return '时间未知';
+        }
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) {
+            return String(value);
+        }
+        return new Intl.DateTimeFormat('zh-CN', {
+            timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        }).format(parsed).replaceAll('/', '-');
+    }
+
     const charts = Array.from(document.querySelectorAll('.mini-chart[data-ticker]'));
     if (!charts.length) {
         return;
@@ -4763,12 +5021,12 @@ HTML = """<!DOCTYPE html>
         }
     }
 
-    function formatMoney(value, fallback = 'Unavailable') {
+    function formatMoney(value, fallback = EMPTY_TEXT) {
         const number = Number(value);
         return Number.isFinite(number) ? `$${number.toFixed(2)}` : fallback;
     }
 
-    function setText(id, value, fallback = 'Unavailable') {
+    function setText(id, value, fallback = EMPTY_TEXT) {
         const node = document.getElementById(id);
         if (!node) {
             return;
@@ -4795,11 +5053,11 @@ HTML = """<!DOCTYPE html>
         }
         const rows = Array.isArray(items) ? items : [];
         if (!rows.length) {
-            node.innerHTML = '<span class="system-status-detail">no data</span>';
+            node.innerHTML = '<span class="system-status-detail">暂无数据</span>';
             return;
         }
         node.innerHTML = rows.map((item) => {
-            const reason = String(item && item.reason ? item.reason : 'unknown');
+            const reason = displayReason(item && item.reason ? item.reason : 'unknown');
             const count = Number(item && item.count ? item.count : 0);
             return `<span class="shadow-chip">${reason} · ${count}</span>`;
         }).join('');
@@ -4828,61 +5086,62 @@ HTML = """<!DOCTYPE html>
             const system = payload.system || {};
             const summary = (payload.dashboard && payload.dashboard.summary) || {};
 
-            setText('last-updated-pill', payload.timestamp || '');
-            setText('system-api-status', system.api_status || 'unavailable');
-            setText('system-last-updated', `最后更新时间：${system.last_updated || 'unavailable'}`);
-            setText('system-broker-type', system.broker_type || 'unavailable');
-            setText('system-broker-connection', `连接状态：${system.broker_connection || 'not connected'}`);
+            setText('last-updated-pill', displayTime(payload.timestamp));
+            setText('system-api-status', displayOptional(system.api_status));
+            setText('system-last-updated', `最后更新时间（北京时间）：${displayTime(system.last_updated)}`);
+            setText('system-broker-type', displayOptional(system.broker_type));
+            setText('system-broker-connection', `连接状态：${displayOptional(system.broker_connection, '未连接')}`);
             const modeConsistency = payload.mode_consistency || {};
             setText('system-top-engine-mode', modeConsistency.mixed ? 'TOP 引擎模式不一致' : (Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? 'TOP 引擎模式一致' : '无启用 TOP 引擎'));
-            setText('system-top-engine-mode-detail', Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? `Dashboard: ${modeConsistency.dashboard_mode || payload.mode || 'unknown'} · TOP: ${modeConsistency.top_modes.join(', ')}` : '当前未生成 TOP 配置');
-            setText('system-data-source', system.data_source || 'no data');
-            setText('system-account-source', system.account_source || 'no data');
-            setText('system-market-label', system.market_open_label || 'unavailable');
-            setText('system-market-detail', system.market_open_detail || 'no data');
-            setText('system-reduce-only', system.global_reduce_only ? 'ENABLED' : 'DISABLED');
-            setText('system-live-order', system.live_order_enabled ? 'ENABLED' : 'DISABLED');
-            setText('system-orders-status', system.active_orders && system.active_orders.status_label ? system.active_orders.status_label : 'no data');
-            setText('system-orders-detail', system.active_orders && system.active_orders.detail ? system.active_orders.detail : 'no data');
-            setText('system-weekend-lifecycle', system.lifecycle && system.lifecycle.weekend_paper ? (system.lifecycle.weekend_paper.status_label || 'unavailable') : 'unavailable');
-            setText('system-weekend-detail', system.lifecycle && system.lifecycle.weekend_paper ? (system.lifecycle.weekend_paper.detail || 'no data') : 'no data');
-            setText('system-weekend-time', `报告：${system.lifecycle && system.lifecycle.weekend_paper ? (system.lifecycle.weekend_paper.generated_at || 'no data') : 'no data'}`);
-            setText('system-sandbox-lifecycle', system.lifecycle && system.lifecycle.longbridge_sandbox ? (system.lifecycle.longbridge_sandbox.status_label || 'unavailable') : 'unavailable');
-            setText('system-sandbox-detail', system.lifecycle && system.lifecycle.longbridge_sandbox ? (system.lifecycle.longbridge_sandbox.detail || 'no data') : 'no data');
-            setText('system-sandbox-time', `报告：${system.lifecycle && system.lifecycle.longbridge_sandbox ? (system.lifecycle.longbridge_sandbox.generated_at || 'no data') : 'no data'}`);
+            setText('system-top-engine-mode-detail', Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? `页面模式：${displayStatus(modeConsistency.dashboard_mode || payload.mode || 'UNKNOWN')} · TOP 模式：${modeConsistency.top_modes.map(displayStatus).join(', ')}` : '当前未生成 TOP 配置');
+            setText('system-data-source', displayOptional(system.data_source));
+            setText('system-account-source', displayOptional(system.account_source));
+            setText('system-market-label', displayOptional(system.market_open_label));
+            setText('system-market-detail', displayOptional(system.market_open_detail));
+            setText('system-reduce-only', displayStatus(system.global_reduce_only ? 'ENABLED' : 'DISABLED'));
+            setText('system-live-order', displayStatus(system.live_order_enabled ? 'ENABLED' : 'DISABLED'));
+            setText('system-orders-status', displayOptional(system.active_orders && system.active_orders.status_label));
+            setText('system-orders-detail', displayOptional(system.active_orders && system.active_orders.detail));
+            setText('system-weekend-lifecycle', displayStatus(system.lifecycle && system.lifecycle.weekend_paper ? system.lifecycle.weekend_paper.status_label : null));
+            setText('system-weekend-detail', displayOptional(system.lifecycle && system.lifecycle.weekend_paper ? system.lifecycle.weekend_paper.detail : null));
+            setText('system-weekend-time', `报告时间（北京时间）：${displayTime(system.lifecycle && system.lifecycle.weekend_paper ? system.lifecycle.weekend_paper.generated_at : null)}`);
+            setText('system-sandbox-lifecycle', displayStatus(system.lifecycle && system.lifecycle.longbridge_sandbox ? system.lifecycle.longbridge_sandbox.status_label : null));
+            setText('system-sandbox-detail', displayOptional(system.lifecycle && system.lifecycle.longbridge_sandbox ? system.lifecycle.longbridge_sandbox.detail : null));
+            setText('system-sandbox-time', `报告时间（北京时间）：${displayTime(system.lifecycle && system.lifecycle.longbridge_sandbox ? system.lifecycle.longbridge_sandbox.generated_at : null)}`);
             setText('headline-total-equity', formatMoney(summary.equity));
-            setText('headline-total-equity-sub', `数据源：${system.account_source || 'unavailable'}`);
+            setText('headline-total-equity-sub', `数据源：${displayOptional(system.account_source)}`);
             setText('headline-available-cash', formatMoney(summary.buying_power ?? summary.cash));
-            setText('headline-available-cash-sub', `资金来源：${system.account_source || 'no data'}`);
+            setText('headline-available-cash-sub', `资金来源：${displayOptional(system.account_source)}`);
             setText('headline-position-count', summary.positions_count != null ? String(summary.positions_count) : '--');
             setText('headline-position-sub', summary.positions_count ? `${summary.positions_count} 个仓位` : '暂无持仓');
             setText('headline-today-pnl', formatMoney(summary.today_total_pnl ?? 0, '$0.00'));
             setText('headline-today-pnl-sub', `按 3 路策略今日盈亏汇总 / 总成交 ${(summary.total_trades ?? 0)} 笔`);
             setText('headline-active-orders', summary.active_orders_pending != null ? String(summary.active_orders_pending) : '0');
-            setText('headline-active-orders-sub', `PENDING ${summary.active_orders_pending ?? 0} · PARTIAL ${summary.active_orders_partial_filled ?? 0}`);
-            setText('headline-system-state', system.broker_connected ? 'RUNNING' : 'DEGRADED');
-            setText('headline-system-state-sub', `Reduce-Only ${system.global_reduce_only ? 'ON' : 'OFF'} · Live Order ${system.live_order_enabled ? 'ON' : 'OFF'}`);
+            setText('headline-active-orders-sub', `等待中 ${summary.active_orders_pending ?? 0} · 部分成交 ${summary.active_orders_partial_filled ?? 0}`);
+            setText('headline-system-state', displayStatus(system.broker_connected ? 'ACTIVE' : 'DEGRADED'));
+            setText('headline-system-state-sub', `仅减仓 ${displayBool(!!system.global_reduce_only)} · 实盘下单 ${displayBool(!!system.live_order_enabled)}`);
 
             const shadow = payload.shadow || {};
-            setText('shadow-title', shadow.title || 'Shadow Observer');
-            setText('shadow-state', shadow.status_label || shadow.state || 'STALE');
-            setText('shadow-detail', shadow.detail || 'no data');
+            const shadowSymbol = String(shadow.title || '模拟').replace(' Shadow Observer', '');
+            setText('shadow-title', `${shadowSymbol} 只读模拟观察`);
+            setText('shadow-state', displayStatus(shadow.status_label || shadow.state || 'STALE'));
+            setText('shadow-detail', `只读模拟，不会发送真实订单 · ${displayOptional(shadow.detail)}`);
             setText('shadow-mode', shadow.mode || 'READ-ONLY SHADOW');
-            setText('shadow-safety-gate', shadow.safety_gate || 'STALE');
-            setText('shadow-quote-only', shadow.quote_api_only === true ? 'true' : shadow.quote_api_only === false ? 'false' : 'unavailable');
-            setText('shadow-trade-api', shadow.trade_api_used === true ? 'true' : shadow.trade_api_used === false ? 'false' : 'unavailable');
-            setText('shadow-trade-context', shadow.trade_context_initialized === true ? 'true' : shadow.trade_context_initialized === false ? 'false' : 'unavailable');
-            setText('shadow-last-run', shadow.last_run_at || 'unavailable');
-            setText('shadow-latest-bar-utc', shadow.latest_processed_bar_utc || 'unavailable');
-            setText('shadow-latest-bar-et', shadow.latest_processed_bar_et || 'unavailable');
-            setText('shadow-data-freshness', shadow.data_freshness || 'unavailable');
-            setText('shadow-benchmark-status', shadow.benchmark_status || 'unavailable');
-            setText('shadow-alignment-status', shadow.alignment_status || 'unavailable');
+            setText('shadow-safety-gate', displayStatus(shadow.safety_gate || 'STALE'));
+            setText('shadow-quote-only', displayBool(shadow.quote_api_only));
+            setText('shadow-trade-api', displayBool(shadow.trade_api_used));
+            setText('shadow-trade-context', displayBool(shadow.trade_context_initialized));
+            setText('shadow-last-run', displayTime(shadow.last_run_at));
+            setText('shadow-latest-bar-utc', displayOptional(shadow.latest_processed_bar_utc));
+            setText('shadow-latest-bar-et', displayOptional(shadow.latest_processed_bar_et));
+            setText('shadow-data-freshness', displayStatus(shadow.data_freshness));
+            setText('shadow-benchmark-status', displayStatus(shadow.benchmark_status));
+            setText('shadow-alignment-status', displayStatus(shadow.alignment_status));
             setText('shadow-flow-counts', `${shadow.signals_generated ?? 0} / ${shadow.simulated_orders ?? 0} / ${shadow.simulated_trades ?? 0}`);
-            setText('shadow-open-positions', shadow.open_simulated_positions != null ? String(shadow.open_simulated_positions) : 'unavailable');
-            setText('shadow-equity', shadow.simulated_equity != null ? formatMoney(shadow.simulated_equity) : 'unavailable');
-            setText('shadow-return', shadow.simulated_return != null ? `${(Number(shadow.simulated_return) * 100).toFixed(2)}%` : 'unavailable');
-            setText('shadow-drawdown', shadow.simulated_drawdown != null ? `${(Number(shadow.simulated_drawdown) * 100).toFixed(2)}%` : 'unavailable');
+            setText('shadow-open-positions', shadow.open_simulated_positions != null ? String(shadow.open_simulated_positions) : EMPTY_TEXT);
+            setText('shadow-equity', shadow.simulated_equity != null ? formatMoney(shadow.simulated_equity) : EMPTY_TEXT);
+            setText('shadow-return', shadow.simulated_return != null ? `${(Number(shadow.simulated_return) * 100).toFixed(2)}%` : EMPTY_TEXT);
+            setText('shadow-drawdown', shadow.simulated_drawdown != null ? `${(Number(shadow.simulated_drawdown) * 100).toFixed(2)}%` : EMPTY_TEXT);
             renderShadowBlockedReasons(shadow.blocked_reason_top5 || []);
             const shadowCard = document.getElementById('shadow-observer-card');
             if (shadowCard) {
@@ -4891,47 +5150,48 @@ HTML = """<!DOCTYPE html>
             }
 
             const candidateValidation = payload.candidate_validation || {};
-            setText('candidate-title', candidateValidation.title || 'AI Candidate Validation');
-            setText('candidate-state', candidateValidation.status_label || candidateValidation.state || 'STALE');
-            setText('candidate-detail', candidateValidation.detail || 'no data');
-            setText('candidate-symbol', candidateValidation.latest_candidate && candidateValidation.latest_candidate.symbol ? candidateValidation.latest_candidate.symbol : 'unavailable');
-            setText('candidate-asset-type', candidateValidation.latest_candidate && candidateValidation.latest_candidate.asset_type ? candidateValidation.latest_candidate.asset_type : 'unavailable');
-            setText('candidate-ai-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.ai_score != null ? String(candidateValidation.latest_candidate.ai_score) : 'unavailable');
-            setText('candidate-candidate-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.candidate_score != null ? String(candidateValidation.latest_candidate.candidate_score) : 'unavailable');
-            setText('candidate-benchmarks', candidateValidation.latest_candidate && Array.isArray(candidateValidation.latest_candidate.benchmarks) && candidateValidation.latest_candidate.benchmarks.length ? candidateValidation.latest_candidate.benchmarks.join(' / ') : 'unavailable');
-            setText('candidate-strategy-family', candidateValidation.latest_candidate && candidateValidation.latest_candidate.strategy_family ? candidateValidation.latest_candidate.strategy_family : 'unavailable');
-            setText('candidate-liquidity-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.liquidity_score != null ? String(candidateValidation.latest_candidate.liquidity_score) : 'unavailable');
-            setText('candidate-trend-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.trend_score != null ? String(candidateValidation.latest_candidate.trend_score) : 'unavailable');
-            setText('candidate-volatility-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.volatility_score != null ? String(candidateValidation.latest_candidate.volatility_score) : 'unavailable');
-            setText('candidate-risk-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.risk_score != null ? String(candidateValidation.latest_candidate.risk_score) : 'unavailable');
-            setText('candidate-strategy-fit-score', candidateValidation.latest_candidate && candidateValidation.latest_candidate.strategy_fit_score != null ? String(candidateValidation.latest_candidate.strategy_fit_score) : 'unavailable');
-            setText('candidate-recommended-strategy', candidateValidation.latest_candidate && candidateValidation.latest_candidate.recommended_strategy ? candidateValidation.latest_candidate.recommended_strategy : 'unavailable');
-            setText('candidate-score-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.score_reason ? candidateValidation.latest_candidate.score_reason : 'unavailable');
-            setText('candidate-validation-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.validation_status ? candidateValidation.latest_candidate.validation_status : 'AI_CANDIDATE');
-            setText('candidate-selection-stage', candidateValidation.latest_candidate && candidateValidation.latest_candidate.selection_stage ? candidateValidation.latest_candidate.selection_stage : (candidateValidation.selection_stage || 'PRELIMINARY'));
-            setText('candidate-last-completed-session', candidateValidation.latest_candidate && candidateValidation.latest_candidate.last_completed_session ? candidateValidation.latest_candidate.last_completed_session : 'unavailable');
-            setText('candidate-daily-data-as-of', candidateValidation.latest_candidate && candidateValidation.latest_candidate.daily_data_as_of ? candidateValidation.latest_candidate.daily_data_as_of : 'unavailable');
-            setText('candidate-premarket-snapshot-at', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_snapshot_at ? candidateValidation.latest_candidate.premarket_snapshot_at : 'unavailable');
-            setText('candidate-premarket-change', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_change_pct != null ? String(candidateValidation.latest_candidate.premarket_change_pct) : 'unavailable');
-            setText('candidate-gap-pct', candidateValidation.latest_candidate && candidateValidation.latest_candidate.gap_pct != null ? String(candidateValidation.latest_candidate.gap_pct) : 'unavailable');
-            setText('candidate-premarket-volume', candidateValidation.latest_candidate && candidateValidation.latest_candidate.premarket_volume != null ? String(candidateValidation.latest_candidate.premarket_volume) : 'unavailable');
-            setText('candidate-freshness-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.freshness_status ? candidateValidation.latest_candidate.freshness_status : (candidateValidation.status_label || 'STALE'));
-            setText('candidate-data-mode', candidateValidation.latest_candidate && candidateValidation.latest_candidate.data_mode ? candidateValidation.latest_candidate.data_mode : 'unavailable');
+            const latestCandidate = candidateValidation.latest_candidate || {};
+            setText('candidate-title', 'AI 候选验证');
+            setText('candidate-state', displayStatus(candidateValidation.status_label || candidateValidation.state || 'STALE'));
+            setText('candidate-detail', displayOptional(candidateValidation.detail));
+            setText('candidate-symbol', displayOptional(latestCandidate.symbol));
+            setText('candidate-asset-type', displayOptional(latestCandidate.asset_type));
+            setText('candidate-ai-score', latestCandidate.ai_score != null ? String(latestCandidate.ai_score) : EMPTY_TEXT);
+            setText('candidate-candidate-score', latestCandidate.candidate_score != null ? String(latestCandidate.candidate_score) : EMPTY_TEXT);
+            setText('candidate-benchmarks', Array.isArray(latestCandidate.benchmarks) && latestCandidate.benchmarks.length ? latestCandidate.benchmarks.join(' / ') : EMPTY_TEXT);
+            setText('candidate-strategy-family', displayOptional(latestCandidate.strategy_family));
+            setText('candidate-liquidity-score', latestCandidate.liquidity_score != null ? String(latestCandidate.liquidity_score) : EMPTY_TEXT);
+            setText('candidate-trend-score', latestCandidate.trend_score != null ? String(latestCandidate.trend_score) : EMPTY_TEXT);
+            setText('candidate-volatility-score', latestCandidate.volatility_score != null ? String(latestCandidate.volatility_score) : EMPTY_TEXT);
+            setText('candidate-risk-score', latestCandidate.risk_score != null ? String(latestCandidate.risk_score) : EMPTY_TEXT);
+            setText('candidate-strategy-fit-score', latestCandidate.strategy_fit_score != null ? String(latestCandidate.strategy_fit_score) : EMPTY_TEXT);
+            setText('candidate-recommended-strategy', displayOptional(latestCandidate.recommended_strategy));
+            setText('candidate-score-reason', displayOptional(latestCandidate.score_reason));
+            setText('candidate-validation-status', displayStatus(latestCandidate.validation_status || 'AI_CANDIDATE'));
+            setText('candidate-selection-stage', displayStatus(latestCandidate.selection_stage || candidateValidation.selection_stage || 'PRELIMINARY'));
+            setText('candidate-last-completed-session', displayOptional(latestCandidate.last_completed_session));
+            setText('candidate-daily-data-as-of', displayOptional(latestCandidate.daily_data_as_of));
+            setText('candidate-premarket-snapshot-at', displayTime(latestCandidate.premarket_snapshot_at));
+            setText('candidate-premarket-change', latestCandidate.premarket_change_pct != null ? String(latestCandidate.premarket_change_pct) : EMPTY_TEXT);
+            setText('candidate-gap-pct', latestCandidate.gap_pct != null ? String(latestCandidate.gap_pct) : EMPTY_TEXT);
+            setText('candidate-premarket-volume', latestCandidate.premarket_volume != null ? String(latestCandidate.premarket_volume) : EMPTY_TEXT);
+            setText('candidate-freshness-status', displayStatus(latestCandidate.freshness_status || candidateValidation.status_label || 'STALE'));
+            setText('candidate-data-mode', displayOptional(latestCandidate.data_mode));
             setText('candidate-universe-filter', candidateValidation.latest_candidate && candidateValidation.latest_candidate.trade_filter_passed ? '通过' : '拒绝');
             setText('candidate-data-sufficiency', candidateValidation.latest_candidate && candidateValidation.latest_candidate.data_status === 'VALID' ? '通过' : '失败');
-            setText('candidate-scoring-eligible', candidateValidation.latest_candidate && candidateValidation.latest_candidate.scoring_eligible ? 'YES' : 'NO');
-            setText('candidate-trade-admission', candidateValidation.latest_candidate && candidateValidation.latest_candidate.trade_admission_status ? candidateValidation.latest_candidate.trade_admission_status : 'NOT_TRADABLE');
-            setText('candidate-scoring-block-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.scoring_block_reason ? candidateValidation.latest_candidate.scoring_block_reason : 'unavailable');
-            setText('candidate-stale-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.stale_reason ? candidateValidation.latest_candidate.stale_reason : 'unavailable');
-            setText('candidate-evidence-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.evidence_status ? candidateValidation.latest_candidate.evidence_status : 'INSUFFICIENT_EVIDENCE');
-            setText('candidate-profitability-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.profitability_status ? candidateValidation.latest_candidate.profitability_status : 'INELIGIBLE');
-            setText('candidate-deployment-status', candidateValidation.latest_candidate && candidateValidation.latest_candidate.deployment_status ? candidateValidation.latest_candidate.deployment_status : 'INELIGIBLE');
-            setText('candidate-rejection-reason', candidateValidation.latest_candidate && candidateValidation.latest_candidate.rejection_reason ? candidateValidation.latest_candidate.rejection_reason : 'unavailable');
-            setText('candidate-last-updated', candidateValidation.last_updated || 'unavailable');
-            setText('candidate-record-count', candidateValidation.candidate_count != null ? String(candidateValidation.candidate_count) : 'unavailable');
+            setText('candidate-scoring-eligible', displayBool(!!latestCandidate.scoring_eligible));
+            setText('candidate-trade-admission', displayStatus(latestCandidate.trade_admission_status || 'NOT_TRADABLE'));
+            setText('candidate-scoring-block-reason', displayReason(latestCandidate.scoring_block_reason));
+            setText('candidate-stale-reason', displayReason(latestCandidate.stale_reason));
+            setText('candidate-evidence-status', displayStatus(latestCandidate.evidence_status || 'INSUFFICIENT_EVIDENCE'));
+            setText('candidate-profitability-status', displayStatus(latestCandidate.profitability_status || 'INELIGIBLE'));
+            setText('candidate-deployment-status', displayStatus(latestCandidate.deployment_status || 'INELIGIBLE'));
+            setText('candidate-rejection-reason', displayReason(latestCandidate.rejection_reason));
+            setText('candidate-last-updated', displayTime(candidateValidation.last_updated));
+            setText('candidate-record-count', candidateValidation.candidate_count != null ? String(candidateValidation.candidate_count) : EMPTY_TEXT);
             const candidatePerformance = candidateValidation.performance || {};
-            setText('candidate-performance-average-score', candidatePerformance.average_score != null ? String(candidatePerformance.average_score) : 'unavailable');
-            setText('candidate-performance-high-score-rate', candidatePerformance.high_score_success_rate != null ? `${candidatePerformance.high_score_success_rate}%` : 'unavailable');
+            setText('candidate-performance-average-score', candidatePerformance.average_score != null ? String(candidatePerformance.average_score) : EMPTY_TEXT);
+            setText('candidate-performance-high-score-rate', candidatePerformance.high_score_success_rate != null ? `${candidatePerformance.high_score_success_rate}%` : EMPTY_TEXT);
             const bucketRows = Array.isArray(candidatePerformance.score_bucket_distribution) ? candidatePerformance.score_bucket_distribution : [];
             const bucketText = bucketRows.length
                 ? bucketRows.map((bucket) => {
@@ -4942,43 +5202,46 @@ HTML = """<!DOCTYPE html>
                     const walkForwardCompleteRate = bucket.walk_forward_complete_rate != null ? `${bucket.walk_forward_complete_rate}%` : 'n/a';
                     return `${label} · ${count} · ${dataValidRate} · ${backtestCompleteRate} · ${walkForwardCompleteRate}`;
                 }).join(' | ')
-                : 'unavailable';
+                : EMPTY_TEXT;
             setText('candidate-performance-buckets', bucketText);
             const candidateModel = payload.candidate_model_evaluation || {};
-            setText('candidate-model-title', candidateModel.title || 'Candidate Model Evaluation');
-            setText('candidate-model-status', candidateModel.approval_status || candidateModel.status_label || 'DRAFT');
-            setText('candidate-model-detail', candidateModel.recommended_action || 'collect_more_samples');
+            setText('candidate-model-title', '候选模型评估');
+            setText('candidate-model-status', displayStatus(candidateModel.approval_status || candidateModel.status_label || 'DRAFT'));
+            setText('candidate-model-detail', displayOptional(candidateModel.recommended_action));
             setText('candidate-model-active-version', candidateModel.active_model_version || 'baseline_v1');
-            setText('candidate-model-challenger-version', candidateModel.challenger_version || 'unavailable');
-            setText('candidate-model-training-sample-count', candidateModel.training_sample_count != null ? String(candidateModel.training_sample_count) : 'unavailable');
+            setText('candidate-model-challenger-version', displayOptional(candidateModel.challenger_version));
+            setText('candidate-model-training-sample-count', candidateModel.training_sample_count != null ? String(candidateModel.training_sample_count) : EMPTY_TEXT);
             const trainingPeriod = candidateModel.training_period || {};
-            setText('candidate-model-training-period', `${trainingPeriod.start || 'unavailable'} -> ${trainingPeriod.end || 'unavailable'}`);
-            setText('candidate-model-baseline-score', candidateModel.comparison && candidateModel.comparison.baseline_score != null ? String(candidateModel.comparison.baseline_score) : 'unavailable');
-            setText('candidate-model-challenger-score', candidateModel.comparison && candidateModel.comparison.challenger_score != null ? String(candidateModel.comparison.challenger_score) : 'unavailable');
-            setText('candidate-model-approval-status', candidateModel.approval_status || 'DRAFT');
-            setText('candidate-model-recommended-action', candidateModel.recommended_action || 'collect_more_samples');
-            setText('candidate-model-sample-warning', candidateModel.sample_size_warning ? 'YES' : 'NO');
-            setText('candidate-model-overfitting-warning', candidateModel.overfitting_warning ? 'YES' : 'NO');
-            setText('candidate-model-baseline-metrics', candidateModel.baseline_metrics ? JSON.stringify(candidateModel.baseline_metrics) : 'unavailable');
-            setText('candidate-model-challenger-metrics', candidateModel.challenger_metrics ? JSON.stringify(candidateModel.challenger_metrics) : 'unavailable');
-            setText('candidate-model-weights', candidateModel.proposed_weights ? JSON.stringify(candidateModel.proposed_weights) : 'unavailable');
-            setText('candidate-model-calibration-curve', Array.isArray(candidateModel.calibration_curve) ? JSON.stringify(candidateModel.calibration_curve) : 'unavailable');
-            setText('candidate-model-warnings', Array.isArray(candidateModel.warnings) && candidateModel.warnings.length ? candidateModel.warnings.join(' · ') : 'none');
+            setText('candidate-model-training-period', `${displayOptional(trainingPeriod.start)} → ${displayOptional(trainingPeriod.end)}`);
+            setText('candidate-model-baseline-score', candidateModel.comparison && candidateModel.comparison.baseline_score != null ? String(candidateModel.comparison.baseline_score) : EMPTY_TEXT);
+            setText('candidate-model-challenger-score', candidateModel.comparison && candidateModel.comparison.challenger_score != null ? String(candidateModel.comparison.challenger_score) : EMPTY_TEXT);
+            setText('candidate-model-approval-status', displayStatus(candidateModel.approval_status || 'DRAFT'));
+            setText('candidate-model-recommended-action', displayOptional(candidateModel.recommended_action));
+            setText('candidate-model-sample-warning', displayBool(!!candidateModel.sample_size_warning));
+            setText('candidate-model-overfitting-warning', displayBool(!!candidateModel.overfitting_warning));
+            setText('candidate-model-baseline-metrics', candidateModel.baseline_metrics ? JSON.stringify(candidateModel.baseline_metrics, null, 2) : EMPTY_TEXT);
+            setText('candidate-model-challenger-metrics', candidateModel.challenger_metrics ? JSON.stringify(candidateModel.challenger_metrics, null, 2) : EMPTY_TEXT);
+            setText('candidate-model-weights', candidateModel.proposed_weights ? JSON.stringify(candidateModel.proposed_weights, null, 2) : EMPTY_TEXT);
+            setText('candidate-model-calibration-curve', Array.isArray(candidateModel.calibration_curve) ? JSON.stringify(candidateModel.calibration_curve, null, 2) : EMPTY_TEXT);
+            setText('candidate-model-warnings', Array.isArray(candidateModel.warnings) && candidateModel.warnings.length ? JSON.stringify(candidateModel.warnings, null, 2) : '无');
             const candidateModelCard = document.getElementById('candidate-model-card');
             if (candidateModelCard) {
                 const candidateModelState = String(candidateModel.approval_status || candidateModel.status_label || candidateModel.state || 'DRAFT').toUpperCase();
                 candidateModelCard.className = `system-status-card full candidate-model-card ${candidateModelState === 'ACTIVE' || candidateModelState === 'APPROVED' || candidateModelState === 'REVIEW_REQUIRED' ? 'status-live' : candidateModelState === 'DRAFT' || candidateModelState === 'BACKTESTED' || candidateModelState === 'WALK_FORWARD_VALIDATED' ? 'status-warn' : 'status-offline'}`;
             }
             const researchReport = payload.research_report || candidateValidation.research_report || {};
-            setText('research-report-title', researchReport.display_title || researchReport.title || 'AI Research Report');
-            setText('research-report-state', researchReport.status_label || researchReport.state || 'STALE');
-            setText('research-report-detail', researchReport.detail || 'no data');
-            setText('research-report-candidate-count', researchReport.candidate_count != null ? String(researchReport.candidate_count) : 'unavailable');
-            setText('research-report-average-score', researchReport.average_score != null ? String(researchReport.average_score) : 'unavailable');
-            setText('research-report-high-score-rate', researchReport.high_score_success_rate != null ? `${researchReport.high_score_success_rate}%` : 'unavailable');
-            setText('research-report-market-regime', researchReport.market_regime && researchReport.market_regime.regime ? researchReport.market_regime.regime : 'UNKNOWN');
-            setText('research-report-market-regime-confidence', researchReport.market_regime && researchReport.market_regime.confidence != null ? String(researchReport.market_regime.confidence) : 'unavailable');
-            setText('research-report-selection-outcome', researchReport.selection_outcome || 'NO_ACTIONABLE_RESEARCH_CANDIDATE');
+            setText('research-report-title', 'AI 研究日报');
+            setText('research-report-state', displayStatus(researchReport.status_label || researchReport.state || 'STALE'));
+            setText('research-report-detail', displayOptional(researchReport.detail));
+            setText('research-report-execution-status', displayStatus(researchReport.selection_execution_status || 'COMPLETED'));
+            setText('research-report-result-quality', displayStatus(researchReport.selection_result_quality || 'COMPLETE'));
+            setText('research-report-research-admission', displayStatus(researchReport.selection_research_admission || 'RESEARCH_READY'));
+            setText('research-report-candidate-count', researchReport.candidate_count != null ? String(researchReport.candidate_count) : EMPTY_TEXT);
+            setText('research-report-average-score', researchReport.average_score != null ? String(researchReport.average_score) : EMPTY_TEXT);
+            setText('research-report-high-score-rate', researchReport.high_score_success_rate != null ? `${researchReport.high_score_success_rate}%` : EMPTY_TEXT);
+            setText('research-report-market-regime', displayStatus(researchReport.market_regime && researchReport.market_regime.regime ? researchReport.market_regime.regime : 'UNKNOWN'));
+            setText('research-report-market-regime-confidence', researchReport.market_regime && researchReport.market_regime.confidence != null ? String(researchReport.market_regime.confidence) : EMPTY_TEXT);
+            setText('research-report-selection-outcome', displayStatus(researchReport.selection_outcome || 'NO_ACTIONABLE_RESEARCH_CANDIDATE'));
             setText('research-report-final-selected-count', researchReport.final_selected_count != null ? String(researchReport.final_selected_count) : '0');
             const researchDistribution = Array.isArray(researchReport.score_distribution) ? researchReport.score_distribution : [];
             setText('research-report-score-distribution', researchDistribution.length ? researchDistribution.map((bucket) => {
@@ -4988,26 +5251,26 @@ HTML = """<!DOCTYPE html>
                 const backtestCompleteRate = bucket.backtest_complete_rate != null ? `${bucket.backtest_complete_rate}%` : 'n/a';
                 const walkForwardCompleteRate = bucket.walk_forward_complete_rate != null ? `${bucket.walk_forward_complete_rate}%` : 'n/a';
                 return `${label} · ${count} · ${dataValidRate} · ${backtestCompleteRate} · ${walkForwardCompleteRate}`;
-            }).join(' | ') : 'unavailable');
+            }).join(' | ') : EMPTY_TEXT);
             const strategyCandidates = Array.isArray(researchReport.candidate_strategy_matrix) ? researchReport.candidate_strategy_matrix : [];
             setText('research-report-strategy-matrix', strategyCandidates.length ? strategyCandidates.map((item) => {
-                const symbol = item.symbol || item.candidate_id || 'unknown';
-                const strategy = item.strategy_id || 'unavailable';
+                const symbol = item.symbol || item.candidate_id || '未知标的';
+                const strategy = item.strategy_id || EMPTY_TEXT;
                 const fit = item.fit_score != null ? item.fit_score : 'n/a';
-                const allowed = item.allowed != null ? (item.allowed ? 'YES' : 'NO') : 'n/a';
-                const blockedReason = item.blocked_reason ? ` · ${item.blocked_reason}` : '';
-                return `${symbol} · ${strategy} · fit ${fit} · ${allowed}${blockedReason}`;
-            }).join(' | ') : 'unavailable');
+                const allowed = item.allowed != null ? displayBool(item.allowed) : '不适用';
+                const blockedReason = item.blocked_reason ? ` · ${displayReason(item.blocked_reason)}` : '';
+                return `${symbol} · ${strategy} · 适配度 ${fit} · ${allowed}${blockedReason}`;
+            }).join(' | ') : EMPTY_TEXT);
             const portfolioComposition = researchReport.portfolio_composition || {};
-            setText('research-report-portfolio-composition', Object.keys(portfolioComposition).length ? `selected ${portfolioComposition.selected_count ?? 0} · blocked ${portfolioComposition.blocked_count ?? 0} · leveraged/inverse ${portfolioComposition.leveraged_inverse_selected_count ?? 0}` + (Array.isArray(portfolioComposition.selected_symbols) && portfolioComposition.selected_symbols.length ? ` · symbols ${portfolioComposition.selected_symbols.join(' / ')}` : '') : 'unavailable');
+            setText('research-report-portfolio-composition', Object.keys(portfolioComposition).length ? `已选 ${portfolioComposition.selected_count ?? 0} · 已阻断 ${portfolioComposition.blocked_count ?? 0} · 杠杆/反向 ETF ${portfolioComposition.leveraged_inverse_selected_count ?? 0}` + (Array.isArray(portfolioComposition.selected_symbols) && portfolioComposition.selected_symbols.length ? ` · 标的 ${portfolioComposition.selected_symbols.join(' / ')}` : '') : EMPTY_TEXT);
             setText('research-report-top-candidates', Array.isArray(researchReport.top_candidates) && researchReport.top_candidates.length
                 ? researchReport.top_candidates.map((item) => {
-                    const symbol = item.symbol || item.candidate_id || 'unknown';
-                    const score = item.candidate_score != null ? item.candidate_score : 'unavailable';
-                    const strategy = item.recommended_strategy || 'unavailable';
+                    const symbol = item.symbol || item.candidate_id || '未知标的';
+                    const score = item.candidate_score != null ? item.candidate_score : EMPTY_TEXT;
+                    const strategy = item.recommended_strategy || EMPTY_TEXT;
                     return `${symbol} · ${score} · ${strategy}`;
                 }).join(' | ')
-                : 'unavailable');
+                : EMPTY_TEXT);
             const researchFailure = researchReport.failure_analysis && researchReport.failure_analysis.statuses ? researchReport.failure_analysis.statuses : {};
             setText('research-report-failure-analysis', `DATA_INVALID ${researchFailure.DATA_INVALID || 0} · BACKTEST_FAILED ${researchFailure.BACKTEST_FAILED || 0} · WALK_FORWARD_FAILED ${researchFailure.WALK_FORWARD_FAILED || 0}`);
             const candidateCard = document.getElementById('candidate-validation-card');
@@ -5021,12 +5284,12 @@ HTML = """<!DOCTYPE html>
                 researchCard.className = `system-status-card full research-report-card ${researchState === 'SAFE' ? 'status-live' : researchState === 'STALE' ? 'status-warn' : 'status-offline'}`;
             }
             const researchStatus = payload.research_status || {};
-            setText('research-status-state', researchStatus.status_label || researchStatus.state || 'unavailable');
-            setText('research-status-detail', researchStatus.detail || 'no data');
-            setText('research-status-last-run', researchStatus.last_research_run || 'unavailable');
-            setText('research-status-date', researchStatus.research_date || 'unavailable');
-            setText('research-status-candidate-count', researchStatus.candidate_count != null ? String(researchStatus.candidate_count) : 'unavailable');
-            setText('research-status-report-status', researchStatus.report_status || 'unavailable');
+            setText('research-status-state', displayStatus(researchStatus.status_label || researchStatus.state));
+            setText('research-status-detail', displayOptional(researchStatus.detail));
+            setText('research-status-last-run', displayTime(researchStatus.last_research_run));
+            setText('research-status-date', displayOptional(researchStatus.research_date));
+            setText('research-status-candidate-count', researchStatus.candidate_count != null ? String(researchStatus.candidate_count) : EMPTY_TEXT);
+            setText('research-status-report-status', displayStatus(researchStatus.report_status));
             const researchStatusCard = document.getElementById('research-status-card');
             if (researchStatusCard) {
                 const researchState = String(researchStatus.state || researchStatus.status_label || 'STALE').toUpperCase();
@@ -5044,32 +5307,68 @@ HTML = """<!DOCTYPE html>
             if (marketChip) {
                 const marketOpen = !!system.market_open;
                 marketChip.className = `pill ${marketOpen ? 'status-live' : 'status-warn'}`;
-                marketChip.textContent = `市场：${system.market_open_label || 'unavailable'}`;
+                marketChip.textContent = `市场：${displayOptional(system.market_open_label)}`;
             }
             const brokerChip = document.getElementById('broker-pill');
             if (brokerChip) {
                 brokerChip.className = `pill ${system.broker_connected ? 'status-live' : 'status-offline'}`;
-                brokerChip.textContent = `Broker：${system.broker_connection || 'not connected'}`;
+                brokerChip.textContent = `券商：${displayOptional(system.broker_connection, '未连接')}`;
             }
             const systemChip = document.getElementById('system-pill');
             if (systemChip) {
                 systemChip.className = `pill ${system.broker_connected ? 'status-live' : 'status-offline'}`;
-                systemChip.innerHTML = `<strong>${system.mode || 'UNKNOWN'}</strong> · ${system.broker_connection || 'not connected'}`;
+                systemChip.innerHTML = `<strong>${displayStatus(system.mode || 'UNKNOWN')}</strong> · ${displayOptional(system.broker_connection, '未连接')}`;
             }
 
             const aiSelection = payload.ai_selection || {};
-            setText('ai-selection-execution-status', aiSelection.execution_status ? `执行状态：${aiSelection.execution_status}` : '执行状态：COMPLETED');
-            setText('ai-selection-result-quality', aiSelection.result_quality ? `结果质量：${aiSelection.result_quality}` : '结果质量：COMPLETE');
-            setText('ai-selection-research-admission', aiSelection.research_admission ? `研究准入：${aiSelection.research_admission}` : '研究准入：RESEARCH_READY');
+            setText('ai-selection-execution-status', `执行状态：${displayStatus(aiSelection.execution_status || 'COMPLETED')}`);
+            setText('ai-selection-result-quality', `结果质量：${displayStatus(aiSelection.result_quality || 'COMPLETE')}`);
+            setText('ai-selection-research-admission', `研究准入：${displayStatus(aiSelection.research_admission || 'RESEARCH_READY')}`);
             setText('ai-selection-research-notice', aiSelection.research_admission_notice || '候选可进入独立数据验证，不代表具备交易资格。');
             const providerSections = aiSelection.provider_audit_sections || {};
-            setText('ai-selection-provider-attempted', `Provider 尝试：${providerSections.attempted || '无'}`);
-            setText('ai-selection-provider-success', `Provider 成功：${providerSections.success || '无'}`);
-            setText('ai-selection-provider-failure', `Provider 失败：${providerSections.failure || '无'}`);
-            setText('ai-selection-provider-timeout', `Provider 超时：${providerSections.timeout || '无'}`);
-            setText('ai-selection-provider-fallback', `Provider Fallback：${providerSections.fallback || '无'}`);
-            setText('ai-selection-provider-mock', `Provider Mock：${providerSections.mock || '无'}`);
-            setText('ai-selection-provider-contributor', `Provider 实际贡献：${providerSections.contributor || '无'}`);
+            setText('ai-selection-provider-attempted', `已尝试数据源：${providerSections.attempted || '无'}`);
+            setText('ai-selection-provider-success', `成功数据源：${providerSections.success || '无'}`);
+            setText('ai-selection-provider-failure', `失败数据源：${providerSections.failure || '无'}`);
+            setText('ai-selection-provider-timeout', `超时数据源：${providerSections.timeout || '无'}`);
+            setText('ai-selection-provider-fallback', `降级数据源：${providerSections.fallback || '无'}`);
+            setText('ai-selection-provider-mock', `模拟数据源：${providerSections.mock || '无'}`);
+            setText('ai-selection-provider-contributor', `实际贡献数据源：${providerSections.contributor || '无'}`);
+
+            const selection = payload.selection || {};
+            const formalTop = Array.isArray(aiSelection.top3) ? aiSelection.top3 : [];
+            const selectedSymbols = formalTop.map((item) => item.ticker || item.symbol).filter(Boolean);
+            const missingCount = Number(aiSelection.top_n_missing_count || 0);
+            const requestedCount = selectedSymbols.length + missingCount;
+            setText('selection-overview-date', displayOptional(selection.selection_date));
+            setText('selection-overview-stage', displayStatus(aiSelection.selection_stage || 'UNAVAILABLE'));
+            setText('selection-overview-quality', displayStatus(aiSelection.result_quality || 'UNAVAILABLE'));
+            setText('selection-overview-admission', displayStatus(aiSelection.research_admission || 'UNAVAILABLE'));
+            setText('selection-overview-top-count', `已入选 ${selectedSymbols.length} / 目标 ${requestedCount}`);
+            setText('selection-overview-missing', missingCount ? `缺失 ${missingCount} 个` : '数量完整');
+            const syncReason = displayReason(selection.reason);
+            const syncSummary = selection.synced ? '已同步' : `未同步：${syncReason}`;
+            setText('selection-overview-sync', syncSummary);
+            setText('selection-overview-sync-pill', syncSummary);
+            const symbolsNode = document.getElementById('selection-overview-symbols');
+            if (symbolsNode) {
+                symbolsNode.replaceChildren();
+                if (selectedSymbols.length) {
+                    selectedSymbols.forEach((symbol) => {
+                        const chip = document.createElement('span');
+                        chip.className = 'symbol-chip';
+                        chip.textContent = String(symbol);
+                        symbolsNode.appendChild(chip);
+                    });
+                } else {
+                    const empty = document.createElement('strong');
+                    empty.textContent = '无';
+                    symbolsNode.appendChild(empty);
+                }
+            }
+            setText('selection-process-data-status', displayStatus(formalTop.length ? formalTop[0].data_status : 'UNAVAILABLE'));
+            setText('selection-process-scoring-count', aiSelection.selection_funnel && aiSelection.selection_funnel.scoring_eligible != null ? String(aiSelection.selection_funnel.scoring_eligible) : '0');
+            setText('selection-process-target-complete', displayBool(requestedCount > 0 && selectedSymbols.length >= requestedCount));
+            setText('selection-process-trade-admission', displayStatus(formalTop.length ? (formalTop[0].trade_admission_status || 'NOT_TRADABLE') : 'NOT_TRADABLE'));
         } catch (error) {
             // Keep last known data on failures.
         }
@@ -6331,13 +6630,13 @@ def index():
             display_positions_hint = "显示当前 paper 运行中的虚拟仓位"
         elif effective_mode == "sandbox":
             display_positions_title = "LongBridge sandbox 持仓"
-            display_positions_hint = "sandbox 账户未连接时显示 unavailable"
+            display_positions_hint = "沙盒账户未连接，暂无持仓数据"
             account_summary = None
             display_positions = []
             selected_positions_count = 0
         elif effective_mode == "live":
             display_positions_title = "LongBridge 真实持仓"
-            display_positions_hint = "live 账户未连接时显示 unavailable"
+            display_positions_hint = "实盘账户未连接，暂无持仓数据"
             account_summary = None
             display_positions = []
             selected_positions_count = 0
@@ -6524,6 +6823,7 @@ def index():
         if top_modes
         else "当前未生成 TOP 配置"
     )
+    selection_dashboard = _selection_dashboard_view(ai_selection, selection_sync)
 
     return render_template_string(HTML,
         cards=cards,
@@ -6538,6 +6838,15 @@ def index():
         display_positions_title=display_positions_title,
         display_positions_hint=display_positions_hint,
         ai_selection=ai_selection,
+        selection_dashboard=selection_dashboard,
+        status_labels_zh=STATUS_LABELS_ZH,
+        reason_labels_zh=REASON_LABELS_ZH,
+        translate_status=translate_status,
+        translate_reason=translate_reason,
+        format_bool=format_bool,
+        format_optional=format_optional,
+        format_timestamp=format_timestamp,
+        truncate_identifier=truncate_identifier,
         ai_selection_price_band=ai_selection_price_band,
         ai_universe_filter=ai_universe_filter,
         research_digest=research_digest,
