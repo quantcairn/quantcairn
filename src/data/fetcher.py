@@ -50,6 +50,15 @@ def _provider_ticker(symbol: str) -> str:
     return upper
 
 
+def _close_session(session) -> None:
+    close = getattr(session, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _configure_yfinance_cache() -> tuple[str, str | None]:
     """Pin yfinance's sqlite-backed cache to an absolute, writable path."""
     global _YFINANCE_CACHE_INITIALIZED, _YFINANCE_CACHE_ERROR
@@ -226,24 +235,27 @@ class PriceFetcher:
         session = requests.Session()
         session.trust_env = False
         last_exc = None
-        for attempt in range(3):
-            try:
-                resp = session.get(
-                    url,
-                    params={"range": "1d", "interval": "1m", "includePrePost": "true"},
-                    headers={"User-Agent": "Mozilla/5.0"},
-                    timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                break
-            except Exception as e:
-                last_exc = e
-                time.sleep(0.25 * (2 ** attempt))
-        else:
-            logger.debug("Yahoo chart fallback failed for %s: %s", self.ticker, last_exc)
-            self._set_quote_diagnostic("PROVIDER_ERROR", "CHART_HTTP_ERROR", str(last_exc) if last_exc else None)
-            return {}
+        try:
+            for attempt in range(3):
+                try:
+                    resp = session.get(
+                        url,
+                        params={"range": "1d", "interval": "1m", "includePrePost": "true"},
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+                except Exception as e:
+                    last_exc = e
+                    time.sleep(0.25 * (2 ** attempt))
+            else:
+                logger.debug("Yahoo chart fallback failed for %s: %s", self.ticker, last_exc)
+                self._set_quote_diagnostic("PROVIDER_ERROR", "CHART_HTTP_ERROR", str(last_exc) if last_exc else None)
+                return {}
+        finally:
+            _close_session(session)
 
         try:
             if data is None:
@@ -378,6 +390,8 @@ class PriceFetcher:
             logger.debug("Direct chart history failed for %s (%s %s): %s", self.ticker, period, interval, e)
             self._set_history_diagnostic("PROVIDER_ERROR", "CHART_HISTORY_ERROR", str(e))
             return []
+        finally:
+            _close_session(session)
 
     def _synthetic_quote(self) -> Quote:
         """Generate a deterministic synthetic quote when all live data sources fail."""

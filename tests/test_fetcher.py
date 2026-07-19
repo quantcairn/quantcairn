@@ -206,6 +206,71 @@ def test_fetch_chart_history_marks_empty_response_for_none_json():
     assert pf._last_history_error_code == "EMPTY_JSON"
 
 
+def test_direct_yahoo_sessions_are_closed_on_success_and_error(monkeypatch):
+    sessions = []
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"regularMarketPrice": 10.0},
+                        "timestamp": [1700000000],
+                        "indicators": {"quote": [{
+                            "open": [10.0], "high": [10.1], "low": [9.9],
+                            "close": [10.0], "volume": [1000],
+                        }]},
+                    }]
+                }
+            }
+
+    class TrackingSession:
+        def __init__(self):
+            self.trust_env = False
+            self.closed = False
+            sessions.append(self)
+
+        def get(self, *args, **kwargs):
+            return DummyResponse()
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(fetcher_mod.requests, "Session", TrackingSession)
+    fetcher = PriceFetcher("SOFI.US")
+
+    assert fetcher._fetch_chart_quote()["status"] == "COMPLETE"
+    assert fetcher._fetch_chart_history("1mo", "1d")
+    assert len(sessions) == 2
+    assert all(session.closed for session in sessions)
+
+
+def test_direct_yahoo_session_is_closed_after_request_failure(monkeypatch):
+    sessions = []
+
+    class FailingSession:
+        def __init__(self):
+            self.trust_env = False
+            self.closed = False
+            sessions.append(self)
+
+        def get(self, *args, **kwargs):
+            raise OSError("network unavailable")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(fetcher_mod.requests, "Session", FailingSession)
+    monkeypatch.setattr(fetcher_mod.time, "sleep", lambda _seconds: None)
+    fetcher = PriceFetcher("SOFI.US")
+
+    assert fetcher._fetch_chart_quote() == {}
+    assert sessions[0].closed is True
+
+
 def test_price_fetcher_uses_absolute_yfinance_cache_dir(monkeypatch, tmp_path: Path):
     cache_dir = tmp_path / "state" / "yfinance_cache"
     recorded: dict[str, str] = {}
