@@ -20,6 +20,8 @@ def test_status_translation_preserves_original_enum():
 def test_reason_and_optional_value_formatting():
     assert translate_reason("low_dollar_volume") == "成交额过低"
     assert translate_reason("insufficient_candidates") == "候选数量不足"
+    assert translate_reason("leveraged_inverse_position_limit") == "杠杆/反向 ETF 单仓上限"
+    assert translate_reason("position_already_exists") == "已有仓位，不自动加仓"
     assert translate_reason("custom_reason") == "未识别原因（custom_reason）"
     assert format_bool(True) == "是"
     assert format_bool(False) == "否"

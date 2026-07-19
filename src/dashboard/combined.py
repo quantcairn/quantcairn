@@ -35,6 +35,7 @@ from src.dashboard.labels_zh import (
     translate_status,
     truncate_identifier,
 )
+from src.engine.ranked_position_policy import calculate_ranked_target_allocations
 from src.candidate_validation.research_scheduler import latest_research_status
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
 from src.notifier.alerts import build_provider_audit_sections, build_research_admission_notice
@@ -806,6 +807,99 @@ def _dashboard_risk_summary(account_summary: dict | None, display_positions: lis
         "largest_pct": round(largest_pct, 2) if largest_pct is not None else None,
         "risk_level": risk_level,
         "risk_label": risk_label,
+    }
+
+
+def _account_summary_from_top_engines(top_engines: list[dict]) -> dict[str, object]:
+    cash = 0.0
+    equity = 0.0
+    buying_power = 0.0
+    positions: list[dict[str, object]] = []
+    for item in top_engines or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            cash += float(item.get("cash", 0.0) or 0.0)
+            equity += float(item.get("equity", 0.0) or 0.0)
+            buying_power += float(item.get("buying_power", 0.0) or 0.0)
+        except Exception:
+            pass
+        shares = int(item.get("position_shares", item.get("shares", 0)) or 0)
+        if shares <= 0:
+            continue
+        price = float(item.get("price", item.get("current_price", 0.0)) or 0.0)
+        avg_entry_price = float(item.get("entry_price", item.get("avg_entry_price", 0.0)) or 0.0)
+        positions.append({
+            "ticker": str(item.get("ticker") or "").strip().upper(),
+            "quantity": shares,
+            "avg_entry_price": avg_entry_price,
+            "current_price": price,
+            "market_value": round(max(0.0, price) * shares, 2),
+        })
+    return {
+        "cash": round(cash, 2),
+        "equity": round(equity, 2),
+        "buying_power": round(buying_power, 2),
+        "positions": positions,
+        "positions_count": len(positions),
+    }
+
+
+def _paper_position_policy_snapshot(
+    *,
+    ai_selection: dict | None,
+    account_summary: dict | None,
+    runtime_config,
+    dashboard_mode: str,
+) -> dict[str, object]:
+    policy = getattr(runtime_config, "position_policy", None) if runtime_config is not None else None
+    mode = str(getattr(policy, "mode", "legacy") or "legacy").strip().lower() if policy is not None else "legacy"
+    paper_enabled = bool(getattr(policy, "paper_position_policy_enabled", False)) if policy is not None else False
+    live_enabled = bool(getattr(policy, "live_position_policy_enabled", False)) if policy is not None else False
+    enabled_for_paper = dashboard_mode == "paper" and mode == "ranked_aggressive" and paper_enabled
+    if policy is None:
+        return {
+            "enabled": False,
+            "mode": "legacy",
+            "paper_only": True,
+            "enabled_for_paper": False,
+            "live_position_policy_enabled": False,
+            "target_allocations": [],
+            "gross_target_exposure": 0.0,
+            "cash_reserve_target": 0.0,
+            "allocation_warnings": ["policy_config_missing"],
+            "note": "未读取到仓位策略配置，当前按旧仓位逻辑展示。",
+        }
+    top_candidates = [
+        dict(item)
+        for item in ((ai_selection or {}).get("top3") or [])
+        if isinstance(item, dict)
+    ]
+    summary = account_summary if isinstance(account_summary, dict) else {}
+    result = calculate_ranked_target_allocations(
+        top_candidates,
+        account_equity=float(summary.get("equity", 0.0) or 0.0),
+        current_positions=list(summary.get("positions") or []),
+        current_cash=float(summary.get("cash", 0.0) or 0.0),
+        policy=policy,
+        selection_mode=str((ai_selection or {}).get("selection_mode") or ("ACTIVE" if str((ai_selection or {}).get("selection_stage") or "").upper() == "FINALIZED" else "UNAVAILABLE")),
+        result_quality=str((ai_selection or {}).get("result_quality") or ""),
+        research_admission=str((ai_selection or {}).get("research_admission") or ""),
+    )
+    note = (
+        "方案 B 已启用，仅用于 Paper 新开仓目标展示。"
+        if enabled_for_paper
+        else "方案 B 当前未启用；Live 不使用该策略。"
+    )
+    return {
+        **result,
+        "enabled": enabled_for_paper,
+        "mode": mode,
+        "paper_only": bool(getattr(policy, "paper_only", True)),
+        "enabled_for_paper": enabled_for_paper,
+        "live_position_policy_enabled": live_enabled,
+        "max_open_positions": int(getattr(policy, "max_open_positions", 3) or 3),
+        "note": note,
     }
 
 
@@ -4391,6 +4485,50 @@ HTML = """<!DOCTYPE html>
                             {% endif %}
                         </div>
                     </div>
+                    <div class="selection-brief" style="margin-top:12px">
+                        <div class="selection-brief-item">
+                            <span class="selection-tag {{ 'live' if position_policy.enabled else '' }}">方案 B</span>
+                            <div class="selection-copy">
+                                <span class="symbols">
+                                    Paper 动态仓位：{{ '已启用' if position_policy.enabled else '未启用' }}
+                                    · 模式 {{ position_policy.mode }}
+                                    · 最大持仓 {{ position_policy.max_open_positions or 3 }}
+                                </span>
+                                <span class="note">{{ position_policy.note }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="selector-table" style="margin-top:10px">
+                        <div class="selector-head">
+                            <span>排名</span>
+                            <span>标的</span>
+                            <span>目标权重</span>
+                            <span>目标金额</span>
+                            <span>状态</span>
+                        </div>
+                        {% for row in position_policy.target_allocations %}
+                        <div class="selector-row">
+                            <span class="num">TOP{{ row.rank }}</span>
+                            <span class="ticker">{{ row.symbol or '暂无' }}</span>
+                            <span class="num">{{ "%.1f"|format((row.capped_target_weight or 0) * 100) }}%</span>
+                            <span class="num">${{ "%.2f"|format(row.target_notional or 0) }}</span>
+                            <span>{{ translate_status(row.allocation_status) }} · {{ translate_reason(row.allocation_reason) }}</span>
+                        </div>
+                        {% endfor %}
+                        {% if not position_policy.target_allocations %}
+                        <div class="selector-row">
+                            <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无目标分配</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% if position_policy.allocation_warnings %}
+                    <div class="selection-status">
+                        仓位提示：
+                        {% for warning in position_policy.allocation_warnings %}
+                            {{ translate_reason(warning) }}{% if not loop.last %} / {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                 </div>
 
                 <div class="overview-panel compact">
@@ -5596,6 +5734,13 @@ def _api_status_payload() -> dict[str, object]:
     ai_selection_top3 = list(ai_selection.get("top3") or [])
     ai_selection_data_status = str(ai_selection.get("data_status") or "")
     ai_selection_notice_status = str((ai_selection_top3[0].get("data_status") if ai_selection_top3 else ai_selection_data_status) or "")
+    api_account_summary = live_account if isinstance(live_account, dict) else _account_summary_from_top_engines(top_engines)
+    position_policy_snapshot = _paper_position_policy_snapshot(
+        ai_selection=ai_selection,
+        account_summary=api_account_summary,
+        runtime_config=runtime_config,
+        dashboard_mode=dashboard_mode or "paper",
+    )
     return {
         "ok": True,
         "mode": dashboard_mode or "paper",
@@ -5715,6 +5860,7 @@ def _api_status_payload() -> dict[str, object]:
                 }
             ),
             "top3": list(ai_selection.get("top3") or []),
+            "position_policy": position_policy_snapshot,
         },
         "system": system_status,
     }
@@ -6763,6 +6909,12 @@ def index():
     risk_summary = _dashboard_risk_summary(account_summary if isinstance(account_summary, dict) else None, account_positions_list)
     risk_summary.setdefault("risk_label", "未知")
     risk_summary.setdefault("risk_level", "UNKNOWN")
+    position_policy_snapshot = _paper_position_policy_snapshot(
+        ai_selection=ai_selection,
+        account_summary=account_summary if isinstance(account_summary, dict) else None,
+        runtime_config=dashboard_config,
+        dashboard_mode=system_status.get("mode_key") or effective_mode or "paper",
+    )
     timeline_items = _dashboard_timeline_items(
         trade_audit=trade_audit,
         system_status=system_status,
@@ -6898,6 +7050,7 @@ def index():
         account_equity_value=account_equity_value,
         active_order_summary=active_order_summary,
         risk_summary=risk_summary,
+        position_policy=position_policy_snapshot,
         timeline_items=timeline_items,
         main_chart_card=main_chart_card,
         mode_display=mode_display,

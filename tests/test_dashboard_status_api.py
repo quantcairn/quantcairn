@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 
 from src.candidate_validation import CandidateRecord, CandidateValidationStore
+from src.config.loader import PositionPolicyConfig
 
 VENV_SITE_PACKAGES = next(
     (path for path in (Path(__file__).resolve().parents[1] / ".venv" / "lib").glob("python*/site-packages") if path.exists()),
@@ -367,10 +368,6 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert payload["system"]["global_reduce_only"] is False
     assert payload["system"]["live_order_enabled"] is False
     assert payload["system"]["lifecycle"]["weekend_paper"]["status_label"] == "unavailable"
-    assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
-    assert payload["shadow"]["title"] == "SOXS Shadow Observer"
-    assert payload["shadow"]["symbol"] == "SOXS.US"
-    assert payload["shadow"]["timeframe"] == "15m"
 
     html = client.get("/").get_data(as_text=True)
     assert "AI 选股结果总览" in html
@@ -383,6 +380,67 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert "Provider Fallback" not in html
     assert "12345678…abcdef" in html
     assert 'title="1234567890abcdef1234567890abcdef"' in html
+
+
+def test_api_status_includes_ranked_paper_position_policy(monkeypatch):
+    policy = PositionPolicyConfig(
+        mode="ranked_aggressive",
+        paper_position_policy_enabled=True,
+        live_position_policy_enabled=False,
+    )
+    _patch_status_basics(
+        monkeypatch,
+        status_map={
+            8091: {"mode": "paper", "price": 10.0, "last_signal": "HOLD", "cash": 10_000.0, "equity": 10_000.0, "buying_power": 10_000.0, "position_shares": 0},
+            8092: {"mode": "paper", "price": 20.0, "last_signal": "HOLD", "cash": 0.0, "equity": 0.0, "buying_power": 0.0, "position_shares": 0},
+            8093: {"mode": "paper", "price": 30.0, "last_signal": "HOLD", "cash": 0.0, "equity": 0.0, "buying_power": 0.0, "position_shares": 0},
+        },
+        selection_sync={
+            "ok": True,
+            "state_date": "2026-07-09",
+            "required_date": "2026-07-09",
+            "selection_state_symbols": ["SOFI", "AAPL", "SOXS"],
+            "current_top_config_symbols": ["SOFI", "AAPL", "SOXS"],
+            "mismatch_reason": "",
+        },
+        ai_selection={
+            "selection_stage": "FINALIZED",
+            "execution_status": "COMPLETED",
+            "result_quality": "COMPLETE",
+            "research_admission": "RESEARCH_READY",
+            "top_n_missing_count": 0,
+            "top3": [
+                {"ticker": "SOFI", "asset_type": "common_stock", "current_price": 10.0, "data_status": "COMPLETE", "scoring_eligible": True, "candidate_score": 90.0},
+                {"ticker": "AAPL", "asset_type": "common_stock", "current_price": 20.0, "data_status": "COMPLETE", "scoring_eligible": True, "candidate_score": 88.0},
+                {"ticker": "SOXS", "asset_type": "inverse_etf", "current_price": 30.0, "data_status": "COMPLETE", "scoring_eligible": True, "candidate_score": 86.0},
+            ],
+            "settings": {},
+        },
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "load_runtime_config",
+        lambda: SimpleNamespace(
+            allow_fallback_live_entries=False,
+            allow_fallback_paper_entries=True,
+            position_policy=policy,
+        ),
+    )
+
+    payload = dashboard.app.test_client().get("/api/status").get_json()
+
+    position_policy = payload["ai_selection"]["position_policy"]
+    assert position_policy["enabled"] is True
+    assert position_policy["mode"] == "ranked_aggressive"
+    assert position_policy["live_position_policy_enabled"] is False
+    assert position_policy["target_allocations"][0]["symbol"] == "SOFI"
+    assert position_policy["target_allocations"][0]["capped_target_weight"] == 0.35
+    assert position_policy["target_allocations"][2]["symbol"] == "SOXS"
+    assert position_policy["target_allocations"][2]["capped_target_weight"] == 0.15
+    assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
+    assert payload["shadow"]["title"] == "SOXS Shadow Observer"
+    assert payload["shadow"]["symbol"] == "SOXS.US"
+    assert payload["shadow"]["timeframe"] == "15m"
 
 
 def test_api_status_handles_offline_top_engine(monkeypatch):

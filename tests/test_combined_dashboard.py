@@ -8,6 +8,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+from src.config.loader import PositionPolicyConfig
 from src.dashboard import combined
 
 
@@ -970,6 +971,89 @@ def test_combined_dashboard_shows_paper_mode_without_live_top_warning(monkeypatc
     assert "虚拟盘运行中" in html
     assert "当前是 paper 模式，未启用 live TOP 校验，虚拟盘会按当天 TOP 配置继续交易。" in html
     assert "启动校验待命" not in html
+
+
+def test_combined_dashboard_shows_ranked_paper_position_policy(monkeypatch):
+    policy = PositionPolicyConfig(
+        mode="ranked_aggressive",
+        paper_position_policy_enabled=True,
+        live_position_policy_enabled=False,
+    )
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="paper",
+        position_policy=policy,
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=False,
+                environment="prod",
+                account_type="",
+                allow_live_order=False,
+            )
+        ),
+    ))
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: {
+        "timestamp": "2026-07-19T09:00:00",
+        "selection_stage": "FINALIZED",
+        "result_quality": "COMPLETE",
+        "research_admission": "RESEARCH_READY",
+        "top_n_missing_count": 0,
+        "top3": [
+            {"ticker": "SOFI", "asset_type": "common_stock", "current_price": 10.0, "data_status": "COMPLETE", "scoring_eligible": True, "candidate_score": 90.0},
+            {"ticker": "AAPL", "asset_type": "common_stock", "current_price": 20.0, "data_status": "COMPLETE", "scoring_eligible": True, "candidate_score": 88.0},
+            {"ticker": "SOXS", "asset_type": "inverse_etf", "current_price": 30.0, "data_status": "COMPLETE", "scoring_eligible": True, "candidate_score": 86.0},
+        ],
+        "report": [],
+        "settings": {},
+    })
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": {"TOP1.yaml": "SOFI", "TOP2.yaml": "AAPL", "TOP3.yaml": "SOXS"}.get(name, name.replace(".yaml", "")),
+        "initial_capital": 0.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: {
+        "mode": "paper",
+        "price": 10.0,
+        "last_signal": "HOLD",
+        "cash": 10_000.0 if port == 8091 else 0.0,
+        "equity": 10_000.0 if port == 8091 else 0.0,
+        "buying_power": 10_000.0 if port == 8091 else 0.0,
+        "position_shares": 0,
+    })
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-19）",
+        "required_date": "2026-07-19",
+        "state_date": "2026-07-19",
+        "selection_state_symbols": ["SOFI", "AAPL", "SOXS"],
+        "current_top_config_symbols": ["SOFI", "AAPL", "SOXS"],
+        "state_top_config_symbols": ["SOFI", "AAPL", "SOXS"],
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "Paper 动态仓位：已启用" in html
+    assert "方案 B 已启用，仅用于 Paper 新开仓目标展示。" in html
+    assert "TOP1" in html
+    assert "SOFI" in html
+    assert "35.0%" in html
+    assert "$3500.00" in html
+    assert "按排名目标分配" in html
 
 
 def test_combined_dashboard_uses_paper_account_summary_when_live_account_missing(monkeypatch):

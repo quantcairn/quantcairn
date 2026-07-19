@@ -97,6 +97,23 @@ REASON_LABELS_ZH = {
     "missing_top_slot": "TOP 配置槽位缺失",
     "top_config_symbols_do_not_match_selection_state": "正式 TOP 与交易配置不一致",
     "unknown": "其他原因",
+    "rank_target_allocation": "按排名目标分配",
+    "leveraged_inverse_position_limit": "杠杆/反向 ETF 单仓上限",
+    "standard_etf_position_limit": "ETF 单仓上限",
+    "common_stock_position_limit": "普通股单仓上限",
+    "selection_not_active": "选股未处于可用状态",
+    "result_quality_not_complete": "结果质量不是完整",
+    "research_admission_not_ready": "研究准入未就绪",
+    "invalid_account_equity": "账户权益无效",
+    "symbol_not_in_formal_top": "标的不在正式 TOP",
+    "position_already_exists": "已有仓位，不自动加仓",
+    "max_open_positions_reached": "达到最大持仓数量",
+    "leveraged_inverse_count_limit": "杠杆/反向 ETF 数量已达上限",
+    "gross_exposure_limit": "总仓位上限",
+    "cash_reserve_limit": "现金保留要求",
+    "invalid_price": "价格无效",
+    "insufficient_buying_power": "可买资金不足",
+    "policy_config_missing": "仓位策略配置缺失",
 }
 
 
