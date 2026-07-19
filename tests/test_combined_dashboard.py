@@ -4,12 +4,19 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.config.loader import PositionPolicyConfig
 from src.dashboard import combined
+
+
+@pytest.fixture(autouse=True)
+def _ignore_real_paper_portfolio_state(monkeypatch):
+    monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: None)
 
 
 def test_dashboard_read_snapshot_cache_avoids_rebuilding(monkeypatch):
@@ -1128,6 +1135,81 @@ def test_combined_dashboard_uses_paper_account_summary_when_live_account_missing
     assert "虚拟持仓" in html
     assert "3 股" in html
     assert "暂无" not in html.split("账户与持仓", 1)[1].split("虚拟持仓", 1)[0]
+
+
+def test_combined_dashboard_uses_unified_paper_portfolio_state(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="paper",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=False,
+                environment="prod",
+                account_type="",
+                allow_live_order=False,
+            )
+        ),
+    ))
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda *args, **kwargs: {
+        "execution_mode": "paper",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐",
+        "required_date": "2026-07-19",
+        "state_date": "2026-07-19",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: {
+        "cash": 880.0,
+        "equity": 1_030.0,
+        "buying_power": 1_760.0,
+        "positions_count": 1,
+        "positions": [
+            {
+                "ticker": "SOFI",
+                "quantity": 10,
+                "avg_entry_price": 10.0,
+                "current_price": 15.0,
+                "market_value": 150.0,
+                "unrealized_pnl": 50.0,
+                "unrealized_pnl_pct": 50.0,
+            }
+        ],
+        "mode": "paper",
+        "execution_mode": "paper",
+        "broker": "PaperBroker",
+    })
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+    payload = combined._api_status_payload()
+
+    assert "$1030.00" in html
+    assert "SOFI" in html
+    assert payload["dashboard"]["summary"]["cash"] == 880.0
+    assert payload["dashboard"]["summary"]["equity"] == 1030.0
 
 
 def test_combined_dashboard_shows_paper_position_pnl_from_engine_status(monkeypatch):

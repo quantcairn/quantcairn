@@ -17,6 +17,7 @@ import yaml
 
 from src.ai_selector.selection_bundle import load_committed_selection_bundle
 from src.ai_selector.selection_report import provider_audit_sections
+from src.broker.paper_portfolio_state import read_paper_portfolio_state
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -99,6 +100,13 @@ class Notifier:
         pnl_str = f" | 盈亏 ${pnl:+.2f}" if pnl is not None else ""
         title = f"{emoji} {prefix}{side_cn} {ticker} {quantity_int}股"
         body = f"{sign}${trade_value:,.2f} @ ${price_float:.2f}{pnl_str}"
+        if str(mode or "").strip().lower() == "paper":
+            portfolio_state = read_paper_portfolio_state()
+            if isinstance(portfolio_state, dict):
+                body += (
+                    f" | 现金 ${float(portfolio_state.get('cash') or 0.0):,.2f}"
+                    f" | 权益 ${float(portfolio_state.get('equity') or 0.0):,.2f}"
+                )
 
         # External notifications are intentionally limited to filled trades
         # so the desktop / Telegram channels stay quiet during scans, signals,

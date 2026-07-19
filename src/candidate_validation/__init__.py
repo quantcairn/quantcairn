@@ -17,6 +17,7 @@ from .calibration import CandidateScoreCalibration, CandidateScoreCalibrator
 from .model_evaluation import CandidateModelEvaluationService, load_candidate_model_evaluation_snapshot
 from .model_governance import CandidateModelManifest, CandidateModelRegistry, CandidateModelStatus
 from .outcome_dataset import CandidateOutcomeDataset, CandidateOutcomeDatasetBuilder, CandidateOutcomeSample
+from .outcome_collector import OutcomeCollector, load_paper_portfolio_snapshot
 from .research_report import CandidateDailyResearchReportGenerator
 from .research_scheduler import DailyResearchScheduler, latest_research_status, market_calendar_check
 from .weight_optimizer import CandidateWeightProposal, OfflineCandidateWeightOptimizer
@@ -42,6 +43,7 @@ __all__ = [
     "CandidateOutcomeDataset",
     "CandidateOutcomeDatasetBuilder",
     "CandidateOutcomeSample",
+    "OutcomeCollector",
     "CandidateScoreCalibration",
     "CandidateScoreCalibrator",
     "ValidationStatus",
@@ -53,4 +55,5 @@ __all__ = [
     "latest_research_status",
     "market_calendar_check",
     "load_candidate_model_evaluation_snapshot",
+    "load_paper_portfolio_snapshot",
 ]

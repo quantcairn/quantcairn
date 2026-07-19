@@ -14,12 +14,14 @@ import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from .base import (
     BrokerBase, Order, OrderSide, OrderType, OrderStatus,
     Position, AccountInfo,
 )
+from .paper_portfolio_state import PaperPortfolioState, write_paper_portfolio_state
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,9 @@ class PaperBroker(BrokerBase):
         commission_per_share: float = 0.005,
         slippage_pct: float = 0.05,
         commission_per_trade: float = 0.0,
+        portfolio_state_path: str | Path | None = None,
+        persist_portfolio_state: bool = False,
+        account_id: str = "paper-default",
     ):
         self._initial_cash = initial_cash
         self._cash = initial_cash
@@ -64,6 +69,10 @@ class PaperBroker(BrokerBase):
         self._positions: dict[str, Position] = {}
         self._connected = False
         self._current_prices: dict[str, float] = {}
+        self._portfolio_state_path = Path(portfolio_state_path) if portfolio_state_path is not None else None
+        self._persist_portfolio_state_enabled = bool(persist_portfolio_state)
+        self._account_id = account_id
+        self._processed_fill_ids: set[str] = set()
 
         # --- New tracking fields ---
         self._trade_history: list[TradeRecord] = []
@@ -73,6 +82,7 @@ class PaperBroker(BrokerBase):
         self._losses: int = 0
         self._total_win_amount: float = 0.0
         self._total_loss_amount: float = 0.0
+        self._persist_portfolio_state()
 
     # ---- BrokerBase Implementation ----
 
@@ -126,6 +136,28 @@ class PaperBroker(BrokerBase):
             notes=notes,
         )
         self._trade_history.append(record)
+
+    def _persist_portfolio_state(
+        self,
+        *,
+        last_fill_id: str | None = None,
+        last_order_id: str | None = None,
+        last_event_id: str | None = None,
+    ) -> None:
+        if not self._persist_portfolio_state_enabled:
+            return
+        if last_fill_id:
+            self._processed_fill_ids.add(str(last_fill_id))
+        state = PaperPortfolioState.from_account(
+            self.get_account(),
+            account_id=self._account_id,
+            realized_pnl=self._realized_pnl,
+            processed_fill_ids=self._processed_fill_ids,
+            last_fill_id=last_fill_id,
+            last_order_id=last_order_id,
+            last_event_id=last_event_id,
+        )
+        write_paper_portfolio_state(state, path=self._portfolio_state_path)
 
     def place_order(
         self,
@@ -268,6 +300,11 @@ class PaperBroker(BrokerBase):
             commission=commission,
         )
         self._orders[order_id] = order
+        self._persist_portfolio_state(
+            last_fill_id=order_id,
+            last_order_id=order_id,
+            last_event_id=f"paper:{order_id}",
+        )
 
         logger.info(
             f"[PAPER] {side.value} {quantity} {ticker} @ ${fill_price:.2f} "
@@ -325,6 +362,7 @@ class PaperBroker(BrokerBase):
         )
         self._positions[ticker] = pos
         self._current_prices[ticker] = avg_price
+        self._persist_portfolio_state(last_event_id=f"seed:{ticker}")
 
         logger.info(
             f"[PAPER] Seeded position: {quantity} {ticker} @ ${avg_price:.2f} "
@@ -364,3 +402,4 @@ class PaperBroker(BrokerBase):
                 cost_basis = pos.avg_entry_price * pos.quantity
                 pos.unrealized_pnl = pos.market_value - cost_basis
                 pos.unrealized_pnl_pct = (pos.unrealized_pnl / cost_basis * 100) if cost_basis else 0
+            self._persist_portfolio_state(last_event_id=f"mark:{ticker}")

@@ -252,7 +252,10 @@ class TradingEngine:
             )
             logger.info("Using Long Bridge (%s) broker", config.mode.upper())
         else:
-            self.broker = PaperBroker(initial_cash=config.position.initial_capital)
+            self.broker = PaperBroker(
+                initial_cash=config.position.initial_capital,
+                persist_portfolio_state=(config.mode == "paper"),
+            )
             logger.info(f"Using Paper Trading broker (initial capital: ${config.position.initial_capital:,.2f})")
 
         # Order state tracking: dedup, cooldown, buying-power block

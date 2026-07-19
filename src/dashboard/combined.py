@@ -21,6 +21,7 @@ from src.ai_selector.selection_state import configured_top_count, current_top_co
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.broker.paper_broker import PaperBroker
+from src.broker.paper_portfolio_state import read_paper_portfolio_state
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 from src.research_report.site import build_research_site
@@ -641,6 +642,13 @@ def _paper_account_summary_from_cards(cards: list[dict]) -> dict[str, object]:
         "data_stale": False,
         "account_error": False,
     }
+
+
+def _paper_account_summary_from_state_or_cards(cards: list[dict]) -> dict[str, object]:
+    state = read_paper_portfolio_state()
+    if isinstance(state, dict):
+        return state
+    return _paper_account_summary_from_cards(cards)
 
 
 def _normalize_symbol_list(values) -> list[str]:
@@ -5734,7 +5742,14 @@ def _api_status_payload() -> dict[str, object]:
     ai_selection_top3 = list(ai_selection.get("top3") or [])
     ai_selection_data_status = str(ai_selection.get("data_status") or "")
     ai_selection_notice_status = str((ai_selection_top3[0].get("data_status") if ai_selection_top3 else ai_selection_data_status) or "")
-    api_account_summary = live_account if isinstance(live_account, dict) else _account_summary_from_top_engines(top_engines)
+    paper_account_summary = read_paper_portfolio_state() if dashboard_mode == "paper" else None
+    api_account_summary = (
+        live_account
+        if isinstance(live_account, dict)
+        else paper_account_summary
+        if isinstance(paper_account_summary, dict)
+        else _account_summary_from_top_engines(top_engines)
+    )
     position_policy_snapshot = _paper_position_policy_snapshot(
         ai_selection=ai_selection,
         account_summary=api_account_summary,
@@ -5771,19 +5786,19 @@ def _api_status_payload() -> dict[str, object]:
             "chart_api_available": True,
             "candidate_validation_api_available": True,
             "summary": {
-                "cash": live_account.get("cash") if isinstance(live_account, dict) else None,
-                "equity": live_account.get("equity") if isinstance(live_account, dict) else None,
-                "buying_power": live_account.get("buying_power") if isinstance(live_account, dict) else None,
-                "positions_count": len(live_account.get("positions") or []) if isinstance(live_account, dict) and isinstance(live_account.get("positions"), list) else (live_account or {}).get("positions_count"),
+                "cash": api_account_summary.get("cash") if isinstance(api_account_summary, dict) else None,
+                "equity": api_account_summary.get("equity") if isinstance(api_account_summary, dict) else None,
+                "buying_power": api_account_summary.get("buying_power") if isinstance(api_account_summary, dict) else None,
+                "positions_count": len(api_account_summary.get("positions") or []) if isinstance(api_account_summary, dict) and isinstance(api_account_summary.get("positions"), list) else (api_account_summary or {}).get("positions_count"),
                 "top_engine_online_count": sum(1 for item in top_engines if item.get("online")),
                 "active_orders_total": order_counts["total"],
                 "active_orders_pending": order_counts["pending"],
                 "active_orders_partial_filled": order_counts["partial_filled"],
                 "today_total_pnl": round(top_daily_pnl, 2),
-                "total_pnl": round(top_unrealized_pnl, 2),
-                "total_equity": round(top_equity, 2),
-                "total_cash": round(top_cash, 2),
-                "total_buying_power": round(top_buying_power, 2),
+                "total_pnl": round(float(api_account_summary.get("unrealized_pnl", top_unrealized_pnl) or 0.0), 2) if isinstance(api_account_summary, dict) else round(top_unrealized_pnl, 2),
+                "total_equity": round(float(api_account_summary.get("equity", top_equity) or 0.0), 2) if isinstance(api_account_summary, dict) else round(top_equity, 2),
+                "total_cash": round(float(api_account_summary.get("cash", top_cash) or 0.0), 2) if isinstance(api_account_summary, dict) else round(top_cash, 2),
+                "total_buying_power": round(float(api_account_summary.get("buying_power", top_buying_power) or 0.0), 2) if isinstance(api_account_summary, dict) else round(top_buying_power, 2),
                 "total_trades": int(trade_audit.get("execution_count", 0) or 0),
             },
         },
@@ -6773,7 +6788,7 @@ def index():
             total_capital += initial_capital
             total_equity += initial_capital
 
-    paper_account_summary = _paper_account_summary_from_cards(cards)
+    paper_account_summary = _paper_account_summary_from_state_or_cards(cards)
     if live_account and live_account_mode in {"live", "sandbox"} and not live_account.get("account_error"):
         account_summary = live_account
         selected_positions_count = _selected_stock_positions_count(live_account, selected_tickers)
