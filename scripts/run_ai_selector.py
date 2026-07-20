@@ -1263,8 +1263,9 @@ def _enrich_selection_rows(
             if not isinstance(nested, dict):
                 continue
             for key, value in nested.items():
-                if key not in item or item.get(key) is None:
+                if key not in item or item.get(key) is None or item.get(key) == "":
                     item[key] = value
+        item = enrich_candidate_quality(item, provider_outputs=provider_outputs)
         ticker = _normalize_ticker(item.get("ticker"))
         fallback_scope, fallback_severity, affected_fields = _candidate_fallback_metadata(item, provider_outputs)
         candidate_fallback = bool(

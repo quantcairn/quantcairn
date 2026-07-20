@@ -62,6 +62,61 @@ def _load_module():
     return module
 
 
+def test_enrich_selection_rows_uses_nested_complete_market_quality_over_stale_top_level_status():
+    module = _load_module()
+    market_data = {
+        "quote_fetch_status": "COMPLETE",
+        "ohlcv_fetch_status": "COMPLETE",
+        "quote_status": "COMPLETE",
+        "ohlcv_status": "COMPLETE",
+        "history_status": "COMPLETE",
+        "quote_timestamp": "2026-07-20T13:16:25Z",
+        "quote_age_seconds": 60,
+        "current_price": 17.28,
+        "daily_data_as_of": "2026-07-17",
+        "daily_data_status": "LATEST_COMPLETED_SESSION",
+        "freshness_status": "SAFE",
+        "benchmark_status": "VALID",
+        "benchmark_alignment_status": "VALID",
+        "history_rows": 250,
+        "history_available_bars": 250,
+        "history_required_bars": 200,
+        "history_missing_windows": [],
+        "close_history": [17.28] * 250,
+        "open": 17.0,
+        "high": 17.5,
+        "low": 16.9,
+        "close": 17.28,
+        "volume": 1_000_000,
+        "average_dollar_volume_20d": 500_000_000.0,
+        "atr_20_percentage": 4.0,
+        "ma20": 16.8,
+        "ma50": 16.5,
+        "ma200": 15.0,
+        "market_cap": 6_000_000_000.0,
+    }
+    row = {
+        "ticker": "SOFI",
+        "score": 82.3,
+        "quote_status": "MISSING",
+        "ohlcv_status": "MISSING",
+        "history_status": "MISSING",
+        "benchmark_status": "",
+        "market_data": dict(market_data),
+        "trade_market_data": dict(market_data),
+    }
+
+    enriched = module._enrich_selection_rows([row])[0]
+
+    assert enriched["quote_status"] == "COMPLETE"
+    assert enriched["ohlcv_status"] == "COMPLETE"
+    assert enriched["history_status"] == "COMPLETE"
+    assert enriched["benchmark_status"] == "VALID"
+    assert enriched["data_status"] == "COMPLETE"
+    assert enriched["scoring_eligible"] is True
+    assert enriched["blocking_reasons"] == []
+
+
 def test_write_selection_filter_log_is_repeatable_without_fd_growth(tmp_path, monkeypatch):
     module = _load_module()
     monkeypatch.setattr(module, "LOG_DIR", tmp_path)
