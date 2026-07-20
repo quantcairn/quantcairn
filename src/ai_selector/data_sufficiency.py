@@ -219,6 +219,15 @@ def evaluate_data_sufficiency(
     if history_rows is None:
         history_rows = len(close_history) if isinstance(close_history, list) else 0
     fallback_history_incomplete = bool(payload.get("fallback_history_incomplete"))
+    explicit_ohlcv_fetch_status = _normalize_text(present("ohlcv_fetch_status")).upper()
+    history_missing_windows = list(payload.get("history_missing_windows") or [])
+    if (
+        fallback_history_incomplete
+        and explicit_ohlcv_fetch_status == "COMPLETE"
+        and history_rows >= min_history_rows
+        and not history_missing_windows
+    ):
+        fallback_history_incomplete = False
 
     ohlcv_status = "OK"
     history_status = "OK"

@@ -124,6 +124,7 @@ def test_enrich_candidate_quality_uses_complete_fetch_diagnostics_over_stale_mis
             "history_available_bars": 220,
             "history_required_bars": 200,
             "history_missing_windows": [],
+            "fallback_history_incomplete": True,
         }
     )
 
