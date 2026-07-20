@@ -543,8 +543,16 @@ def _enrich_candidate_quality_rows(
 ) -> list[dict]:
     enriched: list[dict] = []
     for raw in rows or []:
+        payload = dict(raw)
+        for nested_key in ("market_data", "trade_market_data", "metrics"):
+            nested = payload.get(nested_key)
+            if not isinstance(nested, dict):
+                continue
+            for key, value in nested.items():
+                if key not in payload or payload.get(key) is None or payload.get(key) == "":
+                    payload[key] = value
         item = enrich_candidate_quality(
-            dict(raw),
+            payload,
             provider_audit=provider_audit,
             provider_outputs=provider_outputs,
         )

@@ -117,6 +117,44 @@ def test_enrich_selection_rows_uses_nested_complete_market_quality_over_stale_to
     assert enriched["blocking_reasons"] == []
 
 
+def test_enrich_candidate_quality_rows_uses_nested_market_quality_before_formal_filter():
+    module = _load_module()
+    market_data = _formal_candidate_row("SOFI", 82.3, 17.28)
+    market_data.update(
+        {
+            "quote_fetch_status": "COMPLETE",
+            "ohlcv_fetch_status": "COMPLETE",
+            "quote_status": "COMPLETE",
+            "ohlcv_status": "COMPLETE",
+            "history_status": "COMPLETE",
+            "history_rows": 250,
+            "history_available_bars": 250,
+            "history_required_bars": 200,
+            "history_missing_windows": [],
+            "close_history": [17.28] * 250,
+            "benchmark_status": "VALID",
+            "benchmark_alignment_status": "VALID",
+        }
+    )
+    row = {
+        "ticker": "SOFI",
+        "score": 82.3,
+        "quote_status": "MISSING",
+        "ohlcv_status": "MISSING",
+        "history_status": "MISSING",
+        "benchmark_status": "",
+        "market_data": dict(market_data),
+        "trade_market_data": dict(market_data),
+    }
+
+    enriched = module._enrich_candidate_quality_rows([row])[0]
+
+    assert enriched["data_status"] == "COMPLETE"
+    assert enriched["scoring_eligible"] is True
+    assert enriched["blocking_reasons"] == []
+    assert module.is_formal_selection_eligible(enriched) is True
+
+
 def test_write_selection_filter_log_is_repeatable_without_fd_growth(tmp_path, monkeypatch):
     module = _load_module()
     monkeypatch.setattr(module, "LOG_DIR", tmp_path)
