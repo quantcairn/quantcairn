@@ -439,7 +439,7 @@ def evaluate_candidate_data_quality(
     if stale_fields:
         quality_warnings.append("stale_market_data")
 
-    critical_degraded = bool(set(missing_fields) & {"quote_timestamp", "current_price", "average_dollar_volume_20d", "atr_20_percentage", "ma20", "ma50", "benchmark_status", "benchmark_alignment_status", "market_cap", "history"}) or bool(stale_fields)
+    critical_degraded = bool(set(missing_fields) & {"quote_timestamp", "current_price", "average_dollar_volume_20d", "atr_20_percentage", "ma20", "ma50", "benchmark", "benchmark_status", "benchmark_alignment_status", "market_cap", "history"}) or bool(stale_fields)
     noncritical_degraded = bool(noncritical_source_set and not critical_degraded and candidate_fallback)
     explanation_degraded = bool(noncritical_degraded or any(scope in {"EXPLANATION_ONLY", "NON_CRITICAL_FACTOR", "RUN_LEVEL"} for scope in (aggregate_scope,)))
 

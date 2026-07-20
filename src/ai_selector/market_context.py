@@ -208,6 +208,31 @@ def _last_daily_as_of(candles: Iterable[Any]) -> str | None:
     return parsed.date().isoformat()
 
 
+def _daily_item_session_date(item: Any) -> str | None:
+    timestamp = getattr(item, "timestamp", None)
+    if isinstance(timestamp, datetime):
+        return timestamp.astimezone(US_EASTERN).date().isoformat() if timestamp.tzinfo is not None else timestamp.date().isoformat()
+    text = str(timestamp or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(US_EASTERN).date().isoformat()
+    return parsed.date().isoformat()
+
+
+def _completed_daily_candles(candles: Iterable[Any], previous_completed_session: str) -> list[Any]:
+    completed: list[Any] = []
+    for item in candles or []:
+        session_date = _daily_item_session_date(item)
+        if session_date is None or session_date <= previous_completed_session:
+            completed.append(item)
+    return completed
+
+
 def _daily_close_history(candles: Iterable[Any]) -> list[float]:
     closes: list[float] = []
     for item in candles or []:
@@ -338,6 +363,8 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         daily = fetcher.get_ohlcv(period=DAILY_HISTORY_PERIOD, interval=DAILY_HISTORY_INTERVAL)
     except Exception as exc:
         quote_error = quote_error or str(exc)
+    previous_completed_session = session.previous_completed_session.isoformat()
+    daily = _completed_daily_candles(daily, previous_completed_session)
     quote_fetch_status = str(getattr(fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
     quote_fetch_error_code = getattr(fetcher, "_last_quote_fetch_error_code", None)
     quote_fetch_error_message = getattr(fetcher, "_last_quote_fetch_error_message", None)
@@ -382,9 +409,9 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
     freshness_status = "SAFE"
     stale_reason_parts: list[str] = []
     if daily_data_as_of is not None:
-        if daily_data_as_of == session.previous_completed_session.isoformat():
+        if daily_data_as_of == previous_completed_session:
             daily_data_status = "LATEST_COMPLETED_SESSION"
-        elif daily_data_as_of > session.previous_completed_session.isoformat():
+        elif daily_data_as_of > previous_completed_session:
             daily_data_status = "FUTURE"
             stale_reason_parts.append("daily_data_future")
             freshness_status = "INVALID"
@@ -416,6 +443,7 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
             bench_daily = bench_fetcher.get_ohlcv(period=DAILY_HISTORY_PERIOD, interval=DAILY_HISTORY_INTERVAL)
         except Exception:
             bench_daily = []
+        bench_daily = _completed_daily_candles(bench_daily, previous_completed_session)
         benchmark_quote_fetch_status[benchmark_symbol] = str(getattr(bench_fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
         benchmark_quote_error_code[benchmark_symbol] = getattr(bench_fetcher, "_last_quote_error_code", None)
         benchmark_quote_error_message[benchmark_symbol] = getattr(bench_fetcher, "_last_quote_error_message", None)
@@ -435,7 +463,7 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         else:
             benchmark_change_pct[benchmark_symbol] = None
         if (
-            bench_as_of != session.previous_completed_session.isoformat()
+            bench_as_of != previous_completed_session
             or benchmark_quote_fetch_status[benchmark_symbol] != "COMPLETE"
             or benchmark_ohlcv_fetch_status[benchmark_symbol] != "COMPLETE"
         ):

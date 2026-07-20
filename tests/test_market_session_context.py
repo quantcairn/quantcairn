@@ -166,3 +166,54 @@ def test_build_candidate_market_snapshot_marks_short_history_explicitly(monkeypa
     assert snapshot["history_available_bars"] == 30
     assert snapshot["history_required_bars"] == 200
     assert snapshot["history_missing_windows"] == ["ma50", "ma200"]
+
+
+def test_build_candidate_market_snapshot_ignores_current_incomplete_daily_bar(monkeypatch):
+    monkeypatch.setenv("SOXS_ENABLE_LIVE_MARKET_SNAPSHOT_IN_TESTS", "1")
+
+    class _IntradayDailyBarFetcher(_FakePriceFetcher):
+        def get_quote(self):
+            now_et = datetime(2026, 7, 20, 9, 45, tzinfo=ZoneInfo("America/New_York"))
+            return SimpleNamespace(
+                price=101.25,
+                last_done=101.25,
+                bid=101.0,
+                ask=101.5,
+                volume=250_000,
+                timestamp=now_et.astimezone(timezone.utc),
+            )
+
+        def get_ohlcv(self, period: str = "1mo", interval: str = "1d"):
+            rows = super().get_ohlcv(period=period, interval=interval)
+            rows[-1] = SimpleNamespace(
+                timestamp=datetime(2026, 7, 17, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+                open=99.0,
+                high=101.0,
+                low=98.0,
+                close=100.0,
+                volume=250_000,
+            )
+            rows.append(
+                SimpleNamespace(
+                    timestamp=datetime(2026, 7, 20, 9, 45, tzinfo=ZoneInfo("America/New_York")),
+                    open=100.0,
+                    high=102.0,
+                    low=99.5,
+                    close=101.25,
+                    volume=50_000,
+                )
+            )
+            return rows
+
+    monkeypatch.setattr(market_context, "PriceFetcher", _IntradayDailyBarFetcher)
+    now_et = datetime(2026, 7, 20, 9, 45, tzinfo=ZoneInfo("America/New_York"))
+
+    snapshot = market_context.build_candidate_market_snapshot("SOFI.US", now_et=now_et)
+
+    assert snapshot["previous_completed_session"] == "2026-07-17"
+    assert snapshot["daily_data_as_of"] == "2026-07-17"
+    assert snapshot["daily_data_status"] == "LATEST_COMPLETED_SESSION"
+    assert snapshot["benchmark_status"] == "VALID"
+    assert snapshot["benchmark_alignment_status"] == "VALID"
+    assert "daily_data_future" not in snapshot["stale_reason"]
+    assert snapshot["freshness_status"] == "SAFE"
