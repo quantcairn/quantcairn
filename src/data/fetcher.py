@@ -59,6 +59,18 @@ def _close_session(session) -> None:
             pass
 
 
+def _classify_provider_error(exc: Exception | None) -> tuple[str, str]:
+    message = str(exc or "")
+    lowered = message.lower()
+    if "unable to open database file" in lowered or "sqlite" in lowered:
+        return "CACHE_ERROR", "YFINANCE_CACHE_ERROR"
+    if "invalid crumb" in lowered or "unauthorized" in lowered or "401" in lowered:
+        return "PROVIDER_ERROR", "YAHOO_UNAUTHORIZED"
+    if "could not resolve host" in lowered or "getaddrinfo" in lowered or "dns" in lowered:
+        return "PROVIDER_ERROR", "DNS_ERROR"
+    return "PROVIDER_ERROR", "PROVIDER_ERROR"
+
+
 def _configure_yfinance_cache() -> tuple[str, str | None]:
     """Pin yfinance's sqlite-backed cache to an absolute, writable path."""
     global _YFINANCE_CACHE_INITIALIZED, _YFINANCE_CACHE_ERROR
@@ -227,6 +239,8 @@ class PriceFetcher:
             )
         except Exception as e:
             logger.debug("History fetch failed for %s (%s %s): %s", self.ticker, period, interval, e)
+            status, code = _classify_provider_error(e)
+            self._set_history_diagnostic(status, code, str(e))
             return None
 
     def _fetch_chart_quote(self) -> dict:
@@ -235,6 +249,7 @@ class PriceFetcher:
         session = requests.Session()
         session.trust_env = False
         last_exc = None
+        unauthorized_retry_used = False
         try:
             for attempt in range(3):
                 try:
@@ -244,6 +259,18 @@ class PriceFetcher:
                         headers={"User-Agent": "Mozilla/5.0"},
                         timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
                     )
+                    if getattr(resp, "status_code", None) == 401:
+                        last_exc = RuntimeError("Yahoo 401 Invalid Crumb")
+                        if not unauthorized_retry_used:
+                            unauthorized_retry_used = True
+                            try:
+                                session.cookies.clear()
+                            except Exception:
+                                pass
+                            time.sleep(0.25)
+                            continue
+                        self._set_quote_diagnostic("PROVIDER_ERROR", "YAHOO_UNAUTHORIZED", str(last_exc))
+                        return {}
                     resp.raise_for_status()
                     data = resp.json()
                     break
@@ -252,7 +279,8 @@ class PriceFetcher:
                     time.sleep(0.25 * (2 ** attempt))
             else:
                 logger.debug("Yahoo chart fallback failed for %s: %s", self.ticker, last_exc)
-                self._set_quote_diagnostic("PROVIDER_ERROR", "CHART_HTTP_ERROR", str(last_exc) if last_exc else None)
+                status, code = _classify_provider_error(last_exc)
+                self._set_quote_diagnostic(status, code, str(last_exc) if last_exc else None)
                 return {}
         finally:
             _close_session(session)
@@ -324,6 +352,9 @@ class PriceFetcher:
     def _fetch_chart_history(self, period: str, interval: str) -> list[OHLCV]:
         range_map = {
             ("1mo", "1d"): "1mo",
+            ("6mo", "1d"): "6mo",
+            ("1y", "1d"): "1y",
+            ("260d", "1d"): "1y",
             ("5d", "1d"): "5d",
             ("1d", "5m"): "1d",
             ("1d", "1m"): "1d",
@@ -334,14 +365,37 @@ class PriceFetcher:
         session = requests.Session()
         session.trust_env = False
         try:
-            resp = session.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{self._provider_ticker}",
-                params={"range": yahoo_range, "interval": interval, "includePrePost": "true"},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
-            )
-            resp.raise_for_status()
-            payload = resp.json()
+            unauthorized_retry_used = False
+            payload = None
+            for attempt in range(3):
+                try:
+                    resp = session.get(
+                        f"https://query1.finance.yahoo.com/v8/finance/chart/{self._provider_ticker}",
+                        params={"range": yahoo_range, "interval": interval, "includePrePost": "true"},
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
+                    )
+                    if getattr(resp, "status_code", None) == 401:
+                        if not unauthorized_retry_used:
+                            unauthorized_retry_used = True
+                            try:
+                                session.cookies.clear()
+                            except Exception:
+                                pass
+                            time.sleep(0.25)
+                            continue
+                        self._set_history_diagnostic("PROVIDER_ERROR", "YAHOO_UNAUTHORIZED", "Yahoo 401 Invalid Crumb")
+                        return []
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    break
+                except Exception as e:
+                    if attempt >= 2:
+                        raise
+                    time.sleep(0.25 * (2 ** attempt))
+            if payload is None:
+                self._set_history_diagnostic("EMPTY_RESPONSE", "EMPTY_JSON", "chart payload is null")
+                return []
             if payload is None:
                 self._set_history_diagnostic("EMPTY_RESPONSE", "EMPTY_JSON", "chart payload is null")
                 return []
@@ -388,7 +442,10 @@ class PriceFetcher:
             return candles
         except Exception as e:
             logger.debug("Direct chart history failed for %s (%s %s): %s", self.ticker, period, interval, e)
-            self._set_history_diagnostic("PROVIDER_ERROR", "CHART_HISTORY_ERROR", str(e))
+            status, code = _classify_provider_error(e)
+            if code == "PROVIDER_ERROR":
+                code = "CHART_HISTORY_ERROR"
+            self._set_history_diagnostic(status, code, str(e))
             return []
         finally:
             _close_session(session)

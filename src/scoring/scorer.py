@@ -14,6 +14,7 @@ from ta.volatility import AverageTrueRange
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.ai_selector.settings import get_float_setting
 from src.ai_selector.universe_filter import evaluate_universe_candidate, infer_asset_type
+from src.data.fetcher import _configure_yfinance_cache, _provider_ticker
 
 
 class Scorer:
@@ -175,6 +176,7 @@ class Scorer:
     }
 
     def __init__(self):
+        self._cache_status, self._cache_error_message = _configure_yfinance_cache()
         self.min_price = self._env_float("AI_SELECTOR_MIN_PRICE", get_float_setting("min_price", self.MIN_PRICE))
         self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", get_float_setting("max_price", self.MAX_PRICE))
         self.market_timeout = self._env_float("AI_SELECTOR_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
@@ -199,6 +201,9 @@ class Scorer:
 
     def _longbridge_symbol(self, symbol: str) -> str:
         return symbol if "." in symbol else f"{symbol}.US"
+
+    def _provider_symbol(self, symbol: str) -> str:
+        return _provider_ticker(symbol)
 
     def _longbridge_value(self, obj, *names, default=None):
         if isinstance(obj, dict):
@@ -264,6 +269,7 @@ class Scorer:
                     break
 
     def _fetch_chart_daily(self, symbol: str, days: int = 320) -> pd.DataFrame:
+        symbol = self._provider_symbol(symbol)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         params = {
             "range": "1y" if days >= 250 else f"{max(days, 1)}d",
@@ -280,6 +286,7 @@ class Scorer:
         resp = None
         trust_env_options = (False, True) if self.allow_proxy_market else (False,)
         for trust_env in trust_env_options:
+            session = None
             try:
                 session = requests.Session()
                 session.trust_env = trust_env
@@ -289,6 +296,13 @@ class Scorer:
             except Exception as exc:
                 last_error = exc
                 resp = None
+            finally:
+                close = getattr(session, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
         if resp is None:
             raise last_error
         result = (resp.json().get("chart", {}).get("result") or [None])[0]
@@ -318,7 +332,7 @@ class Scorer:
         prefer_yfinance = os.environ.get("AI_SELECTOR_USE_YFINANCE", "0") == "1"
         if prefer_yfinance:
             try:
-                df = yf.download(symbol, period="260d", interval="1d", progress=False)
+                df = yf.download(self._provider_symbol(symbol), period="260d", interval="1d", progress=False)
                 if df is not None and not df.empty:
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
@@ -326,14 +340,14 @@ class Scorer:
             except Exception:
                 pass
         try:
-            df = self._fetch_chart_daily(symbol)
+            df = self._fetch_chart_daily(self._provider_symbol(symbol))
             if df is not None and not df.empty:
                 return df
         except Exception:
             pass
         if not prefer_yfinance:
             try:
-                df = yf.download(symbol, period="260d", interval="1d", progress=False)
+                df = yf.download(self._provider_symbol(symbol), period="260d", interval="1d", progress=False)
                 if df is not None and not df.empty:
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
@@ -371,9 +385,11 @@ class Scorer:
         return out
 
     def _fetch_live_snapshot(self, symbol: str) -> dict:
+        symbol = self._provider_symbol(symbol)
         last_error = None
         trust_env_options = (False, True) if self.allow_proxy_market else (False,)
         for trust_env in trust_env_options:
+            session = None
             try:
                 url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
                 params = {"range": "5d", "interval": "1d", "includePrePost": "false"}
@@ -411,6 +427,13 @@ class Scorer:
                     }
             except Exception as exc:
                 last_error = exc
+            finally:
+                close = getattr(session, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
         try:
             return self._fetch_longbridge_snapshot(symbol)
         except Exception as exc:
@@ -429,7 +452,7 @@ class Scorer:
             self._market_cap_cache[normalized] = None
             return None
         try:
-            ticker = yf.Ticker(normalized)
+            ticker = yf.Ticker(self._provider_symbol(normalized))
             fast_info = getattr(ticker, "fast_info", {}) or {}
             value = None
             if isinstance(fast_info, dict):

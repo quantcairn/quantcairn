@@ -483,6 +483,146 @@ def test_get_ohlcv_prefers_direct_chart_history():
     assert candles[-1].volume == 1200
 
 
+def test_fetch_chart_history_supports_one_year_direct_history(monkeypatch):
+    requested = {}
+
+    class DummyResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "chart": {
+                    "result": [{
+                        "timestamp": [1700000000],
+                        "indicators": {
+                            "quote": [{
+                                "open": [10.0],
+                                "high": [10.2],
+                                "low": [9.8],
+                                "close": [10.1],
+                                "volume": [1000],
+                            }]
+                        },
+                    }]
+                }
+            }
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, _url, params=None, **_kwargs):
+            requested.update(params or {})
+            return DummyResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(fetcher_mod.requests, "Session", DummySession)
+    fetcher = PriceFetcher("SOFI.US")
+
+    candles = fetcher.get_ohlcv(period="1y", interval="1d")
+
+    assert requested["range"] == "1y"
+    assert len(candles) == 1
+    assert fetcher._last_history_fetch_status == "COMPLETE"
+
+
+def test_yahoo_401_retries_once_and_records_unauthorized(monkeypatch):
+    calls = []
+
+    class UnauthorizedResponse:
+        status_code = 401
+
+        def raise_for_status(self):
+            raise RuntimeError("401 Invalid Crumb")
+
+    class DummyCookies:
+        def __init__(self):
+            self.cleared = 0
+
+        def clear(self):
+            self.cleared += 1
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+            self.cookies = DummyCookies()
+            self.closed = False
+
+        def get(self, *args, **kwargs):
+            calls.append((args, kwargs, self.cookies.cleared))
+            return UnauthorizedResponse()
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(fetcher_mod.requests, "Session", DummySession)
+    monkeypatch.setattr(fetcher_mod.time, "sleep", lambda _seconds: None)
+
+    fetcher = PriceFetcher("SOFI.US")
+    assert fetcher._fetch_chart_quote() == {}
+    assert len(calls) == 2
+    assert fetcher._last_quote_fetch_status == "PROVIDER_ERROR"
+    assert fetcher._last_quote_error_code == "YAHOO_UNAUTHORIZED"
+
+
+def test_scorer_direct_sessions_are_closed_and_symbol_normalized(monkeypatch):
+    from src.scoring.scorer import Scorer
+
+    sessions = []
+    requested_urls = []
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "chart": {
+                    "result": [{
+                        "timestamp": [1700000000],
+                        "indicators": {
+                            "quote": [{
+                                "open": [10.0],
+                                "high": [10.2],
+                                "low": [9.8],
+                                "close": [10.1],
+                                "volume": [1000],
+                            }]
+                        },
+                    }]
+                }
+            }
+
+    class TrackingSession:
+        def __init__(self):
+            self.trust_env = False
+            self.closed = False
+            sessions.append(self)
+
+        def get(self, url, **_kwargs):
+            requested_urls.append(url)
+            return DummyResponse()
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("src.scoring.scorer.requests.Session", TrackingSession)
+    scorer = Scorer()
+
+    df = scorer._fetch_chart_daily("SOFI.US")
+    snapshot = scorer._fetch_live_snapshot("SOFI.US")
+
+    assert not df.empty
+    assert snapshot["price"] == 10.1
+    assert all(session.closed for session in sessions)
+    assert all(url.endswith("/SOFI") for url in requested_urls)
+
+
 def run_test_direct():
     test_get_quote_from_history()
     test_validate_live_mode_requires_longbridge_credentials()
