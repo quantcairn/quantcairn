@@ -110,6 +110,59 @@ def test_enrich_candidate_quality_attaches_explanations() -> None:
     assert enriched["confidence_score"] == 0.0
 
 
+def test_enrich_candidate_quality_uses_complete_fetch_diagnostics_over_stale_missing_status() -> None:
+    candidate = _complete_candidate()
+    candidate.update(
+        {
+            "quote_status": "MISSING",
+            "ohlcv_status": "MISSING",
+            "history_status": "MISSING",
+            "quote_fetch_status": "COMPLETE",
+            "ohlcv_fetch_status": "COMPLETE",
+            "history_rows": 220,
+            "close_history": [150.0] * 220,
+            "history_available_bars": 220,
+            "history_required_bars": 200,
+            "history_missing_windows": [],
+        }
+    )
+
+    enriched = enrich_candidate_quality(candidate)
+
+    assert enriched["quote_status"] == "COMPLETE"
+    assert enriched["ohlcv_status"] == "COMPLETE"
+    assert enriched["history_status"] == "COMPLETE"
+    assert enriched["data_status"] == "COMPLETE"
+    assert enriched["scoring_eligible"] is True
+    assert "missing_history" not in enriched["blocking_reasons"]
+
+
+def test_history_missing_windows_fail_closed_even_when_ohlcv_fetch_succeeds() -> None:
+    candidate = _complete_candidate()
+    candidate.update(
+        {
+            "quote_fetch_status": "COMPLETE",
+            "ohlcv_fetch_status": "COMPLETE",
+            "history_rows": 30,
+            "close_history": [150.0] * 30,
+            "history_available_bars": 30,
+            "history_required_bars": 200,
+            "history_missing_windows": ["ma50", "ma200"],
+        }
+    )
+
+    enriched = enrich_candidate_quality(candidate)
+
+    assert enriched["ohlcv_status"] == "COMPLETE"
+    assert enriched["history_status"] == "MISSING"
+    assert enriched["data_status"] == "INVALID"
+    assert enriched["scoring_eligible"] is False
+    assert "missing_history" in enriched["blocking_reasons"]
+    assert "history_window_missing:ma50" in enriched["blocking_reasons"]
+    assert "history_window_missing:ma200" in enriched["blocking_reasons"]
+    assert is_formal_selection_eligible(enriched) is False
+
+
 def test_formal_selection_helpers_reject_explicit_invalid_data() -> None:
     candidate = _complete_candidate()
     candidate.update(

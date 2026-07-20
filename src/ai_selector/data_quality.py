@@ -331,6 +331,16 @@ def evaluate_candidate_data_quality(
     for field in sufficiency.missing_fields:
         if field and field not in missing_fields:
             missing_fields.append(field)
+    history_missing_windows = [
+        _normalize_text(item)
+        for item in list(payload.get("history_missing_windows") or [])
+        if _normalize_text(item)
+    ]
+    if history_missing_windows:
+        if "history" not in missing_fields:
+            missing_fields.append("history")
+        blocking_reasons.append("missing_history")
+        blocking_reasons.extend(f"history_window_missing:{window}" for window in history_missing_windows)
     if sufficiency.data_status == "STALE" and "quote_timestamp" not in stale_fields and quote_age_seconds is not None:
         stale_fields.append("quote_timestamp")
     if quote_age_seconds is not None:
@@ -429,7 +439,7 @@ def evaluate_candidate_data_quality(
     if stale_fields:
         quality_warnings.append("stale_market_data")
 
-    critical_degraded = bool(set(missing_fields) & {"quote_timestamp", "current_price", "average_dollar_volume_20d", "atr_20_percentage", "ma20", "ma50", "benchmark_status", "benchmark_alignment_status", "market_cap"}) or bool(stale_fields)
+    critical_degraded = bool(set(missing_fields) & {"quote_timestamp", "current_price", "average_dollar_volume_20d", "atr_20_percentage", "ma20", "ma50", "benchmark_status", "benchmark_alignment_status", "market_cap", "history"}) or bool(stale_fields)
     noncritical_degraded = bool(noncritical_source_set and not critical_degraded and candidate_fallback)
     explanation_degraded = bool(noncritical_degraded or any(scope in {"EXPLANATION_ONLY", "NON_CRITICAL_FACTOR", "RUN_LEVEL"} for scope in (aggregate_scope,)))
 
@@ -522,9 +532,33 @@ def enrich_candidate_quality(
     payload["quality_warnings_structured"] = list(warning_list)
     payload["data_status"] = result.data_status
     payload["scoring_eligible"] = result.scoring_eligible
-    payload["quote_status"] = str(payload.get("quote_status") or ("OK" if payload.get("quote_timestamp") else "MISSING")).upper()
-    payload["ohlcv_status"] = str(payload.get("ohlcv_status") or ("OK" if payload.get("close_history") or payload.get("daily_data_as_of") else "MISSING")).upper()
-    payload["history_status"] = str(payload.get("history_status") or ("OK" if payload.get("close_history") else "MISSING")).upper()
+    quote_status = str(payload.get("quote_status") or "").upper()
+    ohlcv_status = str(payload.get("ohlcv_status") or "").upper()
+    history_status = str(payload.get("history_status") or "").upper()
+    quote_fetch_status = str(payload.get("quote_fetch_status") or "").upper()
+    ohlcv_fetch_status = str(payload.get("ohlcv_fetch_status") or "").upper()
+    if quote_fetch_status == "COMPLETE" and result.quote_as_of and payload.get("current_price") is not None:
+        quote_status = "COMPLETE"
+    elif not quote_status:
+        quote_status = "OK" if payload.get("quote_timestamp") else "MISSING"
+    if ohlcv_fetch_status == "COMPLETE" and (payload.get("close_history") or payload.get("daily_data_as_of")):
+        ohlcv_status = "COMPLETE"
+    elif not ohlcv_status:
+        ohlcv_status = "OK" if payload.get("close_history") or payload.get("daily_data_as_of") else "MISSING"
+    history_missing_windows = [
+        str(item)
+        for item in list(payload.get("history_missing_windows") or [])
+        if str(item or "").strip()
+    ]
+    if ohlcv_fetch_status == "COMPLETE" and payload.get("close_history") and not history_missing_windows:
+        history_status = "COMPLETE"
+    elif history_missing_windows:
+        history_status = "MISSING"
+    elif not history_status:
+        history_status = "OK" if payload.get("close_history") else "MISSING"
+    payload["quote_status"] = quote_status
+    payload["ohlcv_status"] = ohlcv_status
+    payload["history_status"] = history_status
     payload["factor_status"] = str(
         payload.get("factor_status")
         or (

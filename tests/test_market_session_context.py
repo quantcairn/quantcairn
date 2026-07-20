@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from zoneinfo import ZoneInfo
@@ -33,10 +33,21 @@ class _FakePriceFetcher:
         )
 
     def get_ohlcv(self, period: str = "1mo", interval: str = "1d"):
-        return [
-            SimpleNamespace(timestamp=datetime(2026, 7, 9, 16, 0, tzinfo=ZoneInfo("America/New_York")), close=99.0, volume=110_000),
-            SimpleNamespace(timestamp=datetime(2026, 7, 10, 16, 0, tzinfo=ZoneInfo("America/New_York")), close=100.0, volume=120_000),
-        ]
+        end = datetime(2026, 7, 10, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+        rows = []
+        for index in range(220):
+            close = 80.0 + index * 0.1
+            rows.append(
+                SimpleNamespace(
+                    timestamp=end - timedelta(days=219 - index),
+                    open=close - 0.2,
+                    high=close + 0.8,
+                    low=close - 0.8,
+                    close=close,
+                    volume=120_000 + index,
+                )
+            )
+        return rows
 
 
 def test_market_session_context_handles_monday_premarket_previous_completed_session():
@@ -81,6 +92,12 @@ def test_build_candidate_market_snapshot_keeps_friday_daily_data_latest_complete
     assert snapshot["premarket_snapshot_available"] is True
     assert snapshot["benchmark_status"] == "VALID"
     assert snapshot["benchmark_alignment_status"] == "VALID"
+    assert snapshot["quote_status"] == "COMPLETE"
+    assert snapshot["ohlcv_status"] == "COMPLETE"
+    assert snapshot["history_status"] == "COMPLETE"
+    assert snapshot["history_available_bars"] == 220
+    assert snapshot["history_required_bars"] == 200
+    assert snapshot["history_missing_windows"] == []
     assert snapshot["trading_eligible"] is False
     assert snapshot["shadow_enabled"] is False
     assert snapshot["paper_enabled"] is False
@@ -105,11 +122,16 @@ def test_build_candidate_market_snapshot_uses_generic_benchmark_fallback_for_unk
 def test_build_candidate_market_snapshot_records_fetch_diagnostics_and_normalizes_benchmarks(monkeypatch):
     monkeypatch.setenv("SOXS_ENABLE_LIVE_MARKET_SNAPSHOT_IN_TESTS", "1")
     seen_symbols: list[str] = []
+    seen_periods: list[tuple[str, str]] = []
 
     class _TrackingPriceFetcher(_FakePriceFetcher):
         def __init__(self, symbol: str, poll_interval: int = 0):
             seen_symbols.append(symbol)
             super().__init__(symbol, poll_interval=poll_interval)
+
+        def get_ohlcv(self, period: str = "1mo", interval: str = "1d"):
+            seen_periods.append((period, interval))
+            return super().get_ohlcv(period=period, interval=interval)
 
     monkeypatch.setattr(market_context, "PriceFetcher", _TrackingPriceFetcher)
     monkeypatch.setattr(market_context, "default_benchmarks_for", lambda symbol: ["SOXX.US", "SMH.US"])
@@ -119,8 +141,28 @@ def test_build_candidate_market_snapshot_records_fetch_diagnostics_and_normalize
 
     assert seen_symbols[0] == "SOXS"
     assert seen_symbols[1:] == ["SOXX.US", "SMH.US"]
+    assert seen_periods == [("1y", "1d"), ("1y", "1d"), ("1y", "1d")]
     assert snapshot["quote_fetch_status"] == "COMPLETE"
     assert snapshot["ohlcv_fetch_status"] == "COMPLETE"
     assert snapshot["benchmark_quote_fetch_status"] == {"SOXX.US": "COMPLETE", "SMH.US": "COMPLETE"}
     assert snapshot["benchmark_ohlcv_fetch_status"] == {"SOXX.US": "COMPLETE", "SMH.US": "COMPLETE"}
     assert snapshot["benchmark_status"] == "VALID"
+
+
+def test_build_candidate_market_snapshot_marks_short_history_explicitly(monkeypatch):
+    monkeypatch.setenv("SOXS_ENABLE_LIVE_MARKET_SNAPSHOT_IN_TESTS", "1")
+
+    class _ShortHistoryFetcher(_FakePriceFetcher):
+        def get_ohlcv(self, period: str = "1mo", interval: str = "1d"):
+            return super().get_ohlcv(period=period, interval=interval)[-30:]
+
+    monkeypatch.setattr(market_context, "PriceFetcher", _ShortHistoryFetcher)
+    now_et = datetime(2026, 7, 13, 8, 55, tzinfo=ZoneInfo("America/New_York"))
+
+    snapshot = market_context.build_candidate_market_snapshot("SOFI.US", now_et=now_et)
+
+    assert snapshot["ohlcv_status"] == "COMPLETE"
+    assert snapshot["history_status"] == "MISSING"
+    assert snapshot["history_available_bars"] == 30
+    assert snapshot["history_required_bars"] == 200
+    assert snapshot["history_missing_windows"] == ["ma50", "ma200"]

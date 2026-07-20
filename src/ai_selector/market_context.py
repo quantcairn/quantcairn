@@ -19,6 +19,11 @@ from src.utils.market_calendar import (
 
 UTC = timezone.utc
 US_EASTERN = ZoneInfo("America/New_York")
+DAILY_HISTORY_PERIOD = "1y"
+DAILY_HISTORY_INTERVAL = "1d"
+FORMAL_HISTORY_REQUIRED_BARS = 200
+ATR20_REQUIRED_BARS = 21
+ADV20_REQUIRED_BARS = 20
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,23 @@ def _neutral_candidate_snapshot(symbol: str, session) -> dict[str, Any]:
         "benchmark_ohlcv_error_message": {},
         "benchmark_alignment_status": "VALID",
         "benchmark_status": "VALID",
+        "quote_status": "MISSING",
+        "ohlcv_status": "MISSING",
+        "history_status": "MISSING",
+        "history_required_bars": FORMAL_HISTORY_REQUIRED_BARS,
+        "history_available_bars": 0,
+        "history_missing_windows": ["ma20", "ma50", "ma200", "atr20", "average_dollar_volume_20d"],
+        "ma20_required_bars": 20,
+        "ma20_available_bars": 0,
+        "ma50_required_bars": 50,
+        "ma50_available_bars": 0,
+        "ma200_required_bars": FORMAL_HISTORY_REQUIRED_BARS,
+        "ma200_available_bars": 0,
+        "atr20_required_bars": ATR20_REQUIRED_BARS,
+        "atr20_available_bars": 0,
+        "average_dollar_volume_20d_required_bars": ADV20_REQUIRED_BARS,
+        "average_dollar_volume_20d_available_bars": 0,
+        "benchmark_alignment_common_bars": 0,
         "selection_stage": "PRELIMINARY",
         "freshness_status": "SAFE",
         "stale_reason": "",
@@ -313,7 +335,7 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
     except Exception as exc:
         quote_error = str(exc)
     try:
-        daily = fetcher.get_ohlcv(period="1mo", interval="1d")
+        daily = fetcher.get_ohlcv(period=DAILY_HISTORY_PERIOD, interval=DAILY_HISTORY_INTERVAL)
     except Exception as exc:
         quote_error = quote_error or str(exc)
     quote_fetch_status = str(getattr(fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
@@ -391,7 +413,7 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         except Exception:
             bench_quote = None
         try:
-            bench_daily = bench_fetcher.get_ohlcv(period="1mo", interval="1d")
+            bench_daily = bench_fetcher.get_ohlcv(period=DAILY_HISTORY_PERIOD, interval=DAILY_HISTORY_INTERVAL)
         except Exception:
             bench_daily = []
         benchmark_quote_fetch_status[benchmark_symbol] = str(getattr(bench_fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
@@ -497,6 +519,30 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
                 relative_strength_vs_spy = round(symbol_return - bench_return, 4)
                 relative_strength_60d = relative_strength_vs_spy
 
+    history_available_bars = len(closes)
+    volume_available_bars = len(_daily_volume_history(daily))
+    average_dollar_volume_20d_available_bars = min(history_available_bars, volume_available_bars)
+    benchmark_alignment_common_bars = 0
+    if benchmark_closes:
+        benchmark_alignment_common_bars = min(
+            [history_available_bars, *[len(values) for values in benchmark_closes.values()]]
+        )
+    history_missing_windows: list[str] = []
+    if history_available_bars < 20:
+        history_missing_windows.append("ma20")
+    if history_available_bars < 50:
+        history_missing_windows.append("ma50")
+    if history_available_bars < FORMAL_HISTORY_REQUIRED_BARS:
+        history_missing_windows.append("ma200")
+    if history_available_bars < ATR20_REQUIRED_BARS:
+        history_missing_windows.append("atr20")
+    if average_dollar_volume_20d_available_bars < ADV20_REQUIRED_BARS:
+        history_missing_windows.append("average_dollar_volume_20d")
+
+    quote_status = "COMPLETE" if quote_fetch_status == "COMPLETE" and current_price is not None and quote_timestamp else "MISSING"
+    ohlcv_status = "COMPLETE" if ohlcv_fetch_status == "COMPLETE" and closes else "MISSING"
+    history_status = "COMPLETE" if ohlcv_status == "COMPLETE" and not history_missing_windows else "MISSING"
+
     returns: list[float] = []
     for index in range(1, len(closes)):
         previous = closes[index - 1]
@@ -571,6 +617,23 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         "benchmark_ohlcv_error_message": benchmark_ohlcv_error_message,
         "benchmark_alignment_status": benchmark_status,
         "benchmark_status": benchmark_status,
+        "quote_status": quote_status,
+        "ohlcv_status": ohlcv_status,
+        "history_status": history_status,
+        "history_required_bars": FORMAL_HISTORY_REQUIRED_BARS,
+        "history_available_bars": history_available_bars,
+        "history_missing_windows": history_missing_windows,
+        "ma20_required_bars": 20,
+        "ma20_available_bars": history_available_bars,
+        "ma50_required_bars": 50,
+        "ma50_available_bars": history_available_bars,
+        "ma200_required_bars": FORMAL_HISTORY_REQUIRED_BARS,
+        "ma200_available_bars": history_available_bars,
+        "atr20_required_bars": ATR20_REQUIRED_BARS,
+        "atr20_available_bars": history_available_bars,
+        "average_dollar_volume_20d_required_bars": ADV20_REQUIRED_BARS,
+        "average_dollar_volume_20d_available_bars": average_dollar_volume_20d_available_bars,
+        "benchmark_alignment_common_bars": benchmark_alignment_common_bars,
         "selection_stage": selection_stage,
         "freshness_status": freshness_status,
         "stale_reason": "; ".join(dict.fromkeys(item for item in stale_reason_parts if item)) or "",
