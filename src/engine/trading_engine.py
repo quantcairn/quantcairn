@@ -49,6 +49,7 @@ from ..ai_selector.selection_state import (
 from ..ai_selector import selection_state as selection_state_module
 from ..ai_selector.selection_bundle import load_committed_selection_bundle
 from ..ai_selector.selection_report import load_latest_ai_selection_state
+from ..utils.market_calendar import required_selection_date
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -1825,7 +1826,7 @@ class TradingEngine:
                 "cached_selection": None,
             }
 
-        required_day = datetime.now(self._ny_tz).date().isoformat()
+        required_day = self._required_selection_date()
         if isinstance(bundle, dict) and isinstance(bundle.get("state"), dict):
             state = dict(bundle.get("state") or {})
         state_day = str(state.get("et_date") or "").strip()
@@ -1947,7 +1948,7 @@ class TradingEngine:
             return None
         if not HAS_PYTZ or self._ny_tz is None:
             return None
-        required_day = datetime.now(self._ny_tz).date().isoformat()
+        required_day = self._required_selection_date()
         if str(state.get("et_date") or "").strip() != required_day:
             return None
         report_path: Path | None = None
@@ -2025,6 +2026,11 @@ class TradingEngine:
             except Exception:
                 continue
         return candidates[0] if candidates else PROJECT_DIR / "reports" / "ai_selection_latest.json"
+
+    def _required_selection_date(self) -> str:
+        if not HAS_PYTZ or self._ny_tz is None:
+            return ""
+        return required_selection_date(datetime.now(self._ny_tz))
 
     def _detect_market_regime(self, top3: list[dict], signal_for_ticker: Optional[dict]) -> str:
         if signal_for_ticker is None:
@@ -2154,7 +2160,7 @@ class TradingEngine:
             and has_live_top_configs()
             and self.ticker.upper() in top_symbols
         ):
-            required_date = datetime.now(pytz.timezone("America/New_York")).date().isoformat()
+            required_date = required_selection_date(datetime.now(pytz.timezone("America/New_York")))
             ok, reason, _state = verify_live_startup_selection(required_et_date=required_date)
             if not ok:
                 self._last_signal_reason = f"实盘启动已阻止：当天选股状态无效（{reason}）"

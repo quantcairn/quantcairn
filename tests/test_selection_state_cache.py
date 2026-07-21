@@ -10,7 +10,7 @@ import yaml
 
 from src.ai_selector import selection_state
 from src.ai_selector.config import AISelectorRuntimeConfig
-from src.config.loader import AppConfig, PositionConfig
+from src.config.loader import AppConfig, PositionConfig, PositionPolicyConfig
 from src.engine import trading_engine as engine_module
 from src.engine.trading_engine import TradingEngine
 
@@ -59,7 +59,7 @@ def test_cached_selection_uses_committed_bundle_instead_of_latest_report():
                 @classmethod
                 def now(cls, tz=None):
                     from datetime import datetime
-                    return datetime(2026, 7, 17, 10, 0, 0)
+                    return datetime(2026, 7, 20, 10, 0, 0)
 
             monkeypatch.setattr(engine_module, "datetime", FakeDateTime)
             engine = object.__new__(TradingEngine)
@@ -131,6 +131,130 @@ def test_manifest_without_readable_committed_bundle_fails_closed():
             assert context["selection_reason"] == "committed_selection_bundle_unavailable"
     finally:
         monkeypatch.restore()
+
+
+def test_monday_regular_session_accepts_previous_completed_session_bundle():
+    monkeypatch = SimpleMonkeyPatch()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_path = root / "ai_selection_report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "selection_run_id": "run-friday",
+                        "selection_date": "2026-07-17",
+                        "selection_stage": "FINALIZED",
+                        "result_quality": "COMPLETE",
+                        "research_admission": "RESEARCH_READY",
+                        "top3": [{"ticker": "SOFI", "score": 91.0, "confidence": 0.8, "reason": "selected"}],
+                        "top10": [{"ticker": "SOFI", "score": 91.0, "confidence": 0.8, "reason": "selected"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            configs_dir = root / "configs"
+            configs_dir.mkdir(parents=True, exist_ok=True)
+            for idx in range(1, 4):
+                payload = {
+                    "enabled": idx == 1,
+                    "ticker": "SOFI" if idx == 1 else None,
+                    "slot": idx,
+                    "reason": "selected" if idx == 1 else "top_n_not_filled",
+                    "selection_run_id": "run-friday",
+                    "top_sync_run_id": "run-friday",
+                    "selection_date": "2026-07-17",
+                    "generated_at": "2026-07-20T09:00:00-04:00",
+                    "result_quality": "COMPLETE",
+                    "research_admission": "RESEARCH_READY",
+                    "mode": "paper",
+                }
+                (configs_dir / f"TOP{idx}.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+            state = {
+                "et_date": "2026-07-17",
+                "selected_symbols": ["SOFI"],
+                "selection_symbols": ["SOFI"],
+                "top_config_symbols": ["SOFI"],
+                "selection_run_id": "run-friday",
+                "top_sync_run_id": "run-friday",
+                "report_path": str(report_path),
+                "selection_stage": "FINALIZED",
+                "result_quality": "COMPLETE",
+                "research_admission": "RESEARCH_READY",
+                "disabled_slots": [2, 3],
+            }
+            monkeypatch.setattr(selection_state, "PROJECT_DIR", root)
+            monkeypatch.setattr(engine_module, "load_selection_state", lambda: dict(state))
+            monkeypatch.setattr(
+                engine_module,
+                "load_committed_selection_bundle",
+                lambda project_dir: {
+                    "bundle_root": root,
+                    "state": dict(state),
+                    "report": json.loads(report_path.read_text(encoding="utf-8")),
+                    "manifest": {"selection_run_id": "run-friday"},
+                },
+            )
+
+            class FakeDateTime:
+                @classmethod
+                def now(cls, tz=None):
+                    from datetime import datetime
+                    return datetime(2026, 7, 20, 10, 0, 0)
+
+            monkeypatch.setattr(engine_module, "datetime", FakeDateTime)
+            engine = object.__new__(TradingEngine)
+            engine._ny_tz = object()
+            engine._write_runtime_audit = lambda *args, **kwargs: None
+
+            context = engine._load_ai_selection_context(SimpleNamespace(enabled=True))
+
+            assert context["selection_mode"] == "ACTIVE"
+            top3, _top10, payload = context["cached_selection"]
+            assert [item["ticker"] for item in top3] == ["SOFI"]
+            assert payload["selection_date"] == "2026-07-17"
+    finally:
+        monkeypatch.restore()
+
+
+def test_research_only_selection_still_blocks_ranked_paper_allocation():
+    engine = object.__new__(TradingEngine)
+    engine.mode = "paper"
+    engine.ticker = "SOFI"
+    engine.config = AppConfig(
+        ticker="SOFI",
+        mode="paper",
+        position_policy=PositionPolicyConfig(
+            mode="ranked_aggressive",
+            paper_position_policy_enabled=True,
+            live_position_policy_enabled=False,
+        ),
+    )
+    engine._ai_selection = engine_module.AISelectionDecision(
+        enabled=True,
+        active=True,
+        selection_mode="ACTIVE",
+        top3=[
+            {
+                "ticker": "SOFI",
+                "symbol": "SOFI",
+                "score": 91.0,
+                "asset_type": "common_stock",
+            }
+        ],
+        signal_for_ticker={"ticker": "SOFI", "score": 91.0},
+        risk_approved=True,
+        allocation_weight=0.30,
+        result_quality="COMPLETE",
+        research_admission="RESEARCH_ONLY",
+    )
+    acct = SimpleNamespace(equity=10000.0, cash=10000.0, positions=[])
+
+    allocation = engine._ranked_position_policy_allocation(acct)
+
+    assert allocation["allocation_status"] == "BLOCKED"
+    assert allocation["allocation_reason"] == "research_admission_not_ready"
+    assert allocation["target_shares"] == 0
 
 
 def test_trading_engine_uses_fresh_selection_state_cache():
