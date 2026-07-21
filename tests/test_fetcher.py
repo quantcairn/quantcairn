@@ -296,6 +296,27 @@ def test_price_fetcher_uses_absolute_yfinance_cache_dir(monkeypatch, tmp_path: P
     assert pf._cache_status == "COMPLETE"
 
 
+def test_price_fetcher_close_releases_yfinance_session(monkeypatch):
+    closed = []
+
+    class DummySession:
+        def close(self):
+            closed.append("closed")
+
+    class TickerWithSession(DummyTicker):
+        def __init__(self, ticker):
+            super().__init__(ticker)
+            self.session = DummySession()
+            self._session = self.session
+
+    monkeypatch.setattr("yfinance.Ticker", TickerWithSession)
+
+    pf = PriceFetcher("SOFI.US")
+    pf.close()
+
+    assert closed == ["closed"]
+
+
 def test_get_ohlcv_handles_empty_dataframe_without_attribute_error(monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:

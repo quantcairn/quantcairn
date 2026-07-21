@@ -148,6 +148,23 @@ class PriceFetcher:
         self._synthetic_period_seconds = max(15, int(_positive_float(os.environ.get("SOXS_SYNTHETIC_PERIOD_SECONDS"), 120.0)))
         self._synthetic_started_at = time.time()
 
+    def close(self) -> None:
+        """Release provider-owned resources held by yfinance ticker/session objects."""
+        ticker_obj = getattr(self, "_ticker_obj", None)
+        seen: set[int] = set()
+        for attr in ("session", "_session"):
+            session = getattr(ticker_obj, attr, None)
+            if session is None or id(session) in seen:
+                continue
+            seen.add(id(session))
+            _close_session(session)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
+
     def _set_quote_diagnostic(self, status: str, error_code: str | None = None, error_message: str | None = None) -> None:
         self._last_quote_fetch_status = status
         self._last_quote_error_code = error_code

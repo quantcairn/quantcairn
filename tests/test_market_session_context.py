@@ -149,6 +149,23 @@ def test_build_candidate_market_snapshot_records_fetch_diagnostics_and_normalize
     assert snapshot["benchmark_status"] == "VALID"
 
 
+def test_build_candidate_market_snapshot_closes_all_fetchers(monkeypatch):
+    monkeypatch.setenv("SOXS_ENABLE_LIVE_MARKET_SNAPSHOT_IN_TESTS", "1")
+    closed_symbols: list[str] = []
+
+    class _ClosingPriceFetcher(_FakePriceFetcher):
+        def close(self):
+            closed_symbols.append(self.symbol)
+
+    monkeypatch.setattr(market_context, "PriceFetcher", _ClosingPriceFetcher)
+    monkeypatch.setattr(market_context, "default_benchmarks_for", lambda symbol: ["SOXX.US", "SMH.US"])
+    now_et = datetime(2026, 7, 13, 8, 55, tzinfo=ZoneInfo("America/New_York"))
+
+    market_context.build_candidate_market_snapshot("SOXS.US", now_et=now_et)
+
+    assert closed_symbols == ["SOXS", "SOXX.US", "SMH.US"]
+
+
 def test_build_candidate_market_snapshot_marks_short_history_explicitly(monkeypatch):
     monkeypatch.setenv("SOXS_ENABLE_LIVE_MARKET_SNAPSHOT_IN_TESTS", "1")
 

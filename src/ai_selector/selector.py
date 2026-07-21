@@ -35,6 +35,8 @@ def _write_text_atomic(path: Path, content: str) -> Path:
     tmp_path = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
     with open(tmp_path, "w", encoding="utf-8") as handle:
         handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(tmp_path, path)
     return path
 
@@ -164,18 +166,21 @@ class _QualityFilterContext:
             )
         else:
             fetcher = PriceFetcher(key, poll_interval=0)
-            quote = fetcher.get_quote()
-            if quote is None or quote.price <= 0:
-                result = (longbridge_price, longbridge_bid, longbridge_ask, bool(longbridge_confirmed))
-            else:
-                bid = longbridge_bid if longbridge_confirmed else (float(quote.bid or 0.0) or None)
-                ask = longbridge_ask if longbridge_confirmed else (float(quote.ask or 0.0) or None)
-                result = (
-                    longbridge_price or (float(quote.price or 0.0) or None),
-                    bid,
-                    ask,
-                    bool(longbridge_confirmed or getattr(quote, "bid_ask_confirmed", False)),
-                )
+            try:
+                quote = fetcher.get_quote()
+                if quote is None or quote.price <= 0:
+                    result = (longbridge_price, longbridge_bid, longbridge_ask, bool(longbridge_confirmed))
+                else:
+                    bid = longbridge_bid if longbridge_confirmed else (float(quote.bid or 0.0) or None)
+                    ask = longbridge_ask if longbridge_confirmed else (float(quote.ask or 0.0) or None)
+                    result = (
+                        longbridge_price or (float(quote.price or 0.0) or None),
+                        bid,
+                        ask,
+                        bool(longbridge_confirmed or getattr(quote, "bid_ask_confirmed", False)),
+                    )
+            finally:
+                fetcher.close()
         self._quotes[key] = result
         return result
 
@@ -184,7 +189,10 @@ class _QualityFilterContext:
         if key in self._history:
             return self._history[key]
         fetcher = PriceFetcher(key, poll_interval=0)
-        candles = fetcher.get_ohlcv(period="1mo", interval="1d")
+        try:
+            candles = fetcher.get_ohlcv(period="1mo", interval="1d")
+        finally:
+            fetcher.close()
         if len(candles) < 4:
             result = (None, None, None)
         else:

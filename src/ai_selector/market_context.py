@@ -304,6 +304,15 @@ def _market_cap_from_fetcher(fetcher: PriceFetcher) -> float | None:
         return None
 
 
+def _close_fetcher(fetcher: PriceFetcher) -> None:
+    close = getattr(fetcher, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _safe_mean(values: Iterable[float]) -> float | None:
     series = pd.Series([float(value) for value in values if value is not None], dtype="float64")
     if series.empty:
@@ -366,13 +375,15 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
     previous_completed_session = session.previous_completed_session.isoformat()
     daily = _completed_daily_candles(daily, previous_completed_session)
     quote_fetch_status = str(getattr(fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
-    quote_fetch_error_code = getattr(fetcher, "_last_quote_fetch_error_code", None)
+    quote_fetch_error_code = getattr(fetcher, "_last_quote_error_code", None)
     quote_fetch_error_message = getattr(fetcher, "_last_quote_fetch_error_message", None)
     ohlcv_fetch_status = str(getattr(fetcher, "_last_history_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
     ohlcv_fetch_error_code = getattr(fetcher, "_last_history_error_code", None)
     ohlcv_fetch_error_message = getattr(fetcher, "_last_history_error_message", None)
     cache_status = str(getattr(fetcher, "_cache_status", "COMPLETE") or "COMPLETE").upper()
     cache_error_message = getattr(fetcher, "_cache_error_message", None)
+    market_cap = _market_cap_from_fetcher(fetcher)
+    _close_fetcher(fetcher)
 
     current_price = _safe_float(getattr(quote, "price", None)) or _safe_float(getattr(quote, "last_done", None))
     bid = _safe_float(getattr(quote, "bid", None))
@@ -450,6 +461,7 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         benchmark_ohlcv_fetch_status[benchmark_symbol] = str(getattr(bench_fetcher, "_last_history_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
         benchmark_ohlcv_error_code[benchmark_symbol] = getattr(bench_fetcher, "_last_history_error_code", None)
         benchmark_ohlcv_error_message[benchmark_symbol] = getattr(bench_fetcher, "_last_history_error_message", None)
+        _close_fetcher(bench_fetcher)
         bench_as_of = _last_daily_as_of(bench_daily)
         benchmark_data_as_of[benchmark_symbol] = bench_as_of
         benchmark_volume[benchmark_symbol] = _safe_int(getattr(bench_quote, "volume", None))
@@ -510,7 +522,6 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
                 recent_close_vol_pairs.append(float(close_value) * float(volume_value))
         if recent_close_vol_pairs:
             average_dollar_volume_20d = round(sum(recent_close_vol_pairs) / len(recent_close_vol_pairs), 4)
-    market_cap = _market_cap_from_fetcher(fetcher)
     atr_20_percentage = _atr_20_percentage(daily)
 
     close_series = pd.Series(closes, dtype="float64") if closes else pd.Series(dtype="float64")
