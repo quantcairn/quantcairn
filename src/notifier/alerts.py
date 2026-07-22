@@ -28,8 +28,11 @@ ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Rate limiting for Telegram: max 1 msg/sec
 _telegram_last_send = 0.0
 _trade_notification_lock = threading.Lock()
+_ai_selection_notification_lock = threading.Lock()
 _TRADE_NOTIFICATION_SCHEMA_VERSION = "trade_notification_state.v1"
 _MAX_TRADE_NOTIFICATION_KEYS = 5000
+_AI_SELECTION_NOTIFICATION_TYPE = "AI_SELECTION_FINALIZED"
+_MAX_AI_SELECTION_NOTIFICATION_ATTEMPTS = 3
 
 
 def _telegram_rate_limit():
@@ -50,6 +53,16 @@ def default_trade_notification_state_path() -> Path:
     if state_dir:
         return (Path(state_dir).expanduser().resolve() / "trade_notification_state.json")
     return PROJECT_DIR / "state" / "trade_notification_state.json"
+
+
+def default_ai_selection_notification_ledger_path() -> Path:
+    override = os.environ.get("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
+    state_dir = os.environ.get("SOXS_STATE_DIR")
+    if state_dir:
+        return Path(state_dir).expanduser().resolve() / "notifications" / "notification_ledger.jsonl"
+    return PROJECT_DIR / "state" / "notifications" / "notification_ledger.jsonl"
 
 
 def _load_trade_notification_state(path: Path) -> dict:
@@ -90,6 +103,110 @@ def _record_trade_notification_key(path: Path, notification_key: str, metadata: 
     key = str(notification_key or "").strip()
     if not key:
         return True
+
+
+def _selection_notification_key(report: dict, notification_type: str = _AI_SELECTION_NOTIFICATION_TYPE) -> str | None:
+    run_id = str(report.get("selection_run_id") or "").strip()
+    bundle_hash = str(report.get("selection_bundle_hash") or "").strip()
+    if not run_id or not bundle_hash:
+        return None
+    return f"{run_id}:{bundle_hash}:{notification_type}"
+
+
+def _read_ai_selection_notification_ledger(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    records: list[dict] = []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    records.append(payload)
+    except Exception as exc:
+        logger.warning("AI selection notification ledger unavailable: %s", exc)
+    return records
+
+
+def _ai_selection_notification_status(path: Path, notification_key: str) -> tuple[bool, int]:
+    records = _read_ai_selection_notification_ledger(path)
+    matching = [item for item in records if str(item.get("notification_key") or "") == notification_key]
+    sent = any(str(item.get("status") or "").upper() == "SENT" for item in matching)
+    attempts = len(matching)
+    return sent, attempts
+
+
+def _append_ai_selection_notification_ledger(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with _ai_selection_notification_lock:
+        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
+            try:
+                import fcntl
+
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+                handle.flush()
+                try:
+                    os.fsync(handle.fileno())
+                except Exception:
+                    pass
+            try:
+                import fcntl
+
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+def _record_ai_selection_notification_attempt(
+    path: Path,
+    *,
+    report: dict,
+    notification_key: str,
+    status: str,
+    attempt_count: int,
+    error: str | None = None,
+) -> None:
+    _append_ai_selection_notification_ledger(
+        path,
+        {
+            "notification_key": notification_key,
+            "notification_type": _AI_SELECTION_NOTIFICATION_TYPE,
+            "selection_run_id": str(report.get("selection_run_id") or ""),
+            "selection_bundle_hash": str(report.get("selection_bundle_hash") or ""),
+            "status": str(status or "").upper(),
+            "sent_at": datetime.now(US_EASTERN).isoformat() if str(status or "").upper() == "SENT" else None,
+            "attempted_at": datetime.now(US_EASTERN).isoformat(),
+            "attempt_count": int(attempt_count),
+            "error": error,
+        },
+    )
+
+
+def _is_formal_ai_selection_notification_payload(report: dict, source: str) -> tuple[bool, str]:
+    if str(source or "") != "selection_bundle":
+        return False, "not_committed_selection_bundle"
+    if str(report.get("dry_run") or report.get("run_mode") or "").strip().lower() == "dry-run":
+        return False, "dry_run"
+    if str(report.get("selection_stage") or "").strip().upper() != "FINALIZED":
+        return False, "selection_not_finalized"
+    if not str(report.get("selection_run_id") or "").strip():
+        return False, "selection_run_id_missing"
+    if not str(report.get("selection_bundle_hash") or "").strip():
+        return False, "selection_bundle_hash_missing"
+    if str(report.get("top_sync_status") or "OK").strip().upper() not in {"OK", "SYNCED"}:
+        return False, "top_sync_not_ok"
+    return True, "ok"
     with _trade_notification_lock:
         state = _load_trade_notification_state(path)
         sent_keys = [str(item) for item in state.get("sent_keys") or [] if str(item)]
@@ -1186,6 +1303,24 @@ def _stage_explanation(selection_stage: str, result_quality: str, research_admis
 
 
 def notify_ai_selection_result(selection_report: dict, top_configs: list | None = None) -> None:
+    report, resolved_top_items, source = _resolve_manifest_first_selection_payload(selection_report, top_configs)
+    allowed, skip_reason = _is_formal_ai_selection_notification_payload(report, source)
+    if not allowed:
+        logger.info("AI selection notification skipped: %s", skip_reason)
+        return
+    notification_key = _selection_notification_key(report)
+    if not notification_key:
+        logger.info("AI selection notification skipped: notification_key_missing")
+        return
+    ledger_path = default_ai_selection_notification_ledger_path()
+    already_sent, attempt_count = _ai_selection_notification_status(ledger_path, notification_key)
+    if already_sent:
+        logger.info("AI selection notification skipped: duplicate bundle %s", notification_key)
+        return
+    if attempt_count >= _MAX_AI_SELECTION_NOTIFICATION_ATTEMPTS:
+        logger.warning("AI selection notification skipped after max attempts: %s", notification_key)
+        return
+
     notification_cfg = _load_ai_selector_notification_config()
     webhook_url = (
         os.environ.get("SOXS_AI_SELECTOR_WEBHOOK")
@@ -1211,11 +1346,27 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
             or notification_cfg.get("telegram_chat_id", "")
         ),
     )
-    title, body = _build_ai_selection_message(selection_report, top_configs)
+    title, body = _build_ai_selection_message(report, resolved_top_items)
     if not notifier._telegram_enabled and not notifier.webhook_url:
         logger.info("AI selection notification skipped: Telegram/Webhook not configured")
         return
     try:
         notifier._send(title, body, "summary", macos=False, remote=True)
+        _record_ai_selection_notification_attempt(
+            ledger_path,
+            report=report,
+            notification_key=notification_key,
+            status="SENT",
+            attempt_count=attempt_count + 1,
+            error=None,
+        )
     except Exception as exc:
+        _record_ai_selection_notification_attempt(
+            ledger_path,
+            report=report,
+            notification_key=notification_key,
+            status="FAILED",
+            attempt_count=attempt_count + 1,
+            error=str(exc),
+        )
         logger.warning("AI selection notification failed: %s", exc)

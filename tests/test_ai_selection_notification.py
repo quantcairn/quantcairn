@@ -287,6 +287,26 @@ def _sample_report_with_semantics() -> dict:
     return report
 
 
+def _committed_bundle_report(**extra) -> dict:
+    report = {
+        **_sample_report_with_rich_top3(),
+        "selection_run_id": "bundle-run-1",
+        "selection_bundle_hash": "bundle-hash-1",
+        "selection_date": "2026-07-16",
+        "generated_at": "2026-07-17T23:42:21+08:00",
+        "selection_stage": "FINALIZED",
+        "execution_status": "COMPLETED",
+        "pipeline_status": "COMPLETED",
+        "result_quality": "COMPLETE",
+        "research_admission": "RESEARCH_READY",
+        "top_sync_status": "OK",
+        "requested_top_n": 3,
+        "selected_top_n": 3,
+    }
+    report.update(extra)
+    return report
+
+
 def test_ai_selection_message_includes_top3():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
@@ -650,6 +670,11 @@ def test_ai_selection_message_marks_legacy_date_source(monkeypatch):
 
 
 def test_notify_ai_selection_without_telegram_does_not_raise(monkeypatch):
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report()},
+    )
     alerts.notify_ai_selection_result(
         _sample_report(),
         [_sample_top(1, "SOXS"), _sample_top(2, "SOFI"), _sample_top(3, "AAPL")],
@@ -780,7 +805,13 @@ def test_ai_selection_message_truncates_long_reason():
     assert "A" * 120 not in body
 
 
-def test_notify_ai_selection_result_send_failure_does_not_raise(monkeypatch):
+def test_notify_ai_selection_result_send_failure_does_not_raise(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(tmp_path / "notification_ledger.jsonl"))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-failure", selection_bundle_hash="bundle-hash-failure")},
+    )
     monkeypatch.setattr(alerts, "_load_notification_config", lambda: {"webhook_url": "https://example.com/hook"})
 
     class FakeNotifier:
@@ -796,7 +827,13 @@ def test_notify_ai_selection_result_send_failure_does_not_raise(monkeypatch):
     alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
 
 
-def test_ai_selection_notification_prefers_ai_selector_bot(monkeypatch):
+def test_ai_selection_notification_prefers_ai_selector_bot(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(tmp_path / "notification_ledger.jsonl"))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-prefers", selection_bundle_hash="bundle-hash-prefers")},
+    )
     monkeypatch.setattr(
         alerts,
         "_load_ai_selector_notification_config",
@@ -828,3 +865,91 @@ def test_ai_selection_notification_prefers_ai_selector_bot(monkeypatch):
     assert captured["telegram_bot_token"] == "ai-bot"
     assert captured["telegram_chat_id"] == "ai-chat"
     assert captured["webhook_url"] == "https://example.com/ai-hook"
+
+
+def test_ai_selection_notification_skips_report_only_payload(monkeypatch):
+    called = {"notifier": False}
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            called["notifier"] = True
+
+        def _send(self, *args, **kwargs):
+            raise AssertionError("report-only payload should not send")
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+    monkeypatch.setattr(alerts, "load_committed_selection_bundle", lambda *_args, **_kwargs: None)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    assert called["notifier"] is False
+
+
+def test_ai_selection_notification_sends_once_per_bundle(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-once", selection_bundle_hash="bundle-hash-once")},
+    )
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {"ai_selector_telegram_bot_token": "ai-bot", "ai_selector_telegram_chat_id": "ai-chat"},
+    )
+    sent = []
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self._telegram_enabled = True
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            sent.append(args)
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    assert len(sent) == 1
+    ledger_lines = ledger_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(ledger_lines) == 1
+    assert "AI_SELECTION_FINALIZED" in ledger_lines[0]
+
+
+def test_ai_selection_notification_failure_can_retry(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-retry", selection_bundle_hash="bundle-hash-retry")},
+    )
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {"ai_selector_telegram_bot_token": "ai-bot", "ai_selector_telegram_chat_id": "ai-chat"},
+    )
+    attempts = {"count": 0}
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self._telegram_enabled = True
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    assert attempts["count"] == 2
+    ledger_text = ledger_path.read_text(encoding="utf-8")
+    assert '"status": "FAILED"' in ledger_text
+    assert '"status": "SENT"' in ledger_text
