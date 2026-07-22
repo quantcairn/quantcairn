@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.data.fetcher import PriceFetcher
 import os
@@ -642,6 +643,73 @@ def test_scorer_direct_sessions_are_closed_and_symbol_normalized(monkeypatch):
     assert snapshot["price"] == 10.1
     assert all(session.closed for session in sessions)
     assert all(url.endswith("/SOFI") for url in requested_urls)
+
+
+def test_scorer_load_history_does_not_use_yfinance_fallback_by_default(monkeypatch):
+    import src.scoring.scorer as scorer_mod
+    from src.scoring.scorer import Scorer
+
+    monkeypatch.delenv("AI_SELECTOR_ALLOW_YFINANCE_FALLBACK", raising=False)
+    monkeypatch.delenv("AI_SELECTOR_USE_YFINANCE", raising=False)
+    monkeypatch.setattr(
+        scorer_mod.yf,
+        "download",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("yfinance fallback should be disabled")),
+    )
+    closed = []
+
+    class TrackingFetcher:
+        def __init__(self, symbol, poll_interval=0):
+            self.symbol = symbol
+
+        def get_ohlcv(self, period="1y", interval="1d"):
+            assert period == "1y"
+            assert interval == "1d"
+            return [
+                SimpleNamespace(open=10.0, high=10.5, low=9.8, close=10.1, volume=1000),
+                SimpleNamespace(open=10.2, high=10.6, low=10.0, close=10.4, volume=1200),
+            ]
+
+        def close(self):
+            closed.append(self.symbol)
+
+    monkeypatch.setattr(scorer_mod, "PriceFetcher", TrackingFetcher)
+    monkeypatch.setattr(
+        Scorer,
+        "_fetch_chart_daily",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("direct chart fallback should not be needed")),
+    )
+
+    df = Scorer()._load_history("SOFI.US")
+
+    assert not df.empty
+    assert list(df["Close"]) == [10.1, 10.4]
+    assert closed == ["SOFI"]
+
+
+def test_scorer_market_cap_fetcher_is_closed(monkeypatch):
+    import src.scoring.scorer as scorer_mod
+    from src.scoring.scorer import Scorer
+
+    closed = []
+
+    class TrackingFetcher:
+        def __init__(self, symbol, poll_interval=0):
+            self.symbol = symbol
+
+        def get_market_cap(self):
+            return 3_000_000_000.0
+
+        def close(self):
+            closed.append(self.symbol)
+
+    monkeypatch.setattr(scorer_mod, "PriceFetcher", TrackingFetcher)
+
+    scorer = Scorer()
+    scorer.FALLBACK_MARKET_CAP = {}
+
+    assert scorer._market_cap_for_symbol("SOFI.US") == 3_000_000_000.0
+    assert closed == ["SOFI"]
 
 
 def run_test_direct():

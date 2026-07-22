@@ -14,7 +14,7 @@ from ta.volatility import AverageTrueRange
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.ai_selector.settings import get_float_setting
 from src.ai_selector.universe_filter import evaluate_universe_candidate, infer_asset_type
-from src.data.fetcher import _configure_yfinance_cache, _provider_ticker
+from src.data.fetcher import PriceFetcher, _configure_yfinance_cache, _provider_ticker
 
 
 class Scorer:
@@ -305,7 +305,13 @@ class Scorer:
                         pass
         if resp is None:
             raise last_error
-        result = (resp.json().get("chart", {}).get("result") or [None])[0]
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            return pd.DataFrame()
+        chart = payload.get("chart")
+        if not isinstance(chart, dict):
+            return pd.DataFrame()
+        result = (chart.get("result") or [None])[0]
         if not result:
             return pd.DataFrame()
         quote = (result.get("indicators", {}).get("quote") or [None])[0]
@@ -330,7 +336,8 @@ class Scorer:
             return pd.DataFrame()
 
         prefer_yfinance = os.environ.get("AI_SELECTOR_USE_YFINANCE", "0") == "1"
-        if prefer_yfinance:
+        allow_yfinance_fallback = os.environ.get("AI_SELECTOR_ALLOW_YFINANCE_FALLBACK", "0") == "1"
+        if prefer_yfinance and allow_yfinance_fallback:
             try:
                 df = yf.download(self._provider_symbol(symbol), period="260d", interval="1d", progress=False)
                 if df is not None and not df.empty:
@@ -340,12 +347,31 @@ class Scorer:
             except Exception:
                 pass
         try:
+            fetcher = PriceFetcher(self._provider_symbol(symbol), poll_interval=0)
+            try:
+                candles = fetcher.get_ohlcv(period="1y", interval="1d")
+            finally:
+                fetcher.close()
+            if candles:
+                df = pd.DataFrame(
+                    {
+                        "Open": [float(item.open) for item in candles],
+                        "High": [float(item.high) for item in candles],
+                        "Low": [float(item.low) for item in candles],
+                        "Close": [float(item.close) for item in candles],
+                        "Volume": [float(item.volume or 0.0) for item in candles],
+                    }
+                )
+                return self._standardize_history(df)
+        except Exception:
+            pass
+        try:
             df = self._fetch_chart_daily(self._provider_symbol(symbol))
             if df is not None and not df.empty:
                 return df
         except Exception:
             pass
-        if not prefer_yfinance:
+        if allow_yfinance_fallback and not prefer_yfinance:
             try:
                 df = yf.download(self._provider_symbol(symbol), period="260d", interval="1d", progress=False)
                 if df is not None and not df.empty:
@@ -451,22 +477,14 @@ class Scorer:
         if infer_asset_type(normalized) != "common_stock":
             self._market_cap_cache[normalized] = None
             return None
+        fetcher = PriceFetcher(normalized, poll_interval=0)
         try:
-            ticker = yf.Ticker(self._provider_symbol(normalized))
-            fast_info = getattr(ticker, "fast_info", {}) or {}
-            value = None
-            if isinstance(fast_info, dict):
-                value = fast_info.get("market_cap") or fast_info.get("marketCap")
-            else:
-                value = getattr(fast_info, "market_cap", None) or getattr(fast_info, "marketCap", None)
-            if value is None:
-                info = getattr(ticker, "info", {}) or {}
-                if isinstance(info, dict):
-                    value = info.get("marketCap")
-            parsed = float(value) if value not in (None, "") else None
+            parsed = fetcher.get_market_cap()
             self._market_cap_cache[normalized] = parsed if parsed and parsed > 0 else None
         except Exception:
             self._market_cap_cache[normalized] = None
+        finally:
+            fetcher.close()
         return self._market_cap_cache[normalized]
 
     def _fallback_profile_for_symbol(self, symbol: str) -> dict | None:
