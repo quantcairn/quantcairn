@@ -535,11 +535,29 @@ def _normalize_selection_metadata(item: dict) -> dict:
     return normalized
 
 
+def _attach_current_run_score_provenance(item: dict, *, generated_at: str | None = None) -> dict:
+    payload = dict(item or {})
+    if not any(payload.get(key) is not None for key in ("candidate_score", "final_score", "score", "ai_score")):
+        return payload
+    source = str(payload.get("score_source") or payload.get("source") or "").strip().lower()
+    if source in {"stub", "mock", "fallback", "cache", "cached", "historical", "prior_bundle", "manual", "seed"}:
+        payload.setdefault("score_source", source.upper() or "UNKNOWN")
+        payload.setdefault("score_provider", str(payload.get("source") or "UNKNOWN"))
+        payload.setdefault("score_is_current_run", False)
+        return payload
+    payload.setdefault("score_source", "current_run_candidate_ranking")
+    payload.setdefault("score_provider", "local_factor_scoring")
+    payload.setdefault("score_generated_at", generated_at or payload.get("generated_at") or "")
+    payload.setdefault("score_is_current_run", True)
+    return payload
+
+
 def _enrich_candidate_quality_rows(
     rows: list[dict],
     *,
     provider_audit: dict[str, dict] | None = None,
     provider_outputs: dict[str, dict] | None = None,
+    score_generated_at: str | None = None,
 ) -> list[dict]:
     enriched: list[dict] = []
     for raw in rows or []:
@@ -570,6 +588,7 @@ def _enrich_candidate_quality_rows(
         )
         item["score_reason"] = str(item.get("score_reason") or item.get("reason") or "")
         item["why_selected"] = str(item.get("why_selected") or "")
+        item = _attach_current_run_score_provenance(item, generated_at=score_generated_at)
         enriched.append(item)
     return enriched
 
@@ -1085,7 +1104,15 @@ def _build_provider_audit_summary(provider_audit: dict[str, dict], provider_outp
 def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None = None) -> dict[str, object]:
     top_items = list(summary.get("top3") or summary.get("top5") or [])
     top_count = int(summary.get("target_top_n") or 3)
-    selected_count = int(summary.get("selection_count") or len(top_items) or 0)
+    formal_top_items = []
+    for item in top_items:
+        if not isinstance(item, dict):
+            continue
+        trade_admission = str(item.get("trade_admission") or item.get("trade_admission_status") or "").strip().upper()
+        validation_status = str(item.get("current_validation_status") or item.get("validation_status") or "").strip().upper()
+        if trade_admission == "TRADABLE" and validation_status not in {"AI_CANDIDATE", "REJECTED", "DATA_INVALID", "FAILED", "NOT_TRADABLE"}:
+            formal_top_items.append(item)
+    selected_count = len(formal_top_items)
     missing_count = max(0, top_count - selected_count)
     provider_outputs = dict(summary.get("provider_outputs") or {})
     warnings = _dedupe_warning_records(
@@ -1105,7 +1132,7 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
                 "requested_count": top_count,
                 "selected_count": selected_count,
                 "missing_count": missing_count,
-                "selected_symbols": [str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+                "selected_symbols": [str(item.get("ticker") or "").upper() for item in formal_top_items if str(item.get("ticker") or "").strip()],
                 "missing_slots": [f"TOP{i}" for i in range(selected_count + 1, top_count + 1)],
                 "details": "final TOP still below requested count",
             },
@@ -1113,7 +1140,7 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
             requested_count=top_count,
             selected_count=selected_count,
             missing_count=missing_count,
-            selected_symbols=[str(item.get("ticker") or "").upper() for item in top_items if str(item.get("ticker") or "").strip()],
+            selected_symbols=[str(item.get("ticker") or "").upper() for item in formal_top_items if str(item.get("ticker") or "").strip()],
             missing_slots=[f"TOP{i}" for i in range(selected_count + 1, top_count + 1)],
             details="final TOP still below requested count",
         )
@@ -1230,8 +1257,19 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
     execution_status = "COMPLETED"
     if invalid_candidates and not top_items:
         execution_status = "FAILED"
+    if execution_status == "FAILED":
+        selection_outcome = "FAILED"
+    elif selected_count <= 0:
+        selection_outcome = "NO_TRADABLE_SELECTION"
+    elif selected_count < top_count:
+        selection_outcome = "PARTIAL"
+    else:
+        selection_outcome = "SUCCESS"
     return {
+        "pipeline_status": execution_status,
         "execution_status": execution_status,
+        "selection_outcome": selection_outcome,
+        "completed_with_selection": selection_outcome in {"SUCCESS", "PARTIAL"},
         "result_quality": result_quality,
         "research_admission": research_admission,
         "selected_top_n": selected_count,
@@ -1261,6 +1299,7 @@ def _enrich_selection_rows(
     rows: list[dict],
     *,
     provider_outputs: dict[str, dict] | None = None,
+    score_generated_at: str | None = None,
 ) -> list[dict]:
     enriched: list[dict] = []
     provider_outputs = dict(provider_outputs or {})
@@ -1319,9 +1358,11 @@ def _enrich_selection_rows(
             )
         )
         item["current_validation_status"] = str(item.get("validation_status") or item.get("current_validation_status") or "AI_CANDIDATE")
-        item["trade_admission_status"] = "NOT_TRADABLE"
-        if item["current_validation_status"] in {"PAPER_ELIGIBLE", "LIVE_ELIGIBLE"}:
-            item["trade_admission_status"] = item["current_validation_status"]
+        existing_trade_admission = str(item.get("trade_admission") or item.get("trade_admission_status") or "").strip().upper()
+        item["trade_admission_status"] = existing_trade_admission or "NOT_TRADABLE"
+        if not existing_trade_admission and item["current_validation_status"] in {"TRADABLE", "PAPER_ELIGIBLE", "LIVE_ELIGIBLE"}:
+            item["trade_admission_status"] = "TRADABLE"
+        item = _attach_current_run_score_provenance(item, generated_at=score_generated_at)
         enriched.append(item)
     return enriched
 
@@ -1985,9 +2026,10 @@ def main(mode: str | None = None):
     summary["provider_outputs"] = dict(integrated_ai.get("provider_outputs") or {})
     outcome = _selection_outcome(summary, provider_audit=integrated_ai.get("provider_audit") or {})
     summary.update(outcome)
-    summary["top10"] = _enrich_selection_rows(list(summary.get("top10") or []), provider_outputs=summary["provider_outputs"])
-    summary["top5"] = _enrich_selection_rows(list(summary.get("top5") or []), provider_outputs=summary["provider_outputs"])
-    summary["top3"] = _enrich_selection_rows(list(summary.get("top3") or []), provider_outputs=summary["provider_outputs"])
+    summary["top10"] = _enrich_selection_rows(list(summary.get("top10") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
+    summary["top5"] = _enrich_selection_rows(list(summary.get("top5") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
+    summary["top3"] = _enrich_selection_rows(list(summary.get("top3") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
+    selected = _enrich_selection_rows(list(selected), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
     if summary.get("warnings_structured"):
         summary["warnings_structured"] = _dedupe_warning_records(list(summary.get("warnings_structured") or []))
         summary["warnings"] = [_format_warning_record(item) for item in summary["warnings_structured"]]

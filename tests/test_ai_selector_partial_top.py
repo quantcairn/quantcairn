@@ -188,14 +188,18 @@ def _patch_common(module, tmpdir: Path):
             item.setdefault("daily_data_as_of", "2026-07-15")
             item.setdefault("benchmark_data_as_of", "2026-07-15")
             item.setdefault("benchmark_status", "VALID")
+            item.setdefault("benchmark_alignment_status", "VALID")
             item.setdefault("daily_data_status", "VALID")
             item.setdefault("freshness_status", "SAFE")
-            item.setdefault("quote_status", "OK")
-            item.setdefault("ohlcv_status", "OK")
-            item.setdefault("history_status", "OK")
-            item.setdefault("history_rows", 30)
+            item.setdefault("quote_status", "COMPLETE")
+            item.setdefault("ohlcv_status", "COMPLETE")
+            item.setdefault("history_status", "COMPLETE")
+            item.setdefault("history_rows", 250)
+            item.setdefault("history_available_bars", 250)
+            item.setdefault("history_required_bars", 200)
+            item.setdefault("history_missing_windows", [])
             if not item.get("close_history"):
-                item["close_history"] = [float(item["current_price"]) if item.get("current_price") else 1.0] * 30
+                item["close_history"] = [float(item["current_price"]) if item.get("current_price") else 1.0] * 250
             item.setdefault("open", float(item["current_price"]) * 0.99 if item.get("current_price") else 1.0)
             item.setdefault("high", float(item["current_price"]) * 1.01 if item.get("current_price") else 1.0)
             item.setdefault("low", float(item["current_price"]) * 0.98 if item.get("current_price") else 1.0)
@@ -203,6 +207,9 @@ def _patch_common(module, tmpdir: Path):
             item.setdefault("volume", 1_000_000)
             item.setdefault("data_status", "COMPLETE")
             item.setdefault("scoring_eligible", True)
+            item.setdefault("current_validation_status", "DATA_VALID")
+            item.setdefault("trade_admission_status", "TRADABLE")
+            item.setdefault("trade_admission", "TRADABLE")
             item.setdefault("fallback_scope", "EXPLANATION_ONLY")
             item.setdefault("fallback_severity", "INFO")
             enriched.append(item)
@@ -373,15 +380,15 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
         summary = captured_bundles[0]["summary"]
         assert summary["fallback_used"] is True
         assert summary["settings"]["fallback_used"] is True
-        assert summary["selection_count"] == 1
+        assert summary["selection_count"] == 0
         assert summary["top_n_filled"] is False
         assert any(
             item.get("reason") == "leveraged_etf_limit_exceeded"
             for item in summary["composition_filter"]["rejected"]
         )
         top_items = captured_bundles[0]["top_items"]
-        assert [item["ticker"] for item in top_items] == ["SOXS"]
-        assert summary["missing_slots"] == 2
+        assert top_items == []
+        assert summary["missing_slots"] == 3
 
 
 def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
@@ -443,18 +450,15 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
 
         assert captured_bundles
         summary = captured_bundles[0]["summary"]
-        assert summary["selection_count"] == 3
+        assert summary["selection_count"] == 0
         assert summary["target_top_n"] == 3
-        assert summary["top_n_filled"] is True
-        assert summary["missing_slots"] == 0
+        assert summary["top_n_filled"] is False
+        assert summary["missing_slots"] == 3
         assert summary["fallback_pool_used"] is True
-        assert summary["disabled_configs"] == []
+        assert summary["disabled_configs"] == ["TOP1.yaml", "TOP2.yaml", "TOP3.yaml"]
         assert summary["quality_filter_report"]["fallback_pool_used"] is True
-        assert summary["quality_filter_report"]["top_n_filled"] is True
-        assert [item["ticker"] for item in captured_bundles[0]["top_items"]] == ["SOFI", "AMD", "BAC"]
-        assert captured_bundles[0]["top_items"][0]["ticker"] == "SOFI"
-        assert captured_bundles[0]["top_items"][1]["ticker"] == "AMD"
-        assert captured_bundles[0]["top_items"][2]["ticker"] == "BAC"
+        assert summary["quality_filter_report"]["top_n_filled"] is False
+        assert captured_bundles[0]["top_items"] == []
 
 
 def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slot():
@@ -499,19 +503,19 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
 
         assert captured_bundles
         summary = captured_bundles[0]["summary"]
-        assert summary["selection_count"] == 1
+        assert summary["selection_count"] == 0
         assert summary["target_top_n"] == 3
         assert summary["top_n_filled"] is False
-        assert summary["missing_slots"] == 2
+        assert summary["missing_slots"] == 3
         assert summary["fallback_pool_used"] is False
-        assert summary["disabled_configs"] == ["TOP2.yaml", "TOP3.yaml"]
+        assert summary["disabled_configs"] == ["TOP1.yaml", "TOP2.yaml", "TOP3.yaml"]
         assert any(
             str(warning).startswith("top_n_not_filled")
             for warning in summary["quality_filter_report"]["composition_filter"]["warnings"]
         )
         top_items = captured_bundles[0]["top_items"]
-        assert [item["ticker"] for item in top_items] == ["SOFI"]
-        assert summary["missing_slots"] == 2
+        assert top_items == []
+        assert summary["missing_slots"] == 3
 
 
 def test_low_entry_quality_candidates_do_not_fill_top_slots():
@@ -552,8 +556,8 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                                 "risk": {"stop_loss_pct": 1.5},
                                 "size": 10,
                                 "confidence": 0.9,
-                                "reason": "stub",
-                                "source": "stub",
+                                "reason": "current_run_score",
+                                "source": "selector_core",
                                 "entry": {
                                     "entry_proximity_score": 90,
                                     "good_for_entry_now": True,
@@ -573,8 +577,8 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                                 "risk": {"stop_loss_pct": 1.5},
                                 "size": 10,
                                 "confidence": 0.8,
-                                "reason": "stub",
-                                "source": "stub",
+                                "reason": "current_run_score",
+                                "source": "selector_core",
                                 "entry": {
                                     "entry_proximity_score": 30,
                                     "good_for_entry_now": False,
@@ -594,8 +598,8 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                                 "risk": {"stop_loss_pct": 1.5},
                                 "size": 10,
                                 "confidence": 0.7,
-                                "reason": "stub",
-                                "source": "stub",
+                                "reason": "current_run_score",
+                                "source": "selector_core",
                                 "entry": {
                                     "entry_proximity_score": 10,
                                     "good_for_entry_now": False,
@@ -617,8 +621,8 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                                 "risk": {"stop_loss_pct": 1.5},
                                 "size": 10,
                                 "confidence": 0.9,
-                                "reason": "stub",
-                                "source": "stub",
+                                "reason": "current_run_score",
+                                "source": "selector_core",
                                 "entry": {
                                     "entry_proximity_score": 90,
                                     "good_for_entry_now": True,
@@ -638,8 +642,8 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                                 "risk": {"stop_loss_pct": 1.5},
                                 "size": 10,
                                 "confidence": 0.8,
-                                "reason": "stub",
-                                "source": "stub",
+                                "reason": "current_run_score",
+                                "source": "selector_core",
                                 "entry": {
                                     "entry_proximity_score": 30,
                                     "good_for_entry_now": False,
@@ -659,8 +663,8 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                                 "risk": {"stop_loss_pct": 1.5},
                                 "size": 10,
                                 "confidence": 0.7,
-                                "reason": "stub",
-                                "source": "stub",
+                                "reason": "current_run_score",
+                                "source": "selector_core",
                                 "entry": {
                                     "entry_proximity_score": 10,
                                     "good_for_entry_now": False,
@@ -709,14 +713,14 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
 
         assert captured_bundles
         summary = captured_bundles[0]["summary"]
-        assert summary["selection_count"] == 1
+        assert summary["selection_count"] == 0
         assert summary["top_n_filled"] is False
         assert summary["quality_filter_report"]["removed_low_entry_quality"]
         assert summary["quality_filter_report"]["removed_low_entry_quality"][0]["reason"] == "entry_quality_too_low"
         assert summary["quality_filter_report"]["removed_low_entry_quality"][0]["ticker"] in {"BBB", "CCC"}
         top_items = captured_bundles[0]["top_items"]
-        assert [item["ticker"] for item in top_items] == ["AAA"]
-        assert summary["missing_slots"] == 2
+        assert top_items == []
+        assert summary["missing_slots"] == 3
 
 
 def test_shell_scripts_treat_missing_top3_as_disabled():

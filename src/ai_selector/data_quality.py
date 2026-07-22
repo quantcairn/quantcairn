@@ -619,6 +619,18 @@ _FORMAL_CRITICAL_BLOCK_REASONS = {
     "stale_data",
 }
 
+_INVALID_SCORE_SOURCES = {
+    "",
+    "UNKNOWN",
+    "PRIOR_BUNDLE",
+    "HISTORICAL",
+    "CACHE",
+    "CACHED",
+    "SEED",
+    "MANUAL",
+    "FALLBACK",
+}
+
 
 def formal_selection_ineligibility_reasons(candidate: Mapping[str, Any]) -> list[str]:
     payload = dict(candidate or {})
@@ -638,9 +650,25 @@ def formal_selection_ineligibility_reasons(candidate: Mapping[str, Any]) -> list
     if data_status in _FORMAL_INELIGIBLE_STATUSES:
         reasons.append(f"data_status_{data_status.lower()}")
 
+    trade_admission = _normalize_text(present("trade_admission", "trade_admission_status", "trade_status")).upper()
+    if trade_admission != "TRADABLE":
+        reasons.append("trade_admission_not_tradable")
+
+    validation_status = _normalize_text(present("current_validation_status", "validation_status", "candidate_state")).upper()
+    if validation_status in {"AI_CANDIDATE", "REJECTED", "DATA_INVALID", "FAILED", "NOT_TRADABLE"}:
+        reasons.append(f"validation_status_{validation_status.lower()}")
+
     scoring_eligible = present("scoring_eligible")
     if scoring_eligible is False:
         reasons.append("scoring_eligible_false")
+
+    score_value = present("candidate_score", "final_score", "score", "ai_score")
+    if score_value is None:
+        reasons.append("score_missing")
+    score_source = _normalize_text(present("score_source")).upper()
+    score_is_current = present("score_is_current_run")
+    if score_source in _INVALID_SCORE_SOURCES or score_is_current is not True:
+        reasons.append("invalid_score_provenance")
 
     quote_status = _normalize_text(present("quote_status")).upper()
     if quote_status in _FORMAL_INELIGIBLE_STATUSES:

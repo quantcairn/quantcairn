@@ -52,15 +52,35 @@ def _base_summary(selection_stage: str, result_quality: str, research_admission:
     }
 
 
+def _formal_top_item(ticker: str, score: float, selection_date: str = "2026-07-16", **extra) -> dict:
+    payload = {
+        "ticker": ticker,
+        "score": score,
+        "final_score": score,
+        "selection_date": selection_date,
+        "data_status": "COMPLETE",
+        "scoring_eligible": True,
+        "current_validation_status": "DATA_VALID",
+        "trade_admission_status": "TRADABLE",
+        "trade_admission": "TRADABLE",
+        "score_source": "current_run_candidate_ranking",
+        "score_provider": "local_factor_scoring",
+        "score_generated_at": f"{selection_date}T09:00:00-04:00",
+        "score_is_current_run": True,
+    }
+    payload.update(extra)
+    return payload
+
+
 def test_selection_bundle_persists_report_state_top_and_manifest(tmp_path, monkeypatch):
     _patch_bundle_roots(tmp_path, monkeypatch)
 
     bundle = build_selection_bundle(
         summary={
             **_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"),
-            "top3": [{"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"}],
-            "top5": [{"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"}],
-            "top10": [{"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"}],
+            "top3": [_formal_top_item("NVDA", 91.5)],
+            "top5": [_formal_top_item("NVDA", 91.5)],
+            "top10": [_formal_top_item("NVDA", 91.5)],
             "selection_count": 1,
             "candidate_count": 1,
             "top_n_filled": False,
@@ -79,17 +99,15 @@ def test_selection_bundle_persists_report_state_top_and_manifest(tmp_path, monke
             "configured_top_symbols": ["NVDA"],
         },
         top_items=[
-            {
-                "ticker": "NVDA",
-                "score": 91.5,
-                "final_score": 91.5,
-                "selection_date": "2026-07-16",
-                "current_price": 100.0,
-                "range_low": 95.0,
-                "range_high": 105.0,
-                "risk": {"stop_loss_pct": 1.5},
-                "size": 5,
-            }
+            _formal_top_item(
+                "NVDA",
+                91.5,
+                current_price=100.0,
+                range_low=95.0,
+                range_high=105.0,
+                risk={"stop_loss_pct": 1.5},
+                size=5,
+            )
         ],
         selection_run_id="run-1",
         selection_date="2026-07-16",
@@ -172,7 +190,7 @@ def test_selection_bundle_loads_report_from_manifest_pinned_bundle(tmp_path, mon
     _patch_bundle_roots(tmp_path, monkeypatch)
 
     bundle = build_selection_bundle(
-        summary={**_base_summary("FINALIZED", "COMPLETE", "RESEARCH_READY"), "top3": [{"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"}]},
+        summary={**_base_summary("FINALIZED", "COMPLETE", "RESEARCH_READY"), "top3": [_formal_top_item("NVDA", 91.5)]},
         selection_state_payload={
             "et_date": "2026-07-16",
             "generated_at": "2026-07-16T09:00:00-04:00",
@@ -186,7 +204,7 @@ def test_selection_bundle_loads_report_from_manifest_pinned_bundle(tmp_path, mon
             "configured_top_symbols": ["NVDA"],
         },
         top_items=[
-            {"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16", "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "risk": {"stop_loss_pct": 1.5}, "size": 5},
+            _formal_top_item("NVDA", 91.5, current_price=100.0, range_low=95.0, range_high=105.0, risk={"stop_loss_pct": 1.5}, size=5),
         ],
         selection_run_id="run-11",
         selection_date="2026-07-16",
@@ -447,7 +465,7 @@ def test_selection_bundle_rolls_back_when_compat_sync_fails_after_manifest_commi
     _patch_bundle_roots(tmp_path, monkeypatch)
 
     success_bundle = build_selection_bundle(
-        summary={**_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"), "top3": [{"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16"}]},
+        summary={**_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"), "top3": [_formal_top_item("NVDA", 91.5)]},
         selection_state_payload={
             "et_date": "2026-07-16",
             "generated_at": "2026-07-16T09:00:00-04:00",
@@ -461,7 +479,7 @@ def test_selection_bundle_rolls_back_when_compat_sync_fails_after_manifest_commi
             "configured_top_symbols": ["NVDA"],
         },
         top_items=[
-            {"ticker": "NVDA", "score": 91.5, "final_score": 91.5, "selection_date": "2026-07-16", "current_price": 100.0, "range_low": 95.0, "range_high": 105.0, "risk": {"stop_loss_pct": 1.5}, "size": 5},
+            _formal_top_item("NVDA", 91.5, current_price=100.0, range_low=95.0, range_high=105.0, risk={"stop_loss_pct": 1.5}, size=5),
         ],
         selection_run_id="run-20",
         selection_date="2026-07-16",
@@ -473,7 +491,7 @@ def test_selection_bundle_rolls_back_when_compat_sync_fails_after_manifest_commi
     persist_selection_bundle(success_bundle)
 
     failing_bundle = build_selection_bundle(
-        summary={**_base_summary("FINALIZED", "COMPLETE", "RESEARCH_READY"), "top3": [{"ticker": "SOFI", "score": 92.5, "final_score": 92.5, "selection_date": "2026-07-17"}]},
+        summary={**_base_summary("FINALIZED", "COMPLETE", "RESEARCH_READY"), "top3": [_formal_top_item("SOFI", 92.5, "2026-07-17")]},
         selection_state_payload={
             "et_date": "2026-07-17",
             "generated_at": "2026-07-17T09:00:00-04:00",
@@ -487,7 +505,7 @@ def test_selection_bundle_rolls_back_when_compat_sync_fails_after_manifest_commi
             "configured_top_symbols": ["SOFI"],
         },
         top_items=[
-            {"ticker": "SOFI", "score": 92.5, "final_score": 92.5, "selection_date": "2026-07-17", "current_price": 20.0, "range_low": 19.0, "range_high": 21.0, "risk": {"stop_loss_pct": 1.5}, "size": 5},
+            _formal_top_item("SOFI", 92.5, "2026-07-17", current_price=20.0, range_low=19.0, range_high=21.0, risk={"stop_loss_pct": 1.5}, size=5),
         ],
         selection_run_id="run-21",
         selection_date="2026-07-17",

@@ -18,6 +18,23 @@ def _load_module():
     return module
 
 
+def _formal_row(ticker: str, score: float = 90.0) -> dict:
+    return {
+        "ticker": ticker,
+        "score": score,
+        "final_score": score,
+        "data_status": "COMPLETE",
+        "scoring_eligible": True,
+        "current_validation_status": "DATA_VALID",
+        "trade_admission_status": "TRADABLE",
+        "trade_admission": "TRADABLE",
+        "score_source": "current_run_candidate_ranking",
+        "score_provider": "local_factor_scoring",
+        "score_generated_at": "2026-07-05T09:00:00",
+        "score_is_current_run": True,
+    }
+
+
 def test_merge_refinement_summary_preserves_preliminary_top5():
     module = _load_module()
     preliminary = {
@@ -89,10 +106,10 @@ def test_main_refines_even_if_latest_report_is_finalized():
 
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
-                "top10": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
-                "top5": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
-                "top3": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}],
-                "report": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+                "top10": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0), _formal_row("MSFT", 86.0)],
+                "top5": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0), _formal_row("MSFT", 86.0)],
+                "top3": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0)],
+                "report": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0), _formal_row("MSFT", 86.0)],
                 "settings": {"selection_stage": "quality_refined"},
                 "quality_filter_report": {},
             }
@@ -183,10 +200,10 @@ def test_main_truncates_refined_candidates_to_requested_top_n():
 
         def run_selection(self, write_configs: bool = True, symbols_override=None):
             return {
-                "top10": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
-                "top5": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
-                "top3": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}],
-                "report": [{"ticker": "NVDA"}, {"ticker": "SOFI"}, {"ticker": "AAPL"}, {"ticker": "MSFT"}],
+                "top10": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0), _formal_row("MSFT", 86.0)],
+                "top5": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0), _formal_row("MSFT", 86.0)],
+                "top3": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0)],
+                "report": [_formal_row("NVDA", 89.0), _formal_row("SOFI", 88.0), _formal_row("AAPL", 87.0), _formal_row("MSFT", 86.0)],
                 "settings": {"selection_stage": "quality_refined"},
                 "quality_filter_report": {},
             }

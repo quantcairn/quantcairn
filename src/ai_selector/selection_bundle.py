@@ -285,6 +285,17 @@ class SelectionBundle:
 
     def report_payload(self) -> dict[str, Any]:
         payload = dict(self.summary or {})
+        selected_top_n = self.selected_top_n
+        requested_top_n = int(self.requested_top_n or self.slot_count)
+        execution_status = str(payload.get("execution_status") or payload.get("selection_execution_status") or "COMPLETED")
+        if execution_status == "FAILED":
+            selection_outcome = "FAILED"
+        elif selected_top_n <= 0:
+            selection_outcome = "NO_TRADABLE_SELECTION"
+        elif selected_top_n < requested_top_n:
+            selection_outcome = "PARTIAL"
+        else:
+            selection_outcome = "SUCCESS"
         payload.update(
             {
                 "selection_run_id": self.selection_run_id,
@@ -292,7 +303,10 @@ class SelectionBundle:
                 "generated_at": self.generated_at,
                 "selection_stage": self.selection_stage,
                 "processing_phase": self.processing_phase,
-                "execution_status": str(payload.get("execution_status") or payload.get("selection_execution_status") or "COMPLETED"),
+                "pipeline_status": str(payload.get("pipeline_status") or execution_status),
+                "execution_status": execution_status,
+                "selection_outcome": str(payload.get("selection_outcome") or selection_outcome),
+                "completed_with_selection": bool(payload.get("completed_with_selection", selection_outcome in {"SUCCESS", "PARTIAL"})),
                 "result_quality": str(payload.get("result_quality") or "COMPLETE"),
                 "research_admission": str(payload.get("research_admission") or "RESEARCH_READY"),
                 "top_sync_run_id": self.selection_run_id,
@@ -303,8 +317,8 @@ class SelectionBundle:
                 "selection_bundle_manifest_path": _relative_path(self.manifest_path),
                 "selection_bundle_root_path": _relative_path(self.bundle_root_path),
                 "selection_bundle_report_path": _relative_path(self.bundle_report_path),
-                "requested_top_n": int(self.requested_top_n or self.slot_count),
-                "selected_top_n": self.selected_top_n,
+                "requested_top_n": requested_top_n,
+                "selected_top_n": selected_top_n,
                 "top_slot_count": self.slot_count,
                 "selected_symbols": list(self.selected_symbols),
                 "selection_symbols": list(self.selected_symbols),
@@ -406,6 +420,9 @@ class SelectionBundle:
             "selection_stage": self.selection_stage,
             "processing_phase": self.processing_phase,
             "execution_status": str(report_payload.get("execution_status") or "COMPLETED"),
+            "pipeline_status": str(report_payload.get("pipeline_status") or report_payload.get("execution_status") or "COMPLETED"),
+            "selection_outcome": str(report_payload.get("selection_outcome") or ""),
+            "completed_with_selection": bool(report_payload.get("completed_with_selection", False)),
             "result_quality": self.result_quality,
             "research_admission": self.research_admission,
             "requested_top_n": int(self.requested_top_n or self.slot_count),
@@ -567,6 +584,43 @@ def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
     from src.ai_selector.data_quality import formal_selection_ineligibility_reasons, is_formal_selection_eligible
 
     errors: list[str] = []
+    provider_audit = bundle.summary.get("provider_audit") if isinstance(bundle.summary, dict) else {}
+    provider_contributors = []
+    provider_attempts = 0
+    provider_successes = 0
+    provider_failures = 0
+    if isinstance(provider_audit, dict):
+        provider_contributors = list(provider_audit.get("provider_contributors") or provider_audit.get("contributors") or [])
+        provider_attempts = int(provider_audit.get("provider_attempts", 0) or 0)
+        provider_successes = int(provider_audit.get("provider_successes", 0) or 0)
+        provider_failures = int(provider_audit.get("provider_failures", 0) or 0)
+        records = provider_audit.get("records") if isinstance(provider_audit.get("records"), list) else None
+        if records is None:
+            records = [value for value in provider_audit.values() if isinstance(value, dict)]
+        if records and provider_attempts <= 0:
+            for record in records:
+                attempted = int(record.get("attempted", 0) or 0)
+                success = int(record.get("success", 0) or 0)
+                provider_attempts += attempted
+                provider_successes += success
+                provider_failures += int(record.get("failure", 0) or max(0, attempted - success))
+                provider_contributors.extend(str(field) for field in (record.get("contributed_fields") or []) if str(field).strip())
+            provider_contributors = sorted(set(provider_contributors))
+    all_providers_failed = provider_attempts > 0 and provider_successes <= 0 and provider_failures >= provider_attempts
+    for bucket_name in ("top3", "top5", "top10", "research_candidates", "ranked_candidates"):
+        bucket = bundle.summary.get(bucket_name) if isinstance(bundle.summary, dict) else None
+        if not isinstance(bucket, list):
+            continue
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            ticker = str(item.get("ticker") or item.get("symbol") or "UNKNOWN").strip().upper() or "UNKNOWN"
+            if all_providers_failed and item.get("research_complete") is True:
+                errors.append(f"research_complete_with_provider_failure:{ticker}")
+            score_provider = str(item.get("score_provider") or item.get("source") or "").strip().lower()
+            score_source = str(item.get("score_source") or "").strip().lower()
+            if not provider_contributors and score_provider in {"ai", "tradingagents", "finrobot", "openbb"} and score_source in {"", "ai", "provider", "research_provider"}:
+                errors.append(f"ai_score_without_provider_contribution:{ticker}")
     requested_top_n = bundle.requested_top_n
     if requested_top_n is None:
         return errors
