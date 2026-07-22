@@ -15,12 +15,14 @@ fi
 VENV_PYTHON="$PYTHON_BIN"
 LOG_DIR="${SOXS_LOG_DIR:-$PROJECT_DIR/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
+RUNTIME_DIR="${SOXS_RUNTIME_DIR:-$PROJECT_DIR/runtime}"
+mkdir -p "$RUNTIME_DIR" 2>/dev/null || true
 USE_LAUNCHD_TOPS="${SOXS_USE_LAUNCHD_TOPS:-1}"
 UID_NUM="$(id -u)"
 TOP_ENGINES=(TOP1 TOP2 TOP3)
 ORPHAN_MONITOR_SCRIPT="$PROJECT_DIR/scripts/start_orphan_monitor.py"
 COMBINED_JOB="com.soxs.combined"
-COMBINED_PID_FILE="$PROJECT_DIR/runtime/combined.pid"
+COMBINED_PID_FILE="$RUNTIME_DIR/combined.pid"
 
 cd "$PROJECT_DIR" || exit 1
 
@@ -79,6 +81,57 @@ launchd_top_jobs() {
     for top_name in "${TOP_ENGINES[@]}"; do
         launchd_job_for_top "$top_name"
     done
+}
+
+top_pid_file() {
+    local top_name="$1"
+    local lower
+    lower="$(printf '%s' "$top_name" | tr '[:upper:]' '[:lower:]')"
+    printf '%s/%s.pid' "$RUNTIME_DIR" "$lower"
+}
+
+command_for_pid() {
+    local pid="$1"
+    ps -p "$pid" -o command= 2>/dev/null | tr -d '\n'
+}
+
+pid_alive() {
+    local pid="$1"
+    if [ -z "$pid" ] || ! kill -0 "$pid" >/dev/null 2>&1; then
+        return 1
+    fi
+    local state
+    state="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]')"
+    case "$state" in
+        Z*)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+is_expected_top_command() {
+    local top_name="$1"
+    local cmd="$2"
+    local port
+    port="$(port_for_top "$top_name")"
+    case "$cmd" in
+        *"run.py"*"--config"*"configs/${top_name}.yaml"*"--port"*"${port}"*|*"run.py"*"--config"*"${PROJECT_DIR}/configs/${top_name}.yaml"*"--port"*"${port}"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+log_scheduled_stop_decision() {
+    local slot="$1"
+    local pid="$2"
+    local result="$3"
+    echo "action=scheduled_stop slot=${slot} pid=${pid:-none} result=${result}"
 }
 
 kill_listener_on_port() {
@@ -418,6 +471,76 @@ stop_top() {
     done
 }
 
+stop_verified_top_pid() {
+    local top_name="$1"
+    local pid_file="$2"
+    local pid="$3"
+    local timeout="${SOXS_TOP_STOP_TIMEOUT_SECONDS:-10}"
+    local elapsed=0
+    if [ -z "$pid" ]; then
+        log_scheduled_stop_decision "$top_name" "" "already_stopped"
+        return 0
+    fi
+    if ! pid_alive "$pid"; then
+        rm -f "$pid_file" 2>/dev/null || true
+        log_scheduled_stop_decision "$top_name" "$pid" "stale_pid"
+        return 0
+    fi
+
+    local cmd
+    cmd="$(command_for_pid "$pid")"
+    if ! is_expected_top_command "$top_name" "$cmd"; then
+        log_scheduled_stop_decision "$top_name" "$pid" "identity_mismatch"
+        return 1
+    fi
+
+    kill "$pid" 2>/dev/null || true
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if ! pid_alive "$pid"; then
+            rm -f "$pid_file" 2>/dev/null || true
+            log_scheduled_stop_decision "$top_name" "$pid" "stopped"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    if ! pid_alive "$pid"; then
+        rm -f "$pid_file" 2>/dev/null || true
+        log_scheduled_stop_decision "$top_name" "$pid" "stopped"
+        return 0
+    fi
+
+    cmd="$(command_for_pid "$pid")"
+    if is_expected_top_command "$top_name" "$cmd"; then
+        kill -9 "$pid" 2>/dev/null || true
+        sleep 1
+        if ! pid_alive "$pid"; then
+            rm -f "$pid_file" 2>/dev/null || true
+            log_scheduled_stop_decision "$top_name" "$pid" "stopped"
+            return 0
+        fi
+    fi
+    log_scheduled_stop_decision "$top_name" "$pid" "failed"
+    return 1
+}
+
+stop_top_scheduled_only() {
+    local status=0
+    local top_name
+    for top_name in "${TOP_ENGINES[@]}"; do
+        local pid_file
+        local pid=""
+        pid_file="$(top_pid_file "$top_name")"
+        if [ -f "$pid_file" ]; then
+            pid="$(cat "$pid_file" 2>/dev/null | tr -d '[:space:]')"
+        fi
+        if ! stop_verified_top_pid "$top_name" "$pid_file" "$pid"; then
+            status=1
+        fi
+    done
+    return "$status"
+}
+
 start_top() {
     startup_delay="${SOXS_ENGINE_STARTUP_DELAY_SECONDS:-6}"
     launchd_startup_timeout="${SOXS_LAUNCHD_ENGINE_STARTUP_TIMEOUT_SECONDS:-20}"
@@ -463,6 +586,7 @@ EOF
                     echo "❌ $TOP failed to spawn detached process"
                     return 1
                 fi
+                printf '%s\n' "$pid" > "$(top_pid_file "$TOP")"
                 TOP_PIDS="$TOP_PIDS $pid"
                 echo "🚀 $TOP on :$port (PID $pid, mode=$ENGINE_MODE)"
                 sleep "$startup_delay"
@@ -581,6 +705,13 @@ case "$1" in
         echo "🛑 All engines stopped"
         ;;
 
+    stop-top)
+        stop_top_scheduled_only
+        status=$?
+        echo "🛑 Scheduled TOP engines stopped"
+        exit "$status"
+        ;;
+
     restart-top)
         stop_combined
         stop_top
@@ -672,6 +803,6 @@ case "$1" in
         ;;
 
     *)
-        echo "Usage: $0 {start|start-foreground|stop|restart-top|restart-combined|restart-all|status|summary}"
+        echo "Usage: $0 {start|start-foreground|stop|stop-top|restart-top|restart-combined|restart-all|status|summary}"
         ;;
 esac

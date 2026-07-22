@@ -138,7 +138,7 @@ case "$1" in
         if ! should_run_scheduled_action scheduled-stop "$marker" >> "$LOG_FILE" 2>&1; then
             exit 0
         fi
-        "$0" stop
+        "$MULTI_LAUNCH" stop-top >> "$LOG_FILE" 2>&1
         status=$?
         if [ "$status" -eq 0 ]; then
             mark_scheduled_action_done scheduled-stop "$marker"
