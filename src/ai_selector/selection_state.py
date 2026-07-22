@@ -208,6 +208,10 @@ def write_selection_state(
     selected_top_n: int | None = None,
     top_slot_count: int | None = None,
     enabled_slots: list[int] | None = None,
+    research_requested_top_n: int | None = None,
+    research_selected_top_n: int | None = None,
+    tradable_requested_top_n: int | None = None,
+    tradable_selected_top_n: int | None = None,
 ) -> Path:
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -220,6 +224,10 @@ def write_selection_state(
     requested_top_n_value = int(requested_top_n or max(configured_top_count(), len(selected_symbols)))
     top_slot_count_value = int(top_slot_count or max(configured_top_count(), len(selected_symbols)))
     enabled_slots_value = list(enabled_slots or list(range(1, selected_top_n_value + 1)))
+    research_requested_top_n_value = int(research_requested_top_n or requested_top_n_value)
+    research_selected_top_n_value = int(research_selected_top_n or 0)
+    tradable_requested_top_n_value = int(tradable_requested_top_n or requested_top_n_value)
+    tradable_selected_top_n_value = int(tradable_selected_top_n if tradable_selected_top_n is not None else selected_top_n_value)
     payload = {
         "et_date": et_date,
         "generated_at": generated_at,
@@ -231,6 +239,10 @@ def write_selection_state(
         "enabled_slots": enabled_slots_value,
         "requested_top_n": requested_top_n_value,
         "selected_top_n": selected_top_n_value,
+        "research_requested_top_n": research_requested_top_n_value,
+        "research_selected_top_n": research_selected_top_n_value,
+        "tradable_requested_top_n": tradable_requested_top_n_value,
+        "tradable_selected_top_n": tradable_selected_top_n_value,
         "top_slot_count": top_slot_count_value,
         "report_path": _normalize_path_value(report_path),
         "selection_stage": str(selection_stage or ""),

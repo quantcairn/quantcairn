@@ -184,6 +184,38 @@ _CRITICAL_MARKET_DATA_FIELDS = {
     "gap_pct",
 }
 
+_VALIDATION_STAGE_BY_STATUS = {
+    "AI_CANDIDATE": ("CLASSIFICATION", "候选分类"),
+    "CLASSIFIED": ("BENCHMARK_ASSIGNMENT", "基准分配"),
+    "BENCHMARK_ASSIGNED": ("STRATEGY_ASSIGNMENT", "策略分配"),
+    "STRATEGY_ASSIGNED": ("DATA_VALIDATION", "数据验证"),
+    "PENDING_DATA_VALIDATION": ("DATA_VALIDATION", "数据验证"),
+    "DATA_VALID": ("BACKTEST_ADMISSION", "回测准入"),
+    "PENDING_BACKTEST": ("BACKTEST", "回测"),
+    "BACKTEST_COMPLETE": ("WALK_FORWARD_ADMISSION", "Walk-Forward 准入"),
+    "PENDING_WALK_FORWARD": ("WALK_FORWARD", "Walk-Forward"),
+    "WALK_FORWARD_COMPLETE": ("SHADOW_ADMISSION", "Shadow 准入"),
+    "PENDING_SHADOW": ("SHADOW", "Shadow"),
+    "SHADOW_OBSERVING": ("SHADOW_MONITORING", "Shadow 观察"),
+    "SHADOW_COMPLETE": ("PAPER_ADMISSION", "Paper 准入"),
+    "PAPER_ELIGIBLE": ("PAPER_READY", "Paper 就绪"),
+    "LIVE_ELIGIBLE": ("LIVE_READY", "Live 就绪"),
+}
+
+_RESEARCH_TOP_CRITICAL_BLOCK_REASONS = {
+    "critical_market_data_fallback",
+    "critical_fallback_severity",
+    "quote_missing",
+    "missing_quote",
+    "ohlcv_missing",
+    "missing_ohlcv",
+    "benchmark_invalid",
+    "history_insufficient",
+    "history_missing",
+    "missing_history",
+    "stale_data",
+}
+
 
 def _et_now() -> datetime:
     return datetime.now(ZoneInfo("America/New_York"))
@@ -199,6 +231,144 @@ def _truthy_env(name: str) -> bool:
 
 def _normalize_ticker(value: str) -> str:
     return str(value or "").strip().upper().split(".")[0]
+
+
+def _next_validation_stage(status: str | None) -> dict:
+    normalized = str(status or "").strip().upper()
+    code, label = _VALIDATION_STAGE_BY_STATUS.get(normalized, ("UNKNOWN", "未知"))
+    return {
+        "next_validation_stage": code,
+        "next_validation_stage_label": label,
+    }
+
+
+def _candidate_validation_records_by_symbol() -> dict[str, dict]:
+    try:
+        records = CandidateValidationStore().load_latest_candidates()
+    except Exception:
+        return {}
+    by_symbol: dict[str, dict] = {}
+    for record in records:
+        try:
+            row = record.summary_row()
+        except Exception:
+            continue
+        symbol = _normalize_ticker(row.get("symbol") or getattr(record, "symbol", ""))
+        if symbol and symbol not in by_symbol:
+            by_symbol[symbol] = row
+    return by_symbol
+
+
+def _apply_validation_snapshot(row: dict, validation_records: dict[str, dict] | None = None) -> dict:
+    item = dict(row or {})
+    symbol = _normalize_ticker(item.get("ticker") or item.get("symbol"))
+    snapshot = dict((validation_records or {}).get(symbol) or {})
+    if snapshot:
+        item.setdefault("candidate_id", snapshot.get("candidate_id"))
+        item.setdefault("validation_status", snapshot.get("validation_status"))
+        item.setdefault("current_validation_status", snapshot.get("current_validation_status") or snapshot.get("validation_status"))
+        item.setdefault("trade_admission_status", snapshot.get("trade_admission_status"))
+        item.setdefault("evidence_status", snapshot.get("evidence_status"))
+        item.setdefault("profitability_status", snapshot.get("profitability_status"))
+        item.setdefault("deployment_status", snapshot.get("deployment_status"))
+    item["validation_status"] = str(item.get("current_validation_status") or item.get("validation_status") or "AI_CANDIDATE").strip().upper()
+    item["current_validation_status"] = item["validation_status"]
+    item["trade_admission_status"] = str(item.get("trade_admission_status") or item.get("trade_admission") or "NOT_TRADABLE").strip().upper()
+    item.update(_next_validation_stage(item["validation_status"]))
+    item["validation_record_resolved"] = bool(item.get("candidate_id"))
+    return item
+
+
+def _is_research_top_candidate(row: dict) -> bool:
+    item = dict(row or {})
+    if not _normalize_ticker(item.get("ticker") or item.get("symbol")):
+        return False
+    if is_formal_selection_eligible(item):
+        return False
+    market_data_sufficiency = str(item.get("market_data_sufficiency") or "").strip().upper()
+    if market_data_sufficiency not in {"COMPLETE", "SUFFICIENT"}:
+        return False
+    if bool(item.get("formal_scoring_eligibility", item.get("scoring_eligible", False))) is not True:
+        return False
+    if str(item.get("score_type") or "").strip().upper() != "FORMAL":
+        return False
+    if item.get("score_is_current_run") is not True:
+        return False
+    score_value = _coalesce_float(
+        item.get("formal_candidate_score"),
+        item.get("candidate_score"),
+        item.get("final_score"),
+        item.get("score"),
+        default=None,
+    )
+    if score_value is None:
+        return False
+    if str(item.get("fallback_scope") or "").strip().upper() == "CRITICAL_MARKET_DATA":
+        return False
+    if str(item.get("fallback_severity") or "").strip().upper() == "CRITICAL":
+        return False
+    blocking_reasons = item.get("blocking_reasons") or []
+    if isinstance(blocking_reasons, (str, bytes)):
+        blocking_reasons = [blocking_reasons]
+    normalized_reasons = {str(reason or "").strip().lower() for reason in blocking_reasons}
+    if normalized_reasons.intersection(_RESEARCH_TOP_CRITICAL_BLOCK_REASONS):
+        return False
+    return True
+
+
+def _build_research_top_candidates(
+    rows: list[dict],
+    *,
+    validation_records: dict[str, dict] | None = None,
+    requested_top_n: int = TOP_COUNT,
+) -> list[dict]:
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for raw in rows or []:
+        item = _apply_validation_snapshot(dict(raw or {}), validation_records)
+        if not _is_research_top_candidate(item):
+            continue
+        symbol = _normalize_ticker(item.get("ticker") or item.get("symbol"))
+        if not symbol or symbol in seen:
+            continue
+        item["ticker"] = symbol
+        item["research_top_eligible"] = True
+        item["formal_top_selected"] = False
+        item["paper_live_allowed"] = False
+        item["validation_path_note"] = "可进入研究验证链，不可进入 Paper / Live"
+        candidates.append(item)
+        seen.add(symbol)
+    candidates.sort(
+        key=lambda item: (
+            -float(_coalesce_float(item.get("formal_candidate_score"), item.get("candidate_score"), item.get("final_score"), item.get("score"), default=0.0) or 0.0),
+            str(item.get("ticker") or ""),
+        )
+    )
+    for idx, item in enumerate(candidates[:requested_top_n], start=1):
+        item["research_rank"] = idx
+    return candidates[:requested_top_n]
+
+
+def _validation_pipeline_summary(research_top: list[dict], tradable_top: list[dict], *, requested_top_n: int = TOP_COUNT) -> dict:
+    status_counts: dict[str, int] = {}
+    stage_counts: dict[str, int] = {}
+    for item in research_top or []:
+        status = str(item.get("validation_status") or item.get("current_validation_status") or "UNKNOWN").strip().upper() or "UNKNOWN"
+        stage = str(item.get("next_validation_stage") or "UNKNOWN").strip().upper() or "UNKNOWN"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    first_stage = _next_validation_stage(research_top[0].get("validation_status") if research_top else None)
+    return {
+        "research_candidate_count": len(research_top or []),
+        "tradable_candidate_count": len(tradable_top or []),
+        "requested_top_n": int(requested_top_n),
+        "next_validation_stage": first_stage["next_validation_stage"],
+        "next_validation_stage_label": first_stage["next_validation_stage_label"],
+        "validation_status_counts": status_counts,
+        "next_validation_stage_counts": stage_counts,
+        "paper_live_blocked": len(tradable_top or []) <= 0,
+        "auto_validation_triggered": False,
+    }
 
 
 def _provider_metadata(
@@ -2311,6 +2481,27 @@ def main(mode: str | None = None):
     summary["top5"] = _enrich_selection_rows(list(summary.get("top5") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
     summary["top3"] = _enrich_selection_rows(list(summary.get("top3") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
     selected = _enrich_selection_rows(list(selected), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
+    validation_records = _candidate_validation_records_by_symbol()
+    tradable_top_candidates = [_apply_validation_snapshot(dict(item or {}), validation_records) for item in selected]
+    research_top_candidates = _build_research_top_candidates(
+        list(summary.get("top10") or []),
+        validation_records=validation_records,
+        requested_top_n=TOP_COUNT,
+    )
+    validation_pipeline_summary = _validation_pipeline_summary(
+        research_top_candidates,
+        tradable_top_candidates,
+        requested_top_n=TOP_COUNT,
+    )
+    summary["research_top_candidates"] = list(research_top_candidates)
+    summary["research_selected_top_n"] = len(research_top_candidates)
+    summary["research_requested_top_n"] = TOP_COUNT
+    summary["tradable_top_candidates"] = list(tradable_top_candidates)
+    summary["tradable_selected_top_n"] = len(tradable_top_candidates)
+    summary["tradable_requested_top_n"] = TOP_COUNT
+    summary["next_validation_stage"] = validation_pipeline_summary.get("next_validation_stage")
+    summary["next_validation_stage_label"] = validation_pipeline_summary.get("next_validation_stage_label")
+    summary["validation_pipeline_summary"] = dict(validation_pipeline_summary)
     if summary.get("warnings_structured"):
         summary["warnings_structured"] = _dedupe_warning_records(list(summary.get("warnings_structured") or []))
         summary["warnings"] = [_format_warning_record(item) for item in summary["warnings_structured"]]

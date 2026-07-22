@@ -125,6 +125,73 @@ def test_enrich_selection_rows_uses_nested_complete_market_quality_over_stale_to
     assert enriched["blocking_reasons"] == []
 
 
+def test_research_top_candidates_keep_ai_candidate_out_of_tradable_top():
+    module = _load_module()
+    row = {
+        **_formal_candidate_row("SOFI", 71.45, 17.28, reason="needs_validation"),
+        "candidate_score": 71.45,
+        "formal_candidate_score": 71.45,
+        "market_data_sufficiency": "COMPLETE",
+        "formal_scoring_eligibility": True,
+        "score_type": "FORMAL",
+        "score_is_formal": True,
+        "score_is_current_run": True,
+        "current_validation_status": "AI_CANDIDATE",
+        "validation_status": "AI_CANDIDATE",
+        "trade_admission_status": "NOT_TRADABLE",
+        "trade_admission": "NOT_TRADABLE",
+    }
+
+    research_top = module._build_research_top_candidates(
+        [row],
+        validation_records={
+            "SOFI": {
+                "candidate_id": "cand_SOFI_US_test",
+                "validation_status": "AI_CANDIDATE",
+                "current_validation_status": "AI_CANDIDATE",
+                "trade_admission_status": "NOT_TRADABLE",
+                "evidence_status": "INSUFFICIENT_EVIDENCE",
+            }
+        },
+        requested_top_n=3,
+    )
+
+    assert [item["ticker"] for item in research_top] == ["SOFI"]
+    assert research_top[0]["candidate_id"] == "cand_SOFI_US_test"
+    assert research_top[0]["trade_admission_status"] == "NOT_TRADABLE"
+    assert research_top[0]["next_validation_stage"] == "CLASSIFICATION"
+    assert research_top[0]["next_validation_stage_label"] == "候选分类"
+    assert research_top[0]["paper_live_allowed"] is False
+    assert not module.is_formal_selection_eligible(research_top[0])
+
+
+def test_research_top_rejects_diagnostic_or_stale_scores():
+    module = _load_module()
+    diagnostic = {
+        **_formal_candidate_row("SOFI", 71.45, 17.28),
+        "market_data_sufficiency": "COMPLETE",
+        "formal_scoring_eligibility": True,
+        "score_type": "DIAGNOSTIC",
+        "score_is_formal": False,
+        "score_is_current_run": True,
+        "trade_admission_status": "NOT_TRADABLE",
+    }
+    stale_score = {
+        **_formal_candidate_row("LOWVOL", 70.0, 20.0),
+        "market_data_sufficiency": "COMPLETE",
+        "formal_scoring_eligibility": True,
+        "score_type": "FORMAL",
+        "score_is_formal": True,
+        "score_source": "PRIOR_BUNDLE",
+        "score_is_current_run": False,
+        "trade_admission_status": "NOT_TRADABLE",
+    }
+
+    research_top = module._build_research_top_candidates([diagnostic, stale_score], requested_top_n=3)
+
+    assert research_top == []
+
+
 def test_enrich_candidate_quality_rows_uses_nested_market_quality_before_formal_filter():
     module = _load_module()
     market_data = _formal_candidate_row("SOFI", 82.3, 17.28)

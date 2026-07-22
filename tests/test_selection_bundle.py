@@ -520,6 +520,79 @@ def test_selection_bundle_rejects_ineligible_formal_top_items(tmp_path, monkeypa
     assert "formal_top_ineligible:SOFI" in audit["validation_error_codes"]
 
 
+def test_selection_bundle_keeps_research_top_separate_from_tradable_top(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+    research_candidate = {
+        **_formal_top_item("SOFI", 71.45),
+        "candidate_id": "cand_SOFI_US_test",
+        "validation_status": "AI_CANDIDATE",
+        "current_validation_status": "AI_CANDIDATE",
+        "trade_admission_status": "NOT_TRADABLE",
+        "research_rank": 1,
+        "next_validation_stage": "CLASSIFICATION",
+        "next_validation_stage_label": "候选分类",
+    }
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"),
+            "top3": [],
+            "research_top_candidates": [research_candidate],
+            "research_selected_top_n": 1,
+            "research_requested_top_n": 3,
+            "tradable_top_candidates": [],
+            "tradable_selected_top_n": 0,
+            "tradable_requested_top_n": 3,
+            "next_validation_stage": "CLASSIFICATION",
+            "next_validation_stage_label": "候选分类",
+            "validation_pipeline_summary": {
+                "research_candidate_count": 1,
+                "tradable_candidate_count": 0,
+                "next_validation_stage": "CLASSIFICATION",
+                "paper_live_blocked": True,
+            },
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": [],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selection_run_id": "run-research-only",
+            "selection_symbols": [],
+            "configured_top_symbols": [],
+        },
+        top_items=[],
+        selection_run_id="run-research-only",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="DEGRADED",
+        research_admission="RESEARCH_ONLY",
+        processing_phase="fast_preliminary",
+        requested_top_n=3,
+    )
+
+    result = persist_selection_bundle(bundle)
+
+    report = json.loads((tmp_path / "reports" / "ai_selection_latest.json").read_text(encoding="utf-8"))
+    state = json.loads((tmp_path / "state" / "ai_selection_state.json").read_text(encoding="utf-8"))
+    manifest = json.loads((tmp_path / "state" / "selection_bundle_manifest.json").read_text(encoding="utf-8"))
+    assert result["selected_symbols"] == []
+    assert report["selected_symbols"] == []
+    assert report["selected_top_n"] == 0
+    assert report["tradable_selected_top_n"] == 0
+    assert report["research_selected_top_n"] == 1
+    assert report["research_top_candidates"][0]["ticker"] == "SOFI"
+    assert state["selected_top_n"] == 0
+    assert state["research_selected_top_n"] == 1
+    assert manifest["selected_top_n"] == 0
+    assert manifest["research_selected_top_n"] == 1
+    assert manifest["tradable_selected_top_n"] == 0
+    assert manifest["selection_symbols"] == []
+
+
 def test_selection_bundle_rolls_back_when_compat_sync_fails_after_manifest_commit(tmp_path, monkeypatch):
     _patch_bundle_roots(tmp_path, monkeypatch)
 
