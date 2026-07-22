@@ -266,6 +266,129 @@ class DataQualityResult:
         }
 
 
+def _status_is_complete(value: Any) -> bool:
+    return _normalize_text(value).upper() in {"COMPLETE", "VALID", "OK", "SAFE", "LATEST_COMPLETED_SESSION"}
+
+
+def _status_is_failed(value: Any) -> bool:
+    return _normalize_text(value).upper() in {"FAILED", "INVALID", "MISSING", "STALE"}
+
+
+def _research_evidence_status(
+    provider_audit: Mapping[str, Any] | None,
+    provider_outputs: Mapping[str, Any] | None,
+) -> str:
+    summary = normalize_provider_audit(dict(provider_audit or {}), dict(provider_outputs or {}))
+    attempted = list(summary.get("attempted") or [])
+    successful = list(summary.get("successful") or [])
+    contributors = list(summary.get("contributors") or [])
+    failed = list(summary.get("failed") or [])
+    timed_out = list(summary.get("timed_out") or [])
+    if not attempted:
+        return "NOT_RUN"
+    if successful and contributors:
+        return "COMPLETE"
+    if successful or contributors:
+        return "PARTIAL"
+    if failed or timed_out:
+        return "FAILED"
+    return "PARTIAL"
+
+
+def _quality_conflict_fields(
+    precheck: Mapping[str, Any],
+    final_state: Mapping[str, Any],
+) -> list[str]:
+    fields = [
+        ("quote_status", "quote_status"),
+        ("ohlcv_status", "ohlcv_status"),
+        ("history_status", "history_status"),
+        ("benchmark_status", "benchmark_status"),
+        ("scoring_eligible", "formal_scoring_eligibility"),
+    ]
+    conflicts: list[str] = []
+    for precheck_key, final_key in fields:
+        precheck_value = precheck.get(precheck_key)
+        final_value = final_state.get(final_key)
+        if precheck_value is None or final_value is None:
+            continue
+        if isinstance(precheck_value, bool) or isinstance(final_value, bool):
+            if bool(precheck_value) != bool(final_value):
+                conflicts.append(precheck_key)
+            continue
+        precheck_text = _normalize_text(precheck_value).upper()
+        final_text = _normalize_text(final_value).upper()
+        if precheck_text and final_text and precheck_text != final_text:
+            conflicts.append(precheck_key)
+    return conflicts
+
+
+def normalize_candidate_quality_state(
+    candidate: Mapping[str, Any],
+    *,
+    data_quality: Mapping[str, Any] | None = None,
+    provider_audit: Mapping[str, Any] | None = None,
+    provider_outputs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach the final candidate quality fields used by selector consumers.
+
+    Early data_sufficiency checks are retained for diagnostics only. Final
+    market-data and scoring eligibility come from the enriched market_data and
+    data_quality snapshots.
+    """
+
+    payload = dict(candidate or {})
+    final_quality = dict(data_quality or payload.get("data_quality") or {})
+    precheck = payload.get("precheck_data_sufficiency")
+    if not isinstance(precheck, Mapping):
+        old_sufficiency = payload.get("data_sufficiency")
+        precheck = dict(old_sufficiency) if isinstance(old_sufficiency, Mapping) else {}
+    else:
+        precheck = dict(precheck)
+
+    quote_status = _normalize_text(payload.get("quote_status")).upper()
+    ohlcv_status = _normalize_text(payload.get("ohlcv_status")).upper()
+    history_status = _normalize_text(payload.get("history_status")).upper()
+    benchmark_status = _normalize_text(
+        payload.get("benchmark_status") or payload.get("benchmark_alignment_status")
+    ).upper()
+    freshness_status = _normalize_text(payload.get("freshness_status")).upper()
+    data_status = _normalize_text(final_quality.get("data_status") or payload.get("data_status")).upper()
+    blocking_reasons = list(final_quality.get("blocking_reasons") or payload.get("blocking_reasons") or [])
+
+    market_complete = (
+        data_status == "COMPLETE"
+        and _status_is_complete(quote_status)
+        and _status_is_complete(ohlcv_status)
+        and _status_is_complete(history_status)
+        and _status_is_complete(benchmark_status)
+        and (not freshness_status or _status_is_complete(freshness_status))
+        and not blocking_reasons
+    )
+    if market_complete:
+        market_data_sufficiency = "COMPLETE"
+    elif data_status == "COMPLETE":
+        market_data_sufficiency = "DEGRADED"
+    else:
+        market_data_sufficiency = "FAILED"
+
+    formal_scoring_eligibility = bool(market_complete and final_quality.get("scoring_eligible", payload.get("scoring_eligible", False)) is True)
+    final_state = {
+        "record_completeness": "COMPLETE" if _normalize_text(payload.get("ticker") or payload.get("symbol")) else "INCOMPLETE",
+        "market_data_sufficiency": market_data_sufficiency,
+        "research_evidence_status": _research_evidence_status(provider_audit, provider_outputs),
+        "formal_scoring_eligibility": formal_scoring_eligibility,
+        "scoring_eligible": formal_scoring_eligibility,
+    }
+    conflicts = _quality_conflict_fields(precheck, {**payload, **final_state})
+    payload.update(final_state)
+    payload["precheck_data_sufficiency"] = precheck
+    payload["final_data_quality"] = final_quality
+    payload["quality_state_conflict"] = bool(conflicts)
+    payload["quality_state_conflict_fields"] = conflicts
+    return payload
+
+
 def evaluate_candidate_data_quality(
     candidate: Mapping[str, Any],
     *,
@@ -597,6 +720,12 @@ def enrich_candidate_quality(
             else "关键数据不足，候选仅供研究排障"
         )
     )
+    payload = normalize_candidate_quality_state(
+        payload,
+        data_quality=data_quality,
+        provider_audit=provider_audit,
+        provider_outputs=provider_outputs,
+    )
     return payload
 
 
@@ -650,6 +779,10 @@ def formal_selection_ineligibility_reasons(candidate: Mapping[str, Any]) -> list
     if data_status in _FORMAL_INELIGIBLE_STATUSES:
         reasons.append(f"data_status_{data_status.lower()}")
 
+    market_data_sufficiency = _normalize_text(present("market_data_sufficiency")).upper()
+    if market_data_sufficiency in {"FAILED", "DEGRADED"}:
+        reasons.append(f"market_data_sufficiency_{market_data_sufficiency.lower()}")
+
     trade_admission = _normalize_text(present("trade_admission", "trade_admission_status", "trade_status")).upper()
     if trade_admission != "TRADABLE":
         reasons.append("trade_admission_not_tradable")
@@ -661,6 +794,9 @@ def formal_selection_ineligibility_reasons(candidate: Mapping[str, Any]) -> list
     scoring_eligible = present("scoring_eligible")
     if scoring_eligible is False:
         reasons.append("scoring_eligible_false")
+    formal_scoring_eligibility = present("formal_scoring_eligibility")
+    if formal_scoring_eligibility is False:
+        reasons.append("formal_scoring_eligibility_false")
 
     score_value = present("candidate_score", "final_score", "score", "ai_score")
     if score_value is None:

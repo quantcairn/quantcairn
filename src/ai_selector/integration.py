@@ -192,12 +192,13 @@ class AISelector:
                 strict_history=False,
                 strict_benchmark=True,
             )
-            candidate["data_mode"] = sufficiency.data_mode
-            candidate["data_freshness"] = sufficiency.data_freshness
-            candidate["data_status"] = sufficiency.data_status
-            candidate["scoring_eligible"] = sufficiency.scoring_eligible
-            candidate["scoring_block_reason"] = sufficiency.scoring_block_reason
-            candidate["missing_fields"] = list(sufficiency.missing_fields)
+            candidate["precheck_data_mode"] = sufficiency.data_mode
+            candidate["precheck_data_freshness"] = sufficiency.data_freshness
+            candidate["precheck_data_status"] = sufficiency.data_status
+            candidate["precheck_scoring_eligible"] = sufficiency.scoring_eligible
+            candidate["precheck_scoring_block_reason"] = sufficiency.scoring_block_reason
+            candidate["precheck_missing_fields"] = list(sufficiency.missing_fields)
+            candidate["precheck_data_sufficiency"] = sufficiency.to_dict()
             candidate["data_sufficiency"] = sufficiency.to_dict()
             candidate = score_candidate(candidate)
             candidate.setdefault("base_score", round(float(candidate.get("score", candidate.get("final_score", 50.0))), 2))
@@ -422,12 +423,13 @@ class AISelector:
                 strict_history=False,
                 strict_benchmark=True,
             )
-            candidate["data_mode"] = sufficiency.data_mode
-            candidate["data_freshness"] = sufficiency.data_freshness
-            candidate["data_status"] = sufficiency.data_status
-            candidate["scoring_eligible"] = sufficiency.scoring_eligible
-            candidate["scoring_block_reason"] = sufficiency.scoring_block_reason
-            candidate["missing_fields"] = list(sufficiency.missing_fields)
+            candidate["precheck_data_mode"] = sufficiency.data_mode
+            candidate["precheck_data_freshness"] = sufficiency.data_freshness
+            candidate["precheck_data_status"] = sufficiency.data_status
+            candidate["precheck_scoring_eligible"] = sufficiency.scoring_eligible
+            candidate["precheck_scoring_block_reason"] = sufficiency.scoring_block_reason
+            candidate["precheck_missing_fields"] = list(sufficiency.missing_fields)
+            candidate["precheck_data_sufficiency"] = sufficiency.to_dict()
             candidate["data_sufficiency"] = sufficiency.to_dict()
             candidate = score_candidate(candidate)
             final_score = float(candidate.get("candidate_score", candidate.get("score", candidate.get("final_score", 50.0))))

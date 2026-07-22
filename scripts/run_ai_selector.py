@@ -972,6 +972,9 @@ def _market_data_ready(item: dict) -> bool:
 
 
 def _data_quality_ready(item: dict) -> bool:
+    market_data_sufficiency = str(item.get("market_data_sufficiency") or "").strip().upper()
+    if market_data_sufficiency and market_data_sufficiency not in {"COMPLETE", "SUFFICIENT"}:
+        return False
     data_status = str(item.get("data_status") or "").strip().upper()
     if data_status not in {"COMPLETE", "VALID"}:
         return False
@@ -1979,7 +1982,11 @@ def main(mode: str | None = None):
         universe_symbols_for_funnel = _candidate_symbols(report_top10)
     market_data_candidates = [item for item in report_top10 if _market_data_ready(item)]
     data_quality_candidates = [item for item in market_data_candidates if _data_quality_ready(item)]
-    scoring_candidates = [item for item in data_quality_candidates if bool(item.get("scoring_eligible", False))]
+    scoring_candidates = [
+        item
+        for item in data_quality_candidates
+        if bool(item.get("formal_scoring_eligibility", item.get("scoring_eligible", False)))
+    ]
     base_ranked_candidates = list(scoring_candidates)
     research_candidates = list(base_ranked_candidates)
     formal_eligible_candidates = list(selected)
@@ -2072,7 +2079,20 @@ def main(mode: str | None = None):
         "provider_unavailable": int(provider_audit_summary.get("provider_unavailable", 0) or 0),
         "provider_malformed_responses": int(provider_audit_summary.get("provider_malformed_responses", 0) or 0),
         "data_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_status") or "").strip().upper() == "COMPLETE")),
-        "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
+        "scoring_eligible": int(
+            sum(
+                1
+                for item in (report_top10 or [])
+                if bool(item.get("formal_scoring_eligibility", item.get("scoring_eligible", False)))
+            )
+        ),
+        "formal_scoring_eligible": int(
+            sum(
+                1
+                for item in (report_top10 or [])
+                if bool(item.get("formal_scoring_eligibility", item.get("scoring_eligible", False)))
+            )
+        ),
         "ranked_candidates": int(len(report_top10 or [])),
         "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
         "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),

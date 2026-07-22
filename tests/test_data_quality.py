@@ -112,11 +112,21 @@ def test_enrich_candidate_quality_attaches_explanations() -> None:
 
 def test_enrich_candidate_quality_uses_complete_fetch_diagnostics_over_stale_missing_status() -> None:
     candidate = _complete_candidate()
+    precheck = {
+        "data_status": "VALID",
+        "quote_status": "OK",
+        "ohlcv_status": "MISSING",
+        "history_status": "DEGRADED",
+        "benchmark_status": "VALID",
+        "scoring_eligible": False,
+        "scoring_block_reason": "history_degraded; missing_ohlcv",
+    }
     candidate.update(
         {
             "quote_status": "MISSING",
             "ohlcv_status": "MISSING",
             "history_status": "MISSING",
+            "data_sufficiency": precheck,
             "quote_fetch_status": "COMPLETE",
             "ohlcv_fetch_status": "COMPLETE",
             "history_rows": 220,
@@ -135,6 +145,13 @@ def test_enrich_candidate_quality_uses_complete_fetch_diagnostics_over_stale_mis
     assert enriched["history_status"] == "COMPLETE"
     assert enriched["data_status"] == "COMPLETE"
     assert enriched["scoring_eligible"] is True
+    assert enriched["formal_scoring_eligibility"] is True
+    assert enriched["market_data_sufficiency"] == "COMPLETE"
+    assert enriched["record_completeness"] == "COMPLETE"
+    assert enriched["precheck_data_sufficiency"] == precheck
+    assert enriched["final_data_quality"]["data_status"] == "COMPLETE"
+    assert enriched["quality_state_conflict"] is True
+    assert set(enriched["quality_state_conflict_fields"]) >= {"ohlcv_status", "history_status", "scoring_eligible"}
     assert "missing_history" not in enriched["blocking_reasons"]
 
 
@@ -158,6 +175,8 @@ def test_history_missing_windows_fail_closed_even_when_ohlcv_fetch_succeeds() ->
     assert enriched["history_status"] == "MISSING"
     assert enriched["data_status"] == "INVALID"
     assert enriched["scoring_eligible"] is False
+    assert enriched["formal_scoring_eligibility"] is False
+    assert enriched["market_data_sufficiency"] == "FAILED"
     assert "missing_history" in enriched["blocking_reasons"]
     assert "history_window_missing:ma50" in enriched["blocking_reasons"]
     assert "history_window_missing:ma200" in enriched["blocking_reasons"]
@@ -170,6 +189,7 @@ def test_formal_selection_helpers_reject_explicit_invalid_data() -> None:
         {
             "data_status": "INVALID",
             "scoring_eligible": False,
+            "formal_scoring_eligibility": False,
             "quote_status": "MISSING",
             "ohlcv_status": "MISSING",
             "history_status": "MISSING",
@@ -184,6 +204,7 @@ def test_formal_selection_helpers_reject_explicit_invalid_data() -> None:
     assert is_formal_selection_eligible(candidate) is False
     assert "data_status_invalid" in reasons
     assert "scoring_eligible_false" in reasons
+    assert "formal_scoring_eligibility_false" in reasons
     assert "quote_status_missing" in reasons
     assert "ohlcv_status_missing" in reasons
     assert "history_status_missing" in reasons
