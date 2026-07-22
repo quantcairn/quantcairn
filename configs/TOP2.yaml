@@ -1,9 +1,9 @@
-ticker: SOXS
+ticker: LABD
 mode: live
 selection:
   source: manual_override
   selection_date: '2026-07-21'
-  score: 82.58
+  score: 80.72
   confidence: 0.58
   protected_position: false
   reduce_only: false
@@ -24,7 +24,7 @@ range:
   quick_stop_pct: 3.0
   post_entry_cooldown_seconds: 300
 position:
-  size_per_trade: 119
+  size_per_trade: 15
   max_position: 9999
   cool_down_seconds: 30
   initial_capital: 700.0
