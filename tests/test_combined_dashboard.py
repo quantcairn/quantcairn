@@ -229,7 +229,7 @@ def test_combined_dashboard_shows_system_status_and_missing_data_labels(monkeypa
         "generated_at": None,
     })
     monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
-        "execution_mode": "paper",
+        "execution_mode": "sandbox",
         "reduce_only": False,
         "new_entries_allowed": True,
         "risk_pause_reason": "",
@@ -262,9 +262,9 @@ def test_combined_dashboard_shows_system_status_and_missing_data_labels(monkeypa
         html = combined.index()
 
     assert "系统状态" in html
-    assert "PAPER" in html
-    assert "PaperBroker" in html
-    assert "PaperBroker / TOP engine runtime" in html
+    assert "SANDBOX" in html
+    assert "PaperBroker" not in html
+    assert "PaperBroker / TOP engine runtime" not in html
     assert "AI 选股结果总览" in html
     assert "展开技术详情" in html
 
@@ -346,6 +346,114 @@ def test_combined_dashboard_uses_sandbox_account_snapshot_without_paper_fallback
     assert "LongBridge sandbox" in html
     assert "LongBridge sandbox 持仓" in html
     assert "PaperBroker / TOP engine runtime" not in html
+
+
+def test_combined_dashboard_separates_display_mode_from_execution_mode(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="sandbox",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=True,
+                environment="sandbox",
+                account_type="paper",
+                allow_live_order=False,
+            )
+        ),
+    ))
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
+        "cash": 900.0,
+        "equity": 1000.0,
+        "buying_power": 900.0,
+        "positions_count": 1,
+        "positions": [],
+        "mode": "sandbox",
+    })
+    monkeypatch.setattr(combined, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"})
+    monkeypatch.setattr(combined, "_load_lifecycle_summary", lambda kind: {
+        "available": False,
+        "status_label": "unavailable",
+        "detail": "no data",
+        "generated_at": None,
+    })
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: None)
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "sandbox",
+        "reduce_only": False,
+        "new_entries_allowed": True,
+        "risk_pause_reason": "",
+        "decision_count": 0,
+        "execution_count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "order_qty": 0,
+        "tickers": [],
+        "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 700.0,
+        "support": 10.0,
+        "resistance": 12.0,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: {"mode": "paper", "price": 18.52, "last_signal": "HOLD", "halted": False})
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐（美东 2026-07-09）",
+        "required_date": "2026-07-09",
+        "state_date": "2026-07-09",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "执行模式一致（页面显示不同）" in html
+    assert "页面显示：SANDBOX（sandbox）" in html
+    assert "执行模式：虚拟盘（paper）" in html
+    assert "虚拟盘" in html
+    assert "TOP 引擎模式不一致" not in html
+
+
+def test_selection_dashboard_view_separates_research_and_tradable_candidates():
+    view = combined._selection_dashboard_view(
+        {
+            "selection_date": "2026-07-21",
+            "selection_stage": "FINALIZED",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selected_top_n": 0,
+            "requested_top_n": 3,
+            "top_n_missing_count": 3,
+            "top3": [],
+            "research_top_candidates": [
+                {
+                    "ticker": "SOFI",
+                    "candidate_score": 71.45,
+                    "validation_status": "AI_CANDIDATE",
+                    "trade_admission_status": "NOT_TRADABLE",
+                    "next_validation_stage": "CLASSIFICATION",
+                    "next_validation_stage_label": "候选分类",
+                }
+            ],
+            "research_selected_top_n": 1,
+            "research_requested_top_n": 3,
+            "tradable_selected_top_n": 0,
+            "tradable_requested_top_n": 3,
+            "next_validation_stage": "CLASSIFICATION",
+            "next_validation_stage_label": "候选分类",
+        },
+        {"ok": True, "detail": "ok"},
+    )
+
+    assert view["selected_count"] == 0
+    assert view["research_selected_count"] == 1
+    assert view["research_symbols"] == ["SOFI"]
+    assert view["tradable_selected_count"] == 0
+    assert view["next_validation_stage"] == "候选分类（CLASSIFICATION）"
+    assert view["paper_live_status"] == "阻断"
 
 
 def test_combined_dashboard_shows_lifecycle_result_cards(monkeypatch):
