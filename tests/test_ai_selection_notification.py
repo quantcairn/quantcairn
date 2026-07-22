@@ -51,6 +51,14 @@ def _sample_top(rank: int, ticker: str, *, fallback_used: bool = False, reason: 
         "size": 63 - rank,
         "leveraged_etf": ticker in {"SOXS", "LABD", "DRIP"},
         "trade_filter_passed": True,
+        "current_validation_status": "DATA_VALID",
+        "trade_admission_status": "TRADABLE",
+        "data_status": "COMPLETE",
+        "scoring_eligible": True,
+        "score_source": "current_run_candidate_ranking",
+        "score_provider": "local_factor_scoring",
+        "score_generated_at": "2026-07-09T09:00:00-04:00",
+        "score_is_current_run": True,
         "selection_penalty_reason": reason,
         "selection": {
             "selection_date": "2026-07-09",
@@ -132,6 +140,14 @@ def _sample_report_with_rich_top3() -> dict:
             "source": "selector_core",
             "leveraged_etf": True,
             "trade_filter_passed": True,
+            "current_validation_status": "DATA_VALID",
+            "trade_admission_status": "TRADABLE",
+            "data_status": "COMPLETE",
+            "scoring_eligible": True,
+            "score_source": "current_run_candidate_ranking",
+            "score_provider": "local_factor_scoring",
+            "score_generated_at": "2026-07-09T09:00:00-04:00",
+            "score_is_current_run": True,
             "selection_date": "2026-07-09",
             "allocation": {
                 "target_capital": 4920,
@@ -152,6 +168,14 @@ def _sample_report_with_rich_top3() -> dict:
             "source": "mock",
             "leveraged_etf": False,
             "trade_filter_passed": True,
+            "current_validation_status": "DATA_VALID",
+            "trade_admission_status": "TRADABLE",
+            "data_status": "COMPLETE",
+            "scoring_eligible": True,
+            "score_source": "current_run_candidate_ranking",
+            "score_provider": "local_factor_scoring",
+            "score_generated_at": "2026-07-09T09:00:00-04:00",
+            "score_is_current_run": True,
             "selection_date": "2026-07-09",
             "allocation": {
                 "target_capital": 17821,
@@ -172,6 +196,14 @@ def _sample_report_with_rich_top3() -> dict:
             "source": "mock",
             "leveraged_etf": True,
             "trade_filter_passed": True,
+            "current_validation_status": "DATA_VALID",
+            "trade_admission_status": "TRADABLE",
+            "data_status": "COMPLETE",
+            "scoring_eligible": True,
+            "score_source": "current_run_candidate_ranking",
+            "score_provider": "local_factor_scoring",
+            "score_generated_at": "2026-07-09T09:00:00-04:00",
+            "score_is_current_run": True,
             "selection_date": "2026-07-09",
             "allocation": {
                 "target_capital": 4920,
@@ -296,10 +328,10 @@ def test_ai_selection_message_handles_only_top2():
     monkeypatch.undo()
 
     assert "正式TOP：2/3" in body
-    assert "TOP3：未生成 / disabled" in body
+    assert "TOP3：空槽" in body
     assert "selected_symbols=SOXS,SOFI" in body
     assert "missing_slots=TOP3" in body
-    assert "原因：top_n_not_filled" in body
+    assert "原因：正式候选不足" in body
 
 
 def test_ai_selection_message_shows_zero_of_three_formal_top():
@@ -362,6 +394,14 @@ def test_ai_selection_message_uses_top_level_fields_when_selection_missing():
                 "size": 119,
                 "leveraged_etf": True,
                 "trade_filter_passed": True,
+                "current_validation_status": "DATA_VALID",
+                "trade_admission_status": "TRADABLE",
+                "data_status": "COMPLETE",
+                "scoring_eligible": True,
+                "score_source": "current_run_candidate_ranking",
+                "score_provider": "local_factor_scoring",
+                "score_generated_at": "2026-07-09T09:00:00-04:00",
+                "score_is_current_run": True,
                 "selection_penalty_reason": "first pick",
             }
         ],
@@ -437,15 +477,16 @@ def test_ai_selection_message_shows_execution_and_result_semantics():
     assert "研究准入：仅研究 (RESEARCH_ONLY)" in body
     assert "状态：AI_CANDIDATE" in body
     assert "NOT_TRADABLE" in body
-    assert "数据：VALID · candidate_fallback=是 · mock=否" in body
+    assert "数据标记：VALID · candidate_fallback=是 · mock=否" in body
     assert "fallback来源：TRADINGAGENTS" in body
-    assert "TOP3：未生成 / disabled" in body
-    assert "原因：top_n_not_filled" in body
+    assert "TOP3：空槽" in body
+    assert "原因：正式候选不足" in body
     assert "Provider 尝试：" in body
     assert "Provider 成功：" in body
     assert "Provider 超时：" in body
     assert "Provider Mock：" in body
-    assert "交易含义：本次结果仅供研究" in body
+    assert "交易含义：本次流程已完成，但没有生成任何正式可交易候选" in body
+    assert "不得进入 Backtest、Walk-Forward、Paper 或 Live" in body
     assert "状态解释：FINALIZED=流程已完成" in body
 
 
@@ -552,13 +593,16 @@ def test_ai_selection_message_uses_manifest_first_bundle_and_time_fields(monkeyp
     assert "选股日期来源：selection_bundle" in body
     assert "结果生成：2026-07-17 11:42 ET" in body
     assert "通知发送：2026-07-18 06:25 北京时间" in body
-    assert "正式TOP：1/3" in body
-    assert "缺失槽位：2（TOP2, TOP3）" in body
+    assert "正式TOP：0/3" in body
+    assert "未准入研究候选：" in body
+    assert "候选1：SOFI" in body
+    assert "缺失槽位：3（TOP1, TOP2, TOP3）" in body
     assert "候选不足主要原因：" in body
     assert "- 低成交额：7" in body
     assert "- 价格超出范围：2" in body
     assert "- 入场质量不足：1" in body
-    assert "交易含义：本次结果仅供研究" in body
+    assert "交易含义：本次流程已完成，但没有生成任何正式可交易候选" in body
+    assert "不得进入 Backtest、Walk-Forward、Paper 或 Live" in body
 
 
 def test_ai_selection_message_marks_missing_selection_date_without_today_fallback(monkeypatch):
@@ -624,6 +668,102 @@ def test_ai_selection_message_fails_closed_without_quality_semantics(monkeypatch
     assert "研究准入：已阻止 (BLOCKED)" in body
     assert "result_quality_missing" in body
     assert "research_admission_missing" in body
+
+
+def test_ai_selection_message_separates_research_only_candidates_from_formal_top(monkeypatch):
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    report = {
+        **_sample_report(),
+        "execution_status": "COMPLETED",
+        "selection_stage": "FINALIZED",
+        "result_quality": "DEGRADED",
+        "research_admission": "RESEARCH_ONLY",
+        "requested_top_n": 3,
+        "top3": [
+            {
+                "ticker": "NVDA",
+                "final_score": 91.5,
+                "ai_score": 91.5,
+                "range_score": 88.0,
+                "reason": "research_complete",
+                "current_validation_status": "AI_CANDIDATE",
+                "trade_admission_status": "NOT_TRADABLE",
+                "data_status": "COMPLETE",
+                "data_sufficiency": False,
+                "scoring_eligible": False,
+                "score_source": "UNKNOWN",
+                "score_provider": "UNKNOWN",
+                "score_is_current_run": False,
+            },
+            {
+                "ticker": "MSFT",
+                "final_score": 88.2,
+                "ai_score": 88.2,
+                "range_score": 84.0,
+                "reason": "research_complete",
+                "current_validation_status": "AI_CANDIDATE",
+                "trade_admission_status": "NOT_TRADABLE",
+                "data_status": "COMPLETE",
+                "data_sufficiency": False,
+                "scoring_eligible": False,
+                "score_source": "HISTORICAL",
+                "score_provider": "prior_bundle",
+                "score_is_current_run": False,
+            },
+        ],
+        "provider_audit": {
+            "tradingagents": {"attempted": 1, "success": 0, "failure": 1, "contributed_fields": []},
+            "finrobot": {"attempted": 1, "success": 0, "failure": 1, "contributed_fields": []},
+            "openbb": {"attempted": 1, "success": 0, "failure": 1, "contributed_fields": []},
+        },
+    }
+
+    _, body = alerts._build_ai_selection_message(report, report["top3"])
+
+    assert "正式TOP：0/3" in body
+    assert "选股结果：NO_TRADABLE_SELECTION" in body
+    assert "已产生正式候选：否" in body
+    assert "不得进入 Backtest、Walk-Forward、Paper 或 Live" in body
+    assert "才可进入 Backtest 或 Paper" not in body
+    assert "TOP1：NVDA" not in body
+    assert "TOP2：MSFT" not in body
+    assert "候选1：NVDA" in body
+    assert "候选2：MSFT" in body
+    assert "Trade Admission：NOT_TRADABLE" in body
+    assert "分数状态：INVALID_SCORE_PROVENANCE" in body
+    assert "Research Evidence：FAILED" in body
+    assert "理由：research_complete" not in body
+
+
+def test_ai_selection_message_renders_mixed_formal_and_research_candidates(monkeypatch):
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    tradable = _sample_top(1, "SOXS")
+    research = _sample_top(2, "NVDA")
+    research.update(
+        {
+            "current_validation_status": "AI_CANDIDATE",
+            "trade_admission_status": "NOT_TRADABLE",
+            "scoring_eligible": False,
+            "data_sufficiency": False,
+        }
+    )
+    report = {
+        **_sample_report(),
+        "execution_status": "COMPLETED",
+        "selection_stage": "FINALIZED",
+        "result_quality": "DEGRADED",
+        "research_admission": "RESEARCH_ONLY",
+        "requested_top_n": 3,
+        "top3": [tradable, research],
+    }
+
+    _, body = alerts._build_ai_selection_message(report, [tradable, research])
+
+    assert "正式TOP：1/3" in body
+    assert "TOP1：SOXS" in body
+    assert "TOP2：NVDA" not in body
+    assert "未准入研究候选：" in body
+    assert "候选1：NVDA" in body
 
 
 def test_ai_selection_message_truncates_long_reason():

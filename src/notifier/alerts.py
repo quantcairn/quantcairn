@@ -624,6 +624,114 @@ def _selection_report_top_items(selection_report: dict) -> list[dict]:
     return [dict(item) for item in items if isinstance(item, dict)]
 
 
+def _candidate_symbol(item: dict) -> str:
+    return str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+
+
+def _trade_admission(item: dict) -> str:
+    selection = dict(item.get("selection") or {})
+    return str(
+        _first_non_empty(
+            item.get("trade_admission"),
+            item.get("trade_admission_status"),
+            selection.get("trade_admission"),
+            selection.get("trade_admission_status"),
+            default="NOT_TRADABLE",
+        )
+        or "NOT_TRADABLE"
+    ).strip().upper()
+
+
+def _validation_status(item: dict) -> str:
+    selection = dict(item.get("selection") or {})
+    return str(
+        _first_non_empty(
+            item.get("current_validation_status"),
+            item.get("validation_status"),
+            selection.get("current_validation_status"),
+            selection.get("validation_status"),
+            default="AI_CANDIDATE",
+        )
+        or "AI_CANDIDATE"
+    ).strip().upper()
+
+
+def _is_formal_trade_selection(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if _trade_admission(item) != "TRADABLE":
+        return False
+    if _validation_status(item) in {"AI_CANDIDATE", "REJECTED", "DATA_INVALID", "FAILED"}:
+        return False
+    if bool(item.get("rejected", False)):
+        return False
+    data_status = str(item.get("data_status") or "").strip().upper()
+    if data_status in {"INVALID", "MISSING", "STALE"}:
+        return False
+    if item.get("data_sufficiency") is False or item.get("scoring_eligible") is False:
+        return False
+    return bool(_candidate_symbol(item))
+
+
+def _score_provenance(item: dict, report: dict | None = None) -> dict[str, object]:
+    selection = dict(item.get("selection") or {})
+    score_source = str(_first_non_empty(item.get("score_source"), selection.get("score_source"), default="")).strip()
+    score_provider = str(_first_non_empty(item.get("score_provider"), selection.get("score_provider"), item.get("source"), selection.get("source"), default="")).strip()
+    score_generated_at = str(
+        _first_non_empty(
+            item.get("score_generated_at"),
+            selection.get("score_generated_at"),
+            item.get("generated_at"),
+            (report or {}).get("generated_at") if isinstance(report, dict) else "",
+            default="",
+        )
+        or ""
+    ).strip()
+    is_current = _first_non_empty(item.get("score_is_current_run"), selection.get("score_is_current_run"), default=None)
+    if is_current is None:
+        run_id = str((report or {}).get("selection_run_id") or "").strip()
+        item_run_id = str(item.get("selection_run_id") or selection.get("selection_run_id") or "").strip()
+        is_current = bool(run_id and item_run_id and run_id == item_run_id)
+    source_upper = score_source.upper()
+    invalid_sources = {"", "UNKNOWN", "PRIOR_BUNDLE", "HISTORICAL", "CACHE", "CACHED", "SEED", "MANUAL", "FALLBACK"}
+    status = "OK"
+    if source_upper in invalid_sources or not bool(is_current):
+        status = "INVALID_SCORE_PROVENANCE"
+    return {
+        "score_source": score_source or "UNKNOWN",
+        "score_provider": score_provider or "UNKNOWN",
+        "score_generated_at": score_generated_at or "UNKNOWN",
+        "score_is_current_run": bool(is_current),
+        "score_provenance_status": status,
+    }
+
+
+def _research_status_for_item(item: dict, report: dict | None = None) -> tuple[bool, str, str]:
+    provider_audit = dict((report or {}).get("provider_audit") or {}) if isinstance(report, dict) else {}
+    contributors = list(provider_audit.get("provider_contributors") or provider_audit.get("contributors") or [])
+    successes = int(provider_audit.get("provider_successes", 0) or provider_audit.get("success", 0) or 0)
+    failures = int(provider_audit.get("provider_failures", 0) or provider_audit.get("failure", 0) or 0)
+    attempts = int(provider_audit.get("provider_attempts", 0) or provider_audit.get("attempted", 0) or 0)
+    records = provider_audit.get("records") if isinstance(provider_audit.get("records"), list) else None
+    if records is None:
+        records = [value for value in provider_audit.values() if isinstance(value, dict)]
+    if records and attempts <= 0:
+        for record in records:
+            attempts += int(record.get("attempted", 0) or 0)
+            successes += int(record.get("success", 0) or 0)
+            failures += int(record.get("failure", 0) or max(0, int(record.get("attempted", 0) or 0) - int(record.get("success", 0) or 0)))
+            contributors.extend(str(field) for field in (record.get("contributed_fields") or []) if str(field).strip())
+        contributors = sorted(set(contributors))
+    explicit_complete = item.get("research_complete")
+    if explicit_complete is True and contributors and successes > 0:
+        return True, str(item.get("research_status") or "COMPLETE"), "research_complete"
+    if attempts > 0 and failures >= attempts and not contributors:
+        return False, "FAILED", "provider_failure"
+    if not contributors:
+        return False, "FAILED", "no_provider_contribution"
+    return False, str(item.get("research_status") or "INCOMPLETE"), str(item.get("reason") or "research_evidence_incomplete")
+
+
 def _merge_top_item_with_report(top_item: dict, selection_report: dict, rank: int) -> dict:
     merged = dict(top_item or {})
     report_items = _selection_report_top_items(selection_report)
@@ -727,10 +835,10 @@ def _merge_top_item_with_report(top_item: dict, selection_report: dict, rank: in
     return merged
 
 
-def _ticker_line(top_config: dict, rank: int) -> str:
+def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, report: dict | None = None) -> str:
     selection = dict(top_config.get("selection") or {})
     allocation = dict(top_config.get("allocation") or {})
-    ticker = str(top_config.get("ticker") or f"TOP{rank}")
+    ticker = _candidate_symbol(top_config) or str(top_config.get("ticker") or f"TOP{rank}")
     final_score = _first_non_empty(selection.get("final_score"), selection.get("score"), top_config.get("final_score"), top_config.get("score"), default="-")
     ai_score = _first_non_empty(selection.get("ai_score"), top_config.get("ai_score"), default="-")
     range_score = _first_non_empty(selection.get("range_score"), top_config.get("range_score"), default="-")
@@ -740,26 +848,40 @@ def _ticker_line(top_config: dict, rank: int) -> str:
     candidate_fallback = bool(_first_non_empty(selection.get("candidate_fallback"), top_config.get("candidate_fallback"), default=False))
     mock_used = bool(_first_non_empty(selection.get("mock_used"), top_config.get("mock_used"), default=False))
     data_status = str(_first_non_empty(selection.get("data_status"), top_config.get("data_status"), default="")).strip().upper()
-    validation_status = str(_first_non_empty(selection.get("current_validation_status"), top_config.get("current_validation_status"), top_config.get("validation_status"), default="")).strip().upper()
-    trade_admission_status = str(_first_non_empty(selection.get("trade_admission_status"), top_config.get("trade_admission_status"), default="")).strip().upper()
+    validation_status = _validation_status(top_config)
+    trade_admission_status = _trade_admission(top_config)
+    data_sufficiency = _first_non_empty(selection.get("data_sufficiency"), top_config.get("data_sufficiency"), default=None)
+    record_completeness = str(_first_non_empty(selection.get("record_completeness"), top_config.get("record_completeness"), default="COMPLETE" if ticker else "INCOMPLETE")).strip().upper()
+    market_data_sufficiency = str(_first_non_empty(selection.get("market_data_sufficiency"), top_config.get("market_data_sufficiency"), default="SUFFICIENT" if data_sufficiency is True else "FAILED")).strip().upper()
+    research_complete, research_status, research_reason = _research_status_for_item(top_config, report)
+    provenance = _score_provenance(top_config, report)
     fallback_sources = _first_non_empty(selection.get("fallback_sources"), top_config.get("fallback_sources"), default=[])
     mock_sources = _first_non_empty(selection.get("mock_sources"), top_config.get("mock_sources"), default=[])
-    reason = _truncate_reason(
-        _first_non_empty(
-            selection.get("reason"),
-            top_config.get("reason"),
-            top_config.get("selection_penalty_reason"),
-            top_config.get("fallback_reason"),
-            default="",
-        )
+    raw_reason = _first_non_empty(
+        top_config.get("rejection_reason"),
+        top_config.get("reject_reason"),
+        top_config.get("blocking_reason"),
+        top_config.get("scoring_block_reason"),
+        selection.get("reason"),
+        top_config.get("reason"),
+        top_config.get("selection_penalty_reason"),
+        top_config.get("fallback_reason"),
+        default="",
     )
+    if str(raw_reason or "").strip() == "research_complete" and not research_complete:
+        raw_reason = research_reason
+    if provenance["score_provenance_status"] == "INVALID_SCORE_PROVENANCE":
+        raw_reason = "invalid_score_provenance"
+    if data_sufficiency is False and not str(raw_reason or "").strip():
+        raw_reason = "data_sufficiency_failed"
+    reason = _truncate_reason(str(raw_reason or ""))
     current_price = float(_first_non_empty(top_config.get("current_price"), top_config.get("price"), top_config.get("price_midpoint_hint"), default=0.0) or 0.0)
     target_shares = int(_first_non_empty(allocation.get("target_shares"), top_config.get("target_shares"), top_config.get("size_per_trade"), top_config.get("size"), default=0) or 0)
     target_capital = float(_first_non_empty(allocation.get("target_capital"), top_config.get("target_capital"), default=0.0) or 0.0)
     if target_capital <= 0 and current_price > 0 and target_shares > 0:
         target_capital = current_price * target_shares
     universe_filter_text = "通过" if filter_passed else "拒绝"
-    data_sufficiency_text = "通过" if data_status == "VALID" else "失败"
+    data_sufficiency_text = "通过" if data_sufficiency is True or data_status in {"VALID", "COMPLETE"} and market_data_sufficiency == "SUFFICIENT" else "失败"
     scoring_eligible_text = "是" if bool(_first_non_empty(selection.get("scoring_eligible"), top_config.get("scoring_eligible"), default=False)) else "否"
     kind = "杠杆/反向ETF" if leveraged else "普通标的"
     fallback_text = "是" if candidate_fallback else "否"
@@ -768,18 +890,28 @@ def _ticker_line(top_config: dict, rank: int) -> str:
     fallback_scope = str(_first_non_empty(selection.get("fallback_scope"), top_config.get("fallback_scope"), default="")).strip().upper()
     fallback_severity = str(_first_non_empty(selection.get("fallback_severity"), top_config.get("fallback_severity"), default="")).strip().upper()
     affected_fields = _first_non_empty(selection.get("affected_fields"), top_config.get("affected_fields"), default=[])
+    display_label = label or f"TOP{rank}"
+    ai_score_label = ai_score
+    if provenance["score_provenance_status"] == "INVALID_SCORE_PROVENANCE" or str(provenance["score_provider"]).upper() == "UNKNOWN":
+        ai_score_label = "-"
     lines = [
-        f"TOP{rank}：{ticker}",
-        f"分数：final {final_score} / AI {ai_score} / Range {range_score}",
+        f"{display_label}：{ticker}",
+        f"分数：final {final_score} / AI {ai_score_label} / Range {range_score}",
+        f"分数来源：{provenance['score_source']} / {provenance['score_provider']} / current_run={'是' if provenance['score_is_current_run'] else '否'}",
+        f"分数状态：{provenance['score_provenance_status']}",
         f"类型：{kind}",
         f"仓位：${target_capital:.0f} / {target_shares}股",
         f"Universe Filter：{universe_filter_text}",
         f"Data Sufficiency：{data_sufficiency_text}",
+        f"Record Completeness：{record_completeness}",
+        f"Market Data Sufficiency：{market_data_sufficiency}",
+        f"Research Evidence：{research_status}",
         f"Scoring Eligible：{scoring_eligible_text}",
         f"Trade Admission：{trade_admission_status or 'NOT_TRADABLE'}",
         f"fallback：{fallback_text}",
         f"状态：{validation_status or 'AI_CANDIDATE'}",
-        f"数据：{data_status or 'UNKNOWN'} · candidate_fallback={'是' if candidate_fallback else '否'} · mock={'是' if mock_used else '否'}",
+        f"数据记录：{record_completeness} · 行情充分性={market_data_sufficiency} · 研究证据={research_status}",
+        f"数据标记：{data_status or 'UNKNOWN'} · candidate_fallback={'是' if candidate_fallback else '否'} · mock={'是' if mock_used else '否'}",
     ]
     if fallback_source_text:
         lines.append(f"fallback来源：{fallback_source_text}")
@@ -799,6 +931,31 @@ def _ticker_line(top_config: dict, rank: int) -> str:
 
 def _build_ai_selection_message(selection_report: dict, top_configs: list | None = None) -> tuple[str, str]:
     report, top_items, selection_date_source = _resolve_manifest_first_selection_payload(selection_report, top_configs)
+    seen_research: set[str] = set()
+    formal_top_items = [dict(item) for item in top_items if _is_formal_trade_selection(dict(item))]
+    research_items: list[dict] = []
+    for item in top_items:
+        row = dict(item or {})
+        symbol = _candidate_symbol(row)
+        if not symbol or _is_formal_trade_selection(row):
+            continue
+        if symbol in seen_research:
+            continue
+        seen_research.add(symbol)
+        research_items.append(row)
+    for bucket_name in ("research_candidates", "ranked_candidates", "top10", "top5", "candidates", "diagnostic_candidates"):
+        bucket = report.get(bucket_name)
+        if not isinstance(bucket, list):
+            continue
+        for raw in bucket:
+            if not isinstance(raw, dict):
+                continue
+            row = _merge_top_item_with_report(dict(raw), report, len(research_items) + 1)
+            symbol = _candidate_symbol(row)
+            if not symbol or symbol in seen_research or _is_formal_trade_selection(row):
+                continue
+            seen_research.add(symbol)
+            research_items.append(row)
     selection_date = str(report.get("selection_date") or "").strip()
     legacy_date = str(report.get("date") or "").strip()
     selection_date_display = selection_date or legacy_date or "未知"
@@ -812,7 +969,7 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     freshness_status = str(report.get("freshness_status") or "").strip().upper()
     stale_reason = str(report.get("stale_reason") or "").strip()
     requested_top_n = int(_first_non_empty(report.get("requested_top_n"), report.get("target_top_n"), 3, default=3) or 3)
-    selected_top_n = int(_first_non_empty(report.get("selected_top_n"), report.get("selection_count"), len(top_items), default=len(top_items)) or 0)
+    selected_top_n = len(formal_top_items)
     missing_count = max(0, requested_top_n - selected_top_n)
     missing_slots = [f"TOP{i}" for i in range(selected_top_n + 1, requested_top_n + 1)] if missing_count > 0 else []
     fallback_used = bool(report.get("fallback_used", False))
@@ -839,6 +996,16 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     if not research_admission:
         research_admission = "RESEARCH_ONLY" if result_quality == "DEGRADED" else ("BLOCKED" if result_quality == "INVALID" else "RESEARCH_READY")
         warnings.append("research_admission_missing")
+    pipeline_status = str(report.get("pipeline_status") or report.get("execution_status") or execution_status or "COMPLETED").strip().upper()
+    if selected_top_n <= 0:
+        selection_outcome = "NO_TRADABLE_SELECTION"
+    elif selected_top_n < requested_top_n:
+        selection_outcome = "PARTIAL"
+    else:
+        selection_outcome = "SUCCESS"
+    if pipeline_status == "FAILED" or execution_status == "FAILED":
+        selection_outcome = "FAILED"
+    completed_with_selection = selection_outcome in {"SUCCESS", "PARTIAL"}
     if not selection_date and selection_date_source == "missing":
         warnings.insert(0, "selection_date_missing")
     structured_warnings = list(report.get("warnings_structured") or quality_report.get("warnings_structured") or [])
@@ -854,7 +1021,7 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
                 "requested_count": requested_top_n,
                 "selected_count": selected_top_n,
                 "missing_count": missing_count,
-                "selected_symbols": [str(item.get("ticker") or "").strip().upper() for item in top_items if str(item.get("ticker") or "").strip()],
+                "selected_symbols": [_candidate_symbol(item) for item in formal_top_items if _candidate_symbol(item)],
                 "missing_slots": list(missing_slots),
                 "details": "final TOP still below requested count",
             }
@@ -865,6 +1032,14 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         for item in structured_warnings:
             if not isinstance(item, dict):
                 continue
+            if str(item.get("warning_code") or item.get("code") or "").strip().lower() == "top_n_not_filled":
+                item = dict(item)
+                item["stage"] = str(item.get("stage") or "FINALIZED").strip().upper() or "FINALIZED"
+                item["requested_count"] = requested_top_n
+                item["selected_count"] = selected_top_n
+                item["missing_count"] = missing_count
+                item["selected_symbols"] = [_candidate_symbol(row) for row in formal_top_items if _candidate_symbol(row)]
+                item["missing_slots"] = list(missing_slots)
             key = (
                 str(item.get("warning_code") or item.get("code") or "warning"),
                 str(item.get("stage") or "").strip().upper(),
@@ -921,6 +1096,8 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         bool(report.get("mock_used", False)),
         report.get("data_status") or (top_items[0].get("data_status") if top_items else ""),
     )
+    if selection_outcome == "NO_TRADABLE_SELECTION":
+        notice = "本次流程已完成，但没有生成任何正式可交易候选。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
     shortfall_reasons = _selection_shortfall_reasons(report)
     lines = [
         f"选股数据日：{selection_date_display}{'（美东交易日）' if selection_date_display != '未知' else ''}",
@@ -928,6 +1105,9 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         f"结果生成：{generated_at_text}",
         f"通知发送：{notification_sent_at_text}",
         f"流程：{selection_stage or 'UNKNOWN'}",
+        f"流程状态：{pipeline_status}",
+        f"选股结果：{selection_outcome}",
+        f"已产生正式候选：{'是' if completed_with_selection else '否'}",
         f"正式TOP：{selected_top_n}/{requested_top_n}",
         f"缺失槽位：{missing_count}{'（' + ', '.join(missing_slots) + '）' if missing_slots else ''}",
         f"执行状态：{execution_text} ({execution_status or 'COMPLETED'})",
@@ -953,12 +1133,18 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         lines.append("")
 
     for rank in range(1, requested_top_n + 1):
-        if rank <= len(top_items):
-            lines.append(_ticker_line(dict(top_items[rank - 1] or {}), rank))
+        if rank <= len(formal_top_items):
+            lines.append(_ticker_line(dict(formal_top_items[rank - 1] or {}), rank, report=report))
         else:
-            reason = "top_n_not_filled" if selected_top_n < requested_top_n else "未生成"
-            lines.append(f"TOP{rank}：未生成 / disabled\n原因：{reason}")
+            reason = "正式候选不足" if selected_top_n < requested_top_n else "未生成"
+            lines.append(f"TOP{rank}：空槽\n原因：{reason}")
         lines.append("")
+
+    if research_items:
+        lines.append("未准入研究候选：")
+        for idx, item in enumerate(research_items[:10], start=1):
+            lines.append(_ticker_line(dict(item or {}), idx, label=f"候选{idx}", report=report))
+            lines.append("")
 
     lines.extend(
         [
