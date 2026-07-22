@@ -8,15 +8,10 @@
   <array>
     <string>/bin/bash</string>
     <string>/Users/chenwei/soxs-range-arbitrage/auto_trade.sh</string>
-    <string>stop</string>
+    <string>scheduled-stop</string>
   </array>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>4</integer>
-    <key>Minute</key>
-    <integer>5</integer>
-  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
   <key>EnvironmentVariables</key>
   <dict>
     <key>SOXS_USE_LAUNCHD_TOPS</key>

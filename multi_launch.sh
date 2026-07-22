@@ -49,17 +49,18 @@ PY
 
 verify_same_day_selection_if_live() {
     "$VENV_PYTHON" - <<'PY'
+from src.ai_selector.selection_state import verify_live_startup_selection
+from src.utils.market_calendar import required_selection_date
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src.ai_selector.selection_state import verify_live_startup_selection
-
-required_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+required_date = required_selection_date(datetime.now(ZoneInfo("America/New_York")))
 ok, reason, state = verify_live_startup_selection(required_et_date=required_date)
 if not ok:
     print(f"Live startup blocked: {reason}")
     raise SystemExit(1)
-print(f"Selection freshness verified for live startup: {required_date} ({reason})")
+print(f"Selection freshness verified for live startup required selection date: {required_date} ({reason})")
 PY
 }
 

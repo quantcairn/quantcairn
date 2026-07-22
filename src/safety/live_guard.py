@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from src.ai_selector.selection_report import load_latest_ai_selection_state
+from src.utils.market_calendar import required_selection_date
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +117,12 @@ class LiveGuard:
         except Exception:
             pass  # timezone unavailable, skip check
 
-    # -- 4. TOP configs exist and have today's date --
+    # -- 4. TOP configs exist and have the required selection date --
 
     def _check_top_configs_exist(self) -> None:
         top_dir = PROJECT_DIR / "configs"
         found_any = False
-        today_str = _et_today().isoformat()
+        required_date = _required_selection_day()
         for idx in range(1, 6):
             path = top_dir / f"TOP{idx}.yaml"
             if not path.exists():
@@ -132,12 +133,14 @@ class LiveGuard:
             except Exception:
                 self._error(f"TOP{idx}.yaml is unreadable")
                 continue
+            enabled = bool(data.get("enabled", True))
             ticker = str(data.get("ticker") or "").strip().upper()
-            if not ticker or not EQUITY_SYMBOL_RE.fullmatch(ticker):
+            if enabled and (not ticker or not EQUITY_SYMBOL_RE.fullmatch(ticker)):
                 self._error(f"TOP{idx}.yaml has no valid ticker")
-            sel_date = str(data.get("selection", {}).get("selection_date") or "").strip()
-            if sel_date and sel_date != today_str:
-                self._error(f"TOP{idx}.yaml ({ticker}) selection_date={sel_date}, expected {today_str}")
+            selection_payload = data.get("selection") if isinstance(data.get("selection"), dict) else {}
+            sel_date = str(data.get("selection_date") or selection_payload.get("selection_date") or "").strip()
+            if sel_date and sel_date != required_date:
+                self._error(f"TOP{idx}.yaml ({ticker or 'disabled'}) selection_date={sel_date}, expected {required_date}")
         if not found_any:
             self._error("No TOP config files found in configs/")
 
@@ -148,10 +151,10 @@ class LiveGuard:
         if not isinstance(data, dict):
             self._error("ai_selection_latest.json does not exist")
             return
-        today_str = _et_today().isoformat()
+        required_date = _required_selection_day()
         sel_date = str(data.get("selection_date") or "").strip()
-        if sel_date != today_str:
-            self._error(f"AI selection_date={sel_date}, expected {today_str}")
+        if sel_date != required_date:
+            self._error(f"AI selection_date={sel_date}, expected {required_date}")
 
     # -- 6. Selection state consistency --
 
@@ -165,10 +168,10 @@ class LiveGuard:
         except Exception:
             self._error("ai_selection_state.json is corrupt")
             return
-        today_str = _et_today().isoformat()
+        required_date = _required_selection_day()
         state_date = str(state.get("et_date") or "").strip()
-        if state_date != today_str:
-            self._error(f"selection_state et_date={state_date}, expected {today_str}")
+        if state_date != required_date:
+            self._error(f"selection_state et_date={state_date}, expected {required_date}")
         # Verify TOP config symbols match state
         state_symbols = {
             str(s or "").strip().upper()
@@ -339,6 +342,16 @@ def _et_today() -> date:
         return datetime.now(pytz.timezone("America/New_York")).date()
     except Exception:
         return date.today()
+
+
+def _required_selection_day() -> str:
+    """Return the current market-calendar selection date expected by selectors."""
+    try:
+        import pytz
+        now_et = datetime.now(pytz.timezone("America/New_York"))
+        return required_selection_date(now_et)
+    except Exception:
+        return _et_today().isoformat()
 
 
 def _easter(year: int) -> date:

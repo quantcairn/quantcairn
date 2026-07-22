@@ -17,6 +17,8 @@ LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/trading.log"
 MULTI_LAUNCH="$PROJECT_DIR/multi_launch.sh"
+STATE_DIR="${SOXS_STATE_DIR:-$PROJECT_DIR/state}"
+SCHEDULE_DIR="$STATE_DIR/auto_trade_schedule"
 
 cd "$PROJECT_DIR" || exit 1
 
@@ -26,7 +28,13 @@ if [ -f "$LOCAL_AI_ENV" ]; then
     set +a
 fi
 
-echo "Using Python: $PYTHON_BIN"
+case "${1:-}" in
+    scheduled-start|scheduled-stop)
+        ;;
+    *)
+        echo "Using Python: $PYTHON_BIN"
+        ;;
+esac
 
 is_trading_day_now() {
     "$PYTHON_BIN" - <<'PY'
@@ -43,7 +51,101 @@ print(f"Trading day verified in ET: {now_et.date().isoformat()}")
 PY
 }
 
+schedule_marker_path() {
+    local action="$1"
+    "$PYTHON_BIN" - "$SCHEDULE_DIR" "$action" <<'PY'
+import sys
+from pathlib import Path
+from src.utils.trading_schedule import parse_env_now
+
+schedule_dir = Path(sys.argv[1])
+action = sys.argv[2]
+now_et = parse_env_now(__import__("os").environ.get("SOXS_SCHEDULE_NOW_ET"))
+if now_et is None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+print(schedule_dir / f"{action}_{now_et.date().isoformat()}.done")
+PY
+}
+
+should_run_scheduled_action() {
+    local action="$1"
+    local marker="$2"
+    "$PYTHON_BIN" - "$action" "$marker" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from src.utils.trading_schedule import auto_trade_decision, parse_env_now
+
+action = sys.argv[1]
+marker = Path(sys.argv[2])
+decision = auto_trade_decision(
+    action,
+    now_et=parse_env_now(os.environ.get("SOXS_SCHEDULE_NOW_ET")),
+    already_ran=marker.exists(),
+)
+verbose = str(os.environ.get("SOXS_SCHEDULE_VERBOSE") or "").strip().lower() in {"1", "true", "yes", "on"}
+if decision.should_run or verbose:
+    print(
+        "scheduled_decision "
+        f"action={decision.action} "
+        f"should_run={str(decision.should_run).lower()} "
+        f"reason={decision.reason} "
+        f"now_et={decision.now_et.isoformat()} "
+        f"session_date={decision.session_date} "
+        f"required_selection_date={decision.required_selection_date}"
+    )
+raise SystemExit(0 if decision.should_run else 2)
+PY
+}
+
+mark_scheduled_action_done() {
+    local action="$1"
+    local marker="$2"
+    mkdir -p "$(dirname "$marker")"
+    "$PYTHON_BIN" - "$marker" <<'PY'
+import sys
+from pathlib import Path
+from src.utils.trading_schedule import marker_timestamp, parse_env_now
+import os
+
+marker = Path(sys.argv[1])
+marker.parent.mkdir(parents=True, exist_ok=True)
+marker.write_text(marker_timestamp(parse_env_now(os.environ.get("SOXS_SCHEDULE_NOW_ET"))) + "\n", encoding="utf-8")
+PY
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Scheduled $action marked done: $marker" \
+        | tee -a "$LOG_FILE"
+}
+
 case "$1" in
+    scheduled-start)
+        marker="$(schedule_marker_path scheduled-start)"
+        if ! should_run_scheduled_action scheduled-start "$marker" >> "$LOG_FILE" 2>&1; then
+            exit 0
+        fi
+        "$0" start
+        status=$?
+        if [ "$status" -eq 0 ]; then
+            mark_scheduled_action_done scheduled-start "$marker"
+        fi
+        exit "$status"
+        ;;
+
+    scheduled-stop)
+        marker="$(schedule_marker_path scheduled-stop)"
+        if ! should_run_scheduled_action scheduled-stop "$marker" >> "$LOG_FILE" 2>&1; then
+            exit 0
+        fi
+        "$0" stop
+        status=$?
+        if [ "$status" -eq 0 ]; then
+            mark_scheduled_action_done scheduled-stop "$marker"
+        fi
+        exit "$status"
+        ;;
+
     start)
         if ! is_trading_day_now >> "$LOG_FILE" 2>&1; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Non-trading day; trading start skipped" \
@@ -72,17 +174,20 @@ case "$1" in
         fi
 
         if ! "$PYTHON_BIN" - <<'PY' >> "$LOG_FILE" 2>&1
-from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.ai_selector.selection_state import verify_selection_state
+from src.utils.market_calendar import required_selection_date
 
-required_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+from datetime import datetime
+
+now_et = datetime.now(ZoneInfo("America/New_York"))
+required_date = required_selection_date(now_et)
 ok, reason, state = verify_selection_state(required_et_date=required_date)
 if not ok:
     print(f"Selection state verification failed: {reason}; state={state}")
     raise SystemExit(1)
-print(f"Selection state verified for ET date {required_date}.")
+print(f"Selection state verified for required selection date {required_date}.")
 PY
         then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Selection freshness check failed; trading start aborted" \
@@ -113,7 +218,7 @@ PY
         ;;
 
     *)
-        echo "Usage: $0 {start|stop|status}"
+        echo "Usage: $0 {scheduled-start|scheduled-stop|start|stop|status}"
         exit 1
         ;;
 esac

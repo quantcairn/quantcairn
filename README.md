@@ -186,23 +186,25 @@ soxs-range-arbitrage/
 
 ## 自动启动（可选）
 
-推荐将 `launchd/com.soxs.arbitrage.plist`、`launchd/com.soxs.arbitrage.stop.plist` 与 `launchd/com.soxs.ai_selector.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。或者使用 `cron` 调度 `auto_trade.sh start|stop`。其中 AI 选股由 `scripts/ai_selector_wrapper.py` 在美东时间 `09:00` 自动执行一次，再由交易启动任务接管。
+推荐将 `launchd/com.soxs.arbitrage.plist`、`launchd/com.soxs.arbitrage.stop.plist` 与 `launchd/com.soxs.ai_selector.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。`launchd` 每分钟唤醒一次，实际是否启动/停止由 `auto_trade.sh scheduled-start|scheduled-stop` 使用美股交易日历和美东时间判断。其中 AI 选股由 `scripts/ai_selector_wrapper.py` 在美东时间 `09:00` 自动执行一次，再由交易启动任务接管。
 
-当前默认时刻与美股常规时段对齐如下：
+当前默认窗口与美股常规时段对齐如下：
 
 - 上海时间 `21:00` = 美东时间 `09:00`：执行 AI 选股
-- 上海时间 `21:25` = 美东时间 `09:25`：启动交易任务
-- 上海时间 `04:05` = 美东时间 `16:05`：停止交易任务并进入收盘后状态
+- 美东时间 `09:25` 后的启动窗口：启动交易任务
+- 美东时间 `16:05` 后的停止窗口：停止交易任务并进入收盘后状态
+- 夏令时、冬令时、周末和美股休市日均由脚本判断，不依赖固定北京时间偏移
 
 调度注意事项：
 
 - `launchd` 与 `cron` 的启动/停止任务二选一，不要同时启用
 - 如果同时启用，会造成重复启动，日志里会反复出现 `AI Top3 trading started`
-- 无论使用 `launchd` 还是 `cron`，都应调用 `auto_trade.sh start|stop`
+- 使用 `launchd` 时应调用 `auto_trade.sh scheduled-start|scheduled-stop`
+- 手动启动/停止仍使用 `auto_trade.sh start|stop`
 - 不要再直接用 `multi_launch.sh start|stop` 做定时启停；虽然现在也会校验“当天选股状态”，但标准入口仍应保持为 `auto_trade.sh` / `tradectl.sh`
 - `launchd/com.soxs.arbitrage*.plist` 现在默认使用稳定的后台常驻路径，不再强制 TOP1-5 走 `launchd` 子服务
 - `auto_trade.sh start`、`tradectl.sh up`、`multi_launch.sh start`、`multi_launch.sh restart-all` 现在都会先检查是否为美股交易日；像 `2026-07-03` 这类休市日会直接跳过启动
-- 以上 live TOP 启动入口现在都会检查当天美东 `selection_state`；状态缺失、日期过期或 `TOP1~TOP5` 与状态不一致时会直接拒绝启动
+- 以上 live TOP 启动入口现在都会检查 `required_selection_date` 对应的 `selection_state`；状态缺失、日期过期或 `TOP1~TOP5` 与状态不一致时会直接拒绝启动
 - 即使直接运行 `run.py --config configs/TOP1.yaml --live`，现在也会触发同样的当天选股校验
 
 示例如下：
@@ -218,10 +220,10 @@ launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.stop.plist
 launchctl load ~/Library/LaunchAgents/com.soxs.ai_selector.plist
 
 # 或使用 crontab（示例，只在不使用 launchd 时启用）
-# 每个交易日 21:25 启动交易引擎（上海时间，对应美东 09:25）
-25 21 * * 1-5 /Users/chenwei/soxs-range-arbitrage/auto_trade.sh start
-# 每个交易日 04:05 停止（上海时间，对应美东 16:05）
-5 4 * * 1-5 /Users/chenwei/soxs-range-arbitrage/auto_trade.sh stop
+# 每分钟唤醒，脚本自行判断美股交易日和美东 09:25 启动窗口
+* * * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh scheduled-start
+# 每分钟唤醒，脚本自行判断美股交易日和美东 16:05 停止窗口
+* * * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh scheduled-stop
 ```
 
 日常手动控制建议直接使用：
