@@ -305,6 +305,18 @@ class OrphanPositionMonitor:
         quantity = int(getattr(pos, "quantity", 0) or 0)
         if quantity <= 0:
             return
+
+        # ── B4: Ownership gate — skip if a TOP engine is actively assigned ──
+        if ticker in self._active_assigned_symbols():
+            append_runtime_audit(
+                {
+                    "phase": "orphan_exit_skipped",
+                    "symbol": ticker,
+                    "reason": "active_top_owner",
+                }
+            )
+            return
+
         avg_cost = float(getattr(pos, "avg_entry_price", 0.0) or 0.0)
         current_price = float(getattr(pos, "current_price", 0.0) or avg_cost or 0.0)
         if avg_cost <= 0 or current_price <= 0:
