@@ -22,6 +22,10 @@ runtime/
 artifacts/backtests/
 artifacts/shadow/
 artifacts/candidates/
+artifacts/selector_funnel/
+artifacts/research/daily/
+artifacts/learning/outcome_dataset.csv
+artifacts/learning/suggested_weights.json
 data/market/
 site/
 .pytest_cache/
