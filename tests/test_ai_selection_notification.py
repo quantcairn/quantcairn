@@ -791,6 +791,57 @@ def test_ai_selection_message_renders_mixed_formal_and_research_candidates(monke
     assert "候选1：NVDA" in body
 
 
+def test_ai_selection_message_prefers_final_market_data_over_precheck_snapshot(monkeypatch):
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    candidate = _sample_top(1, "SOFI")
+    candidate.update(
+        {
+            "current_validation_status": "AI_CANDIDATE",
+            "trade_admission_status": "NOT_TRADABLE",
+            "data_status": "COMPLETE",
+            "record_completeness": "COMPLETE",
+            "market_data_sufficiency": "COMPLETE",
+            "research_evidence_status": "FAILED",
+            "formal_scoring_eligibility": True,
+            "scoring_eligible": True,
+            "score_type": "FORMAL",
+            "score_is_formal": True,
+            "quality_state_conflict": True,
+            "quality_state_conflict_fields": ["ohlcv_status", "history_status", "scoring_eligible"],
+            "data_sufficiency": {
+                "data_status": "VALID",
+                "quote_status": "OK",
+                "ohlcv_status": "MISSING",
+                "history_status": "DEGRADED",
+                "scoring_eligible": False,
+            },
+        }
+    )
+    report = {
+        **_sample_report(selection_count=0),
+        "execution_status": "COMPLETED",
+        "selection_stage": "FINALIZED",
+        "result_quality": "DEGRADED",
+        "research_admission": "RESEARCH_ONLY",
+        "selection_outcome": "NO_TRADABLE_SELECTION",
+        "completed_with_selection": False,
+        "requested_top_n": 3,
+        "selected_top_n": 0,
+        "top3": [candidate],
+    }
+
+    _, body = alerts._build_ai_selection_message(report, [candidate])
+
+    assert "正式TOP：0/3" in body
+    assert "候选1：SOFI" in body
+    assert "Market Data Sufficiency：COMPLETE" in body
+    assert "Data Sufficiency：通过" in body
+    assert "Scoring Eligible：是" in body
+    assert "评分类型：FORMAL / formal=是" in body
+    assert "预检查：VALID · 可评分=否" in body
+    assert "状态冲突诊断：预检查与最终状态不一致" in body
+
+
 def test_ai_selection_message_truncates_long_reason():
     _, body = alerts._build_ai_selection_message(
         _sample_report(),

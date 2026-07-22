@@ -801,6 +801,12 @@ def formal_selection_ineligibility_reasons(candidate: Mapping[str, Any]) -> list
     score_value = present("candidate_score", "final_score", "score", "ai_score")
     if score_value is None:
         reasons.append("score_missing")
+    score_type = _normalize_text(present("score_type")).upper()
+    if score_type == "DIAGNOSTIC":
+        reasons.append("diagnostic_score_not_formal")
+    score_is_formal = present("score_is_formal")
+    if score_is_formal is False:
+        reasons.append("score_not_formal")
     score_source = _normalize_text(present("score_source")).upper()
     score_is_current = present("score_is_current_run")
     if score_source in _INVALID_SCORE_SOURCES or score_is_current is not True:

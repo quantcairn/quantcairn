@@ -452,6 +452,7 @@ def _recommended_strategy(candidate: dict[str, Any], trend_score: float) -> tupl
 
 def score_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     item = dict(candidate or {})
+    score_is_formal = item.get("formal_scoring_eligibility", item.get("scoring_eligible", True)) is not False
     base_score = _safe_float(_first_present(item, ("score", "final_score", "candidate_score", "base_score", "ai_score")), 50.0) or 50.0
 
     liquidity_score, liquidity_reasons = _liquidity_score(item)
@@ -524,9 +525,30 @@ def score_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     item["strategy_fit_score"] = round(float(strategy_fit_score), 2)
     item["recommended_strategy"] = recommended_strategy
     item["score_reason"] = score_reason
-    item["candidate_score"] = round(_clamp(candidate_score), 2)
-    item["score"] = item["candidate_score"]
-    item["final_score"] = item["candidate_score"]
+    scored_value = round(_clamp(candidate_score), 2)
+    if score_is_formal:
+        item["score_type"] = "FORMAL"
+        item["score_is_formal"] = True
+        item["formal_candidate_score"] = scored_value
+        item["candidate_score"] = scored_value
+        item["score"] = scored_value
+        item["final_score"] = scored_value
+    else:
+        item["score_type"] = "DIAGNOSTIC"
+        item["score_is_formal"] = False
+        item["formal_candidate_score"] = None
+        item["candidate_score"] = None
+        item["score"] = None
+        item["final_score"] = None
+        item["diagnostic_score"] = scored_value
+        item["diagnostic_factor_scores"] = {
+            "liquidity": item["liquidity_score"],
+            "trend": item["trend_score"],
+            "volatility": item["volatility_score"],
+            "risk": item["risk_score"],
+            "strategy_fit": item["strategy_fit_score"],
+        }
+        item["diagnostic_score_reason"] = score_reason
     return item
 
 

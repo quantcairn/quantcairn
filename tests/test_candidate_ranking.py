@@ -61,3 +61,28 @@ def test_fallback_to_existing_score_without_factor_fields():
     assert candidate["score"] == 77.0
     assert candidate["final_score"] == 77.0
     assert candidate["score_reason"] == "fallback_to_existing_score"
+
+
+def test_formal_ineligible_candidate_only_gets_diagnostic_score():
+    candidate = score_candidate(
+        {
+            "ticker": "SOFI",
+            "asset_type": "common_stock",
+            "formal_scoring_eligibility": False,
+            "average_dollar_volume_20d": 900_000_000,
+            "current_price": 20.0,
+            "ma20": 19.0,
+            "ma50": 18.0,
+            "atr_20_percentage": 6.0,
+            "risk_score": 70.0,
+        }
+    )
+
+    assert candidate["score_type"] == "DIAGNOSTIC"
+    assert candidate["score_is_formal"] is False
+    assert candidate["formal_candidate_score"] is None
+    assert candidate["candidate_score"] is None
+    assert candidate["final_score"] is None
+    assert candidate["score"] is None
+    assert candidate["diagnostic_score"] > 0
+    assert candidate["diagnostic_factor_scores"]["liquidity"] > 0

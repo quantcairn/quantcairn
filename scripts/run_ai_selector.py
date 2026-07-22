@@ -554,6 +554,42 @@ def _attach_current_run_score_provenance(item: dict, *, generated_at: str | None
     return payload
 
 
+def _apply_formal_score_semantics(item: dict) -> dict:
+    payload = dict(item or {})
+    is_formal = bool(payload.get("formal_scoring_eligibility", payload.get("scoring_eligible", False)))
+    score_value = _coalesce_float(
+        payload.get("candidate_score"),
+        payload.get("final_score"),
+        payload.get("score"),
+        payload.get("ai_score"),
+        default=None,
+    )
+    if is_formal:
+        if score_value is not None:
+            payload["formal_candidate_score"] = float(score_value)
+            payload["candidate_score"] = float(score_value)
+            payload["score"] = float(score_value)
+            payload["final_score"] = float(score_value)
+        payload["score_type"] = "FORMAL"
+        payload["score_is_formal"] = True
+        return payload
+
+    diagnostic_score = _coalesce_float(payload.get("diagnostic_score"), score_value, default=None)
+    if diagnostic_score is not None:
+        payload["diagnostic_score"] = float(diagnostic_score)
+    payload["diagnostic_score_reason"] = str(payload.get("diagnostic_score_reason") or payload.get("score_reason") or "")
+    factor_scores = payload.get("factor_scores")
+    if isinstance(factor_scores, dict):
+        payload["diagnostic_factor_scores"] = dict(factor_scores)
+    payload["formal_candidate_score"] = None
+    payload["candidate_score"] = None
+    payload["score"] = None
+    payload["final_score"] = None
+    payload["score_type"] = "DIAGNOSTIC"
+    payload["score_is_formal"] = False
+    return payload
+
+
 def _enrich_candidate_quality_rows(
     rows: list[dict],
     *,
@@ -576,13 +612,13 @@ def _enrich_candidate_quality_rows(
             provider_audit=provider_audit,
             provider_outputs=provider_outputs,
         )
+        item = _apply_formal_score_semantics(item)
         item["candidate_score"] = float(
             item.get("candidate_score")
             or item.get("final_score")
             or item.get("score")
-            or item.get("ai_score")
             or 0.0
-        )
+        ) if item.get("score_is_formal", False) else None
         item["confidence_score"] = float(
             item.get("confidence_score")
             or item.get("confidence")

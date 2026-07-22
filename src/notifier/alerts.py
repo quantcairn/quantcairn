@@ -957,6 +957,7 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
     allocation = dict(top_config.get("allocation") or {})
     ticker = _candidate_symbol(top_config) or str(top_config.get("ticker") or f"TOP{rank}")
     final_score = _first_non_empty(selection.get("final_score"), selection.get("score"), top_config.get("final_score"), top_config.get("score"), default="-")
+    diagnostic_score = _first_non_empty(selection.get("diagnostic_score"), top_config.get("diagnostic_score"), default="-")
     ai_score = _first_non_empty(selection.get("ai_score"), top_config.get("ai_score"), default="-")
     range_score = _first_non_empty(selection.get("range_score"), top_config.get("range_score"), default="-")
     leveraged = bool(_first_non_empty(selection.get("leveraged_etf"), top_config.get("leveraged_etf"), default=False))
@@ -968,8 +969,15 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
     validation_status = _validation_status(top_config)
     trade_admission_status = _trade_admission(top_config)
     data_sufficiency = _first_non_empty(selection.get("data_sufficiency"), top_config.get("data_sufficiency"), default=None)
+    precheck_data_sufficiency = _first_non_empty(selection.get("precheck_data_sufficiency"), top_config.get("precheck_data_sufficiency"), default=data_sufficiency if isinstance(data_sufficiency, dict) else None)
     record_completeness = str(_first_non_empty(selection.get("record_completeness"), top_config.get("record_completeness"), default="COMPLETE" if ticker else "INCOMPLETE")).strip().upper()
-    market_data_sufficiency = str(_first_non_empty(selection.get("market_data_sufficiency"), top_config.get("market_data_sufficiency"), default="SUFFICIENT" if data_sufficiency is True else "FAILED")).strip().upper()
+    market_default = "COMPLETE" if data_status in {"VALID", "COMPLETE"} else "FAILED"
+    market_data_sufficiency = str(_first_non_empty(selection.get("market_data_sufficiency"), top_config.get("market_data_sufficiency"), default=market_default)).strip().upper()
+    if market_data_sufficiency == "SUFFICIENT":
+        market_data_sufficiency = "COMPLETE"
+    formal_scoring_eligible = bool(_first_non_empty(selection.get("formal_scoring_eligibility"), top_config.get("formal_scoring_eligibility"), selection.get("scoring_eligible"), top_config.get("scoring_eligible"), default=False))
+    score_type = str(_first_non_empty(selection.get("score_type"), top_config.get("score_type"), default="FORMAL" if formal_scoring_eligible else "DIAGNOSTIC")).strip().upper()
+    score_is_formal = bool(_first_non_empty(selection.get("score_is_formal"), top_config.get("score_is_formal"), default=score_type == "FORMAL"))
     research_complete, research_status, research_reason = _research_status_for_item(top_config, report)
     provenance = _score_provenance(top_config, report)
     fallback_sources = _first_non_empty(selection.get("fallback_sources"), top_config.get("fallback_sources"), default=[])
@@ -998,8 +1006,8 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
     if target_capital <= 0 and current_price > 0 and target_shares > 0:
         target_capital = current_price * target_shares
     universe_filter_text = "通过" if filter_passed else "拒绝"
-    data_sufficiency_text = "通过" if data_sufficiency is True or data_status in {"VALID", "COMPLETE"} and market_data_sufficiency == "SUFFICIENT" else "失败"
-    scoring_eligible_text = "是" if bool(_first_non_empty(selection.get("scoring_eligible"), top_config.get("scoring_eligible"), default=False)) else "否"
+    data_sufficiency_text = "通过" if market_data_sufficiency == "COMPLETE" else "失败"
+    scoring_eligible_text = "是" if formal_scoring_eligible else "否"
     kind = "杠杆/反向ETF" if leveraged else "普通标的"
     fallback_text = "是" if candidate_fallback else "否"
     fallback_source_text = " / ".join(str(item).strip().upper() for item in (fallback_sources or []) if str(item).strip())
@@ -1014,6 +1022,8 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
     lines = [
         f"{display_label}：{ticker}",
         f"分数：final {final_score} / AI {ai_score_label} / Range {range_score}",
+        f"诊断分：{diagnostic_score}",
+        f"评分类型：{score_type} / formal={'是' if score_is_formal else '否'}",
         f"分数来源：{provenance['score_source']} / {provenance['score_provider']} / current_run={'是' if provenance['score_is_current_run'] else '否'}",
         f"分数状态：{provenance['score_provenance_status']}",
         f"类型：{kind}",
@@ -1030,6 +1040,14 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
         f"数据记录：{record_completeness} · 行情充分性={market_data_sufficiency} · 研究证据={research_status}",
         f"数据标记：{data_status or 'UNKNOWN'} · candidate_fallback={'是' if candidate_fallback else '否'} · mock={'是' if mock_used else '否'}",
     ]
+    if isinstance(precheck_data_sufficiency, dict):
+        precheck_status = str(precheck_data_sufficiency.get("data_status") or "UNKNOWN").strip().upper()
+        precheck_eligible = "是" if precheck_data_sufficiency.get("scoring_eligible") is True else "否"
+        lines.append(f"预检查：{precheck_status} · 可评分={precheck_eligible}")
+    if bool(_first_non_empty(selection.get("quality_state_conflict"), top_config.get("quality_state_conflict"), default=False)):
+        fields = _first_non_empty(selection.get("quality_state_conflict_fields"), top_config.get("quality_state_conflict_fields"), default=[])
+        field_text = ", ".join(str(item) for item in fields) if isinstance(fields, list) else str(fields)
+        lines.append(f"状态冲突诊断：预检查与最终状态不一致 ({field_text})")
     if fallback_source_text:
         lines.append(f"fallback来源：{fallback_source_text}")
     if mock_source_text:
