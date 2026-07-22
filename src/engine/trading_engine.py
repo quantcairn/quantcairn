@@ -298,10 +298,21 @@ class TradingEngine:
         self._sell_lock_path = (
             STATE_DIR / "sell_locks" / f"{self.ticker.upper()}.lock"
         )
+        self._exit_fence_path = (
+            STATE_DIR / "exit_fences" / f"{self.ticker.upper()}.json"
+        )
         self._position_sync_fence: Optional[dict] = None
         self._load_pending_order()
         self._load_position_sync_fence()
-        self._reduce_only = bool(getattr(config.position, "reduce_only", False))
+        # ── Live safety: all live engines start in reduce-only by default ──
+        # B1: restore reduce-only live startup gate
+        # B3: AI 0/3 selection also leaves engine in reduce-only
+        self._live_arming_status: str = "DISARMED"  # DISARMED | REDUCE_ONLY | ARMED
+        if self.mode == "live":
+            self._reduce_only = True  # Always start reduce-only
+            self._live_arming_status = "REDUCE_ONLY"
+        else:
+            self._reduce_only = bool(getattr(config.position, "reduce_only", False))
         if self.mode == "live" and (
             self._position_sync_fence
             or (
@@ -404,6 +415,129 @@ class TradingEngine:
                 source="ai_report_fallback",
             )
         return False
+
+    def _try_arm_live_ordering(self) -> None:
+        """B1+B2+B3: Require ALL safety conditions before enabling live BUY.
+
+        Called once during startup after broker connect, LiveGuard, and
+        SelectionBundle checks have completed.  On success, lifts
+        reduce_only to False and sets arming status to ARMED.
+        """
+        if self.mode != "live":
+            return
+        if self._live_arming_status == "ARMED":
+            return  # Already armed
+
+        blocking: list[str] = []
+
+        # ── B2: allow_live_order AND logic ──────────────────────────
+        lb = self.config.broker.longbridge
+        top_allow = bool(getattr(lb, "allow_live_order", False))
+
+        # Check config.local.yaml for live-order permission
+        local_allow = False
+        try:
+            from ..config.runtime_values import load_private_longbridge_config
+            private = load_private_longbridge_config()
+            local_allow = bool(
+                private.get("allow_live_order", False)
+                or private.get("environment", "").strip().lower() == "prod"
+            )
+        except Exception:
+            pass
+
+        broker_live = (
+            bool(getattr(lb, "enabled", False))
+            and str(getattr(lb, "environment", "") or "").strip().lower() == "prod"
+            and str(getattr(lb, "account_type", "") or "").strip().lower()
+            not in {"paper", "demo", "sandbox"}
+        )
+
+        live_guard_ok = bool(
+            (self._live_guard_verdict or {}).get("allowed_to_open_new_positions", False)
+        )
+
+        # ── B3: selection authority check ───────────────────────────
+        selection_active = False
+        ticker_selected = False
+        try:
+            from ..ai_selector.selection_state import (
+                load_selection_state,
+                current_top_config_symbols,
+            )
+            from ..utils.market_calendar import required_selection_date
+            state = load_selection_state()
+            if state:
+                sel_date = str(state.get("et_date") or "")
+                req_date = required_selection_date()
+                selected_symbols = [
+                    str(s or "").strip().upper()
+                    for s in (state.get("selected_symbols") or state.get("selection_symbols") or [])
+                    if str(s or "").strip()
+                ]
+                ticker_selected = self.ticker.upper() in selected_symbols
+                selection_active = (
+                    len(selected_symbols) > 0
+                    and bool(sel_date)
+                    and bool(req_date)
+                )
+        except Exception:
+            pass
+
+        # ── Assess ──────────────────────────────────────────────────
+        top_has_enabled_live_order = top_allow
+        effective_allow = all([
+            top_has_enabled_live_order,
+            broker_live,
+            live_guard_ok,
+            selection_active,
+            ticker_selected,
+        ])
+
+        if not top_has_enabled_live_order:
+            blocking.append("top_allow_live_order=false")
+        if not broker_live:
+            blocking.append("broker_not_prod_live")
+        if not live_guard_ok:
+            blocking.append("live_guard_blocked")
+        if not selection_active:
+            blocking.append("no_active_selection")
+        if not ticker_selected:
+            blocking.append("ticker_not_in_selected_symbols")
+
+        audit = {
+            "phase": "live_arming_check",
+            "ticker": self.ticker,
+            "allow_live_order_inputs": {
+                "top_config": top_has_enabled_live_order,
+                "local_config": local_allow,
+                "live_guard": live_guard_ok,
+                "selection_active": selection_active,
+                "ticker_selected": ticker_selected,
+                "broker_live": broker_live,
+                "reduce_only": self._reduce_only,
+            },
+            "effective_allow_live_order": effective_allow,
+            "blocking_reasons": blocking,
+            "arming_status": self._live_arming_status,
+        }
+        self._write_runtime_audit("live_arming_check", **audit)
+
+        if effective_allow:
+            self._reduce_only = False
+            self._live_arming_status = "ARMED"
+            logger.info(
+                "🔓 Live ordering ARMED for %s — all safety gates passed. "
+                "New BUY positions allowed.",
+                self.ticker,
+            )
+        else:
+            logger.warning(
+                "🔒 Live ordering BLOCKED for %s: %s. "
+                "Engine running in reduce-only mode.",
+                self.ticker,
+                ", ".join(blocking),
+            )
 
     def _ai_fallback_policy(self) -> tuple[bool, bool, float]:
         ai_cfg = getattr(self.config, "ai_selector", None)
@@ -575,9 +709,13 @@ class TradingEngine:
 
             if not self._live_guard_verdict.get("allowed_to_open_new_positions", False):
                 self._reduce_only = True
+                self._live_arming_status = "REDUCE_ONLY"
                 logger.info("LiveGuard: reduce-only mode enforced (new positions blocked)")
             else:
                 logger.info("LiveGuard: all checks passed — new positions allowed")
+
+            # ── B1+B2+B3: Attempt to arm live ordering ──
+            self._try_arm_live_ordering()
 
         # Do NOT re-run AI Selector at live engine startup — only read existing state.
         if self.mode != "live":
@@ -933,6 +1071,12 @@ class TradingEngine:
         if self._reduce_only:
             self._last_signal_reason = "仅减仓模式：今晚不新开仓"
             return
+
+        # ── B5: exit fence — block re-buy after risk/orphan exits ──
+        if self._exit_fence_active():
+            self._last_signal_reason = "BUY blocked: exit fence active (risk/orphan exit cooldown)"
+            return
+
         self._trade_in_progress = True
         try:
             try:
@@ -2140,18 +2284,6 @@ class TradingEngine:
 
     def _verify_live_startup_safety(self) -> bool:
         """Fail closed unless live startup has verified selection and broker data."""
-        if not self._reduce_only:
-            self._last_signal_reason = "实盘启动已阻止：global reduce-only 未开启"
-            self._write_runtime_audit(
-                "startup_safety_check",
-                broker_position_verified=False,
-                broker_account_verified=False,
-                startup_allowed=False,
-                reason="global_reduce_only_disabled",
-                startup_role=self._startup_role,
-            )
-            self.notifier.alert(self._last_signal_reason, "error")
-            return False
         top_symbols = {
             str(symbol or "").strip().upper() for symbol in current_top_config_symbols()
         }
@@ -2568,8 +2700,50 @@ class TradingEngine:
                     lock_path=str(self._sell_lock_path),
                     reason=reason,
                 )
+                # ── B5: Write exit fence on risk/orphan exits ──
+                if "orphan" in reason or "risk" in reason:
+                    self._set_exit_fence(reason)
         except OSError as exc:
             logger.error("Could not release sell lock for %s: %s", self.ticker, exc)
+
+    # ── B5: exit fence ─────────────────────────────────────────────
+
+    def _exit_fence_active(self) -> bool:
+        """Return True if a risk/orphan exit fence is still in effect."""
+        try:
+            if not self._exit_fence_path.exists():
+                return False
+            data = json.loads(self._exit_fence_path.read_text(encoding="utf-8"))
+            expires_at = float(data.get("expires_at", 0) or 0)
+            if time.time() > expires_at:
+                self._exit_fence_path.unlink(missing_ok=True)
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _set_exit_fence(self, reason: str, duration_seconds: int = 600) -> None:
+        """Prevent TOP engines from re-buying after a risk/orphan exit."""
+        self._exit_fence_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "symbol": self.ticker.upper(),
+            "source": reason,
+            "created_at": time.time(),
+            "expires_at": time.time() + duration_seconds,
+            "reason": reason,
+        }
+        try:
+            self._exit_fence_path.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+            self._write_runtime_audit(
+                "exit_fence_set",
+                symbol=self.ticker.upper(),
+                reason=reason,
+                duration_seconds=duration_seconds,
+            )
+        except OSError:
+            pass
 
     def _load_pending_order(self) -> None:
         """Restore an unresolved live order so restarts cannot submit duplicates."""
