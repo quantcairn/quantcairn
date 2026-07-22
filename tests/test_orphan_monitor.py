@@ -230,6 +230,8 @@ def test_orphan_monitor_never_submits_buy():
 def test_orphan_monitor_soxs_special_exits_submit_sell(current_price, reason):
     broker = FakeBroker(positions=[_position("SOXS", 7, 100.0, current_price)])
     monitor = OrphanPositionMonitor(broker=broker)
+    # B4: mock TOP engine offline so SOXS is treated as an orphan
+    monitor._active_assigned_symbols = lambda: set()
     pos = _position("SOXS", 7, 100.0, current_price)
     engine = monitor._engine_for_symbol("SOXS")
     _use_test_state(engine, f"soxs-{reason}")
@@ -245,6 +247,8 @@ def test_orphan_monitor_soxs_special_exits_submit_sell(current_price, reason):
 def test_orphan_exit_trade_notification_uses_live_mode():
     broker = FakeBroker(positions=[_position("SOXS", 7, 100.0, 105.0)])
     monitor = OrphanPositionMonitor(broker=broker)
+    # B4: mock TOP engine offline so SOXS is treated as an orphan
+    monitor._active_assigned_symbols = lambda: set()
     pos = _position("SOXS", 7, 100.0, 105.0)
     engine = monitor._engine_for_symbol("SOXS")
     engine.notifier = FakeNotifier()
