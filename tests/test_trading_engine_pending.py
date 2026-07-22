@@ -473,11 +473,16 @@ def test_position_sync_fence_survives_restart():
     second._clear_position_sync_fence()
 
 
-def test_live_startup_safety_blocks_when_reduce_only_disabled():
+def test_live_engine_starts_in_reduce_only_mode():
+    """B1: All live engines now start in reduce_only=True by default."""
     engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
-    engine._reduce_only = False
+    assert engine._reduce_only is True
+    assert engine._live_arming_status == "REDUCE_ONLY"
 
-    assert engine._verify_live_startup_safety() is False
+
+def test_paper_engine_reduce_only_from_config():
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="paper"), ignore_trading_hours=True)
+    assert engine._live_arming_status == "DISARMED"
 
 
 def test_live_startup_safety_blocks_unreliable_account():
