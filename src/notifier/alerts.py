@@ -1046,6 +1046,9 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
     formal_scoring_eligible = bool(_first_non_empty(selection.get("formal_scoring_eligibility"), top_config.get("formal_scoring_eligibility"), selection.get("scoring_eligible"), top_config.get("scoring_eligible"), default=False))
     score_type = str(_first_non_empty(selection.get("score_type"), top_config.get("score_type"), default="FORMAL" if formal_scoring_eligible else "DIAGNOSTIC")).strip().upper()
     score_is_formal = bool(_first_non_empty(selection.get("score_is_formal"), top_config.get("score_is_formal"), default=score_type == "FORMAL"))
+    next_validation_stage = str(_first_non_empty(selection.get("next_validation_stage"), top_config.get("next_validation_stage"), default="")).strip().upper()
+    next_validation_stage_label = str(_first_non_empty(selection.get("next_validation_stage_label"), top_config.get("next_validation_stage_label"), default="")).strip()
+    validation_path_note = str(_first_non_empty(selection.get("validation_path_note"), top_config.get("validation_path_note"), default="")).strip()
     research_complete, research_status, research_reason = _research_status_for_item(top_config, report)
     provenance = _score_provenance(top_config, report)
     fallback_sources = _first_non_empty(selection.get("fallback_sources"), top_config.get("fallback_sources"), default=[])
@@ -1108,6 +1111,11 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
         f"数据记录：{record_completeness} · 行情充分性={market_data_sufficiency} · 研究证据={research_status}",
         f"数据标记：{data_status or 'UNKNOWN'} · candidate_fallback={'是' if candidate_fallback else '否'} · mock={'是' if mock_used else '否'}",
     ]
+    if next_validation_stage:
+        stage_text = f"{next_validation_stage_label}（{next_validation_stage}）" if next_validation_stage_label else next_validation_stage
+        lines.append(f"下一验证阶段：{stage_text}")
+    if validation_path_note:
+        lines.append(f"验证说明：{validation_path_note}")
     if isinstance(precheck_data_sufficiency, dict):
         precheck_status = str(precheck_data_sufficiency.get("data_status") or "UNKNOWN").strip().upper()
         precheck_eligible = "是" if precheck_data_sufficiency.get("scoring_eligible") is True else "否"
@@ -1146,7 +1154,7 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
             continue
         seen_research.add(symbol)
         research_items.append(row)
-    for bucket_name in ("research_candidates", "ranked_candidates", "top10", "top5", "candidates", "diagnostic_candidates"):
+    for bucket_name in ("research_top_candidates", "research_candidates", "ranked_candidates", "top10", "top5", "candidates", "diagnostic_candidates"):
         bucket = report.get(bucket_name)
         if not isinstance(bucket, list):
             continue
@@ -1173,6 +1181,10 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     stale_reason = str(report.get("stale_reason") or "").strip()
     requested_top_n = int(_first_non_empty(report.get("requested_top_n"), report.get("target_top_n"), 3, default=3) or 3)
     selected_top_n = len(formal_top_items)
+    research_requested_top_n = int(_first_non_empty(report.get("research_requested_top_n"), requested_top_n, default=requested_top_n) or requested_top_n)
+    research_selected_top_n = int(_first_non_empty(report.get("research_selected_top_n"), len(research_items), default=len(research_items)) or 0)
+    tradable_requested_top_n = int(_first_non_empty(report.get("tradable_requested_top_n"), requested_top_n, default=requested_top_n) or requested_top_n)
+    tradable_selected_top_n = int(_first_non_empty(report.get("tradable_selected_top_n"), selected_top_n, default=selected_top_n) or 0)
     missing_count = max(0, requested_top_n - selected_top_n)
     missing_slots = [f"TOP{i}" for i in range(selected_top_n + 1, requested_top_n + 1)] if missing_count > 0 else []
     fallback_used = bool(report.get("fallback_used", False))
@@ -1311,6 +1323,8 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         f"流程状态：{pipeline_status}",
         f"选股结果：{selection_outcome}",
         f"已产生正式候选：{'是' if completed_with_selection else '否'}",
+        f"研究候选：{research_selected_top_n}/{research_requested_top_n}",
+        f"可交易候选：{tradable_selected_top_n}/{tradable_requested_top_n}",
         f"正式TOP：{selected_top_n}/{requested_top_n}",
         f"缺失槽位：{missing_count}{'（' + ', '.join(missing_slots) + '）' if missing_slots else ''}",
         f"执行状态：{execution_text} ({execution_status or 'COMPLETED'})",
@@ -1339,6 +1353,8 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
             lines.extend(nearest_rejected_lines)
         else:
             lines.append("暂无可解释的最近候选")
+        if research_items:
+            lines.append("存在研究候选，但尚无可进入 Paper / Live 的可交易候选。")
     if last_completed_session or daily_data_as_of or premarket_snapshot_at or freshness_status or stale_reason:
         lines.append("")
 
@@ -1353,7 +1369,7 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     if research_items:
         lines.append("未准入研究候选：")
         for idx, item in enumerate(research_items[:10], start=1):
-            lines.append(_ticker_line(dict(item or {}), idx, label=f"候选{idx}", report=report))
+            lines.append(_ticker_line(dict(item or {}), idx, label=f"研究候选{idx}", report=report))
             lines.append("")
 
     lines.extend(

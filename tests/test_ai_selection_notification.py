@@ -615,8 +615,10 @@ def test_ai_selection_message_uses_manifest_first_bundle_and_time_fields(monkeyp
     assert "结果生成：2026-07-17 11:42 ET" in body
     assert "通知发送：2026-07-18 06:25 北京时间" in body
     assert "正式TOP：0/3" in body
+    assert "研究候选：1/3" in body
+    assert "可交易候选：0/3" in body
     assert "未准入研究候选：" in body
-    assert "候选1：SOFI" in body
+    assert "研究候选1：SOFI" in body
     assert "缺失槽位：3（TOP1, TOP2, TOP3）" in body
     assert "候选不足主要原因：" in body
     assert "- 低成交额：7" in body
@@ -833,8 +835,8 @@ def test_ai_selection_message_separates_research_only_candidates_from_formal_top
     assert "才可进入 Backtest 或 Paper" not in body
     assert "TOP1：NVDA" not in body
     assert "TOP2：MSFT" not in body
-    assert "候选1：NVDA" in body
-    assert "候选2：MSFT" in body
+    assert "研究候选1：NVDA" in body
+    assert "研究候选2：MSFT" in body
     assert "Trade Admission：NOT_TRADABLE" in body
     assert "分数状态：INVALID_SCORE_PROVENANCE" in body
     assert "Research Evidence：FAILED" in body
@@ -869,7 +871,7 @@ def test_ai_selection_message_renders_mixed_formal_and_research_candidates(monke
     assert "TOP1：SOXS" in body
     assert "TOP2：NVDA" not in body
     assert "未准入研究候选：" in body
-    assert "候选1：NVDA" in body
+    assert "研究候选1：NVDA" in body
 
 
 def test_ai_selection_message_prefers_final_market_data_over_precheck_snapshot(monkeypatch):
@@ -914,13 +916,70 @@ def test_ai_selection_message_prefers_final_market_data_over_precheck_snapshot(m
     _, body = alerts._build_ai_selection_message(report, [candidate])
 
     assert "正式TOP：0/3" in body
-    assert "候选1：SOFI" in body
+    assert "研究候选：1/3" in body
+    assert "可交易候选：0/3" in body
+    assert "研究候选1：SOFI" in body
     assert "Market Data Sufficiency：COMPLETE" in body
     assert "Data Sufficiency：通过" in body
     assert "Scoring Eligible：是" in body
     assert "评分类型：FORMAL / formal=是" in body
     assert "预检查：VALID · 可评分=否" in body
     assert "状态冲突诊断：预检查与最终状态不一致" in body
+
+
+def test_ai_selection_message_uses_research_top_candidates_as_validation_path():
+    candidate = {
+        "ticker": "SOFI",
+        "candidate_score": 71.45,
+        "final_score": 71.45,
+        "score": 71.45,
+        "ai_score": 71.45,
+        "range_score": 70.0,
+        "candidate_id": "cand_SOFI_US_test",
+        "validation_status": "AI_CANDIDATE",
+        "current_validation_status": "AI_CANDIDATE",
+        "trade_admission_status": "NOT_TRADABLE",
+        "data_status": "COMPLETE",
+        "market_data_sufficiency": "COMPLETE",
+        "formal_scoring_eligibility": True,
+        "scoring_eligible": True,
+        "score_type": "FORMAL",
+        "score_is_formal": True,
+        "score_source": "current_run_candidate_ranking",
+        "score_provider": "local_factor_scoring",
+        "score_is_current_run": True,
+        "next_validation_stage": "CLASSIFICATION",
+        "next_validation_stage_label": "候选分类",
+        "validation_path_note": "可进入研究验证链，不可进入 Paper / Live",
+    }
+    report = {
+        **_sample_report(selection_count=0),
+        "execution_status": "COMPLETED",
+        "selection_stage": "FINALIZED",
+        "result_quality": "DEGRADED",
+        "research_admission": "RESEARCH_ONLY",
+        "selection_outcome": "NO_TRADABLE_SELECTION",
+        "completed_with_selection": False,
+        "requested_top_n": 3,
+        "selected_top_n": 0,
+        "research_requested_top_n": 3,
+        "research_selected_top_n": 1,
+        "tradable_requested_top_n": 3,
+        "tradable_selected_top_n": 0,
+        "top3": [],
+        "research_top_candidates": [candidate],
+    }
+
+    _, body = alerts._build_ai_selection_message(report, [])
+
+    assert "研究候选：1/3" in body
+    assert "可交易候选：0/3" in body
+    assert "正式TOP：0/3" in body
+    assert "TOP1：空槽" in body
+    assert "研究候选1：SOFI" in body
+    assert "下一验证阶段：候选分类（CLASSIFICATION）" in body
+    assert "验证说明：可进入研究验证链，不可进入 Paper / Live" in body
+    assert "Paper / Live" in body
 
 
 def test_ai_selection_message_truncates_long_reason():

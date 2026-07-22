@@ -101,6 +101,19 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
     missing_count = int(ai_selection.get("top_n_missing_count") or max(0, requested_count - selected_count))
     if requested_count == 0 and (selected_count or missing_count):
         requested_count = selected_count + missing_count
+    research_candidates = [item for item in (ai_selection.get("research_top_candidates") or []) if isinstance(item, dict)]
+    research_selected_count = int(ai_selection.get("research_selected_top_n") if ai_selection.get("research_selected_top_n") is not None else len(research_candidates))
+    research_requested_count = int(ai_selection.get("research_requested_top_n") or requested_count or 0)
+    tradable_selected_count = int(ai_selection.get("tradable_selected_top_n") if ai_selection.get("tradable_selected_top_n") is not None else selected_count)
+    tradable_requested_count = int(ai_selection.get("tradable_requested_top_n") or requested_count or 0)
+    research_symbols = [
+        str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+        for item in research_candidates
+        if str(item.get("ticker") or item.get("symbol") or "").strip()
+    ]
+    next_validation_stage = str(ai_selection.get("next_validation_stage") or (ai_selection.get("validation_pipeline_summary") or {}).get("next_validation_stage") or "").strip().upper()
+    next_validation_stage_label = str(ai_selection.get("next_validation_stage_label") or (ai_selection.get("validation_pipeline_summary") or {}).get("next_validation_stage_label") or "").strip()
+    next_validation_stage_text = "暂无" if not next_validation_stage else f"{next_validation_stage_label or next_validation_stage}（{next_validation_stage}）"
     selected_symbols = [
         str(symbol or "").strip().upper()
         for symbol in (ai_selection.get("selected_symbols") or [])
@@ -161,6 +174,13 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "research_admission": translate_status(ai_selection.get("research_admission") or "UNAVAILABLE"),
         "selected_count": selected_count,
         "requested_count": requested_count,
+        "research_selected_count": research_selected_count,
+        "research_requested_count": research_requested_count,
+        "tradable_selected_count": tradable_selected_count,
+        "tradable_requested_count": tradable_requested_count,
+        "research_symbols": research_symbols,
+        "next_validation_stage": next_validation_stage_text,
+        "paper_live_status": "阻断" if tradable_selected_count <= 0 else "按交易 Gate 继续校验",
         "selected_symbols": selected_symbols,
         "missing_count": missing_count,
         "missing_label": "数量完整" if missing_count == 0 else f"缺失 {missing_count} 个",
@@ -3681,6 +3701,14 @@ HTML = """<!DOCTYPE html>
                 <span>正式 TOP</span>
                 <strong id="selection-overview-top-count">已入选 {{ selection_dashboard.selected_count }} / 目标 {{ selection_dashboard.requested_count }}</strong>
             </div>
+            <div class="selection-overview-item emphasis">
+                <span>研究候选</span>
+                <strong id="selection-overview-research-count">{{ selection_dashboard.research_selected_count }} / {{ selection_dashboard.research_requested_count }}</strong>
+            </div>
+            <div class="selection-overview-item emphasis">
+                <span>可交易候选</span>
+                <strong id="selection-overview-tradable-count">{{ selection_dashboard.tradable_selected_count }} / {{ selection_dashboard.tradable_requested_count }}</strong>
+            </div>
             <div class="selection-overview-item">
                 <span>已入选标的</span>
                 <div class="symbol-chips" id="selection-overview-symbols">
@@ -3706,6 +3734,8 @@ HTML = """<!DOCTYPE html>
                         <tr><th>股票池筛选</th><td>{{ selection_dashboard.universe_filter }}</td></tr>
                         <tr><th>可评分候选</th><td id="selection-process-scoring-count">{{ selection_dashboard.scoring_eligible_count }}</td></tr>
                         <tr><th>正式候选</th><td>{{ selection_dashboard.formal_candidate_count }}</td></tr>
+                        <tr><th>下一验证阶段</th><td id="selection-process-next-validation">{{ selection_dashboard.next_validation_stage }}</td></tr>
+                        <tr><th>Paper / Live 新开仓</th><td id="selection-process-paper-live">{{ selection_dashboard.paper_live_status }}</td></tr>
                         <tr><th>达到目标数量</th><td id="selection-process-target-complete">{{ format_bool(selection_dashboard.target_complete) }}</td></tr>
                         <tr><th>交易准入</th><td id="selection-process-trade-admission">{{ selection_dashboard.trade_admission }}</td></tr>
                     </tbody>
@@ -5512,11 +5542,21 @@ HTML = """<!DOCTYPE html>
             const selectedSymbols = formalTop.map((item) => item.ticker || item.symbol).filter(Boolean);
             const missingCount = Number(aiSelection.top_n_missing_count || 0);
             const requestedCount = selectedSymbols.length + missingCount;
+            const researchCandidates = Array.isArray(aiSelection.research_top_candidates) ? aiSelection.research_top_candidates : [];
+            const researchSelectedCount = Number(aiSelection.research_selected_top_n ?? researchCandidates.length);
+            const researchRequestedCount = Number(aiSelection.research_requested_top_n ?? requestedCount);
+            const tradableSelectedCount = Number(aiSelection.tradable_selected_top_n ?? selectedSymbols.length);
+            const tradableRequestedCount = Number(aiSelection.tradable_requested_top_n ?? requestedCount);
+            const validationSummary = aiSelection.validation_pipeline_summary || {};
+            const nextValidationStage = String(aiSelection.next_validation_stage || validationSummary.next_validation_stage || '').toUpperCase();
+            const nextValidationLabel = String(aiSelection.next_validation_stage_label || validationSummary.next_validation_stage_label || '');
             setText('selection-overview-date', displayOptional(selection.selection_date));
             setText('selection-overview-stage', displayStatus(aiSelection.selection_stage || 'UNAVAILABLE'));
             setText('selection-overview-quality', displayStatus(aiSelection.result_quality || 'UNAVAILABLE'));
             setText('selection-overview-admission', displayStatus(aiSelection.research_admission || 'UNAVAILABLE'));
             setText('selection-overview-top-count', `已入选 ${selectedSymbols.length} / 目标 ${requestedCount}`);
+            setText('selection-overview-research-count', `${researchSelectedCount} / ${researchRequestedCount}`);
+            setText('selection-overview-tradable-count', `${tradableSelectedCount} / ${tradableRequestedCount}`);
             setText('selection-overview-missing', missingCount ? `缺失 ${missingCount} 个` : '数量完整');
             const syncReason = displayReason(selection.reason);
             const syncSummary = selection.synced ? '已同步' : `未同步：${syncReason}`;
@@ -5540,6 +5580,8 @@ HTML = """<!DOCTYPE html>
             }
             setText('selection-process-data-status', displayStatus(formalTop.length ? formalTop[0].data_status : 'UNAVAILABLE'));
             setText('selection-process-scoring-count', aiSelection.selection_funnel && aiSelection.selection_funnel.scoring_eligible != null ? String(aiSelection.selection_funnel.scoring_eligible) : '0');
+            setText('selection-process-next-validation', nextValidationStage ? `${nextValidationLabel || nextValidationStage}（${nextValidationStage}）` : '暂无');
+            setText('selection-process-paper-live', tradableSelectedCount > 0 ? '按交易 Gate 继续校验' : '阻断');
             setText('selection-process-target-complete', displayBool(requestedCount > 0 && selectedSymbols.length >= requestedCount));
             setText('selection-process-trade-admission', displayStatus(formalTop.length ? (formalTop[0].trade_admission_status || 'NOT_TRADABLE') : 'NOT_TRADABLE'));
         } catch (error) {
