@@ -186,6 +186,65 @@ def test_selection_bundle_persists_report_state_top_and_manifest(tmp_path, monke
     assert result["bundle_root_path"] == "state/selection_bundles/run-1/selection_bundle_v1"
 
 
+def test_selection_bundle_manifest_includes_funnel_summary(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "COMPLETE", "RESEARCH_READY"),
+            "top3": [_formal_top_item("NVDA", 91.5)],
+            "selection_funnel": {
+                "selection_run_id": "run-funnel",
+                "selection_date": "2026-07-16",
+                "stages": [
+                    {
+                        "stage": "FORMAL_TOP",
+                        "input_count": 1,
+                        "output_count": 1,
+                        "input_symbols": ["NVDA"],
+                        "output_symbols": ["NVDA"],
+                        "dropped_symbols": [],
+                        "dropped": [],
+                        "drop_reason_counts": {},
+                    }
+                ],
+            },
+            "rejection_reason_counts": {"top_n_not_filled": 2},
+            "nearest_rejected_candidates": [
+                {"symbol": "SOFI", "stage": "FORMAL_ELIGIBILITY", "reason_code": "trade_admission_not_tradable"}
+            ],
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": ["NVDA"],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "COMPLETE",
+            "research_admission": "RESEARCH_READY",
+            "selection_run_id": "run-funnel",
+            "selection_symbols": ["NVDA"],
+            "configured_top_symbols": ["NVDA"],
+        },
+        top_items=[_formal_top_item("NVDA", 91.5)],
+        selection_run_id="run-funnel",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="COMPLETE",
+        research_admission="RESEARCH_READY",
+        processing_phase="fast_preliminary",
+    )
+
+    persist_selection_bundle(bundle)
+
+    manifest = json.loads((tmp_path / "state" / "selection_bundle_manifest.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "reports" / "ai_selection_latest.json").read_text(encoding="utf-8"))
+    assert manifest["selection_funnel"]["stages"][0]["stage"] == "FORMAL_TOP"
+    assert manifest["rejection_reason_counts"] == {"top_n_not_filled": 2}
+    assert manifest["nearest_rejected_candidates"][0]["symbol"] == "SOFI"
+    assert report["selection_funnel"]["stages"][0]["stage"] == "FORMAL_TOP"
+
+
 def test_selection_bundle_loads_report_from_manifest_pinned_bundle(tmp_path, monkeypatch):
     _patch_bundle_roots(tmp_path, monkeypatch)
 

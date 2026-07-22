@@ -50,8 +50,10 @@ from src.ai_selector.settings import resolve_price_band
 from src.ai_selector.data_quality import (
     enrich_candidate_quality,
     evaluate_candidate_data_quality,
+    formal_selection_ineligibility_reasons,
     is_formal_selection_eligible,
 )
+from src.ai_selector.funnel_tracker import FunnelTracker, dropped_record, reason_from_candidate
 from src.ai_selector.universe_filter import filter_universe_candidates, load_universe_rules
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
@@ -933,6 +935,149 @@ def _build_rejection_trace(groups: list[tuple[str, list[dict]]]) -> tuple[list[d
     return trace, counts
 
 
+def _candidate_symbols(rows: list[dict] | tuple[dict, ...] | None) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for item in rows or []:
+        symbol = _normalize_ticker((item or {}).get("ticker") or (item or {}).get("symbol"))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+
+def _market_data_ready(item: dict) -> bool:
+    status_fields = (
+        str(item.get("quote_status") or "").strip().upper(),
+        str(item.get("ohlcv_status") or "").strip().upper(),
+    )
+    if any(value in {"MISSING", "INVALID", "STALE"} for value in status_fields if value):
+        return False
+    if not str((item.get("data_quality") or {}).get("quote_as_of") or item.get("quote_timestamp") or "").strip():
+        return False
+    if not str((item.get("data_quality") or {}).get("ohlcv_as_of") or item.get("daily_data_as_of") or "").strip():
+        return False
+    return True
+
+
+def _data_quality_ready(item: dict) -> bool:
+    data_status = str(item.get("data_status") or "").strip().upper()
+    if data_status not in {"COMPLETE", "VALID"}:
+        return False
+    benchmark_status = str(item.get("benchmark_status") or item.get("benchmark_alignment_status") or "").strip().upper()
+    if benchmark_status in {"MISSING", "INVALID", "STALE"}:
+        return False
+    for key in ("history_status", "freshness_status"):
+        value = str(item.get(key) or "").strip().upper()
+        if value in {"MISSING", "INVALID", "STALE"}:
+            return False
+    return True
+
+
+def _drop_records_for_stage(input_rows: list[dict], output_rows: list[dict], *, default_reason: str) -> list[dict]:
+    output_symbols = set(_candidate_symbols(output_rows))
+    records: list[dict] = []
+    for item in input_rows or []:
+        symbol = _normalize_ticker(item.get("ticker") or item.get("symbol"))
+        if not symbol or symbol in output_symbols:
+            continue
+        reason = reason_from_candidate(item)
+        if reason == "unknown":
+            reason = default_reason
+        records.append(dropped_record(symbol, reason, str(item.get("reason") or item.get("reject_reason") or item.get("scoring_block_reason") or "")))
+    return records
+
+
+def _formal_ineligibility_drop_records(input_rows: list[dict], output_rows: list[dict]) -> list[dict]:
+    output_symbols = set(_candidate_symbols(output_rows))
+    records: list[dict] = []
+    for item in input_rows or []:
+        symbol = _normalize_ticker(item.get("ticker") or item.get("symbol"))
+        if not symbol or symbol in output_symbols:
+            continue
+        reasons = formal_selection_ineligibility_reasons(item)
+        records.append(dropped_record(symbol, reasons[0] if reasons else "unknown", ",".join(reasons)))
+    return records
+
+
+def _build_selection_funnel_report(
+    *,
+    selection_run_id: str,
+    selection_date: str,
+    universe_symbols: list[str],
+    universe_filtered: list[dict],
+    market_data_candidates: list[dict],
+    data_quality_candidates: list[dict],
+    scoring_candidates: list[dict],
+    base_ranked_candidates: list[dict],
+    research_candidates: list[dict],
+    refined_candidates: list[dict],
+    formal_eligible_candidates: list[dict],
+    composition_candidates: list[dict],
+    formal_top_candidates: list[dict],
+    universe_rejected_rows: list[dict],
+    composition_rejected_rows: list[dict],
+    refinement_rejected_rows: list[dict],
+) -> tuple[dict, Path | None]:
+    tracker = FunnelTracker(selection_run_id=selection_run_id, selection_date=selection_date, project_dir=PROJECT_DIR)
+    tracker.add_stage("UNIVERSE", universe_symbols, universe_symbols)
+    tracker.add_stage("UNIVERSE_FILTER", universe_symbols, universe_filtered, dropped=universe_rejected_rows)
+    tracker.add_stage(
+        "MARKET_DATA",
+        universe_filtered,
+        market_data_candidates,
+        dropped=_drop_records_for_stage(universe_filtered, market_data_candidates, default_reason="quote_missing"),
+    )
+    tracker.add_stage(
+        "DATA_QUALITY",
+        market_data_candidates,
+        data_quality_candidates,
+        dropped=_drop_records_for_stage(market_data_candidates, data_quality_candidates, default_reason="history_insufficient"),
+    )
+    tracker.add_stage(
+        "SCORING_ELIGIBLE",
+        data_quality_candidates,
+        scoring_candidates,
+        dropped=_drop_records_for_stage(data_quality_candidates, scoring_candidates, default_reason="scoring_ineligible"),
+    )
+    tracker.add_stage("BASE_RANKING", scoring_candidates, base_ranked_candidates)
+    tracker.add_stage("RESEARCH_PROVIDER", base_ranked_candidates, research_candidates)
+    tracker.add_stage(
+        "REFINEMENT",
+        research_candidates,
+        refined_candidates,
+        dropped=refinement_rejected_rows or _drop_records_for_stage(research_candidates, refined_candidates, default_reason="refinement_rejected"),
+    )
+    tracker.add_stage(
+        "FORMAL_ELIGIBILITY",
+        refined_candidates,
+        formal_eligible_candidates,
+        dropped=_formal_ineligibility_drop_records(refined_candidates, formal_eligible_candidates),
+    )
+    tracker.add_stage(
+        "COMPOSITION_FILTER",
+        formal_eligible_candidates,
+        composition_candidates,
+        dropped=composition_rejected_rows or _drop_records_for_stage(formal_eligible_candidates, composition_candidates, default_reason="composition_limit"),
+    )
+    tracker.add_stage(
+        "FORMAL_TOP",
+        composition_candidates,
+        formal_top_candidates,
+        dropped=_drop_records_for_stage(composition_candidates, formal_top_candidates, default_reason="top_n_limit"),
+    )
+    report = tracker.to_dict()
+    path: Path | None = None
+    try:
+        path = tracker.write_report()
+        report["funnel_report_path"] = str(path.relative_to(PROJECT_DIR))
+    except Exception as exc:
+        report["funnel_report_error"] = str(exc)
+    tracker.print_table()
+    return report, path
+
+
 def _normalize_entry_report_fields(item: dict) -> dict:
     normalized = dict(item or {})
     entry = normalized.get("entry") if isinstance(normalized.get("entry"), dict) else {}
@@ -1811,6 +1956,43 @@ def main(mode: str | None = None):
     report_top10 = _attach_ranking_context(report_top10, report_top10)
     diagnostic_selected = list(selected)
     selected = [item for item in selected if is_formal_selection_eligible(item)]
+    selection_stage = "FINALIZED"
+    market_stage = selection_stage
+    selection_run_id = uuid.uuid4().hex
+    current_session = _selection_date()
+    universe_symbols_for_funnel = [
+        str(item).strip().upper()
+        for item in (selection_symbols or integrated_ai.get("preferred_symbols") or _candidate_symbols(report_top10) or [])
+        if str(item).strip()
+    ]
+    if not universe_symbols_for_funnel:
+        universe_symbols_for_funnel = _candidate_symbols(report_top10)
+    market_data_candidates = [item for item in report_top10 if _market_data_ready(item)]
+    data_quality_candidates = [item for item in market_data_candidates if _data_quality_ready(item)]
+    scoring_candidates = [item for item in data_quality_candidates if bool(item.get("scoring_eligible", False))]
+    base_ranked_candidates = list(scoring_candidates)
+    research_candidates = list(base_ranked_candidates)
+    formal_eligible_candidates = list(selected)
+    composition_candidates = list(selected)
+    formal_top_candidates = list(selected[:TOP_COUNT])
+    funnel_report, funnel_report_path = _build_selection_funnel_report(
+        selection_run_id=selection_run_id,
+        selection_date=current_session,
+        universe_symbols=universe_symbols_for_funnel,
+        universe_filtered=report_top10,
+        market_data_candidates=market_data_candidates,
+        data_quality_candidates=data_quality_candidates,
+        scoring_candidates=scoring_candidates,
+        base_ranked_candidates=base_ranked_candidates,
+        research_candidates=research_candidates,
+        refined_candidates=diagnostic_selected,
+        formal_eligible_candidates=formal_eligible_candidates,
+        composition_candidates=composition_candidates,
+        formal_top_candidates=formal_top_candidates,
+        universe_rejected_rows=universe_rejected_rows,
+        composition_rejected_rows=list(composition_filter_report.get("rejected") or []),
+        refinement_rejected_rows=list(low_quality_rejected or []),
+    )
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
@@ -1857,9 +2039,13 @@ def main(mode: str | None = None):
             ("ENTRY_QUALITY", list(low_quality_rejected or [])),
         ]
     )
+    rejection_reason_counts = {
+        **dict(funnel_report.get("rejection_reason_counts") or {}),
+        **dict(rejection_reason_counts or {}),
+    }
     quality_report["rejection_trace"] = list(rejection_trace)
     quality_report["rejection_reason_counts"] = dict(rejection_reason_counts)
-    quality_report["selection_funnel"] = {
+    legacy_funnel_counts = {
         "universe_scanned": int(len(selection_symbols or integrated_ai.get("preferred_symbols") or out.get("top10") or [])),
         "universe_passed": int(len(report_top10 or [])),
         "quote_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("quote_as_of") or (item or {}).get("quote_timestamp") or "").strip())),
@@ -1888,6 +2074,13 @@ def main(mode: str | None = None):
         "budget_exhausted": bool((out.get("quality_filter_report") or {}).get("timed_out", False)),
         "run_mode": run_mode,
     }
+    quality_report["selection_funnel"] = {
+        **legacy_funnel_counts,
+        **dict(funnel_report or {}),
+    }
+    quality_report["nearest_rejected_candidates"] = list(funnel_report.get("nearest_rejected_candidates") or [])
+    if funnel_report_path is not None:
+        quality_report["funnel_report_path"] = str(funnel_report_path.relative_to(PROJECT_DIR))
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     out["settings"] = dict(out.get("settings") or {})
@@ -1901,12 +2094,9 @@ def main(mode: str | None = None):
     out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
     write_selection_filter_log(quality_report)
     summary_top3_source = list(selected)
-    selection_stage = "FINALIZED"
-    market_stage = selection_stage
-    selection_run_id = uuid.uuid4().hex
     if selected:
         for item in selected:
-            item["selection_date"] = _selection_date()
+            item["selection_date"] = current_session
             item["protected_position"] = bool(item.get("protected_position") or item.get("existing_position"))
             item.update(_normalize_selection_metadata(item))
             item["fallback_used"] = bool(item.get("fallback_used", False))
@@ -1953,7 +2143,6 @@ def main(mode: str | None = None):
 
     top3_summary = [_normalize_entry_report_fields(item) for item in list(selected)]
     first_item = top3_summary[0] if top3_summary else {}
-    current_session = _selection_date()
     summary = {
         'timestamp': timestamp,
         'generated_at': timestamp,
@@ -2036,6 +2225,9 @@ def main(mode: str | None = None):
     summary["rejection_trace"] = list(quality_report.get("rejection_trace") or [])
     summary["rejection_reason_counts"] = dict(quality_report.get("rejection_reason_counts") or {})
     summary["selection_funnel"] = dict(quality_report.get("selection_funnel") or {})
+    summary["nearest_rejected_candidates"] = list(quality_report.get("nearest_rejected_candidates") or [])
+    if quality_report.get("funnel_report_path"):
+        summary["funnel_report_path"] = quality_report.get("funnel_report_path")
     summary["final_selected_symbols"] = [
         str(item.get("ticker") or "").strip().upper()
         for item in selected
@@ -2076,47 +2268,6 @@ def main(mode: str | None = None):
     )
     if isinstance(bundle_result, dict):
         summary.update(bundle_result)
-
-    rejection_trace, rejection_reason_counts = _build_rejection_trace(
-        [
-            ("UNIVERSE", list(universe_rejected_rows or [])),
-            ("PRICE_BAND", list(price_band_rejected_rows or [])),
-            ("TRADE_FILTER", list(trade_filter_rejected or [])),
-            ("COMPOSITION", list(composition_filter_report.get("rejected") or [])),
-            ("ENTRY_QUALITY", list(low_quality_rejected or [])),
-        ]
-    )
-    summary["rejection_trace"] = rejection_trace
-    summary["rejection_reason_counts"] = rejection_reason_counts
-    summary["selection_funnel"] = {
-        "universe_scanned": int(len(selection_symbols or integrated_ai.get("preferred_symbols") or out.get("top10") or [])),
-        "universe_passed": int(len(report_top10 or [])),
-        "quote_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("quote_as_of") or (item or {}).get("quote_timestamp") or "").strip())),
-        "ohlcv_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("ohlcv_as_of") or (item or {}).get("daily_data_as_of") or "").strip())),
-        "benchmark_complete": int(sum(1 for item in (report_top10 or []) if str(
-            (item or {}).get("benchmark_status")
-            or (item or {}).get("benchmark_alignment_status")
-            or ((item or {}).get("market_data") or {}).get("benchmark_status")
-            or ((item or {}).get("market_data") or {}).get("benchmark_alignment_status")
-            or ""
-        ).strip().upper() == "VALID")),
-        "provider_empty_responses": int((provider_audit_summary.get("provider_empty_responses", 0) if isinstance(provider_audit_summary, dict) else 0) or 0),
-        "data_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_status") or "").strip().upper() == "COMPLETE")),
-        "scoring_eligible": int(sum(1 for item in (report_top10 or []) if bool(item.get("scoring_eligible", False)))),
-        "ranked_candidates": int(len(report_top10 or [])),
-        "quality_threshold_passed": int(sum(1 for item in (report_top10 or []) if item.get("trade_filter_passed", True))),
-        "preliminary_selected": int(len(out.get("top3") or out.get("top5") or [])),
-        "refined_selected": int(len(summary.get("refined_top3") or summary.get("refined_top5") or [])),
-        "final_selected": int(len(summary.get("top3") or [])),
-        "provider_timeouts": int(provider_audit_summary.get("provider_timeouts", 0) or 0),
-        "provider_budget_exhausted": int(provider_audit_summary.get("provider_budget_exhausted", 0) or 0),
-        "provider_unavailable": int(provider_audit_summary.get("provider_unavailable", 0) or 0),
-        "provider_malformed_responses": int(provider_audit_summary.get("provider_malformed_responses", 0) or 0),
-        "provider_failures": int(provider_audit_summary.get("provider_failures", 0) or 0),
-        "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
-        "budget_exhausted": bool((summary.get("quality_filter_report") or {}).get("timed_out", False)),
-        "run_mode": run_mode,
-    }
 
     _publish_candidate_validation_records(summary)
     notification_rows = selected or summary_top3_source
