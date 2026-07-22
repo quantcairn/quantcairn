@@ -37,6 +37,24 @@ def test_funnel_tracker_keeps_unknown_reason_without_guessing(tmp_path, monkeypa
     dropped = tracker.to_dict()["stages"][0]["dropped"][0]
     assert dropped["symbol"] == "SOFI"
     assert dropped["reason_code"] == "unknown"
+    assert tracker.to_dict()["rejection_reason_counts"] == {}
+    assert tracker.to_dict()["nearest_rejected_candidates"] == []
+
+
+def test_funnel_tracker_counts_structured_unknown_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOXS_PROJECT_DIR", str(tmp_path))
+    tracker = FunnelTracker(selection_run_id="run-b2", selection_date="2026-07-17")
+
+    tracker.add_stage(
+        "REFINEMENT",
+        ["SOFI"],
+        [],
+        dropped=[dropped_record("SOFI", "unknown", "provider returned no structured reason")],
+    )
+
+    payload = tracker.to_dict()
+    assert payload["rejection_reason_counts"] == {"unknown": 1}
+    assert payload["nearest_rejected_candidates"][0]["symbol"] == "SOFI"
 
 
 def test_funnel_tracker_writes_run_isolated_reports(tmp_path, monkeypatch):

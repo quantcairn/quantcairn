@@ -32,10 +32,14 @@ KNOWN_REASON_CODES = {
     "ohlcv_missing",
     "benchmark_invalid",
     "freshness_invalid",
+    "market_data_sufficiency_failed",
     "history_insufficient",
     "scoring_ineligible",
+    "formal_scoring_ineligible",
     "invalid_score_provenance",
+    "research_evidence_failed",
     "trade_admission_not_tradable",
+    "validation_status_ai_candidate",
     "provider_timeout",
     "provider_skipped_budget",
     "provider_unavailable",
@@ -88,8 +92,13 @@ def _reason_code(value: str | None) -> str:
         "benchmark_missing": "benchmark_invalid",
         "history_short": "history_insufficient",
         "scoring_eligible_false": "scoring_ineligible",
-        "validation_status_ai_candidate": "trade_admission_not_tradable",
+        "validation_status_ai_candidate": "validation_status_ai_candidate",
         "validation_status_not_tradable": "trade_admission_not_tradable",
+        "formal_scoring_eligibility_false": "formal_scoring_ineligible",
+        "market_data_sufficiency_failed": "market_data_sufficiency_failed",
+        "market_data_sufficiency_degraded": "market_data_sufficiency_failed",
+        "score_not_formal": "formal_scoring_ineligible",
+        "diagnostic_score_not_formal": "formal_scoring_ineligible",
         "data_status_invalid": "ohlcv_missing",
         "quote_status_missing": "quote_missing",
         "ohlcv_status_missing": "ohlcv_missing",
@@ -123,13 +132,15 @@ def reason_from_candidate(candidate: Mapping[str, Any]) -> str:
     return "unknown"
 
 
-def dropped_record(symbol: str, reason_code: str = "unknown", reason_detail: str = "", *, blocking: bool = True) -> dict[str, Any]:
-    return {
+def dropped_record(symbol: str, reason_code: str = "unknown", reason_detail: str = "", *, blocking: bool = True, **extra: Any) -> dict[str, Any]:
+    record = {
         "symbol": str(symbol or "").strip().upper(),
         "reason_code": _reason_code(reason_code),
         "reason_detail": str(reason_detail or ""),
         "blocking": bool(blocking),
     }
+    record.update(extra)
+    return record
 
 
 @dataclass
@@ -151,7 +162,15 @@ class FunnelStageRecord:
             or dropped_record(symbol, "unknown", "stage_removed_without_structured_reason")
             for symbol in dropped_symbols
         ]
-        counts = Counter(str(item.get("reason_code") or "unknown") for item in dropped)
+        structured_dropped = [
+            item
+            for item in dropped
+            if not (
+                str(item.get("reason_code") or "").lower() == "unknown"
+                and str(item.get("reason_detail") or "") == "stage_removed_without_structured_reason"
+            )
+        ]
+        counts = Counter(str(item.get("reason_code") or "unknown") for item in structured_dropped)
         return {
             "stage": self.stage,
             "input_count": len(input_symbols),
@@ -215,14 +234,19 @@ class FunnelTracker:
         for stage in stages:
             reason_counts.update(stage.get("drop_reason_counts") or {})
             for item in stage.get("dropped") or []:
+                if (
+                    str(item.get("reason_code") or "").lower() == "unknown"
+                    and str(item.get("reason_detail") or "") == "stage_removed_without_structured_reason"
+                ):
+                    continue
                 nearest_rejected.append(
-                    {
+                    dict(item, **{
                         "symbol": item.get("symbol"),
                         "stage": stage.get("stage"),
                         "reason_code": item.get("reason_code") or "unknown",
                         "reason_detail": item.get("reason_detail") or "",
                         "blocking": bool(item.get("blocking", True)),
-                    }
+                    })
                 )
         return {
             "selection_run_id": self.selection_run_id,

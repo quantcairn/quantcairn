@@ -547,7 +547,8 @@ def test_ai_selection_message_renders_provider_audit_sections():
     assert "Provider 成功：finrobot / openbb" in body
     assert "Provider 超时：tradingagents" in body
     assert "Provider Mock：finrobot / tradingagents" in body
-    assert "Provider 实际贡献：" in body
+    assert "Provider 真实贡献：openbb" in body
+    assert "Provider 模拟解释：finrobot / tradingagents" in body
     assert "fallback范围：CRITICAL_MARKET_DATA" in body
     assert "fallback级别：CRITICAL" in body
     assert "fallback影响：current_price, close, atr_20_percentage" in body
@@ -623,6 +624,86 @@ def test_ai_selection_message_uses_manifest_first_bundle_and_time_fields(monkeyp
     assert "- 入场质量不足：1" in body
     assert "交易含义：本次流程已完成，但没有生成任何正式可交易候选" in body
     assert "不得进入 Backtest、Walk-Forward、Paper 或 Live" in body
+
+
+def test_ai_selection_message_shows_structured_no_selection_diagnostics():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    _, body = alerts._build_ai_selection_message(
+        {
+            "selection_run_id": "run-zero",
+            "selection_date": "2026-07-16",
+            "generated_at": "2026-07-17T23:42:21+08:00",
+            "requested_top_n": 3,
+            "selected_top_n": 0,
+            "top_n_missing_count": 3,
+            "top3": [],
+            "rejection_reason_counts": {
+                "trade_admission_not_tradable": 4,
+                "validation_status_ai_candidate": 3,
+                "research_evidence_failed": 2,
+                "unknown": 1,
+            },
+            "nearest_rejected_candidates": [
+                {
+                    "symbol": "SOFI",
+                    "formal_candidate_score": 82.3,
+                    "score_type": "FORMAL",
+                    "market_data_sufficiency": "COMPLETE",
+                    "formal_scoring_eligibility": True,
+                    "research_evidence_status": "FAILED",
+                    "trade_admission_status": "NOT_TRADABLE",
+                    "rejection_stage": "FORMAL_ELIGIBILITY",
+                    "rejection_reason_codes": ["validation_status_ai_candidate"],
+                }
+            ],
+        },
+        [],
+    )
+    monkeypatch.undo()
+
+    assert "- 未取得交易准入：4" in body
+    assert "- 仍处于研究候选阶段：3" in body
+    assert "- 研究证据不足：2" in body
+    assert "最接近入选候选：" in body
+    assert "1. SOFI" in body
+    assert "评分：82.3（FORMAL）" in body
+    assert "行情数据：COMPLETE" in body
+    assert "正式评分资格：是" in body
+    assert "交易准入：NOT_TRADABLE" in body
+    assert "淘汰阶段：FORMAL_ELIGIBILITY" in body
+    assert "原因：仍处于研究候选阶段" in body
+
+
+def test_ai_selection_message_suppresses_unstructured_unknown_shortfall():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    _, body = alerts._build_ai_selection_message(
+        {
+            "selection_run_id": "run-zero",
+            "selection_date": "2026-07-16",
+            "generated_at": "2026-07-17T23:42:21+08:00",
+            "requested_top_n": 3,
+            "selected_top_n": 0,
+            "top_n_missing_count": 3,
+            "top3": [],
+            "rejection_reason_counts": {"unknown": 9},
+            "nearest_rejected_candidates": [
+                {
+                    "symbol": "SOFI",
+                    "stage": "UNIVERSE_FILTER",
+                    "reason_code": "unknown",
+                    "reason_detail": "stage_removed_without_structured_reason",
+                }
+            ],
+        },
+        [],
+    )
+    monkeypatch.undo()
+
+    assert "其他原因：9" not in body
+    assert "最接近入选候选：" in body
+    assert "暂无可解释的最近候选" in body
 
 
 def test_ai_selection_message_marks_missing_selection_date_without_today_fallback(monkeypatch):

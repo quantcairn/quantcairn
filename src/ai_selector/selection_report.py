@@ -238,6 +238,7 @@ def normalize_provider_audit(
     fallback: list[str] = []
     mock: list[str] = []
     contributors: list[str] = []
+    mock_contributors: list[str] = []
     details: list[dict[str, Any]] = []
 
     for provider_name in provider_names:
@@ -291,8 +292,11 @@ def normalize_provider_audit(
         if mock_count > 0:
             mock.append(provider_name)
         if contributor_fields:
-            suffix = " (mock)" if mock_count > 0 else " (fallback)" if fallback_count > 0 else ""
-            contributors.append(f"{provider_name}{suffix}")
+            if mock_count > 0:
+                mock_contributors.append(provider_name)
+            else:
+                suffix = " (fallback)" if fallback_count > 0 else ""
+                contributors.append(f"{provider_name}{suffix}")
 
         details.append(
             {
@@ -326,6 +330,7 @@ def normalize_provider_audit(
         "fallback": _unique_join(fallback),
         "mock": _unique_join(mock),
         "contributors": _unique_join(contributors),
+        "mock_contributors": _unique_join(mock_contributors),
         "counts": {
             "attempted": len(_unique_join(attempted)),
             "successful": len(_unique_join(successful)),
@@ -334,6 +339,7 @@ def normalize_provider_audit(
             "fallback": len(_unique_join(fallback)),
             "mock": len(_unique_join(mock)),
             "contributors": len(_unique_join(contributors)),
+            "mock_contributors": len(_unique_join(mock_contributors)),
         },
         "details": details,
     }
@@ -357,6 +363,7 @@ def provider_audit_sections(
         "fallback": _join(list(normalized.get("fallback") or [])),
         "mock": _join(list(normalized.get("mock") or [])),
         "contributor": _join(list(normalized.get("contributors") or [])),
+        "mock_contributor": _join(list(normalized.get("mock_contributors") or [])),
     }
 
 

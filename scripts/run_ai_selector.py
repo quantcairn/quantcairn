@@ -1046,7 +1046,33 @@ def _formal_ineligibility_drop_records(input_rows: list[dict], output_rows: list
         if not symbol or symbol in output_symbols:
             continue
         reasons = formal_selection_ineligibility_reasons(item)
-        records.append(dropped_record(symbol, reasons[0] if reasons else "unknown", ",".join(reasons)))
+        score_value = _coalesce_float(
+            item.get("formal_candidate_score"),
+            item.get("candidate_score"),
+            item.get("final_score"),
+            item.get("score"),
+            item.get("diagnostic_score"),
+            default=None,
+        )
+        records.append(
+            dropped_record(
+                symbol,
+                reasons[0] if reasons else "unknown",
+                ",".join(reasons),
+                formal_rank=item.get("formal_rank"),
+                research_rank=item.get("rank") or item.get("research_rank"),
+                formal_candidate_score=item.get("formal_candidate_score"),
+                diagnostic_score=item.get("diagnostic_score"),
+                candidate_score=score_value,
+                score_type=item.get("score_type"),
+                market_data_sufficiency=item.get("market_data_sufficiency"),
+                formal_scoring_eligibility=bool(item.get("formal_scoring_eligibility", item.get("scoring_eligible", False))),
+                research_evidence_status=item.get("research_evidence_status"),
+                trade_admission_status=item.get("trade_admission_status") or item.get("trade_admission"),
+                rejection_stage="FORMAL_ELIGIBILITY",
+                rejection_reason_codes=reasons,
+            )
+        )
     return records
 
 

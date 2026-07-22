@@ -345,7 +345,8 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert payload["ai_selection"]["provider_audit_sections"]["timeout"] == "tradingagents"
     assert payload["ai_selection"]["provider_audit_sections"]["fallback"] == "finrobot / tradingagents"
     assert payload["ai_selection"]["provider_audit_sections"]["mock"] == "finrobot / tradingagents"
-    assert payload["ai_selection"]["provider_audit_sections"]["contributor"] == "finrobot (mock) / openbb / tradingagents (mock)"
+    assert payload["ai_selection"]["provider_audit_sections"]["contributor"] == "openbb"
+    assert payload["ai_selection"]["provider_audit_sections"]["mock_contributor"] == "finrobot / tradingagents"
     assert payload["ai_selection"]["selection_funnel"]["final_selected"] == 1
     assert payload["ai_selection"]["rejection_reason_counts"]["top_n_not_filled"] == 1
     assert "本次结果仅供研究" in payload["ai_selection"]["research_admission_notice"]

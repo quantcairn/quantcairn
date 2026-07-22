@@ -640,10 +640,18 @@ _SHORTFALL_REASON_LABELS = {
     "low_dollar_volume": "低成交额",
     "price_out_of_range": "价格超出范围",
     "quote_missing": "报价缺失",
+    "quote_stale": "报价过期",
     "ohlcv_missing": "历史行情缺失",
     "benchmark_invalid": "基准数据无效",
     "freshness_invalid": "数据时效无效",
     "history_insufficient": "历史数据不足",
+    "market_data_sufficiency_failed": "行情数据不足",
+    "formal_scoring_ineligible": "不具备正式评分资格",
+    "invalid_score_provenance": "分数来源无效",
+    "research_evidence_failed": "研究证据不足",
+    "trade_admission_not_tradable": "未取得交易准入",
+    "validation_status_ai_candidate": "仍处于研究候选阶段",
+    "refinement_rejected": "精筛未通过",
     "entry_quality_too_low": "入场质量不足",
     "leveraged_etf_limit_exceeded": "杠杆ETF数量限制",
     "composition_limit": "组合约束",
@@ -652,14 +660,30 @@ _SHORTFALL_REASON_LABELS = {
 }
 
 
-def _selection_shortfall_reasons(report: dict, *, limit: int = 3) -> list[str]:
+def _selection_shortfall_reasons(report: dict, *, limit: int = 5) -> list[str]:
     counts = report.get("rejection_reason_counts")
     if not isinstance(counts, dict):
         counts = dict((report.get("quality_filter_report") or {}).get("rejection_reason_counts") or {})
+    nearest_rows = report.get("nearest_rejected_candidates")
+    if not isinstance(nearest_rows, list):
+        nearest_rows = list((report.get("quality_filter_report") or {}).get("nearest_rejected_candidates") or [])
+    unstructured_unknown_only = bool(
+        counts
+        and set(str(code).lower() for code in counts) == {"unknown"}
+        and nearest_rows
+        and all(
+            str((row or {}).get("reason_code") or "").lower() == "unknown"
+            and str((row or {}).get("reason_detail") or "") == "stage_removed_without_structured_reason"
+            for row in nearest_rows
+            if isinstance(row, dict)
+        )
+    )
     items: list[tuple[str, int]] = []
     for raw_code, raw_count in counts.items():
         code = str(raw_code or "").strip().lower()
         if not code or code == "top_n_not_filled":
+            continue
+        if code == "unknown" and unstructured_unknown_only:
             continue
         try:
             count = int(raw_count or 0)
@@ -674,6 +698,50 @@ def _selection_shortfall_reasons(report: dict, *, limit: int = 3) -> list[str]:
         label = _SHORTFALL_REASON_LABELS.get(code, code)
         summary.append(f"{label}：{count}")
     return summary
+
+
+def _format_nearest_rejected_candidates(report: dict, *, limit: int = 3) -> list[str]:
+    rows = report.get("nearest_rejected_candidates")
+    if not isinstance(rows, list):
+        rows = list((report.get("quality_filter_report") or {}).get("nearest_rejected_candidates") or [])
+    formatted: list[str] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        if (
+            str(raw.get("reason_code") or "").lower() == "unknown"
+            and str(raw.get("reason_detail") or "") == "stage_removed_without_structured_reason"
+        ):
+            continue
+        symbol = str(raw.get("symbol") or raw.get("ticker") or "").strip().upper()
+        if not symbol:
+            continue
+        reason_codes = raw.get("rejection_reason_codes") or raw.get("reason_codes") or []
+        if isinstance(reason_codes, str):
+            reason_codes = [reason_codes]
+        if not reason_codes:
+            reason_codes = [raw.get("reason_code") or "unknown"]
+        reason_text = " / ".join(_SHORTFALL_REASON_LABELS.get(str(code).lower(), str(code)) for code in reason_codes if str(code).strip())
+        stage = str(raw.get("rejection_stage") or raw.get("stage") or "UNKNOWN").strip().upper()
+        score = _first_non_empty(raw.get("formal_candidate_score"), raw.get("candidate_score"), raw.get("diagnostic_score"), default="-")
+        score_type = str(raw.get("score_type") or "UNKNOWN").strip().upper()
+        market_data = str(raw.get("market_data_sufficiency") or "UNKNOWN").strip().upper()
+        formal_eligible = raw.get("formal_scoring_eligibility")
+        trade_admission = str(raw.get("trade_admission_status") or raw.get("trade_admission") or "NOT_TRADABLE").strip().upper()
+        formatted.extend(
+            [
+                f"{len(formatted) // 7 + 1}. {symbol}",
+                f"   评分：{score}（{score_type}）",
+                f"   行情数据：{market_data}",
+                f"   正式评分资格：{'是' if formal_eligible is True else '否'}",
+                f"   交易准入：{trade_admission}",
+                f"   淘汰阶段：{stage}",
+                f"   原因：{reason_text or '其他原因'}",
+            ]
+        )
+        if len(formatted) // 7 >= limit:
+            break
+    return formatted
 
 
 def _resolve_manifest_first_selection_payload(
@@ -1263,7 +1331,14 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         lines.append(f"原因：{stale_reason}")
     if shortfall_reasons and missing_count > 0:
         lines.append("候选不足主要原因：")
-        lines.extend([f"- {item}" for item in shortfall_reasons[:3]])
+        lines.extend([f"- {item}" for item in shortfall_reasons[:5]])
+    nearest_rejected_lines = _format_nearest_rejected_candidates(report)
+    if selected_top_n == 0:
+        lines.append("最接近入选候选：")
+        if nearest_rejected_lines:
+            lines.extend(nearest_rejected_lines)
+        else:
+            lines.append("暂无可解释的最近候选")
     if last_completed_session or daily_data_as_of or premarket_snapshot_at or freshness_status or stale_reason:
         lines.append("")
 
@@ -1289,7 +1364,8 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
             f"Provider 超时：{provider_audit_sections['timeout']}",
             f"Provider Fallback：{provider_audit_sections['fallback']}",
             f"Provider Mock：{provider_audit_sections['mock']}",
-            f"Provider 实际贡献：{provider_audit_sections['contributor']}",
+            f"Provider 真实贡献：{provider_audit_sections['contributor']}",
+            f"Provider 模拟解释：{provider_audit_sections.get('mock_contributor', '无')}",
         ]
     )
     if warnings:
