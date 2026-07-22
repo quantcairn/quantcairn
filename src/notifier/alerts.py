@@ -103,6 +103,33 @@ def _record_trade_notification_key(path: Path, notification_key: str, metadata: 
     key = str(notification_key or "").strip()
     if not key:
         return True
+    with _trade_notification_lock:
+        state = _load_trade_notification_state(path)
+        sent_keys = [str(item) for item in state.get("sent_keys") or [] if str(item)]
+        if key in set(sent_keys):
+            logger.info("Skipped duplicate trade notification: %s", key)
+            return False
+        sent_keys.append(key)
+        if len(sent_keys) > _MAX_TRADE_NOTIFICATION_KEYS:
+            sent_keys = sent_keys[-_MAX_TRADE_NOTIFICATION_KEYS:]
+        notifications = state.get("notifications") or {}
+        notifications = {str(k): v for k, v in notifications.items() if str(k) in set(sent_keys)}
+        notifications[key] = dict(metadata)
+        payload = {
+            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
+            "updated_at": datetime.now(US_EASTERN).isoformat(),
+            "sent_keys": sent_keys,
+            "notifications": notifications,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.warning("Trade notification dedupe state write failed: %s", exc)
+            return True
+        return True
 
 
 def _selection_notification_key(report: dict, notification_type: str = _AI_SELECTION_NOTIFICATION_TYPE) -> str | None:
@@ -207,33 +234,6 @@ def _is_formal_ai_selection_notification_payload(report: dict, source: str) -> t
     if str(report.get("top_sync_status") or "OK").strip().upper() not in {"OK", "SYNCED"}:
         return False, "top_sync_not_ok"
     return True, "ok"
-    with _trade_notification_lock:
-        state = _load_trade_notification_state(path)
-        sent_keys = [str(item) for item in state.get("sent_keys") or [] if str(item)]
-        if key in set(sent_keys):
-            logger.info("Skipped duplicate trade notification: %s", key)
-            return False
-        sent_keys.append(key)
-        if len(sent_keys) > _MAX_TRADE_NOTIFICATION_KEYS:
-            sent_keys = sent_keys[-_MAX_TRADE_NOTIFICATION_KEYS:]
-        notifications = state.get("notifications") or {}
-        notifications = {str(k): v for k, v in notifications.items() if str(k) in set(sent_keys)}
-        notifications[key] = dict(metadata)
-        payload = {
-            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
-            "updated_at": datetime.now(US_EASTERN).isoformat(),
-            "sent_keys": sent_keys,
-            "notifications": notifications,
-        }
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-            os.replace(tmp, path)
-        except Exception as exc:
-            logger.warning("Trade notification dedupe state write failed: %s", exc)
-            return True
-        return True
 
 
 class Notifier:

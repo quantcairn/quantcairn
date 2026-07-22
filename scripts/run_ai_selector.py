@@ -947,6 +947,16 @@ def _candidate_symbols(rows: list[dict] | tuple[dict, ...] | None) -> list[str]:
     return symbols
 
 
+def _relative_project_path(path: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(PROJECT_DIR.resolve()))
+    except Exception:
+        try:
+            return str(Path(path).relative_to(PROJECT_DIR))
+        except Exception:
+            return str(path)
+
+
 def _market_data_ready(item: dict) -> bool:
     status_fields = (
         str(item.get("quote_status") or "").strip().upper(),
@@ -2080,7 +2090,7 @@ def main(mode: str | None = None):
     }
     quality_report["nearest_rejected_candidates"] = list(funnel_report.get("nearest_rejected_candidates") or [])
     if funnel_report_path is not None:
-        quality_report["funnel_report_path"] = str(funnel_report_path.relative_to(PROJECT_DIR))
+        quality_report["funnel_report_path"] = _relative_project_path(funnel_report_path)
     out["quality_filter_report"] = quality_report
     out["top10"] = list(report_top10)
     out["settings"] = dict(out.get("settings") or {})
