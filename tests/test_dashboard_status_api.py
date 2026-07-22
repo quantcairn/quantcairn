@@ -660,10 +660,72 @@ def test_api_status_shows_sandbox_snapshot_without_paper_fallback(monkeypatch):
     assert payload["system"]["account_source"] == "LongBridge sandbox account"
     assert payload["system"]["live_order_enabled"] is False
     assert payload["mode_consistency"]["dashboard_mode"] == "sandbox"
+    assert payload["mode_consistency"]["dashboard_display_mode"] == "sandbox"
+    assert payload["mode_consistency"]["dashboard_execution_mode"] == "paper"
     assert payload["mode_consistency"]["top_modes"] == ["sandbox", "sandbox", "sandbox"]
+    assert payload["mode_consistency"]["top_execution_modes"] == ["paper", "paper", "paper"]
     assert payload["mode_consistency"]["mixed"] is False
+    assert payload["mode_consistency"]["display_mismatch"] is False
+    assert payload["system"]["dashboard_display_mode"] == "sandbox"
+    assert payload["system"]["dashboard_execution_mode"] == "paper"
+    assert payload["system"]["dashboard_broker_environment"] == "longbridge_sandbox"
     assert payload["system"]["lifecycle"]["weekend_paper"]["status_label"] == "unavailable"
     assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
+
+
+def test_api_status_distinguishes_display_mode_from_execution_mode(monkeypatch):
+    _patch_status_basics(
+        monkeypatch,
+        status_map={
+            8091: {"mode": "paper", "price": 18.52, "last_signal": "HOLD", "halted": False},
+            8092: {"mode": "paper", "price": 8.42, "last_signal": "BUY", "halted": False},
+            8093: {"mode": "paper", "price": 4.12, "last_signal": "SELL", "halted": False},
+        },
+        selection_sync={
+            "ok": True,
+            "state_date": "2026-07-09",
+            "required_date": "2026-07-09",
+            "selection_state_symbols": ["SOFI", "LABD", "F"],
+            "current_top_config_symbols": ["SOFI", "LABD", "F"],
+            "mismatch_reason": "",
+        },
+        ai_selection={"fallback_used": False, "top3": [], "settings": {"min_price": 4.0, "max_price": 50.0}},
+        top_modes=["paper", "paper", "paper"],
+        dashboard_config=SimpleNamespace(
+            mode="sandbox",
+            broker=SimpleNamespace(
+                longbridge=SimpleNamespace(
+                    enabled=True,
+                    environment="sandbox",
+                    account_type="paper",
+                    allow_live_order=False,
+                )
+            ),
+        ),
+        live_account={
+            "cash": 1000.0,
+            "equity": 1000.0,
+            "buying_power": 1000.0,
+            "positions": [],
+            "positions_count": 0,
+            "mode": "sandbox",
+        },
+    )
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "sandbox", "execution_count": 0, "buy_count": 0, "sell_count": 0, "decision_count": 0})
+
+    payload = dashboard.app.test_client().get("/api/status").get_json()
+
+    assert payload["mode_consistency"]["dashboard_mode"] == "sandbox"
+    assert payload["mode_consistency"]["dashboard_display_mode"] == "sandbox"
+    assert payload["mode_consistency"]["dashboard_execution_mode"] == "paper"
+    assert payload["mode_consistency"]["top_modes"] == ["paper", "paper", "paper"]
+    assert payload["mode_consistency"]["top_execution_modes"] == ["paper", "paper", "paper"]
+    assert payload["mode_consistency"]["mixed"] is False
+    assert payload["mode_consistency"]["display_mismatch"] is True
+    assert payload["mode_consistency"]["severity"] == "INFO"
+    assert payload["system"]["dashboard_display_mode"] == "sandbox"
+    assert payload["system"]["dashboard_execution_mode"] == "paper"
+    assert payload["system"]["dashboard_broker_environment"] == "longbridge_sandbox"
 
 
 def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch, tmp_path):

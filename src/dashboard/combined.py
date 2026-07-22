@@ -1145,6 +1145,235 @@ def _mode_label(mode: str | None) -> str:
     }.get(value, "UNKNOWN")
 
 
+def _execution_mode_code(mode: str | None) -> str:
+    value = str(mode or "").strip().lower()
+    if value == "live":
+        return "live"
+    if value in {"paper", "sandbox"}:
+        return "paper"
+    if value == "backtest":
+        return "backtest"
+    return "unknown"
+
+
+def _execution_mode_label(mode: str | None) -> str:
+    value = _execution_mode_code(mode)
+    return {
+        "paper": "虚拟盘",
+        "live": "实盘",
+        "backtest": "回测",
+    }.get(value, "未知")
+
+
+def _broker_environment_code(
+    *,
+    mode: str | None,
+    broker_enabled: bool | None = None,
+    broker_environment: str | None = None,
+    account_type: str | None = None,
+) -> str:
+    raw_mode = str(mode or "").strip().lower()
+    env = str(broker_environment or "").strip().lower()
+    acct = str(account_type or "").strip().lower()
+    enabled = bool(broker_enabled) if broker_enabled is not None else False
+    if raw_mode == "live" or env in {"live", "prod"} or acct == "live":
+        return "longbridge_live"
+    if raw_mode == "sandbox" or env == "sandbox" or acct in {"paper", "demo", "sandbox"}:
+        return "longbridge_sandbox"
+    if raw_mode == "paper" or not enabled:
+        return "local_paper"
+    return "unavailable"
+
+
+def _broker_environment_label(code: str | None) -> str:
+    value = str(code or "").strip().lower()
+    return {
+        "local_paper": "本地模拟账户",
+        "longbridge_sandbox": "LongBridge 沙盒",
+        "longbridge_live": "LongBridge 实盘",
+        "unavailable": "不可用",
+    }.get(value, "未知")
+
+
+def _account_type_code(
+    *,
+    mode: str | None,
+    broker_enabled: bool | None = None,
+    broker_environment: str | None = None,
+    account_type: str | None = None,
+) -> str:
+    raw_mode = str(mode or "").strip().lower()
+    env = str(broker_environment or "").strip().lower()
+    acct = str(account_type or "").strip().lower()
+    enabled = bool(broker_enabled) if broker_enabled is not None else False
+    if raw_mode == "live" or env in {"live", "prod"} or acct == "live":
+        return "live"
+    if raw_mode == "sandbox" or env == "sandbox" or acct in {"paper", "demo", "sandbox"}:
+        return "sandbox"
+    if raw_mode == "paper" or not enabled:
+        return "simulated"
+    return "unknown"
+
+
+def _account_type_label(code: str | None) -> str:
+    value = str(code or "").strip().lower()
+    return {
+        "simulated": "模拟账户",
+        "sandbox": "沙盒账户",
+        "live": "实盘账户",
+        "unknown": "未知",
+    }.get(value, "未知")
+
+
+def _mode_context_from_config(config=None) -> dict[str, object]:
+    config = config or _load_dashboard_config()
+    dashboard_display_mode = str(getattr(config, "mode", "") or "paper").strip().lower() if config is not None else "paper"
+    dashboard_display_mode = dashboard_display_mode or "paper"
+    dashboard_execution_mode = _execution_mode_code(dashboard_display_mode)
+    broker_cfg = getattr(config, "broker", None) if config is not None else None
+    longbridge_cfg = getattr(broker_cfg, "longbridge", None) if broker_cfg is not None else None
+    broker_enabled = bool(getattr(longbridge_cfg, "enabled", False)) if longbridge_cfg is not None else False
+    broker_environment = str(getattr(longbridge_cfg, "environment", "") or "") if longbridge_cfg is not None else ""
+    account_type = str(getattr(longbridge_cfg, "account_type", "") or "") if longbridge_cfg is not None else ""
+    dashboard_broker_environment = _broker_environment_code(
+        mode=dashboard_display_mode,
+        broker_enabled=broker_enabled,
+        broker_environment=broker_environment,
+        account_type=account_type,
+    )
+    dashboard_account_type = _account_type_code(
+        mode=dashboard_display_mode,
+        broker_enabled=broker_enabled,
+        broker_environment=broker_environment,
+        account_type=account_type,
+    )
+    return {
+        "dashboard_display_mode": dashboard_display_mode,
+        "dashboard_display_mode_label": _mode_label(dashboard_display_mode),
+        "dashboard_execution_mode": dashboard_execution_mode,
+        "dashboard_execution_mode_label": _execution_mode_label(dashboard_execution_mode),
+        "dashboard_broker_environment": dashboard_broker_environment,
+        "dashboard_broker_environment_label": _broker_environment_label(dashboard_broker_environment),
+        "dashboard_account_type": dashboard_account_type,
+        "dashboard_account_type_label": _account_type_label(dashboard_account_type),
+    }
+
+
+def _build_mode_consistency_payload(
+    *,
+    dashboard_config=None,
+    system_status: dict[str, object] | None = None,
+    top_engines: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    mode_context = _mode_context_from_config(dashboard_config)
+    dashboard_display_mode = str((system_status or {}).get("mode_key") or mode_context["dashboard_display_mode"] or "paper").strip().lower() or "paper"
+    dashboard_display_label = _mode_label(dashboard_display_mode)
+    dashboard_execution_mode = str((system_status or {}).get("execution_mode") or mode_context["dashboard_execution_mode"] or "unknown").strip().lower() or "unknown"
+    dashboard_execution_label = _execution_mode_label(dashboard_execution_mode)
+    dashboard_broker_environment = str((system_status or {}).get("broker_environment") or mode_context["dashboard_broker_environment"] or "unavailable").strip().lower() or "unavailable"
+    dashboard_broker_environment_label = _broker_environment_label(dashboard_broker_environment)
+    dashboard_account_type = str((system_status or {}).get("account_type") or mode_context["dashboard_account_type"] or "unknown").strip().lower() or "unknown"
+    dashboard_account_type_label = _account_type_label(dashboard_account_type)
+
+    top_entries = [item for item in (top_engines or []) if isinstance(item, dict)]
+    top_display_modes = [
+        str(item.get("mode") or "").strip().lower()
+        for item in top_entries
+        if str(item.get("mode") or "").strip().lower() not in {"", "disabled"}
+    ]
+    top_execution_modes = [
+        str(item.get("execution_mode") or _execution_mode_code(item.get("mode"))).strip().lower()
+        for item in top_entries
+        if str(item.get("execution_mode") or _execution_mode_code(item.get("mode"))).strip().lower() not in {"", "unknown", "disabled"}
+    ]
+    top_broker_environments = [
+        str(item.get("broker_environment") or "").strip().lower()
+        for item in top_entries
+        if str(item.get("broker_environment") or "").strip().lower() not in {"", "unknown", "disabled"}
+    ]
+    top_account_types = [
+        str(item.get("account_type") or "").strip().lower()
+        for item in top_entries
+        if str(item.get("account_type") or "").strip().lower() not in {"", "unknown", "disabled"}
+    ]
+    configured_top_count = sum(1 for item in top_entries if bool(item.get("configured", False)))
+    online_top_count = sum(1 for item in top_entries if bool(item.get("online", False)))
+    top_execution_modes_unique = sorted(set(top_execution_modes))
+    top_display_modes_unique = sorted(set(top_display_modes))
+    hard_conflict = bool(top_execution_modes_unique) and (
+        len(top_execution_modes_unique) > 1 or dashboard_execution_mode not in top_execution_modes_unique
+    )
+    display_only_mismatch = bool(top_display_modes_unique) and dashboard_display_mode not in top_display_modes_unique and not hard_conflict
+    offline_top_count = sum(1 for item in top_entries if bool(item.get("configured", False)) and not bool(item.get("online", False)))
+    if hard_conflict:
+        severity = "BLOCKED"
+        label = "执行模式不一致"
+        reason = "execution_mode_conflict"
+    elif display_only_mismatch:
+        severity = "INFO"
+        label = "执行模式一致（页面显示不同）"
+        reason = "display_dimension_mismatch"
+    elif offline_top_count:
+        severity = "WARNING"
+        label = "TOP 引擎离线"
+        reason = "top_engine_offline"
+    elif configured_top_count == 0:
+        severity = "INFO"
+        label = "无启用 TOP 引擎"
+        reason = "no_top_configs"
+    else:
+        severity = "OK"
+        label = "执行模式一致"
+        reason = "execution_mode_aligned"
+    if hard_conflict:
+        detail = (
+            f"页面显示：{dashboard_display_label}（{dashboard_display_mode}） · "
+            f"执行模式：{dashboard_execution_label}（{dashboard_execution_mode}） · "
+            f"TOP 执行模式：{', '.join(_execution_mode_label(mode) + '（' + mode + '）' for mode in top_execution_modes_unique)}"
+        )
+    elif display_only_mismatch:
+        detail = (
+            f"页面显示：{dashboard_display_label}（{dashboard_display_mode}） · "
+            f"执行模式：{dashboard_execution_label}（{dashboard_execution_mode}） · "
+            f"Broker 环境：{dashboard_broker_environment_label} · "
+            f"账户类型：{dashboard_account_type_label}"
+        )
+    elif configured_top_count == 0:
+        detail = "当前未生成 TOP 配置"
+    else:
+        top_display_text = ", ".join(_mode_label(mode) for mode in top_display_modes_unique) if top_display_modes_unique else "未知"
+        top_execution_text = ", ".join(_execution_mode_label(mode) for mode in top_execution_modes_unique) if top_execution_modes_unique else "未知"
+        detail = (
+            f"页面显示：{dashboard_display_label}（{dashboard_display_mode}） · "
+            f"执行模式：{dashboard_execution_label}（{dashboard_execution_mode}） · "
+            f"TOP 显示：{top_display_text} · TOP 执行：{top_execution_text}"
+        )
+    return {
+        "dashboard_mode": dashboard_display_mode,
+        "dashboard_display_mode": dashboard_display_mode,
+        "dashboard_display_mode_label": dashboard_display_label,
+        "dashboard_execution_mode": dashboard_execution_mode,
+        "dashboard_execution_mode_label": dashboard_execution_label,
+        "dashboard_broker_environment": dashboard_broker_environment,
+        "dashboard_broker_environment_label": dashboard_broker_environment_label,
+        "dashboard_account_type": dashboard_account_type,
+        "dashboard_account_type_label": dashboard_account_type_label,
+        "top_modes": top_display_modes,
+        "top_display_modes": top_display_modes,
+        "top_execution_modes": top_execution_modes,
+        "top_broker_environments": top_broker_environments,
+        "top_account_types": top_account_types,
+        "configured_top_count": configured_top_count,
+        "online_top_count": online_top_count,
+        "mixed": hard_conflict,
+        "display_mismatch": display_only_mismatch,
+        "severity": severity,
+        "reason": reason,
+        "label": label,
+        "detail": detail,
+    }
+
+
 def _market_status_snapshot(now_et: datetime | None = None) -> dict[str, object]:
     try:
         now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
@@ -2291,6 +2520,7 @@ def _system_status_snapshot(
     config_mode = str(getattr(config, "mode", "") or "paper").strip().lower() if config is not None else "paper"
     override_mode = str(mode_override or "").strip().lower()
     mode = override_mode if override_mode in {"paper", "sandbox", "live"} else config_mode
+    mode_context = _mode_context_from_config(config)
     guard = TradingEnvironmentGuard().validate(config) if config is not None else None
     longbridge_cfg = getattr(getattr(config, "broker", None), "longbridge", None) if config is not None else None
     live_order_enabled = bool(getattr(longbridge_cfg, "allow_live_order", False)) if longbridge_cfg else False
@@ -2325,6 +2555,15 @@ def _system_status_snapshot(
         "api_status": "OK",
         "mode": _mode_label(mode),
         "mode_key": mode or "paper",
+        "dashboard_display_mode": mode_context["dashboard_display_mode"],
+        "dashboard_display_mode_label": mode_context["dashboard_display_mode_label"],
+        "dashboard_execution_mode": mode_context["dashboard_execution_mode"],
+        "dashboard_execution_mode_label": mode_context["dashboard_execution_mode_label"],
+        "execution_mode_label": mode_context["dashboard_execution_mode_label"],
+        "dashboard_broker_environment": mode_context["dashboard_broker_environment"],
+        "dashboard_broker_environment_label": mode_context["dashboard_broker_environment_label"],
+        "dashboard_account_type": mode_context["dashboard_account_type"],
+        "dashboard_account_type_label": mode_context["dashboard_account_type_label"],
         "broker_type": "PaperBroker" if mode == "paper" else "LongBridge",
         "broker_connection": broker_connection_label,
         "broker_connected": broker_connected,
@@ -3807,7 +4046,7 @@ HTML = """<!DOCTYPE html>
                 <span class="system-status-detail" id="system-broker-connection">连接状态：{{ system_status.broker_connection or 'not connected' }}</span>
             </div>
             <div class="system-status-card {{ 'status-warn' if mode_consistency.mixed else '' }}">
-                <span class="system-status-label">TOP 引擎模式</span>
+                <span class="system-status-label">执行模式对齐</span>
                 <span class="system-status-value" id="system-top-engine-mode">{{ mode_consistency.label }}</span>
                 <span class="system-status-detail" id="system-top-engine-mode-detail">{{ mode_consistency.detail }}</span>
             </div>
@@ -5295,8 +5534,8 @@ HTML = """<!DOCTYPE html>
             setText('system-broker-type', displayOptional(system.broker_type));
             setText('system-broker-connection', `连接状态：${displayOptional(system.broker_connection, '未连接')}`);
             const modeConsistency = payload.mode_consistency || {};
-            setText('system-top-engine-mode', modeConsistency.mixed ? 'TOP 引擎模式不一致' : (Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? 'TOP 引擎模式一致' : '无启用 TOP 引擎'));
-            setText('system-top-engine-mode-detail', Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? `页面模式：${displayStatus(modeConsistency.dashboard_mode || payload.mode || 'UNKNOWN')} · TOP 模式：${modeConsistency.top_modes.map(displayStatus).join(', ')}` : '当前未生成 TOP 配置');
+            setText('system-top-engine-mode', modeConsistency.label || (Array.isArray(modeConsistency.top_modes) && modeConsistency.top_modes.length ? '执行模式一致' : '无启用 TOP 引擎'));
+            setText('system-top-engine-mode-detail', modeConsistency.detail || '当前未生成 TOP 配置');
             setText('system-data-source', displayOptional(system.data_source));
             setText('system-account-source', displayOptional(system.account_source));
             setText('system-market-label', displayOptional(system.market_open_label));
@@ -5665,12 +5904,38 @@ def _combined_process_count() -> int:
 
 def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | None) -> dict:
     port = int(item.get("port", 0) or 0)
-    configured = bool(ticker) or _top_config_exists(str(item.get("config") or ""))
+    config_name = str(item.get("config") or "")
+    config_path = PROJECT_DIR / "configs" / config_name if config_name else None
+    configured = bool(ticker) or _top_config_exists(config_name)
     status = _fetch_status(port) if configured and port else None
     if status is not None and not isinstance(status, dict):
         status = {}
+    config_data: dict[str, object] = {}
+    if config_path is not None and config_path.exists():
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            if isinstance(raw, dict):
+                config_data = raw
+        except Exception:
+            config_data = {}
+    broker_cfg = config_data.get("broker") if isinstance(config_data.get("broker"), dict) else {}
+    longbridge_cfg = broker_cfg.get("longbridge") if isinstance(broker_cfg, dict) and isinstance(broker_cfg.get("longbridge"), dict) else {}
+    raw_mode = str((status or {}).get("mode") or config_data.get("mode") or mode or ("disabled" if not configured else "paper")).strip().lower() or "unknown"
+    execution_mode = _execution_mode_code(raw_mode)
+    broker_environment = _broker_environment_code(
+        mode=raw_mode,
+        broker_enabled=bool(longbridge_cfg.get("enabled", False)) if isinstance(longbridge_cfg, dict) else None,
+        broker_environment=str(longbridge_cfg.get("environment") or "") if isinstance(longbridge_cfg, dict) else "",
+        account_type=str(longbridge_cfg.get("account_type") or "") if isinstance(longbridge_cfg, dict) else "",
+    )
+    account_type_code = _account_type_code(
+        mode=raw_mode,
+        broker_enabled=bool(longbridge_cfg.get("enabled", False)) if isinstance(longbridge_cfg, dict) else None,
+        broker_environment=str(longbridge_cfg.get("environment") or "") if isinstance(longbridge_cfg, dict) else "",
+        account_type=str(longbridge_cfg.get("account_type") or "") if isinstance(longbridge_cfg, dict) else "",
+    )
     online = bool(status)
-    payload_mode = str((status or {}).get("mode") or mode or ("paper" if configured else "disabled")).strip().lower() or "unknown"
+    payload_mode = str((status or {}).get("mode") or raw_mode).strip().lower() or "unknown"
     signal = str((status or {}).get("last_signal") or (status or {}).get("signal") or ("OFFLINE" if not online else "HOLD")).strip().upper()
     price = (status or {}).get("price") if online else None
     halted = bool((status or {}).get("halted", False)) if online else False
@@ -5681,6 +5946,13 @@ def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | No
         "port": port,
         "online": online,
         "mode": payload_mode,
+        "execution_mode": execution_mode,
+        "broker_environment": broker_environment,
+        "account_type": account_type_code,
+        "runtime_status": "online" if online else "offline",
+        "mode_display": _execution_mode_label(execution_mode),
+        "broker_environment_display": _broker_environment_label(broker_environment),
+        "account_type_display": _account_type_label(account_type_code),
         "signal": signal,
         "price": price,
         "halted": halted,
@@ -5753,20 +6025,11 @@ def _api_status_payload() -> dict[str, object]:
     if not fallback_used:
         fallback_used = any(bool((item or {}).get("fallback_used")) for item in (ai_selection.get("top3") or []))
     live_guard_ok = not any(str(mode).strip().lower() == "live" for mode in top_modes) or bool((selection_sync or {}).get("ok"))
-    configured_top_modes = [
-        str(item.get("mode") or "").strip().lower()
-        for item in top_engines
-        if item.get("configured")
-    ]
-    distinct_top_modes = sorted({mode for mode in configured_top_modes if mode and mode != "disabled"})
-    mode_consistency = {
-        "dashboard_mode": dashboard_mode or "paper",
-        "top_modes": configured_top_modes,
-        "mixed": bool(distinct_top_modes and (dashboard_mode or "paper") not in distinct_top_modes),
-        "reason": "",
-    }
-    if mode_consistency["mixed"]:
-        mode_consistency["reason"] = "dashboard_mode_differs_from_top_engine_mode"
+    mode_consistency = _build_mode_consistency_payload(
+        dashboard_config=dashboard_config,
+        system_status={"mode_key": dashboard_mode or "paper"},
+        top_engines=top_engines,
+    )
     fallback_live_allowed, fallback_paper_allowed = _fallback_runtime_flags()
     top_daily_pnl = 0.0
     top_unrealized_pnl = 0.0
@@ -5814,7 +6077,7 @@ def _api_status_payload() -> dict[str, object]:
         "ok": True,
         "mode": dashboard_mode or "paper",
         "runtime_mode": dashboard_mode or "paper",
-        "top_modes": configured_top_modes,
+        "top_modes": list(mode_consistency.get("top_modes") or []),
         "mode_consistency": mode_consistency,
         "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "combined": {
@@ -5829,6 +6092,10 @@ def _api_status_payload() -> dict[str, object]:
             "fallback_used": fallback_used,
             "reason": str((selection_sync or {}).get("mismatch_reason") or ""),
         },
+        "dashboard_display_mode": mode_consistency.get("dashboard_display_mode"),
+        "dashboard_execution_mode": mode_consistency.get("dashboard_execution_mode"),
+        "dashboard_broker_environment": mode_consistency.get("dashboard_broker_environment"),
+        "dashboard_account_type": mode_consistency.get("dashboard_account_type"),
         "top_engines": top_engines,
         "candidate_validation_api_available": True,
         "risk": {
@@ -7002,12 +7269,7 @@ def index():
         startup_guard=startup_guard,
     )
     main_chart_card = featured_cards[0] if featured_cards else (cards[0] if cards else None)
-    mode_display = (
-        "PAPER · 虚拟盘" if system_status["mode_key"] == "paper"
-        else "SANDBOX · 沙盒" if system_status["mode_key"] == "sandbox"
-        else "PROD · 实盘账户" if system_status["mode_key"] == "live"
-        else "UNKNOWN"
-    )
+    mode_display = f"{system_status.get('mode', 'UNKNOWN')} · {system_status.get('execution_mode_label') or _execution_mode_label(system_status.get('dashboard_execution_mode') or system_status.get('mode_key'))}"
     if system_status["mode_key"] == "live":
         mode_class = "mode-live"
     elif system_status["mode_key"] == "sandbox":
@@ -7053,22 +7315,21 @@ def index():
         for mode in _load_top_modes()
         if str(mode or "").strip().lower() not in {"", "disabled"}
     ]
-    mode_consistency = {
-        "dashboard_mode": system_status.get("mode_key") or effective_mode or "paper",
-        "top_modes": top_modes,
-        "mixed": bool(top_modes and str(system_status.get("mode_key") or effective_mode or "paper").strip().lower() not in set(top_modes)),
-    }
-    mode_consistency["label"] = (
-        "TOP 引擎模式不一致"
-        if mode_consistency["mixed"]
-        else "TOP 引擎模式一致"
-        if top_modes
-        else "无启用 TOP 引擎"
-    )
-    mode_consistency["detail"] = (
-        f"Dashboard: {mode_consistency['dashboard_mode']} · TOP: {', '.join(top_modes)}"
-        if top_modes
-        else "当前未生成 TOP 配置"
+    top_mode_entries = [
+        {
+            "configured": True,
+            "online": True,
+            "mode": mode,
+            "execution_mode": _execution_mode_code(mode),
+            "broker_environment": _broker_environment_code(mode=mode, broker_enabled=False),
+            "account_type": _account_type_code(mode=mode, broker_enabled=False),
+        }
+        for mode in top_modes
+    ]
+    mode_consistency = _build_mode_consistency_payload(
+        dashboard_config=dashboard_config,
+        system_status=system_status,
+        top_engines=top_mode_entries,
     )
     selection_dashboard = _selection_dashboard_view(ai_selection, selection_sync)
 
