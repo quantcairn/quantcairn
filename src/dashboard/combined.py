@@ -2062,6 +2062,101 @@ def _candidate_model_evaluation_payload() -> dict[str, object]:
     }
 
 
+def _safe_wa_factor_list(raw: Any, labels: dict[str, str]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for item in (raw or []) if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            f = str(item.get("factor") or "")
+            result.append({
+                "label": labels.get(f, f),
+                "diff": _safe_ratio_str(item.get("diff"), 4),
+            })
+    return result
+
+
+def _build_wa_suggestions(weights: dict[str, Any]) -> list[dict[str, object]]:
+    dim_cn = {
+        "volatility_score": "波动率得分", "volume_score": "成交量得分",
+        "trend_fit_score": "趋势拟合得分", "repeatability_score": "可重复性得分",
+        "drawdown_safety_score": "回撤安全得分", "correlation_bonus": "相关性红利",
+    }
+    raw = weights.get("weight_suggestions") or []
+    if raw:
+        result: list[dict[str, object]] = []
+        for s in (raw if isinstance(raw, list) else []):
+            if not isinstance(s, dict):
+                continue
+            dim = str(s.get("factor") or "")
+            cur = _safe_number(s.get("current")) or 0.0
+            sug = _safe_number(s.get("suggested")) or cur
+            delta = _safe_number(s.get("delta")) or 0.0
+            conf = _safe_number(s.get("confidence")) or 0.0
+            arrow = "↑" if delta > 0.001 else ("↓" if delta < -0.001 else "→")
+            result.append({
+                "dim": dim, "label": dim_cn.get(dim, dim),
+                "current": _safe_ratio_str(cur),
+                "suggested": _safe_ratio_str(sug),
+                "delta": _safe_ratio_str(delta),
+                "arrow": arrow,
+                "confidence": _safe_pct_str(conf, 0) if conf > 0 else "暂无",
+            })
+        return result
+    # Fallback from old format
+    base_wt = weights.get("baseline_weights") or {}
+    prop_wt = weights.get("proposed_weights") or {}
+    result = []
+    for dim in ("volatility_score", "volume_score", "trend_fit_score",
+                "repeatability_score", "drawdown_safety_score", "correlation_bonus"):
+        bl = _safe_number(base_wt.get(dim)) or 0.0
+        pr = _safe_number(prop_wt.get(dim)) or bl
+        diff = round(pr - bl, 4) if math.isfinite(pr - bl) else 0.0
+        arrow = "↑" if diff > 0.001 else ("↓" if diff < -0.001 else "→")
+        result.append({
+            "dim": dim, "label": dim_cn.get(dim, dim),
+            "current": _safe_ratio_str(bl), "suggested": _safe_ratio_str(pr),
+            "delta": _safe_ratio_str(diff), "arrow": arrow, "confidence": "暂无",
+        })
+    return result
+
+
+def _build_wa_factor_perf(weights: dict[str, Any]) -> list[dict[str, str]]:
+    dim_cn = {
+        "volatility_score": "波动率得分", "volume_score": "成交量得分",
+        "trend_fit_score": "趋势拟合得分", "repeatability_score": "可重复性得分",
+        "drawdown_safety_score": "回撤安全得分", "correlation_bonus": "相关性红利",
+    }
+    raw = weights.get("factor_performance") or []
+    result: list[dict[str, str]] = []
+    for fp in (raw if isinstance(raw, list) else []):
+        if not isinstance(fp, dict):
+            continue
+        f = str(fp.get("factor") or "")
+        result.append({
+            "label": dim_cn.get(f, f),
+            "win_avg": _safe_ratio_str(fp.get("win_avg"), 2),
+            "loss_avg": _safe_ratio_str(fp.get("loss_avg"), 2),
+            "diff": _safe_ratio_str(fp.get("diff"), 4),
+            "direction": str(fp.get("direction") or ""),
+        })
+    return result
+
+
+def _build_wa_strategy_rows(weights: dict[str, Any]) -> list[dict[str, object]]:
+    sp = weights.get("strategy_performance") or {}
+    items = sp.get("strategies") if isinstance(sp.get("strategies"), list) else []
+    result: list[dict[str, object]] = []
+    for s in items if items else []:
+        if isinstance(s, dict):
+            result.append({
+                "strategy": str(s.get("strategy") or ""),
+                "trade_count": int(_safe_number(s.get("trade_count")) or 0),
+                "win_rate": _safe_pct_str(s.get("win_rate"), 1),
+                "avg_return": _safe_pct_str(s.get("avg_return"), 2),
+                "total_pnl": _safe_float_str(s.get("total_realized_pnl"), 2),
+            })
+    return result
+
+
 def _learning_summary_payload() -> dict[str, object]:
     """Read outcome_summary.json + suggested_weights.json for 8090 display.
 
@@ -2220,6 +2315,13 @@ def _learning_summary_payload() -> dict[str, object]:
         "wa_baseline_eval": wa_baseline_ev,
         "wa_proposed_eval": wa_proposed_ev,
         "wa_improved": wa_improved,
+        # ── v2 Weight Advisor fields ──
+        "wa_suggestions": _build_wa_suggestions(weights),
+        "wa_factor_perf": _build_wa_factor_perf(weights),
+        "wa_strategy_rows": _build_wa_strategy_rows(weights),
+        "wa_avg_confidence": _safe_pct_str(weights.get("avg_confidence"), 0),
+        "wa_top_pos": _safe_wa_factor_list(weights.get("top_positive_factors"), _dim_cn),
+        "wa_top_neg": _safe_wa_factor_list(weights.get("top_negative_factors"), _dim_cn),
         "governance": governance,
         "data_sufficient": closed_trades >= 20,
         "avg_return_str": avg_return_str,
@@ -4887,27 +4989,37 @@ HTML = """<!DOCTYPE html>
                     <span class="system-status-label">权重建议</span>
                     <span class="system-status-value" id="learning-wa-status">{{ learning_summary.wa_status }}</span>
                     <span class="system-status-detail" id="learning-wa-explain">{{ learning_summary.wa_explanation[:150] }}</span>
-                    <div class="board-section-head" style="margin-top:8px"><span>评分权重（基准 → 建议）</span></div>
+                    <div class="board-section-head" style="margin-top:8px"><span>评分权重（基准 → 建议 ±0.05 max Δ）</span></div>
                     <table class="display-table" aria-label="权重对比">
-                        <thead><tr><th>维度</th><th>基准</th><th>建议</th><th>变化</th></tr></thead>
+                        <thead><tr><th>维度</th><th>基准</th><th>建议</th><th>Δ</th><th>置信度</th></tr></thead>
                         <tbody id="learning-weight-rows">
-                            {% for w in learning_summary.wa_weight_rows %}
-                            <tr><td>{{ w.label }}</td><td>{{ w.baseline }}</td><td>{{ w.proposed }}</td><td>{{ w.arrow }} {{ w.diff }}</td></tr>
+                            {% for w in learning_summary.wa_suggestions %}
+                            <tr><td>{{ w.label }}</td><td>{{ w.current }}</td><td>{{ w.suggested }}</td><td>{{ w.arrow }} {{ w.delta }}</td><td>{{ w.confidence }}</td></tr>
                             {% endfor %}
+                            {% if not learning_summary.wa_suggestions %}{% for w in learning_summary.wa_weight_rows %}
+                            <tr><td>{{ w.label }}</td><td>{{ w.baseline }}</td><td>{{ w.proposed }}</td><td>{{ w.arrow }} {{ w.diff }}</td><td>暂无</td></tr>
+                            {% endfor %}{% endif %}
                         </tbody>
                     </table>
-                    {% if learning_summary.wa_feature_rows %}
-                    <div class="board-section-head" style="margin-top:8px"><span>特征重要性</span></div>
-                    <table class="display-table" aria-label="特征重要性">
-                        <thead><tr><th>特征</th><th>重要性</th></tr></thead>
-                        <tbody id="learning-feature-rows">
-                            {% for f in learning_summary.wa_feature_rows %}
-                            <tr><td>{{ f.label }}</td><td>{{ f.importance }}</td></tr>
-                            {% endfor %}
+                    {% if learning_summary.wa_factor_perf %}
+                    <div class="board-section-head" style="margin-top:8px"><span>因子表现（WIN vs LOSS）</span></div>
+                    <table class="display-table" aria-label="因子表现">
+                        <thead><tr><th>因子</th><th>WIN均值</th><th>LOSS均值</th><th>差异</th></tr></thead>
+                        <tbody>{% for f in learning_summary.wa_factor_perf %}
+                            <tr><td>{{ f.label }}</td><td>{{ f.win_avg }}</td><td>{{ f.loss_avg }}</td><td>{{ f.diff }}</td></tr>{% endfor %}
+                        {% if not learning_summary.wa_factor_perf %}<tr><td colspan="4">暂无因子表现数据</td></tr>{% endif %}
                         </tbody>
                     </table>
                     {% endif %}
-                    <div class="board-section-head" style="margin-top:8px"><span>Champion / Challenger</span></div>
+                    {% if learning_summary.wa_strategy_rows %}
+                    <div class="board-section-head" style="margin-top:8px"><span>策略表现</span></div>
+                    <table class="display-table" aria-label="策略表现">
+                        <thead><tr><th>策略</th><th>笔数</th><th>胜率</th><th>平均回报</th><th>总盈亏</th></tr></thead>
+                        <tbody>{% for s in learning_summary.wa_strategy_rows %}
+                            <tr><td>{{ s.strategy }}</td><td>{{ s.trade_count }}</td><td>{{ s.win_rate }}</td><td>{{ s.avg_return }}</td><td>{{ s.total_pnl }}</td></tr>{% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
                     <div class="shadow-metrics-grid">
                         <div class="shadow-metric"><span>🏆 Champion</span><strong id="learning-champion">{{ learning_summary.governance.champion }}</strong></div>
                         <div class="shadow-metric"><span>⚡ Challenger</span><strong id="learning-challenger">{{ learning_summary.governance.challenger }}</strong></div>

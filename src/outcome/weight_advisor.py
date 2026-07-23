@@ -1,12 +1,12 @@
-"""Read-only weight advisor for selector scoring.
+"""Weight Advisor v2 — reads v3 outcome datasets, proposes weight adjustments.
 
-Reads outcome_dataset.csv, computes feature importance and weight
-suggestions via time-split validation.  Never auto-modifies baseline
-configuration, never auto-activates a Challenger, never affects the
-live Selector or Paper/Live trading.
+Data source:   artifacts/learning/outcome_dataset.parquet (→ CSV fallback)
+Output:        artifacts/learning/suggested_weights.json
+                artifacts/learning/strategy_performance.json
+Governance:    creates LearningProposal (PENDING_HUMAN_APPROVAL)
 
-Minimum 20 closed trades required.  Below threshold, returns
-INSUFFICIENT_DATA with baseline-only weights.
+Advisory only — NEVER modifies active weights, Selector, Broker, or
+TradingEngine.  All activation requires human approval via Governance.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import json
 import math
 import os
 import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,11 +24,15 @@ from typing import Any
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LEARNING_DIR = PROJECT_DIR / "artifacts" / "learning"
 OUTCOME_CSV_PATH = LEARNING_DIR / "outcome_dataset.csv"
+OUTCOME_PARQUET_PATH = LEARNING_DIR / "outcome_dataset.parquet"
 WEIGHTS_PATH = LEARNING_DIR / "suggested_weights.json"
+STRATEGY_PERF_PATH = LEARNING_DIR / "strategy_performance.json"
 MIN_SAMPLE_SIZE = 20
-MODEL_VERSION = "weight_advisor.v1"
+MODEL_VERSION = "weight_advisor.v2"
+MAX_DELTA_PER_FACTOR = 0.05
 
-BASELINE_WEIGHTS = {
+
+BASELINE_WEIGHTS: dict[str, float] = {
     "volatility_score": 0.30,
     "volume_score": 0.20,
     "trend_fit_score": 0.20,
@@ -45,6 +50,25 @@ FEATURE_NAMES = [
     "correlation_bonus",
 ]
 
+# V3 parquet → selector dimension mapping
+FEATURE_COLUMN_MAP = {
+    "volatility_score": "feature_volatility_score",
+    "volume_score": "feature_volume_score",
+    "trend_fit_score": "feature_trend_score",
+    "repeatability_score": "feature_repeatability_score",
+    "drawdown_safety_score": "feature_drawdown_safety_score",
+    "correlation_bonus": "feature_risk_score",  # proxy: risk ↔ correlation
+}
+
+CHINESE_LABELS: dict[str, str] = {
+    "volatility_score": "波动率得分",
+    "volume_score": "成交量得分",
+    "trend_fit_score": "趋势拟合得分",
+    "repeatability_score": "可重复性得分",
+    "drawdown_safety_score": "回撤安全得分",
+    "correlation_bonus": "相关性红利",
+}
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -52,26 +76,38 @@ def _utc_now_iso() -> str:
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value or 0.0)
+        result = float(value or 0.0)
     except (TypeError, ValueError):
         return float(default)
+    if math.isnan(result) or math.isinf(result):
+        return float(default)
+    return round(result, 6)
 
 
 def _normalize_symbol(value: Any) -> str:
     return str(value or "").strip().upper().split(".")[0]
 
 
-# ── Data loading ──────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Data loading (Parquet → CSV fallback)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def _load_outcomes() -> list[dict[str, Any]]:
-    """Load training-eligible rows from outcome_dataset.csv."""
+def _load_outcomes_parquet() -> list[dict[str, Any]] | None:
+    try:
+        import pyarrow.parquet as pq
+        table = pq.read_table(str(OUTCOME_PARQUET_PATH))
+        return table.to_pylist()
+    except Exception:
+        return None
+
+
+def _load_outcomes_csv() -> list[dict[str, Any]]:
     if not OUTCOME_CSV_PATH.exists():
         return []
     rows: list[dict[str, Any]] = []
     try:
         with OUTCOME_CSV_PATH.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
+            for row in csv.DictReader(f):
                 if str(row.get("training_eligible") or "").strip().lower() != "true":
                     continue
                 rows.append(dict(row))
@@ -80,198 +116,221 @@ def _load_outcomes() -> list[dict[str, Any]]:
     return rows
 
 
-# ── Feature / target extraction ───────────────────────────────────────
-
-def _extract_features(outcomes: list[dict[str, Any]]) -> tuple[list[dict[str, float]], list[float]]:
-    """Build feature dicts and P&L targets from outcome rows.
-
-    Feature set:
-      - formal_rank (normalized 1/rank)
-      - formal_candidate_score (0-100)
-      - strategy_fit_score (0-100)
-      - market_regime_encoded (one-hot: NORMAL, BEAR, BULL, RANGE, UNKNOWN)
-
-    Target: pnl_pct
-    """
-    features: list[dict[str, float]] = []
-    targets: list[float] = []
-
-    for row in outcomes:
-        rank = _safe_float(row.get("formal_rank"), default=3.0)
-        feat = {
-            "formal_rank_inverse": round(1.0 / max(1.0, rank), 4),
-            "formal_candidate_score": _safe_float(row.get("formal_candidate_score"), default=50.0),
-            "strategy_fit_score": _safe_float(row.get("strategy_fit_score"), default=50.0),
-            "hold_duration_hours": _safe_float(row.get("hold_duration_seconds"), default=0.0) / 3600.0,
-            "regime_NORMAL": 1.0 if str(row.get("market_regime") or "").strip().upper() == "NORMAL" else 0.0,
-            "regime_BEAR": 1.0 if str(row.get("market_regime") or "").strip().upper() == "BEAR" else 0.0,
-            "regime_BULL": 1.0 if str(row.get("market_regime") or "").strip().upper() == "BULL" else 0.0,
-            "regime_RANGE": 1.0 if str(row.get("market_regime") or "").strip().upper() == "RANGE" else 0.0,
-        }
-        features.append(feat)
-        targets.append(_safe_float(row.get("pnl_pct"), default=0.0))
-
-    return features, targets
+def _load_outcomes() -> list[dict[str, Any]]:
+    parquet_rows = _load_outcomes_parquet()
+    if parquet_rows:
+        return [r for r in parquet_rows
+                if str(r.get("training_eligible") or "").strip().lower() == "true"]
+    return _load_outcomes_csv()
 
 
-# ── Time-split validation ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Factor performance analysis
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def _time_split(
-    features: list[dict[str, float]],
-    targets: list[float],
-    outcomes: list[dict[str, Any]],
-) -> tuple[list[dict[str, float]], list[float], list[dict[str, float]], list[float]]:
-    """Split into train (first 70%) and test (last 30%) by chronological order."""
-    n = len(outcomes)
-    split_idx = int(n * 0.70)
-    return (
-        features[:split_idx],
-        targets[:split_idx],
-        features[split_idx:],
-        targets[split_idx:],
-    )
-
-
-# ── Simple feature importance via correlation ─────────────────────────
-
-def _correlation_importance(
-    features: list[dict[str, float]],
-    targets: list[float],
-) -> dict[str, float]:
-    """Compute Pearson correlation between each feature and P&L target.
-
-    Returns absolute correlation values, normalized to sum to 1.0.
-    """
-    n = len(features)
-    if n < 3:
-        return {name: 1.0 / len(FEATURE_NAMES) for name in FEATURE_NAMES}
-
-    feature_keys = sorted(set().union(*(f.keys() for f in features)))
-    correlations: dict[str, float] = {}
-
-    for key in feature_keys:
-        xs = [f.get(key, 0.0) for f in features]
-        ys = list(targets)
-
-        mean_x = sum(xs) / n
-        mean_y = sum(ys) / n
-
-        cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
-        std_x = math.sqrt(sum((x - mean_x) ** 2 for x in xs))
-        std_y = math.sqrt(sum((y - mean_y) ** 2 for y in ys))
-
-        if std_x > 0 and std_y > 0:
-            corr = cov / (std_x * std_y)
-            correlations[key] = abs(max(-1.0, min(1.0, corr)))
-        else:
-            correlations[key] = 0.0
-
-    total = sum(correlations.values())
-    if total > 0:
-        correlations = {k: round(v / total, 4) for k, v in correlations.items()}
-    else:
-        correlations = {k: 1.0 / len(feature_keys) for k in feature_keys}
-
-    return correlations
+@dataclass(slots=True)
+class FactorPerformance:
+    factor: str
+    label: str
+    win_avg: float = 0.0
+    loss_avg: float = 0.0
+    even_avg: float = 0.0
+    diff: float = 0.0          # win_avg - loss_avg
+    direction: str = ""         # "positive" | "negative"
+    win_count: int = 0
+    loss_count: int = 0
+    even_count: int = 0
 
 
-# ── Weight proposal ────────────────────────────────────────────────────
+def _compute_factor_performance(outcomes: list[dict[str, Any]]) -> list[FactorPerformance]:
+    """Compute WIN/LOSS/EVEN averages for each feature column."""
+    rng = max(1, len(outcomes))
+    # Group outcomes by WIN/LOSS/EVEN
+    groups: dict[str, list[dict[str, Any]]] = {"WIN": [], "LOSS": [], "EVEN": []}
+    for r in outcomes:
+        oc = str(r.get("outcome") or "").strip().upper()
+        groups.setdefault(oc, []).append(r)
 
-def _map_to_selector_features(feature_importance: dict[str, float]) -> dict[str, float]:
-    """Map the outcome-derived feature importance to selector scoring dimensions.
-
-    The selector uses 6 dimensions: volatility_score, volume_score,
-    trend_fit_score, repeatability_score, drawdown_safety_score,
-    correlation_bonus.
-
-    We map outcome features to these dimensions using a fixed mapping
-    and blend with baseline (50/50) to stay conservative.
-    """
-    # Fixed mapping: outcome-derived signal to selector dimension
-    mapping: dict[str, list[str]] = {
-        "volatility_score": ["formal_candidate_score"],
-        "volume_score": ["hold_duration_hours"],
-        "trend_fit_score": ["strategy_fit_score", "regime_NORMAL", "regime_BULL"],
-        "repeatability_score": ["formal_rank_inverse"],
-        "drawdown_safety_score": ["regime_BEAR", "regime_RANGE"],
-        "correlation_bonus": ["strategy_fit_score", "formal_candidate_score"],
-    }
-
-    proposed: dict[str, float] = {}
-    for dim, sources in mapping.items():
-        raw = sum(feature_importance.get(s, 0.0) for s in sources) / max(1, len(sources))
-        proposed[dim] = raw
-
-    total = sum(proposed.values()) or 1.0
-    proposed = {k: round(v / total, 4) for k, v in proposed.items()}
-
-    # Blend 50/50 with baseline
-    blended: dict[str, float] = {}
+    results: list[FactorPerformance] = []
     for dim in FEATURE_NAMES:
-        base = BASELINE_WEIGHTS.get(dim, 0.0)
-        prop = proposed.get(dim, base)
-        blended[dim] = round(base * 0.50 + prop * 0.50, 4)
+        col = FEATURE_COLUMN_MAP.get(dim, f"feature_{dim}")
+        label = CHINESE_LABELS.get(dim, dim)
+        wins = [_safe_float(r.get(col)) for r in groups.get("WIN", [])]
+        losses = [_safe_float(r.get(col)) for r in groups.get("LOSS", [])]
+        evens = [_safe_float(r.get(col)) for r in groups.get("EVEN", [])]
+        wa = round(sum(wins) / max(1, len(wins)), 4) if wins else 0.0
+        la = round(sum(losses) / max(1, len(losses)), 4) if losses else 0.0
+        ea = round(sum(evens) / max(1, len(evens)), 4) if evens else 0.0
+        diff = round(wa - la, 4)
+        results.append(FactorPerformance(
+            factor=dim, label=label,
+            win_avg=wa, loss_avg=la, even_avg=ea,
+            diff=diff,
+            direction="positive" if diff > 0 else "negative",
+            win_count=len(wins), loss_count=len(losses), even_count=len(evens),
+        ))
+    results.sort(key=lambda x: -x.diff)
+    return results
 
-    total_blended = sum(blended.values()) or 1.0
-    blended = {k: round(v / total_blended, 4) for k, v in blended.items()}
 
-    return blended
+# ═══════════════════════════════════════════════════════════════════════════════
+# Weight suggestion with delta protection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass(slots=True)
+class WeightSuggestion:
+    factor: str
+    label: str
+    current: float
+    suggested: float
+    delta: float
+    confidence: float = 0.0
 
 
-# ── Evaluation ─────────────────────────────────────────────────────────
+def _compute_weight_suggestions(
+    factors: list[FactorPerformance],
+    sample_size: int,
+) -> list[WeightSuggestion]:
+    """Propose per-factor weight adjustments with ±0.05 cap.
 
-def _evaluate_on_test(
-    features: list[dict[str, float]],
-    targets: list[float],
-    weights: dict[str, float],
-) -> dict[str, Any]:
-    """Compute test-set metrics: MSE, R², hit-rate, mean direction accuracy."""
-    n = len(features)
-    if n < 2:
-        return {"mse": 0.0, "r2": 0.0, "hit_rate": 0.0, "mean_direction_accuracy": 0.0}
+    Confidence = f(sample_size, win_rate_differential, factor direction consistency).
+    """
+    results: list[WeightSuggestion] = []
+    total_outcomes = sum(f.win_count + f.loss_count + f.even_count for f in factors) / max(1, len(factors))
+    win_rate = sum(f.win_count for f in factors) / max(1, total_outcomes)
 
-    # Simple linear model: predicted = sum(weight_i * feature_i)
-    feature_keys = sorted(set().union(*(f.keys() for f in features)))
-    predictions: list[float] = []
-    for feat in features:
-        pred = sum(weights.get(k, 0.0) * feat.get(k, 0.0) for k in feature_keys)
-        predictions.append(pred)
+    # Factor consistency: how many factors point in the same direction as overall win rate
+    positive_factors = sum(1 for f in factors if f.diff > 0)
 
-    # MSE
-    mse = sum((p - y) ** 2 for p, y in zip(predictions, targets)) / n
+    for factor in factors:
+        base = BASELINE_WEIGHTS.get(factor.factor, 0.20)
+        # Scale: positive diff → increase weight, negative diff → decrease
+        # Magnitude: proportional to |diff| normalized against max |diff|
+        max_abs_diff = max(abs(f.diff) for f in factors) if factors else 1.0
+        if max_abs_diff > 0:
+            scale = min(1.0, abs(factor.diff) / max_abs_diff)
+        else:
+            scale = 0.0
 
-    # R²
-    mean_y = sum(targets) / n
-    ss_total = sum((y - mean_y) ** 2 for y in targets)
-    ss_res = sum((p - y) ** 2 for p, y in zip(predictions, targets))
-    r2 = 1.0 - (ss_res / ss_total) if ss_total > 0 else 0.0
+        raw_delta = scale * MAX_DELTA_PER_FACTOR
+        if factor.diff > 0:
+            raw_delta = raw_delta
+        else:
+            raw_delta = -raw_delta
 
-    # Hit rate: % of predictions with same sign as actual
-    hits = sum(1 for p, y in zip(predictions, targets) if (p > 0) == (y > 0))
-    hit_rate = hits / n if n > 0 else 0.0
+        # ── Confidence ───────────────────────────────────────────────────
+        # 1. Sample size confidence (logistic: 0 at 0, ~0.9 at 60+)
+        sample_conf = 1.0 / (1.0 + math.exp(-0.08 * (sample_size - 30)))
+        sample_conf = max(0.0, min(1.0, sample_conf))
 
-    # Direction accuracy on consecutive pairs
-    dir_correct = 0
-    for i in range(1, n):
-        if (targets[i] - targets[i - 1] > 0) == (predictions[i] - predictions[i - 1] > 0):
-            dir_correct += 1
-    mda = dir_correct / (n - 1) if n > 1 else 0.0
+        # 2. Factor direction agreement: how well does this factor separate WIN/LOSS
+        total_factor_samples = factor.win_count + factor.loss_count + factor.even_count
+        agreement = 0.5
+        if total_factor_samples > 0:
+            # If diff is large relative to the averages, confidence is higher
+            avg_val = (factor.win_avg + factor.loss_avg) / 2.0 if (factor.win_avg + factor.loss_avg) > 0 else 1.0
+            agreement = min(1.0, abs(factor.diff) / max(1.0, avg_val) * 2.0)
+
+        # 3. Win-rate differential: how different is WIN from LOSS overall
+        wr_diff = abs(factor.win_avg - factor.loss_avg) / max(0.01, factor.win_avg + factor.loss_avg)
+        wr_conf = min(1.0, wr_diff * 3.0)
+
+        confidence = round(0.35 * sample_conf + 0.35 * wr_conf + 0.30 * agreement, 4)
+
+        # Apply delta cap and clamp
+        capped_delta = max(-MAX_DELTA_PER_FACTOR, min(MAX_DELTA_PER_FACTOR, raw_delta))
+        suggested = round(base + capped_delta, 4)
+
+        results.append(WeightSuggestion(
+            factor=factor.factor,
+            label=factor.label,
+            current=base,
+            suggested=suggested,
+            delta=capped_delta,
+            confidence=confidence,
+        ))
+
+    # ── Normalize to sum to 1.0 ──────────────────────────────────────────
+    total = sum(r.suggested for r in results) or 1.0
+    for r in results:
+        r.suggested = round(r.suggested / total, 4)
+        r.delta = round(r.suggested - r.current, 4)
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Strategy performance analysis
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _compute_strategy_performance(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute per-strategy trade statistics."""
+    strategies: dict[str, dict[str, Any]] = {}
+    for r in outcomes:
+        strat = str(r.get("strategy") or r.get("strategy_family") or "unknown")
+        outcome = str(r.get("outcome") or "").strip().upper()
+        pnl = _safe_float(r.get("return_pct") or r.get("pnl_pct"))
+        realized = _safe_float(r.get("realized_pnl"))
+        s = strategies.setdefault(strat, {
+            "strategy": strat, "trade_count": 0,
+            "wins": 0, "losses": 0, "evens": 0,
+            "avg_return": 0.0, "total_return": 0.0,
+            "total_realized_pnl": 0.0,
+        })
+        s["trade_count"] += 1
+        s["total_return"] += pnl
+        s["total_realized_pnl"] += realized
+        if outcome == "WIN":
+            s["wins"] += 1
+        elif outcome == "LOSS":
+            s["losses"] += 1
+        else:
+            s["evens"] += 1
+
+    items = list(strategies.values())
+    for s in items:
+        tc = max(1, s["trade_count"])
+        s["win_rate"] = round(s["wins"] / tc * 100.0, 2)
+        s["avg_return"] = round(s["total_return"] / tc, 4)
+        s["total_return"] = round(s["total_return"], 4)
+        s["total_realized_pnl"] = round(s["total_realized_pnl"], 4)
+
+    items.sort(key=lambda x: -x["total_realized_pnl"])
+    best = items[0]["strategy"] if items else ""
+    worst = items[-1]["strategy"] if items else ""
 
     return {
-        "mse": round(mse, 4),
-        "r2": round(r2, 4),
-        "hit_rate": round(hit_rate, 4),
-        "mean_direction_accuracy": round(mda, 4),
+        "generated_at": _utc_now_iso(),
+        "strategies": items,
+        "best_strategy": best,
+        "worst_strategy": worst,
+        "strategy_count": len(items),
     }
 
 
-# ── Main advisor ───────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Governance integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _register_governance_proposal(report: dict[str, Any]) -> None:
+    """Register the weight proposal with the governance system."""
+    try:
+        from src.outcome.governance import LearningGovernance
+        gov = LearningGovernance()
+        gov.register_weight_proposal(dry_run=False)
+    except Exception:
+        pass  # governance registration is best-effort
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main advisor
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def run_weight_advisor(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Read outcome data, compute weight suggestions, write suggested_weights.json.
+    """Read outcome data, compute weight suggestions, write reports.
 
     Returns complete advisor report dict.
     """
@@ -290,53 +349,85 @@ def run_weight_advisor(
         report.update({
             "status": "INSUFFICIENT_DATA",
             "proposed_weights": dict(BASELINE_WEIGHTS),
-            "feature_importances": {},
+            "weight_suggestions": [],
+            "factor_performance": [],
+            "top_positive_factors": [],
+            "top_negative_factors": [],
+            "strategy_performance": {},
             "evaluation_metrics": {},
             "explanation": (
                 f"Insufficient training data: {sample_size} eligible outcomes, "
-                f"minimum {MIN_SAMPLE_SIZE} required.  Baseline weights retained. "
-                f"Paper trading must accumulate more closed trades before "
-                f"weight suggestion is meaningful."
+                f"minimum {MIN_SAMPLE_SIZE} required.  Baseline weights retained."
             ),
-            "test_set_size": 0,
         })
     else:
-        features, targets = _extract_features(outcomes)
-        train_f, train_t, test_f, test_t = _time_split(features, targets, outcomes)
-        importance = _correlation_importance(train_f, train_t)
-        proposed = _map_to_selector_features(importance)
-        baseline_eval = _evaluate_on_test(test_f, test_t, BASELINE_WEIGHTS)
-        proposed_eval = _evaluate_on_test(test_f, test_t, proposed)
+        # 1. Factor performance analysis
+        factors = _compute_factor_performance(outcomes)
+        top_positive = [{"factor": f.factor, "label": f.label, "win_avg": f.win_avg,
+                          "loss_avg": f.loss_avg, "diff": f.diff}
+                         for f in factors if f.diff > 0][:3]
+        top_negative = [{"factor": f.factor, "label": f.label, "win_avg": f.win_avg,
+                          "loss_avg": f.loss_avg, "diff": f.diff}
+                         for f in factors if f.diff < 0][-3:]
+        top_negative.reverse()
 
-        improved = (
-            proposed_eval.get("r2", 0.0) >= baseline_eval.get("r2", 0.0)
-            and proposed_eval.get("hit_rate", 0.0) >= baseline_eval.get("hit_rate", 0.0)
+        # 2. Weight suggestions with delta protection
+        suggestions = _compute_weight_suggestions(factors, sample_size)
+        proposed_weights: dict[str, float] = {}
+        weight_details: list[dict[str, Any]] = []
+        for s in suggestions:
+            proposed_weights[s.factor] = s.suggested
+            weight_details.append({
+                "factor": s.factor,
+                "label": s.label,
+                "current": s.current,
+                "suggested": s.suggested,
+                "delta": s.delta,
+                "confidence": s.confidence,
+            })
+
+        # 3. Strategy performance
+        strategy_perf = _compute_strategy_performance(outcomes)
+
+        # 4. Confidence summary (average of all individual factor confidences)
+        avg_confidence = (
+            round(sum(s.confidence for s in suggestions) / max(1, len(suggestions)), 4)
+            if suggestions else 0.0
         )
 
         report.update({
             "status": "COMPLETED",
-            "train_set_size": len(train_f),
-            "test_set_size": len(test_f),
-            "feature_importances": {
-                k: round(v, 4) for k, v in sorted(importance.items(), key=lambda x: -x[1])
-            },
-            "proposed_weights": dict(proposed),
+            "proposed_weights": proposed_weights,
+            "weight_suggestions": weight_details,
+            "factor_performance": [
+                {"factor": f.factor, "label": f.label, "win_avg": f.win_avg,
+                 "loss_avg": f.loss_avg, "even_avg": f.even_avg, "diff": f.diff,
+                 "direction": f.direction}
+                for f in factors
+            ],
+            "top_positive_factors": top_positive,
+            "top_negative_factors": top_negative,
+            "strategy_performance": strategy_perf,
+            "avg_confidence": avg_confidence,
             "evaluation_metrics": {
-                "baseline": baseline_eval,
-                "proposed": proposed_eval,
-                "improved": improved,
+                "max_delta_per_factor": MAX_DELTA_PER_FACTOR,
+                "total_weight": round(sum(proposed_weights.values()), 4),
+                "sample_size": sample_size,
+                "weight_count": len(proposed_weights),
             },
             "explanation": (
-                f"Time-split validation on {sample_size} closed trades "
-                f"(train={len(train_f)}, test={len(test_f)}). "
-                f"Proposed weights {'improve' if improved else 'do not improve'} "
-                f"over baseline.  Feature importance derived from Pearson "
-                f"correlation with realized P&L %."
+                f"Factor performance analysis on {sample_size} closed trades. "
+                f"Confidence={avg_confidence:.2%}. "
+                f"Weight adjustments capped at ±{MAX_DELTA_PER_FACTOR} per factor. "
+                f"Human approval required via governance."
             ),
         })
 
     if not dry_run:
         _write_report(report)
+        _write_strategy_performance(report.get("strategy_performance") or {})
+        if report.get("status") == "COMPLETED":
+            _register_governance_proposal(report)
 
     return report
 
@@ -348,9 +439,27 @@ def _write_report(report: dict[str, Any]) -> Path:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dump(report, f, ensure_ascii=False, indent=2, sort_keys=True, default=str)
         os.replace(tmp, WEIGHTS_PATH)
         return WEIGHTS_PATH
+    except Exception:
+        try:
+            Path(tmp).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def _write_strategy_performance(data: dict[str, Any]) -> Path:
+    LEARNING_DIR.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".strategy_perf.", suffix=".tmp", dir=str(LEARNING_DIR)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True, default=str)
+        os.replace(tmp, STRATEGY_PERF_PATH)
+        return STRATEGY_PERF_PATH
     except Exception:
         try:
             Path(tmp).unlink(missing_ok=True)
