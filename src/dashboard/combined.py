@@ -1616,13 +1616,59 @@ def _candidate_research_report_snapshot() -> dict[str, object]:
     }
 
 
+def _load_weight_advisor_data() -> dict[str, object]:
+    """Load the latest Weight Advisor report from artifacts/learning/."""
+    try:
+        path = PROJECT_DIR / "artifacts" / "learning" / "suggested_weights.json"
+        if not path.exists():
+            return {"available": False}
+        import json
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return dict(data) if isinstance(data, dict) else {"available": False}
+    except Exception:
+        return {"available": False}
+
+
+def _load_outcome_summary() -> dict[str, object]:
+    """Load the latest outcome summary from artifacts/learning/."""
+    try:
+        path = PROJECT_DIR / "artifacts" / "learning" / "outcome_summary.json"
+        if not path.exists():
+            return {"available": False}
+        import json
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return dict(data) if isinstance(data, dict) else {"available": False}
+    except Exception:
+        return {"available": False}
+
+
 def _candidate_model_evaluation_snapshot() -> dict[str, object]:
     try:
-        return load_candidate_model_evaluation_snapshot(
+        base = load_candidate_model_evaluation_snapshot(
             candidate_root=_candidate_artifact_root(),
             backtest_root=PROJECT_DIR / "artifacts" / "backtests",
             model_root=PROJECT_DIR / "config" / "candidate_models",
         )
+        # Merge Weight Advisor data
+        wa = _load_weight_advisor_data()
+        if wa.get("available", True):
+            base["weight_advisor"] = wa
+            base["weight_advisor_available"] = True
+            # Surface key fields at top level for display
+            base["wa_sample_size"] = int(wa.get("sample_size", 0) or 0)
+            base["wa_status"] = str(wa.get("status", ""))
+            base["wa_approval"] = str(wa.get("approval_status", ""))
+            base["wa_explanation"] = str(wa.get("explanation", "") or "")
+            base["wa_feature_importances"] = dict(wa.get("feature_importances") or {})
+            base["wa_proposed_weights"] = dict(wa.get("proposed_weights") or {})
+            base["wa_baseline_weights"] = dict(wa.get("baseline_weights") or {})
+            ev = wa.get("evaluation_metrics") or {}
+            base["wa_baseline_eval"] = dict(ev.get("baseline") or {})
+            base["wa_proposed_eval"] = dict(ev.get("proposed") or {})
+            base["wa_improved"] = bool(ev.get("improved", False))
+        else:
+            base["weight_advisor_available"] = False
+        return base
     except Exception as exc:
         return {
             "title": "Candidate Model Evaluation",
@@ -1954,6 +2000,119 @@ def _candidate_model_evaluation_payload() -> dict[str, object]:
         "model_governance": {},
         "active_model": None,
         "challenger_model": None,
+    }
+
+
+def _learning_summary_payload() -> dict[str, object]:
+    """Read outcome_summary.json + suggested_weights.json for 8090 display."""
+    outcome = _load_outcome_summary()
+    weights = _load_weight_advisor_data()
+
+    # Outcome summary
+    outcome_available = bool(outcome.get("available", True))
+    closed_trades = int(outcome.get("closed_trade_count", 0) or 0)
+    training_eligible = int(outcome.get("training_eligible_count", 0) or 0)
+    win_rate = float(outcome.get("win_rate", 0.0) or 0.0)
+    avg_pnl = float(outcome.get("avg_pnl_pct", 0.0) or 0.0)
+    total_pnl = float(outcome.get("total_realized_pnl", 0.0) or 0.0)
+    best_trade = float(outcome.get("best_trade", 0.0) or 0.0)
+    worst_trade = float(outcome.get("worst_trade", 0.0) or 0.0)
+    wins = int(outcome.get("wins", 0) or 0)
+    losses = int(outcome.get("losses", 0) or 0)
+    avg_hold = float(outcome.get("avg_hold_duration_hours", 0.0) or 0.0)
+    top_symbols = outcome.get("top_symbols") or []
+
+    # Weight Advisor
+    wa_available = bool(weights.get("available", True))
+    wa_status = str(weights.get("status") or "")
+    wa_sample = int(weights.get("sample_size", 0) or 0)
+    wa_approval = str(weights.get("approval_status") or "")
+    wa_explanation = str(weights.get("explanation") or "")[:200]
+    wa_baseline = dict(weights.get("baseline_weights") or {})
+    wa_proposed = dict(weights.get("proposed_weights") or {})
+    wa_feature_imp = dict(weights.get("feature_importances") or {})
+    wa_ev = weights.get("evaluation_metrics") or {}
+    wa_baseline_ev = dict(wa_ev.get("baseline") or {})
+    wa_proposed_ev = dict(wa_ev.get("proposed") or {})
+
+    # Chinese weight dimension labels
+    _dim_cn = {
+        "volatility_score": "波动率得分",
+        "volume_score": "成交量得分",
+        "trend_fit_score": "趋势拟合得分",
+        "repeatability_score": "可重复性得分",
+        "drawdown_safety_score": "回撤安全得分",
+        "correlation_bonus": "相关性红利",
+    }
+    weight_rows = []
+    for dim in ["volatility_score", "volume_score", "trend_fit_score",
+                "repeatability_score", "drawdown_safety_score", "correlation_bonus"]:
+        bl = wa_baseline.get(dim, 0.0)
+        pr = wa_proposed.get(dim, bl)
+        diff = round(pr - bl, 4)
+        arrow = "↑" if diff > 0.001 else ("↓" if diff < -0.001 else "→")
+        weight_rows.append({
+            "dim": dim,
+            "label": _dim_cn.get(dim, dim),
+            "baseline": bl,
+            "proposed": pr,
+            "diff": diff,
+            "arrow": arrow,
+        })
+
+    # Feature importance top 5 (Chinese labels)
+    _feat_cn = {
+        "formal_rank_inverse": "正式排名(倒数)",
+        "formal_candidate_score": "正式候选评分",
+        "strategy_fit_score": "策略适配评分",
+        "hold_duration_hours": "持仓时长",
+        "regime_NORMAL": "震荡市(NORMAL)",
+        "regime_BEAR": "熊市(BEAR)",
+        "regime_BULL": "牛市(BULL)",
+        "regime_RANGE": "区间市(RANGE)",
+    }
+    feat_rows = []
+    for key, val in sorted(wa_feature_imp.items(), key=lambda x: -x[1])[:8]:
+        feat_rows.append({
+            "key": key,
+            "label": _feat_cn.get(key, key),
+            "importance": round(float(val), 4),
+        })
+
+    # Model governance status from weight advisor
+    governance = {
+        "champion": "baseline_v1 (固定权重)" if wa_status != "COMPLETED" else "baseline_v1 (基准模型)",
+        "challenger": "weight_advisor_v1" if wa_status == "COMPLETED" else "无挑战模型",
+        "approval": wa_approval if wa_status == "COMPLETED" else "WAITING_FOR_DATA",
+        "action": "collect_more_trades" if closed_trades < 20 else "review_weight_proposal",
+    }
+
+    return {
+        "available": True,
+        "outcome_available": outcome_available,
+        "closed_trades": closed_trades,
+        "training_eligible": training_eligible,
+        "win_rate": win_rate,
+        "avg_pnl_pct": avg_pnl,
+        "total_realized_pnl": total_pnl,
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "wins": wins,
+        "losses": losses,
+        "avg_hold_hours": avg_hold,
+        "top_symbols": top_symbols,
+        "wa_available": wa_available,
+        "wa_status": wa_status,
+        "wa_sample_size": wa_sample,
+        "wa_approval": wa_approval,
+        "wa_explanation": wa_explanation,
+        "wa_weight_rows": weight_rows,
+        "wa_feature_rows": feat_rows,
+        "wa_baseline_eval": wa_baseline_ev,
+        "wa_proposed_eval": wa_proposed_ev,
+        "wa_improved": bool(wa_ev.get("improved", False)),
+        "governance": governance,
+        "data_sufficient": closed_trades >= 20,
     }
 
 
@@ -4481,6 +4640,83 @@ HTML = """<!DOCTYPE html>
                 </details>
             </div>
         </div>
+        {% if learning_summary.outcome_available or learning_summary.wa_available %}
+        <div class="board-section">
+            <div class="board-section-head">
+                <h2>学习数据看板</h2>
+            </div>
+            <div class="system-status-grid">
+                <div class="system-status-card full status-ok" id="learning-outcome-card">
+                    <span class="system-status-label">成交结果摘要</span>
+                    <span class="system-status-value" id="learning-closed-trades">{{ learning_summary.closed_trades }} 笔已平仓</span>
+                    <span class="system-status-detail" id="learning-win-rate">胜率: {{ '%.1f'|format(learning_summary.win_rate) }}% · 总盈亏: {{ '%.2f'|format(learning_summary.total_realized_pnl) }}</span>
+                    <div class="shadow-metrics-grid">
+                        <div class="shadow-metric"><span>已平仓交易</span><strong id="learning-trades-count">{{ learning_summary.closed_trades }}</strong></div>
+                        <div class="shadow-metric"><span>可用于训练</span><strong id="learning-training-eligible">{{ learning_summary.training_eligible }}</strong></div>
+                        <div class="shadow-metric"><span>胜率</span><strong id="learning-win-rate-pct">{{ '%.1f'|format(learning_summary.win_rate) }}%</strong></div>
+                        <div class="shadow-metric"><span>平均盈亏%</span><strong id="learning-avg-pnl">{{ '%.2f'|format(learning_summary.avg_pnl_pct) }}%</strong></div>
+                        <div class="shadow-metric"><span>最佳交易%</span><strong id="learning-best">{{ '%.2f'|format(learning_summary.best_trade) }}%</strong></div>
+                        <div class="shadow-metric"><span>最差交易%</span><strong id="learning-worst">{{ '%.2f'|format(learning_summary.worst_trade) }}%</strong></div>
+                        <div class="shadow-metric"><span>总实现盈亏</span><strong id="learning-total-pnl">{{ '%.2f'|format(learning_summary.total_realized_pnl) }}</strong></div>
+                        <div class="shadow-metric"><span>W/L</span><strong id="learning-wl">{{ learning_summary.wins }}胜 / {{ learning_summary.losses }}负</strong></div>
+                        <div class="shadow-metric"><span>平均持仓(小时)</span><strong id="learning-avg-hold">{{ '%.1f'|format(learning_summary.avg_hold_hours) }}</strong></div>
+                        <div class="shadow-metric"><span>数据集状态</span><strong id="learning-sufficient">{{ '数据充足 (>=20笔)' if learning_summary.data_sufficient else '数据不足 (<20笔)' }}</strong></div>
+                    </div>
+                    {% if learning_summary.top_symbols %}
+                    <div class="board-section-head" style="margin-top:8px"><span>标的总盈亏排名</span></div>
+                    <div class="shadow-metrics-grid">
+                        {% for s in learning_summary.top_symbols[:5] %}
+                        <div class="shadow-metric"><span>{{ s.symbol }}</span><strong>{{ '%.2f'|format(s.total_pnl) }} ({{ s.count }}笔)</strong></div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+                {% if learning_summary.wa_available %}
+                <div class="system-status-card full status-ok" id="learning-weight-card">
+                    <span class="system-status-label">权重建议</span>
+                    <span class="system-status-value" id="learning-wa-status">{{ learning_summary.wa_status }}</span>
+                    <span class="system-status-detail" id="learning-wa-explain">{{ learning_summary.wa_explanation[:150] }}</span>
+                    <div class="board-section-head" style="margin-top:8px"><span>评分权重（基准 → 建议）</span></div>
+                    <table class="display-table" aria-label="权重对比">
+                        <thead><tr><th>维度</th><th>基准</th><th>建议</th><th>变化</th></tr></thead>
+                        <tbody id="learning-weight-rows">
+                            {% for w in learning_summary.wa_weight_rows %}
+                            <tr><td>{{ w.label }}</td><td>{{ '%.4f'|format(w.baseline) }}</td><td>{{ '%.4f'|format(w.proposed) }}</td><td>{{ w.arrow }} {{ '%.4f'|format(w.diff) }}</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% if learning_summary.wa_feature_rows %}
+                    <div class="board-section-head" style="margin-top:8px"><span>特征重要性</span></div>
+                    <table class="display-table" aria-label="特征重要性">
+                        <thead><tr><th>特征</th><th>重要性</th></tr></thead>
+                        <tbody id="learning-feature-rows">
+                            {% for f in learning_summary.wa_feature_rows %}
+                            <tr><td>{{ f.label }}</td><td>{{ '%.4f'|format(f.importance) }}</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+                    <div class="board-section-head" style="margin-top:8px"><span>Champion / Challenger</span></div>
+                    <div class="shadow-metrics-grid">
+                        <div class="shadow-metric"><span>🏆 Champion</span><strong id="learning-champion">{{ learning_summary.governance.champion }}</strong></div>
+                        <div class="shadow-metric"><span>⚡ Challenger</span><strong id="learning-challenger">{{ learning_summary.governance.challenger }}</strong></div>
+                        <div class="shadow-metric"><span>审批状态</span><strong id="learning-approval">{{ learning_summary.governance.approval }}</strong></div>
+                        <div class="shadow-metric"><span>建议操作</span><strong id="learning-action">{{ learning_summary.governance.action }}</strong></div>
+                    </div>
+                    {% if learning_summary.wa_status == 'COMPLETED' %}
+                    <div class="board-section-head" style="margin-top:8px"><span>测试集评估</span></div>
+                    <div class="shadow-metrics-grid">
+                        <div class="shadow-metric"><span>Baseline R²</span><strong id="learning-base-r2">{{ '%.4f'|format(learning_summary.wa_baseline_eval.r2) }}</strong></div>
+                        <div class="shadow-metric"><span>Proposed R²</span><strong id="learning-prop-r2">{{ '%.4f'|format(learning_summary.wa_proposed_eval.r2) }}</strong></div>
+                        <div class="shadow-metric"><span>改善?</span><strong id="learning-improved">{{ '✅ 是' if learning_summary.wa_improved else '❌ 否' }}</strong></div>
+                        <div class="shadow-metric"><span>Hit Rate</span><strong id="learning-hit-rate">{{ '%.2f'|format(learning_summary.wa_proposed_eval.hit_rate) }}%</strong></div>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
     </div>
     <div class="board-section">
         <div class="board-section-head">
@@ -5717,6 +5953,36 @@ HTML = """<!DOCTYPE html>
                 const candidateModelState = String(candidateModel.approval_status || candidateModel.status_label || candidateModel.state || 'DRAFT').toUpperCase();
                 candidateModelCard.className = `system-status-card full candidate-model-card ${candidateModelState === 'ACTIVE' || candidateModelState === 'APPROVED' || candidateModelState === 'REVIEW_REQUIRED' ? 'status-live' : candidateModelState === 'DRAFT' || candidateModelState === 'BACKTESTED' || candidateModelState === 'WALK_FORWARD_VALIDATED' ? 'status-warn' : 'status-offline'}`;
             }
+            // ── Learning summary refresh ──
+            const ls = payload.learning_summary || {};
+            if (ls.available) {
+                setText('learning-closed-trades', `${ls.closed_trades || 0} 笔已平仓`);
+                setText('learning-win-rate', `胜率: ${(ls.win_rate || 0).toFixed(1)}% · 总盈亏: ${(ls.total_realized_pnl || 0).toFixed(2)}`);
+                setText('learning-trades-count', String(ls.closed_trades || 0));
+                setText('learning-training-eligible', String(ls.training_eligible || 0));
+                setText('learning-win-rate-pct', `${(ls.win_rate || 0).toFixed(1)}%`);
+                setText('learning-avg-pnl', `${(ls.avg_pnl_pct || 0).toFixed(2)}%`);
+                setText('learning-best', `${(ls.best_trade || 0).toFixed(2)}%`);
+                setText('learning-worst', `${(ls.worst_trade || 0).toFixed(2)}%`);
+                setText('learning-total-pnl', (ls.total_realized_pnl || 0).toFixed(2));
+                setText('learning-wl', `${ls.wins || 0}胜 / ${ls.losses || 0}负`);
+                setText('learning-avg-hold', `${(ls.avg_hold_hours || 0).toFixed(1)}`);
+                setText('learning-sufficient', (ls.data_sufficient ? '数据充足 (>=20笔)' : '数据不足 (<20笔)'));
+                if (ls.wa_available) {
+                    setText('learning-wa-status', ls.wa_status || 'UNAVAILABLE');
+                    setText('learning-wa-explain', (ls.wa_explanation || '').substring(0, 150));
+                    setText('learning-champion', ls.governance?.champion || 'baseline_v1');
+                    setText('learning-challenger', ls.governance?.challenger || '无');
+                    setText('learning-approval', ls.governance?.approval || 'DRAFT');
+                    setText('learning-action', ls.governance?.action || '');
+                    if (ls.wa_status === 'COMPLETED') {
+                        setText('learning-base-r2', (ls.wa_baseline_eval?.r2 || 0).toFixed(4));
+                        setText('learning-prop-r2', (ls.wa_proposed_eval?.r2 || 0).toFixed(4));
+                        setText('learning-improved', ls.wa_improved ? '✅ 是' : '❌ 否');
+                        setText('learning-hit-rate', `${(ls.wa_proposed_eval?.hit_rate || 0).toFixed(2)}%`);
+                    }
+                }
+            }
             const researchReport = payload.research_report || candidateValidation.research_report || {};
             setText('research-report-title', 'AI 研究日报');
             setText('research-report-state', displayStatus(researchReport.status_label || researchReport.state || 'STALE'));
@@ -6180,6 +6446,7 @@ def _api_status_payload() -> dict[str, object]:
         "candidate_validation": candidate_validation,
         "candidate_model_evaluation": _candidate_model_evaluation_payload(),
         "research_status": _research_status_payload(),
+        "learning_summary": _learning_summary_payload(),
         "research_report": _candidate_research_report_payload(),
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
@@ -7337,6 +7604,7 @@ def index():
     shadow_status = _shadow_status_payload()
     candidate_validation = _candidate_validation_payload()
     candidate_model_evaluation = _candidate_model_evaluation_payload()
+    learning_summary = _learning_summary_payload()
     shadow_state = str(shadow_status.get("state") or "STALE").upper()
     shadow_status_class = "status-live" if shadow_state == "SAFE" else "status-warn" if shadow_state == "STALE" else "status-offline"
     candidate_state = str(candidate_validation.get("state") or "STALE").upper()
@@ -7442,6 +7710,7 @@ def index():
         candidate_status_class=candidate_status_class,
         candidate_model_evaluation=candidate_model_evaluation,
         candidate_model_status_class=candidate_model_status_class,
+        learning_summary=learning_summary,
         research_status=_research_status_payload(),
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
