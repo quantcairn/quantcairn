@@ -312,6 +312,19 @@ def _compute_strategy_performance(outcomes: list[dict[str, Any]]) -> dict[str, A
 # Governance integration
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _load_market_regime() -> dict[str, Any] | None:
+    """Read the current market regime from the Regime Engine."""
+    try:
+        path = LEARNING_DIR.parent / "regime" / "current_regime.json"
+        if not path.exists():
+            return None
+        import json as _json
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 def _register_governance_proposal(report: dict[str, Any]) -> None:
     """Register the weight proposal with the governance system."""
     try:
@@ -337,12 +350,17 @@ def run_weight_advisor(
     outcomes = _load_outcomes()
     sample_size = len(outcomes)
 
+    # ── Market regime context ─────────────────────────────────────────────
+    market_regime = _load_market_regime()
+
     report: dict[str, Any] = {
         "model_version": MODEL_VERSION,
         "run_date": _utc_now_iso(),
         "sample_size": sample_size,
         "baseline_weights": dict(BASELINE_WEIGHTS),
         "approval_status": "PENDING_HUMAN_APPROVAL",
+        "market_regime": market_regime.get("regime", "UNKNOWN") if market_regime else "UNKNOWN",
+        "regime_confidence": market_regime.get("confidence", 0.0) if market_regime else 0.0,
     }
 
     if sample_size < MIN_SAMPLE_SIZE:

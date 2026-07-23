@@ -2736,6 +2736,46 @@ def _shadow_status_payload() -> dict[str, object]:
     }
 
 
+def _market_regime_payload() -> dict[str, object]:
+    """Read current_regime.json from the Market Regime Engine."""
+    try:
+        path = PROJECT_DIR / "artifacts" / "regime" / "current_regime.json"
+        if not path.exists():
+            return {"available": False}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"available": False}
+        return {
+            "available": True,
+            "date": str(data.get("date") or ""),
+            "regime": str(data.get("regime") or ""),
+            "confidence": _safe_float(data.get("confidence")),
+            "confidence_str": _safe_pct_str(data.get("confidence"), 0),
+            "bull_score": _safe_float(data.get("bull_score")),
+            "sideways_score": _safe_float(data.get("sideways_score")),
+            "bear_score": _safe_float(data.get("bear_score")),
+            "risk_off_score": _safe_float(data.get("risk_off_score")),
+            "signals": list(data.get("signals") or [])[:6],
+            "vix": _safe_float(data.get("vix")),
+            "vix_change_pct": _safe_float(data.get("vix_change_pct")),
+            "market_return_5d": _safe_float(data.get("market_return_5d")),
+            "market_return_20d": _safe_float(data.get("market_return_20d")),
+            "indices": {
+                k: {
+                    "price": _safe_float(v.get("price")) if isinstance(v, dict) else 0.0,
+                    "price_vs_ma20": _safe_float(v.get("price_vs_ma20")) if isinstance(v, dict) else 1.0,
+                    "rsi": _safe_float(v.get("rsi")) if isinstance(v, dict) else 50.0,
+                }
+                for k, v in (data.get("indices") or {}).items()
+                if isinstance(v, dict)
+            },
+            "version": str(data.get("version") or "v1"),
+            "research_only": True,
+        }
+    except Exception:
+        return {"available": False}
+
+
 def _regime_shadow_payload() -> dict[str, object]:
     """Read the latest shadow regime evaluation report."""
     try:
@@ -4896,6 +4936,48 @@ HTML = """<!DOCTYPE html>
                 </details>
             </div>
         </div>
+        {% if market_regime.available %}
+        <div class="board-section">
+            <div class="board-section-head">
+                <h2>市场周期检测 ⚠️ 仅研究参考</h2>
+            </div>
+            <div class="system-status-grid">
+                <div class="system-status-card full status-ok" id="market-regime-card">
+                    <span class="system-status-label">当前市场周期</span>
+                    <span class="system-status-value" id="market-regime-label">{{ market_regime.regime }} ({{ market_regime.confidence_str }})</span>
+                    <span class="system-status-detail">
+                        VIX: {{ '%.1f'|format(market_regime.vix) }} ({{ '%+.1f'|format(market_regime.vix_change_pct) }}%) ·
+                        5d: {{ '%+.2f'|format(market_regime.market_return_5d) }}% ·
+                        20d: {{ '%+.2f'|format(market_regime.market_return_20d) }}% ·
+                        不影响正式选股
+                    </span>
+                    <div class="shadow-metrics-grid">
+                        <div class="shadow-metric"><span>🟢 BULL</span><strong id="regime-bull">{{ '%.1f'|format(market_regime.bull_score) }}</strong></div>
+                        <div class="shadow-metric"><span>🟡 SIDEWAYS</span><strong id="regime-sideways">{{ '%.1f'|format(market_regime.sideways_score) }}</strong></div>
+                        <div class="shadow-metric"><span>🔴 BEAR</span><strong id="regime-bear">{{ '%.1f'|format(market_regime.bear_score) }}</strong></div>
+                        <div class="shadow-metric"><span>⚪ RISK_OFF</span><strong id="regime-risk-off">{{ '%.1f'|format(market_regime.risk_off_score) }}</strong></div>
+                    </div>
+                    {% if market_regime.indices %}
+                    <div class="board-section-head" style="margin-top:8px"><span>指数快照</span></div>
+                    <div class="shadow-metrics-grid">
+                        {% for sym, snap in market_regime.indices.items() %}
+                        <div class="shadow-metric"><span>{{ sym }}</span><strong>{{ '%.2f'|format(snap.price) }} (vs MA20: {{ '%.2f'|format(snap.price_vs_ma20) }})</strong></div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% if market_regime.signals %}
+                    <div class="board-section-head" style="margin-top:8px"><span>判定信号</span></div>
+                    <div style="padding: 4px 0; font-size:13px; color: var(--muted);">
+                        {% for s in market_regime.signals %}<span style="margin-right: 12px;">• {{ s }}</span>{% endfor %}
+                    </div>
+                    {% endif %}
+                    <div style="margin-top:8px; color: var(--muted); font-size: 12px;">
+                        ⚠️ 市场周期检测仅供研究参考。不修改选股、不修改权重、不影响 Paper/Live。
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         {% if regime_shadow.available %}
         <div class="board-section">
             <div class="board-section-head">
@@ -6276,6 +6358,15 @@ HTML = """<!DOCTYPE html>
                 const candidateModelState = String(candidateModel.approval_status || candidateModel.status_label || candidateModel.state || 'DRAFT').toUpperCase();
                 candidateModelCard.className = `system-status-card full candidate-model-card ${candidateModelState === 'ACTIVE' || candidateModelState === 'APPROVED' || candidateModelState === 'REVIEW_REQUIRED' ? 'status-live' : candidateModelState === 'DRAFT' || candidateModelState === 'BACKTESTED' || candidateModelState === 'WALK_FORWARD_VALIDATED' ? 'status-warn' : 'status-offline'}`;
             }
+            // ── Market regime refresh ──
+            const mr = payload.market_regime || {};
+            if (mr.available) {
+                setText('market-regime-label', `${mr.regime || '?'} (${mr.confidence_str || '0%'})`);
+                setText('regime-bull', (mr.bull_score || 0).toFixed(1));
+                setText('regime-sideways', (mr.sideways_score || 0).toFixed(1));
+                setText('regime-bear', (mr.bear_score || 0).toFixed(1));
+                setText('regime-risk-off', (mr.risk_off_score || 0).toFixed(1));
+            }
             // ── Regime shadow refresh ──
             const rs = payload.regime_shadow || {};
             if (rs.available) {
@@ -6790,6 +6881,7 @@ def _api_status_payload() -> dict[str, object]:
         "candidate_model_evaluation": _candidate_model_evaluation_payload(),
         "research_status": _research_status_payload(),
         "learning_summary": _learning_summary_payload(),
+        "market_regime": _market_regime_payload(),
         "regime_shadow": _regime_shadow_payload(),
         "governance": _governance_payload(),
         "research_report": _candidate_research_report_payload(),
@@ -7950,6 +8042,7 @@ def index():
     candidate_validation = _candidate_validation_payload()
     candidate_model_evaluation = _candidate_model_evaluation_payload()
     learning_summary = _learning_summary_payload()
+    market_regime = _market_regime_payload()
     regime_shadow = _regime_shadow_payload()
     shadow_state = str(shadow_status.get("state") or "STALE").upper()
     shadow_status_class = "status-live" if shadow_state == "SAFE" else "status-warn" if shadow_state == "STALE" else "status-offline"
@@ -8057,6 +8150,7 @@ def index():
         candidate_model_evaluation=candidate_model_evaluation,
         candidate_model_status_class=candidate_model_status_class,
         learning_summary=learning_summary,
+        market_regime=market_regime,
         regime_shadow=regime_shadow,
         research_status=_research_status_payload(),
         # ---- Aggregated trade statistics ----
