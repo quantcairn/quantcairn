@@ -15,7 +15,7 @@ from src.news_agent.news_collector import NewsCollector
 from src.ai_selector.settings import load_runtime_settings
 from src.data.fetcher import PriceFetcher
 from src.ai_selector.candidate_ranking import score_candidate
-from src.ai_selector.funnel_tracker import FunnelTracker
+from src.ai_selector.funnel_tracker import FunnelTracker, FunnelStageRecord
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = PROJECT_DIR / "logs"
@@ -519,6 +519,16 @@ class AIStrategySelector:
         live_requested = self._live_data_requested()
         scored = self._score_with_live_flag(symbols, news_map, live_enabled=live_requested)
         scored = [score_candidate(item) for item in scored]
+
+        # Fix chain: MARKET_DATA output is the pool that actually reached scoring
+        # (replace the stage with correct output now that scoring has run)
+        _valid_scored_symbols = [_normalize_ticker(item.get("ticker")) for item in scored]
+        tracker.records[-1] = FunnelStageRecord(
+            stage="MARKET_DATA",
+            input_symbols=list(symbols),
+            output_symbols=_valid_scored_symbols,
+        )
+
         scoring_eligible = [item for item in scored if bool(item.get("scoring_eligible", True))]
         scoring_dropped = [
             {"symbol": _normalize_ticker(item.get("ticker")),
@@ -635,12 +645,25 @@ class AIStrategySelector:
         filter_report["backfilled_symbols"] = backfilled_symbols
         filter_report["selection_stage"] = selection_stage
         write_selection_filter_log(filter_report)
-        tracker.add_stage("FORMAL_TOP", top10, topk)
+
+        # ── FORMAL_TOP: record the ACTUAL input pool, not the empty quality-passed set ──
+        if not top10 and topk:
+            # Backfill: input is the preliminary pool that got promoted
+            tracker.add_stage("FORMAL_TOP", preliminary_topk, topk)
+        else:
+            tracker.add_stage("FORMAL_TOP", top10, topk)
 
         # Write funnel report
         funnel_summary = tracker.to_dict()
         try:
             tracker.write_report()
+        except Exception:
+            pass
+
+        # ── Consistency report ──────────────────────────────────────────
+        tracker.print_consistency_report()
+        try:
+            tracker.write_debug_artifact()
         except Exception:
             pass
 

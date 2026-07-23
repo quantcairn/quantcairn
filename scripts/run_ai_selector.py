@@ -2235,24 +2235,9 @@ def main(mode: str | None = None):
     formal_eligible_candidates = list(selected)
     composition_candidates = list(selected)
     formal_top_candidates = list(selected[:TOP_COUNT])
-    funnel_report, funnel_report_path = _build_selection_funnel_report(
-        selection_run_id=selection_run_id,
-        selection_date=current_session,
-        universe_symbols=universe_symbols_for_funnel,
-        universe_filtered=report_top10,
-        market_data_candidates=market_data_candidates,
-        data_quality_candidates=data_quality_candidates,
-        scoring_candidates=scoring_candidates,
-        base_ranked_candidates=base_ranked_candidates,
-        research_candidates=research_candidates,
-        refined_candidates=diagnostic_selected,
-        formal_eligible_candidates=formal_eligible_candidates,
-        composition_candidates=composition_candidates,
-        formal_top_candidates=formal_top_candidates,
-        universe_rejected_rows=universe_rejected_rows,
-        composition_rejected_rows=list(composition_filter_report.get("rejected") or []),
-        refinement_rejected_rows=list(low_quality_rejected or []),
-    )
+    # ── Read funnel from selector (single source of truth) ──
+    funnel_report = dict(out.get("selection_funnel") or {})
+    funnel_report_path = funnel_report.get("funnel_report_path") or None
     preserved_positions = [
         str(item.get("ticker") or "").upper()
         for item in protected_positions
