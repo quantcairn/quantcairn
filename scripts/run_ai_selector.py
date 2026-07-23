@@ -2073,6 +2073,11 @@ def main(mode: str | None = None):
         print("Live position verification failed; refusing to run selection or replace TOP configs.")
         sys.exit(1)
 
+    # ── Preflight: market state + data availability ────────────────────
+    from src.ai_selector.preflight import run_preflight as _run_preflight, print_preflight
+    _pf = _run_preflight(symbols=None, max_scan_symbols=5)
+    print_preflight(_pf)
+
     integrated_ai = _run_integrated_ai_selector()
     preferred_symbols = integrated_ai.get("preferred_symbols") or None
     selection_symbols = _merged_selection_symbols(preferred_symbols)

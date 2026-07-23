@@ -478,6 +478,15 @@ class AIStrategySelector:
             selection_date=selection_date,
         )
 
+        # ── Preflight: check market state before building universe ───────
+        _preflight_report: dict[str, Any] = {}
+        try:
+            from src.ai_selector.preflight import run_preflight as _run_preflight, PreflightReport
+            _pf = _run_preflight(dry_run=True)
+            _preflight_report = _pf.to_dict()
+        except Exception:
+            _preflight_report = {"market_state": "UNKNOWN", "run_mode": "FULL"}
+
         # 1. build universe
         source = "override"
         if symbols_override:
@@ -713,6 +722,7 @@ class AIStrategySelector:
             "formal_candidates": formal_symbols,
             "quality_fallback_active": quality_fallback_active,
             "quality_fallback_reason": "QUALITY_GATE" if quality_fallback_active else "",
+            "preflight": _preflight_report,
         }
 
     def _select_diversified_top_k(self, candidates: List[dict], max_items: int) -> List[dict]:
