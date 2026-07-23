@@ -2587,6 +2587,46 @@ def _shadow_status_payload() -> dict[str, object]:
     }
 
 
+def _regime_shadow_payload() -> dict[str, object]:
+    """Read the latest shadow regime evaluation report."""
+    try:
+        latest = PROJECT_DIR / "artifacts" / "research" / "regime_shadow"
+        if not latest.exists():
+            return {"available": False}
+        # Find most recent selection_date dir
+        date_dirs = sorted([d for d in latest.iterdir() if d.is_dir()], reverse=True)
+        if not date_dirs:
+            return {"available": False}
+        # Try latest.json first, then any report
+        for date_dir in date_dirs:
+            latest_file = date_dir / "latest.json"
+            if not latest_file.exists():
+                reports = sorted(date_dir.rglob("regime_shadow_report.json"), reverse=True)
+                if reports:
+                    latest_file = reports[0]
+                else:
+                    continue
+            data = json.loads(latest_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            return {
+                "available": True,
+                "selection_date": str(data.get("selection_date") or ""),
+                "candidate_count": int(data.get("candidate_count", 0) or 0),
+                "evaluated_count": int(data.get("evaluated_count", 0) or 0),
+                "dominant_regime": str(data.get("dominant_regime") or "N/A"),
+                "dominant_score": float(data.get("dominant_score", 0) or 0),
+                "regime_distribution": dict(data.get("regime_distribution") or {}),
+                "aggregate_scores": dict(data.get("aggregate_scores") or {}),
+                "comparison": dict(data.get("comparison") or {}),
+                "per_candidate": list(data.get("per_candidate") or [])[:10],
+                "research_only": True,
+            }
+    except Exception:
+        return {"available": False}
+    return {"available": False}
+
+
 def _shadow_summary_payload() -> dict[str, object]:
     snapshot = _shadow_status_snapshot()
     runtime = snapshot.get("runtime_state") if isinstance(snapshot.get("runtime_state"), dict) else {}
@@ -4707,6 +4747,63 @@ HTML = """<!DOCTYPE html>
                 </details>
             </div>
         </div>
+        {% if regime_shadow.available %}
+        <div class="board-section">
+            <div class="board-section-head">
+                <h2>影子市场周期评估 ⚠️ 仅研究</h2>
+            </div>
+            <div class="system-status-grid">
+                <div class="system-status-card full status-ok" id="regime-shadow-card">
+                    <span class="system-status-label">当前主导周期</span>
+                    <span class="system-status-value" id="regime-shadow-dominant">{{ regime_shadow.dominant_regime }} ({{ regime_shadow.dominant_score }})</span>
+                    <span class="system-status-detail">
+                        评估 {{ regime_shadow.evaluated_count }}/{{ regime_shadow.candidate_count }} 个候选 · 仅研究参考 · 不影响正式选股
+                    </span>
+                    <div class="shadow-metrics-grid">
+                        <div class="shadow-metric"><span>🟢 Bull 候选</span><strong id="regime-bull-count">{{ regime_shadow.regime_distribution.BULL if regime_shadow.regime_distribution.BULL is not none else 0 }}</strong></div>
+                        <div class="shadow-metric"><span>🔴 Bear 候选</span><strong id="regime-bear-count">{{ regime_shadow.regime_distribution.BEAR if regime_shadow.regime_distribution.BEAR is not none else 0 }}</strong></div>
+                        <div class="shadow-metric"><span>🟡 Range 候选</span><strong id="regime-range-count">{{ regime_shadow.regime_distribution.RANGE if regime_shadow.regime_distribution.RANGE is not none else 0 }}</strong></div>
+                        <div class="shadow-metric"><span>Bull 均分</span><strong id="regime-bull-avg">{{ '%.1f'|format(regime_shadow.aggregate_scores.bull_avg) if regime_shadow.aggregate_scores.bull_avg is not none else '暂无' }}</strong></div>
+                        <div class="shadow-metric"><span>Bear 均分</span><strong id="regime-bear-avg">{{ '%.1f'|format(regime_shadow.aggregate_scores.bear_avg) if regime_shadow.aggregate_scores.bear_avg is not none else '暂无' }}</strong></div>
+                        <div class="shadow-metric"><span>Range 均分</span><strong id="regime-range-avg">{{ '%.1f'|format(regime_shadow.aggregate_scores.range_avg) if regime_shadow.aggregate_scores.range_avg is not none else '暂无' }}</strong></div>
+                    </div>
+                    {% if regime_shadow.comparison %}
+                    <div class="board-section-head" style="margin-top:8px"><span>与正式选股对比</span></div>
+                    <div class="shadow-metrics-grid">
+                        <div class="shadow-metric"><span>正式 TOP</span><strong id="regime-comp-current">{{ regime_shadow.comparison.current|join(', ') or '无' }}</strong></div>
+                        <div class="shadow-metric"><span>影子 TOP</span><strong id="regime-comp-shadow">{{ regime_shadow.comparison.shadow_top3|join(', ') or '无' }}</strong></div>
+                        <div class="shadow-metric"><span>差异</span><strong id="regime-comp-changed">{{ '有差异' if regime_shadow.comparison.changed else '一致' }}</strong></div>
+                        {% if regime_shadow.comparison.changed %}
+                        <div class="shadow-metric"><span>影子新增</span><strong id="regime-comp-added">{{ regime_shadow.comparison.added_by_shadow|join(', ') or '无' }}</strong></div>
+                        <div class="shadow-metric"><span>影子移除</span><strong id="regime-comp-removed">{{ regime_shadow.comparison.removed_by_shadow|join(', ') or '无' }}</strong></div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    {% if regime_shadow.per_candidate %}
+                    <div class="board-section-head" style="margin-top:8px"><span>候选周期判定</span></div>
+                    <table class="display-table" aria-label="候选周期判定">
+                        <thead><tr><th>标的</th><th>Bull</th><th>Bear</th><th>Range</th><th>判定</th><th>置信度</th></tr></thead>
+                        <tbody>
+                            {% for r in regime_shadow.per_candidate[:10] %}
+                            <tr>
+                                <td>{{ r.symbol }}</td>
+                                <td>{{ r.bull_score|int }}</td>
+                                <td>{{ r.bear_score|int }}</td>
+                                <td>{{ r.range_score|int }}</td>
+                                <td>{{ r.winner }}</td>
+                                <td>{{ r.confidence }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+                    <div style="margin-top:8px; color: var(--muted); font-size: 12px;">
+                        ⚠️ 影子市场周期仅供研究参考。不修改 selected_symbols、不修改评分、不修改 TOP 配置、不影响 Paper/Live。
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         {% if learning_summary.outcome_available or learning_summary.wa_available %}
         <div class="board-section">
             <div class="board-section-head">
@@ -6020,6 +6117,26 @@ HTML = """<!DOCTYPE html>
                 const candidateModelState = String(candidateModel.approval_status || candidateModel.status_label || candidateModel.state || 'DRAFT').toUpperCase();
                 candidateModelCard.className = `system-status-card full candidate-model-card ${candidateModelState === 'ACTIVE' || candidateModelState === 'APPROVED' || candidateModelState === 'REVIEW_REQUIRED' ? 'status-live' : candidateModelState === 'DRAFT' || candidateModelState === 'BACKTESTED' || candidateModelState === 'WALK_FORWARD_VALIDATED' ? 'status-warn' : 'status-offline'}`;
             }
+            // ── Regime shadow refresh ──
+            const rs = payload.regime_shadow || {};
+            if (rs.available) {
+                setText('regime-shadow-dominant', `${rs.dominant_regime || 'N/A'} (${rs.dominant_score || 0})`);
+                setText('regime-bull-count', String(rs.regime_distribution?.BULL ?? 0));
+                setText('regime-bear-count', String(rs.regime_distribution?.BEAR ?? 0));
+                setText('regime-range-count', String(rs.regime_distribution?.RANGE ?? 0));
+                setText('regime-bull-avg', String(rs.aggregate_scores?.bull_avg ?? '暂无'));
+                setText('regime-bear-avg', String(rs.aggregate_scores?.bear_avg ?? '暂无'));
+                setText('regime-range-avg', String(rs.aggregate_scores?.range_avg ?? '暂无'));
+                if (rs.comparison) {
+                    setText('regime-comp-current', (rs.comparison.current || []).join(', ') || '无');
+                    setText('regime-comp-shadow', (rs.comparison.shadow_top3 || []).join(', ') || '无');
+                    setText('regime-comp-changed', rs.comparison.changed ? '有差异' : '一致');
+                    if (rs.comparison.changed) {
+                        setText('regime-comp-added', (rs.comparison.added_by_shadow || []).join(', ') || '无');
+                        setText('regime-comp-removed', (rs.comparison.removed_by_shadow || []).join(', ') || '无');
+                    }
+                }
+            }
             // ── Learning summary refresh (all values are pre-formatted safe strings) ──
             const ls = payload.learning_summary || {};
             if (ls.available) {
@@ -6514,6 +6631,7 @@ def _api_status_payload() -> dict[str, object]:
         "candidate_model_evaluation": _candidate_model_evaluation_payload(),
         "research_status": _research_status_payload(),
         "learning_summary": _learning_summary_payload(),
+        "regime_shadow": _regime_shadow_payload(),
         "research_report": _candidate_research_report_payload(),
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
@@ -7672,6 +7790,7 @@ def index():
     candidate_validation = _candidate_validation_payload()
     candidate_model_evaluation = _candidate_model_evaluation_payload()
     learning_summary = _learning_summary_payload()
+    regime_shadow = _regime_shadow_payload()
     shadow_state = str(shadow_status.get("state") or "STALE").upper()
     shadow_status_class = "status-live" if shadow_state == "SAFE" else "status-warn" if shadow_state == "STALE" else "status-offline"
     candidate_state = str(candidate_validation.get("state") or "STALE").upper()
@@ -7778,6 +7897,7 @@ def index():
         candidate_model_evaluation=candidate_model_evaluation,
         candidate_model_status_class=candidate_model_status_class,
         learning_summary=learning_summary,
+        regime_shadow=regime_shadow,
         research_status=_research_status_payload(),
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
