@@ -579,6 +579,126 @@ def test_refresh_broker_snapshots_keeps_reduce_only_and_places_no_order():
     assert engine._position_shares == 0
 
 
+# ── live arming gate: local_allow AND logic ─────────────────────────
+
+def test_live_arming_top_true_local_false_blocks():
+    """top=allow, local=false → effective_allow stays false."""
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine.broker = SimpleNamespace(connect=lambda: True, disconnect=lambda: None)
+    engine._live_guard_verdict = {"allowed_to_open_new_positions": True}
+    # Set top allow_live_order=true in config's broker section
+    engine.config.broker.longbridge.allow_live_order = True
+    engine.config.broker.longbridge.enabled = True
+    engine.config.broker.longbridge.environment = "prod"
+    engine.config.broker.longbridge.account_type = "live"
+    # Mock local config to return allow_live_order=False
+    with patch("src.config.runtime_values.load_private_longbridge_config",
+               return_value={"allow_live_order": False}):
+        # Mock selection state to be active with ticker included
+        with patch("src.ai_selector.selection_state.load_selection_state",
+                   return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
+            with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
+                engine._try_arm_live_ordering()
+    assert engine._reduce_only is True
+    assert engine._live_arming_status == "REDUCE_ONLY"
+
+
+def test_live_arming_top_false_local_true_blocks():
+    """top=false, local=allow → effective_allow stays false."""
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine.broker = SimpleNamespace(connect=lambda: True, disconnect=lambda: None)
+    engine._live_guard_verdict = {"allowed_to_open_new_positions": True}
+    engine.config.broker.longbridge.allow_live_order = False
+    engine.config.broker.longbridge.enabled = True
+    engine.config.broker.longbridge.environment = "prod"
+    engine.config.broker.longbridge.account_type = "live"
+    with patch("src.config.runtime_values.load_private_longbridge_config",
+               return_value={"allow_live_order": True}):
+        with patch("src.ai_selector.selection_state.load_selection_state",
+                   return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
+            with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
+                engine._try_arm_live_ordering()
+    assert engine._reduce_only is True
+    assert engine._live_arming_status == "REDUCE_ONLY"
+
+
+def test_live_arming_local_missing_blocks():
+    """local allow missing/falsy → effective_allow stays false."""
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine.broker = SimpleNamespace(connect=lambda: True, disconnect=lambda: None)
+    engine._live_guard_verdict = {"allowed_to_open_new_positions": True}
+    engine.config.broker.longbridge.allow_live_order = True
+    engine.config.broker.longbridge.enabled = True
+    engine.config.broker.longbridge.environment = "prod"
+    engine.config.broker.longbridge.account_type = "live"
+    # local config has no allow_live_order key
+    with patch("src.config.runtime_values.load_private_longbridge_config", return_value={}):
+        with patch("src.ai_selector.selection_state.load_selection_state",
+                   return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
+            with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
+                engine._try_arm_live_ordering()
+    assert engine._reduce_only is True
+    assert engine._live_arming_status == "REDUCE_ONLY"
+
+
+def test_live_arming_all_true_arms():
+    """top=true, local=true, broker=prod/live, guard=ok, selection=active, ticker=selected → ARMED."""
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine.broker = SimpleNamespace(connect=lambda: True, disconnect=lambda: None)
+    engine._live_guard_verdict = {"allowed_to_open_new_positions": True}
+    engine.config.broker.longbridge.allow_live_order = True
+    engine.config.broker.longbridge.enabled = True
+    engine.config.broker.longbridge.environment = "prod"
+    engine.config.broker.longbridge.account_type = "live"
+    with patch("src.config.runtime_values.load_private_longbridge_config",
+               return_value={"allow_live_order": True}):
+        with patch("src.ai_selector.selection_state.load_selection_state",
+                   return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
+            with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
+                engine._try_arm_live_ordering()
+    assert engine._reduce_only is False
+    assert engine._live_arming_status == "ARMED"
+
+
+def test_live_arming_all_true_but_reduce_only_stops_buy():
+    """Even with all gates true, reduce_only=True blocks BUY at _handle_buy_signal."""
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine.strategy = FakeStrategy()
+    engine.notifier = FakeNotifier()
+    engine.risk = FakeRisk()
+    engine._reduce_only = True  # Explicitly set — should block
+    place_calls = []
+    engine.broker = SimpleNamespace(
+        get_account=lambda: SimpleNamespace(cash=1000.0, buying_power=1000.0),
+        place_order=lambda **kwargs: place_calls.append(kwargs),
+    )
+    engine._handle_buy_signal(
+        SimpleNamespace(type=SimpleNamespace(value="BUY")), 100.0, 100.0
+    )
+    assert place_calls == []
+    assert "仅减仓模式" in engine._last_signal_reason
+
+
+def test_live_arming_prod_env_without_dual_approval_blocks():
+    """prod environment alone does NOT grant live-order permission."""
+    engine = TradingEngine(AppConfig(ticker="PLTR", mode="live"), ignore_trading_hours=True)
+    engine.broker = SimpleNamespace(connect=lambda: True, disconnect=lambda: None)
+    engine._live_guard_verdict = {"allowed_to_open_new_positions": True}
+    engine.config.broker.longbridge.allow_live_order = False
+    engine.config.broker.longbridge.enabled = True
+    engine.config.broker.longbridge.environment = "prod"
+    engine.config.broker.longbridge.account_type = "live"
+    # local config: environment=prod but allow_live_order=false explicitly
+    with patch("src.config.runtime_values.load_private_longbridge_config",
+               return_value={"environment": "prod", "allow_live_order": False}):
+        with patch("src.ai_selector.selection_state.load_selection_state",
+                   return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
+            with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
+                engine._try_arm_live_ordering()
+    assert engine._reduce_only is True
+    assert engine._live_arming_status == "REDUCE_ONLY"
+
+
 def run_test_direct():
     test_reconcile_pending_buy_fill_updates_local_state()
     test_reconcile_partial_buy_fill_keeps_pending_order()
@@ -596,6 +716,12 @@ def run_test_direct():
     test_live_startup_safety_blocks_unreliable_account()
     test_cross_process_sell_lock_allows_only_one_engine()
     test_paper_sell_does_not_create_live_position_fence()
+    test_live_arming_top_true_local_false_blocks()
+    test_live_arming_top_false_local_true_blocks()
+    test_live_arming_local_missing_blocks()
+    test_live_arming_all_true_arms()
+    test_live_arming_all_true_but_reduce_only_stops_buy()
+    test_live_arming_prod_env_without_dual_approval_blocks()
 
 
 if __name__ == "__main__":

@@ -434,15 +434,14 @@ class TradingEngine:
         lb = self.config.broker.longbridge
         top_allow = bool(getattr(lb, "allow_live_order", False))
 
-        # Check config.local.yaml for live-order permission
+        # Check config.local.yaml for live-order permission.
+        # Must be explicitly true — environment=prod alone does NOT
+        # grant live-order authority.
         local_allow = False
         try:
             from ..config.runtime_values import load_private_longbridge_config
             private = load_private_longbridge_config()
-            local_allow = bool(
-                private.get("allow_live_order", False)
-                or private.get("environment", "").strip().lower() == "prod"
-            )
+            local_allow = bool(private.get("allow_live_order", False))
         except Exception:
             pass
 
@@ -485,17 +484,19 @@ class TradingEngine:
             pass
 
         # ── Assess ──────────────────────────────────────────────────
-        top_has_enabled_live_order = top_allow
         effective_allow = all([
-            top_has_enabled_live_order,
+            top_allow,
+            local_allow,
             broker_live,
             live_guard_ok,
             selection_active,
             ticker_selected,
         ])
 
-        if not top_has_enabled_live_order:
+        if not top_allow:
             blocking.append("top_allow_live_order=false")
+        if not local_allow:
+            blocking.append("local_allow_live_order=false")
         if not broker_live:
             blocking.append("broker_not_prod_live")
         if not live_guard_ok:
@@ -506,20 +507,19 @@ class TradingEngine:
             blocking.append("ticker_not_in_selected_symbols")
 
         audit = {
-            "phase": "live_arming_check",
             "ticker": self.ticker,
-            "allow_live_order_inputs": {
-                "top_config": top_has_enabled_live_order,
-                "local_config": local_allow,
-                "live_guard": live_guard_ok,
+            "live_order_gate": {
+                "top_allow_live_order": top_allow,
+                "local_allow_live_order": local_allow,
+                "broker_live": broker_live,
+                "live_guard_ok": live_guard_ok,
                 "selection_active": selection_active,
                 "ticker_selected": ticker_selected,
-                "broker_live": broker_live,
-                "reduce_only": self._reduce_only,
+                "effective_allow": effective_allow,
+                "blocking_reasons": blocking,
             },
-            "effective_allow_live_order": effective_allow,
-            "blocking_reasons": blocking,
             "arming_status": self._live_arming_status,
+            "reduce_only": self._reduce_only,
         }
         self._write_runtime_audit("live_arming_check", **audit)
 
