@@ -36,6 +36,7 @@ from src.engine.position_sizing import determine_buy_quantity
 from src.dashboard.server import start_dashboard
 from src.ai_selector.selection_state import verify_live_startup_selection
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
+from src.utils.market_calendar import required_selection_date
 
 
 TOP_CONFIG_RE = re.compile(r"TOP[1-5]\.yaml$", re.IGNORECASE)
@@ -63,7 +64,7 @@ def verify_live_top_selection_guard(config_path: str, mode: str) -> None:
     normalized = os.path.abspath(config_path)
     if not TOP_CONFIG_RE.search(normalized):
         return
-    required_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    required_date = required_selection_date(datetime.now(ZoneInfo("America/New_York")))
     ok, reason, _state = verify_live_startup_selection(required_et_date=required_date)
     if ok:
         return
