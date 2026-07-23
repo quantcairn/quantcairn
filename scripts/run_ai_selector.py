@@ -2212,13 +2212,17 @@ def main(mode: str | None = None):
     market_stage = selection_stage
     selection_run_id = uuid.uuid4().hex
     current_session = _selection_date()
-    universe_symbols_for_funnel = [
-        str(item).strip().upper()
-        for item in (selection_symbols or integrated_ai.get("preferred_symbols") or _candidate_symbols(report_top10) or [])
-        if str(item).strip()
-    ]
+    # Read actual universe from selector's own funnel stages (not legacy selection_symbols)
+    _sel_funnel = out.get("selection_funnel") or {}
+    _sel_stages = _sel_funnel.get("stages") or []
+    _universe_stage = next((s for s in _sel_stages if s.get("stage") == "UNIVERSE"), {})
+    universe_symbols_for_funnel = _universe_stage.get("input_symbols") or []
     if not universe_symbols_for_funnel:
-        universe_symbols_for_funnel = _candidate_symbols(report_top10)
+        universe_symbols_for_funnel = [
+            str(item).strip().upper()
+            for item in (out.get("top10") or [])
+            if str(item.get("ticker", "")).strip()
+        ]
     market_data_candidates = [item for item in report_top10 if _market_data_ready(item)]
     data_quality_candidates = [item for item in market_data_candidates if _data_quality_ready(item)]
     scoring_candidates = [
@@ -2301,8 +2305,9 @@ def main(mode: str | None = None):
     }
     quality_report["rejection_trace"] = list(rejection_trace)
     quality_report["rejection_reason_counts"] = dict(rejection_reason_counts)
+    actual_universe_count = int(len(universe_symbols_for_funnel) or out.get("universe_symbol_count", 0) or 0)
     legacy_funnel_counts = {
-        "universe_scanned": int(len(selection_symbols or integrated_ai.get("preferred_symbols") or out.get("top10") or [])),
+        "universe_scanned": actual_universe_count,
         "universe_passed": int(len(report_top10 or [])),
         "quote_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("quote_as_of") or (item or {}).get("quote_timestamp") or "").strip())),
         "ohlcv_complete": int(sum(1 for item in (report_top10 or []) if str((item or {}).get("data_quality", {}).get("ohlcv_as_of") or (item or {}).get("daily_data_as_of") or "").strip())),
@@ -2344,6 +2349,9 @@ def main(mode: str | None = None):
         "run_mode": run_mode,
     }
     quality_report["selection_funnel"] = {
+        # Selector's own funnel stages (authoritative — uses actual universe)
+        **dict(_sel_funnel or {}),
+        # Legacy flat counts as fallback only
         **legacy_funnel_counts,
         **dict(funnel_report or {}),
     }
