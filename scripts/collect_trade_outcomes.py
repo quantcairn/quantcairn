@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Collect paper trade outcomes into a learning dataset.
 
-Reads runtime audit logs, matches BUY/SELL pairs into closed trades,
-enriches with SelectionBundle context, and writes (or updates)
+Reads runtime audit logs, matches BUY/SELL pairs into closed trades
+using per-symbol FIFO buy lots, enriches with entry-time
+SelectionBundle context, and writes (or updates)
 artifacts/learning/outcome_dataset.csv.
 
 Usage:
     python scripts/collect_trade_outcomes.py           # dry-run
     python scripts/collect_trade_outcomes.py --apply   # write
-    python scripts/collect_trade_outcomes.py --summary # summary only
+    python scripts/collect_trade_outcomes.py --summary # report only
 """
 
 from __future__ import annotations
@@ -38,14 +39,15 @@ def main() -> int:
             print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
             return 0
         print("=== Trade Outcome Summary ===")
-        print(f"  Closed trades:  {summary['closed_trade_count']}")
-        print(f"  Win rate:       {summary['win_rate']}%")
-        print(f"  Avg P&L %:      {summary['avg_pnl_pct']}%")
-        print(f"  Best trade:     {summary['best_trade']}%")
-        print(f"  Worst trade:    {summary['worst_trade']}%")
-        print(f"  Total P&L:      {summary['total_realized_pnl']}")
-        print(f"  Avg hold (hrs): {summary['avg_hold_duration_hours']}")
-        print(f"  Wins/Losses:    {summary.get('wins', 0)}/{summary.get('losses', 0)}")
+        print(f"  Closed trades:      {summary['closed_trade_count']}")
+        print(f"  Training eligible:  {summary.get('training_eligible_count', 0)}")
+        print(f"  Win rate:           {summary['win_rate']}%")
+        print(f"  Avg P&L %:          {summary['avg_pnl_pct']}%")
+        print(f"  Best trade:         {summary['best_trade']}%")
+        print(f"  Worst trade:        {summary['worst_trade']}%")
+        print(f"  Total P&L:          {summary['total_realized_pnl']}")
+        print(f"  Avg hold (hrs):     {summary['avg_hold_duration_hours']}")
+        print(f"  Wins/Losses:        {summary.get('wins', 0)}/{summary.get('losses', 0)}")
         if summary.get("top_symbols"):
             print("  Top symbols:")
             for item in summary["top_symbols"][:5]:
@@ -72,7 +74,10 @@ def main() -> int:
     if new_trades:
         print(f"  New closed trades ({len(new_trades)}):")
         for t in new_trades[:20]:
-            print(f"    {t['symbol']:5s}  P&L%: {t.get('pnl_pct', 0):.2f}%  P&L: {t.get('realized_pnl', 0):.4f}")
+            ctx = t.get("selection_context_status", "?")
+            te = "✓" if t.get("training_eligible") else "✗"
+            print(f"    {te} {t['symbol']:5s}  qty={t.get('quantity',0)}  "
+                  f"P&L%={t.get('pnl_pct', 0):.2f}%  ctx={ctx}")
         if len(new_trades) > 20:
             print(f"    ... and {len(new_trades) - 20} more")
 
@@ -80,11 +85,12 @@ def main() -> int:
     if summary:
         print()
         print("  Summary:")
-        print(f"    closed_trades={summary.get('closed_trade_count', 0)}")
-        print(f"    win_rate={summary.get('win_rate', 0)}%")
-        print(f"    avg_pnl_pct={summary.get('avg_pnl_pct', 0)}%")
-        print(f"    best_trade={summary.get('best_trade', 0)}")
-        print(f"    worst_trade={summary.get('worst_trade', 0)}")
+        print(f"    closed_trades={summary.get('closed_trade_count', 0)} "
+              f"training_eligible={summary.get('training_eligible_count', 0)}")
+        print(f"    win_rate={summary.get('win_rate', 0)}% "
+              f"avg_pnl_pct={summary.get('avg_pnl_pct', 0)}%")
+        print(f"    best={summary.get('best_trade', 0)} "
+              f"worst={summary.get('worst_trade', 0)}")
 
     return 0
 
