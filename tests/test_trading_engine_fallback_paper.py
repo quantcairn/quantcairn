@@ -145,6 +145,8 @@ def _sell_signal():
 
 def test_fallback_used_live_mode_blocks_buy():
     engine = _engine(mode="live", allow_paper=True)
+    # B1: live engines start in reduce_only; disable it to test the fallback gate
+    engine._reduce_only = False
     calls = []
     engine.broker = SimpleNamespace(
         get_account=lambda: SimpleNamespace(cash=1000.0, buying_power=1000.0, positions=[]),

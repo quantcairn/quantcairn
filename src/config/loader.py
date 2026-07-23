@@ -406,7 +406,7 @@ def _parse_config(raw: dict) -> AppConfig:
     sandbox_enabled = _bool_env("LONGBRIDGE_SANDBOX_ENABLED", lb_sandbox.get("enabled", False))
     environment = os.environ.get(
         "LONGBRIDGE_ENV",
-        lb.get("environment") or private_lb.get("environment")
+        lb.get("environment")
         or ("sandbox" if sandbox_enabled else "prod"),
     )
     http_url = os.environ.get(
@@ -450,7 +450,7 @@ def _parse_config(raw: dict) -> AppConfig:
             ),
             allow_live_order=_bool_env(
                 "LONGBRIDGE_ALLOW_LIVE_ORDER",
-                _coerce_bool(lb_sandbox.get("allow_live_order", False)),
+                _coerce_bool(lb.get("allow_live_order") or lb_sandbox.get("allow_live_order", False)),
             ),
         )
     )

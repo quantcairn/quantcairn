@@ -1286,6 +1286,20 @@ def _build_mode_consistency_payload(
         for item in top_entries
         if str(item.get("execution_mode") or _execution_mode_code(item.get("mode"))).strip().lower() not in {"", "unknown", "disabled"}
     ]
+    # Auto-align dashboard mode when all running TOP engines agree.
+    top_execution_modes_unique = sorted(set(top_execution_modes))
+    if (
+        top_execution_modes_unique
+        and len(top_execution_modes_unique) == 1
+        and dashboard_display_mode not in top_execution_modes_unique
+        and dashboard_display_mode != "sandbox"
+    ):
+        aligned = top_execution_modes_unique[0]
+        dashboard_display_mode = aligned
+        dashboard_display_label = _mode_label(aligned)
+        dashboard_execution_mode = aligned
+        dashboard_execution_label = _execution_mode_label(aligned)
+
     top_broker_environments = [
         str(item.get("broker_environment") or "").strip().lower()
         for item in top_entries

@@ -257,6 +257,9 @@ def test_combined_dashboard_shows_system_status_and_missing_data_labels(monkeypa
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -337,6 +340,9 @@ def test_combined_dashboard_uses_sandbox_account_snapshot_without_paper_fallback
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -406,6 +412,9 @@ def test_combined_dashboard_separates_display_mode_from_execution_mode(monkeypat
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -511,6 +520,9 @@ def test_combined_dashboard_shows_lifecycle_result_cards(monkeypatch):
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -573,6 +585,9 @@ def test_combined_dashboard_does_not_use_submit_order_from_page(monkeypatch):
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -1100,6 +1115,9 @@ def test_combined_dashboard_shows_paper_mode_without_live_top_warning(monkeypatc
         "suggestion": "请重新运行 AI Selector 或重新写入 TOP 配置",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -1189,6 +1207,9 @@ def test_combined_dashboard_shows_ranked_paper_position_policy(monkeypatch):
         "state_top_config_symbols": ["SOFI", "AAPL", "SOXS"],
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -1263,6 +1284,9 @@ def test_combined_dashboard_does_not_backfill_paper_positions_from_engine_status
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()
@@ -1319,6 +1343,9 @@ def test_combined_dashboard_uses_unified_paper_portfolio_state(monkeypatch):
         "state_date": "2026-07-19",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
     monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: {
         "cash": 880.0,
         "equity": 1_030.0,
@@ -1414,6 +1441,9 @@ def test_combined_dashboard_shows_paper_position_pnl_from_unified_state(monkeypa
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
     monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: {
         "cash": 680.0,
         "equity": 703.0,
@@ -1507,6 +1537,9 @@ def test_combined_dashboard_shows_negative_pnl_in_green(monkeypatch):
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
     monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: {
         "cash": 698.0,
         "equity": 698.0,
@@ -1615,6 +1648,9 @@ def test_combined_dashboard_paper_mode_ignores_live_account_positions(monkeypatc
         "state_date": "2026-07-09",
     })
     monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: ["SOFI", "LABD", "F"])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
 
     with combined.app.test_request_context("/"):
         html = combined.index()

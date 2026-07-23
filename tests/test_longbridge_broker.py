@@ -137,6 +137,7 @@ def test_longbridge_sandbox_requires_explicit_endpoints(monkeypatch=None):
     try:
         monkeypatch.setattr("src.config.runtime_values.load_private_longbridge_config", lambda: {})
         monkeypatch.setattr("src.config.runtime_values.clear_private_config_cache", lambda: None)
+        monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
         monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
         broker = module.LongBridgeBroker(
             app_key="k",
@@ -353,6 +354,7 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
         ),
     )
 
+    monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
     broker = module.LongBridgeBroker(
@@ -456,6 +458,7 @@ def test_longbridge_order_query_exposes_limit_price_from_sdk_price_field(tmp_pat
         ),
     )
 
+    monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
     broker = module.LongBridgeBroker(
@@ -548,6 +551,7 @@ def test_longbridge_active_orders_include_limit_price_in_snapshot(tmp_path, monk
         ),
     )
 
+    monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
     broker = module.LongBridgeBroker(
@@ -1006,6 +1010,7 @@ def test_longbridge_broker_account_balance_handles_list_response(tmp_path, monke
         ),
     )
 
+    monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
     broker = module.LongBridgeBroker(
@@ -1280,6 +1285,7 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
         ),
     )
 
+    monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
     broker = module.LongBridgeBroker(
