@@ -2736,6 +2736,32 @@ def _shadow_status_payload() -> dict[str, object]:
     }
 
 
+def _universe_payload() -> dict[str, object]:
+    """Read the managed universe snapshot for 8090 display."""
+    try:
+        from src.universe.manager import UniverseManager
+        mgr = UniverseManager()
+        snap = mgr.load_snapshot() or mgr.build_snapshot(dry_run=True)
+        enabled_list = [s.to_dict() for s in snap.symbols if s.enabled]
+        disabled_list = [
+            {"symbol": s.symbol, "reason": s.disabled_reason, "asset_type": s.asset_type}
+            for s in snap.symbols if not s.enabled
+        ]
+        return {
+            "available": True,
+            "total_symbols": snap.total_symbols,
+            "enabled_symbols": snap.enabled_symbols,
+            "disabled_count": snap.total_symbols - snap.enabled_symbols,
+            "composition": dict(snap.composition),
+            "max_leveraged_inverse": snap.max_leveraged_inverse,
+            "filter_results": dict(snap.filter_results),
+            "enabled_list": enabled_list,
+            "disabled_list": disabled_list[len(disabled_list) - 10:] if len(disabled_list) > 10 else disabled_list,
+        }
+    except Exception:
+        return {"available": False}
+
+
 def _market_regime_payload() -> dict[str, object]:
     """Read current_regime.json from the Market Regime Engine."""
     try:
@@ -4936,6 +4962,41 @@ HTML = """<!DOCTYPE html>
                 </details>
             </div>
         </div>
+        {% if universe.available %}
+        <div class="board-section">
+            <div class="board-section-head">
+                <h2>候选池管理</h2>
+            </div>
+            <div class="system-status-grid">
+                <div class="system-status-card full status-ok" id="universe-card">
+                    <span class="system-status-label">候选池概览</span>
+                    <span class="system-status-value" id="universe-counts">{{ universe.enabled_symbols }} / {{ universe.total_symbols }} 启用</span>
+                    <span class="system-status-detail">
+                        杠杆/反向 ETF 上限: {{ universe.max_leveraged_inverse }} ·
+                        流动性过滤 · 价格过滤 · 风险过滤 · 组合分散
+                    </span>
+                    <div class="shadow-metrics-grid">
+                        {% for at, count in universe.composition.items() %}
+                        <div class="shadow-metric"><span>{{ at }}</span><strong id="universe-comp-{{ at }}">{{ count }}</strong></div>
+                        {% endfor %}
+                    </div>
+                    <div class="board-section-head" style="margin-top:8px"><span>过滤统计</span></div>
+                    <div class="shadow-metrics-grid">
+                        <div class="shadow-metric"><span>流动性淘汰</span><strong id="universe-liq-drop">{{ universe.filter_results.liquidity_dropped if universe.filter_results.liquidity_dropped is not none else 0 }}</strong></div>
+                        <div class="shadow-metric"><span>价格淘汰</span><strong id="universe-price-drop">{{ universe.filter_results.price_dropped if universe.filter_results.price_dropped is not none else 0 }}</strong></div>
+                        <div class="shadow-metric"><span>风险淘汰</span><strong id="universe-risk-drop">{{ universe.filter_results.risk_dropped if universe.filter_results.risk_dropped is not none else 0 }}</strong></div>
+                        <div class="shadow-metric"><span>组合淘汰</span><strong id="universe-comp-drop">{{ universe.filter_results.composition_dropped if universe.filter_results.composition_dropped is not none else 0 }}</strong></div>
+                    </div>
+                    {% if universe.disabled_list %}
+                    <div class="board-section-head" style="margin-top:8px"><span>最近禁用标的</span></div>
+                    <div style="padding: 4px 0; font-size:13px; color: var(--muted); max-height: 80px; overflow-y: auto;">
+                        {% for d in universe.disabled_list %}<span style="margin-right: 12px;">• {{ d.symbol }} ({{ d.reason }})</span>{% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
         {% if market_regime.available %}
         <div class="board-section">
             <div class="board-section-head">
@@ -6883,6 +6944,7 @@ def _api_status_payload() -> dict[str, object]:
         "learning_summary": _learning_summary_payload(),
         "market_regime": _market_regime_payload(),
         "regime_shadow": _regime_shadow_payload(),
+        "universe": _universe_payload(),
         "governance": _governance_payload(),
         "research_report": _candidate_research_report_payload(),
         "ai_selection": {
@@ -8152,6 +8214,7 @@ def index():
         learning_summary=learning_summary,
         market_regime=market_regime,
         regime_shadow=regime_shadow,
+        universe=_universe_payload(),
         research_status=_research_status_payload(),
         # ---- Aggregated trade statistics ----
         trade_stats=_aggregate_trade_stats(cards),
