@@ -479,6 +479,7 @@ class AIStrategySelector:
         )
 
         # 1. build universe
+        source = "override"
         if symbols_override:
             symbols = []
             seen = set()

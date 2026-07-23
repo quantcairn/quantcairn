@@ -2058,7 +2058,12 @@ def main(mode: str | None = None):
         str(runtime_settings.get("auto_refresh_minutes", 5)),
     )
     configured_max_symbols = int(runtime_settings.get("max_symbols", 20) or 20)
-    os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
+    # Managed universe has 35+ symbols — don't cap it to the legacy 9-symbol limit.
+    universe_source = os.environ.get("AI_SELECTOR_UNIVERSE", "managed")
+    if universe_source == "managed":
+        os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
+    else:
+        os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
     os.environ.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
     os.environ.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
     os.environ.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "0")
@@ -2072,7 +2077,9 @@ def main(mode: str | None = None):
     preferred_symbols = integrated_ai.get("preferred_symbols") or None
     selection_symbols = _merged_selection_symbols(preferred_symbols)
     sel = AIStrategySelector()
-    out = sel.run_selection(write_configs=False, symbols_override=selection_symbols)
+    # Let selector choose universe source (managed/sample/sp500) unless
+    # explicitly overridden via --universe-source CLI.
+    out = sel.run_selection(write_configs=False)
     selected = out.get('top5') or out.get('top3') or []
     if not selected and selection_symbols:
         integrated_ai["fallback_used"] = True
@@ -2616,5 +2623,13 @@ if __name__ == '__main__':
         default=None,
         help="Selector run mode (default: full)",
     )
+    parser.add_argument(
+        "--universe-source",
+        choices=("managed", "sample", "sp500"),
+        default=None,
+        help="Universe source (default: managed).  Overrides AI_SELECTOR_UNIVERSE env var.",
+    )
     args = parser.parse_args()
+    if args.universe_source:
+        os.environ["AI_SELECTOR_UNIVERSE"] = args.universe_source
     main(mode=args.mode)
