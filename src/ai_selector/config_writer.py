@@ -46,6 +46,10 @@ def _load_existing_mode(index: int, fallback: str) -> str:
     return fallback
 
 
+def _existing_mode_is_live(index: int) -> bool:
+    return _load_existing_mode(index, "paper") == "live"
+
+
 def _dynamic_min_profit_per_trade(estimated_price: float) -> float:
     """Scale the minimum tradable range for lower-priced stocks."""
     try:
@@ -461,6 +465,14 @@ def write_top_configs(
                     },
                 }
         else:
+            # Preserve existing live TOP configs — never overwrite them with
+            # disabled slots when the AI selector has zero tradable candidates.
+            if _existing_mode_is_live(i):
+                logger.warning(
+                    "Skipping TOP%d disabled write: existing live config preserved",
+                    i,
+                )
+                continue
             payload = _slot_disabled_payload(
                 slot=i,
                 requested_top_n=slot_count,

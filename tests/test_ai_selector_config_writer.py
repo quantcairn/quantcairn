@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from src.ai_selector.config_writer import write_top_configs
+from src.ai_selector.config_writer import write_top_configs, _existing_mode_is_live, _load_existing_mode
 
 
 class SimpleMonkeyPatch:
@@ -415,6 +415,151 @@ def test_config_writer_defaults_portfolio_when_missing(tmp_path, monkeypatch):
     assert updated["portfolio"]["max_total_risk"] == 0.05
     assert updated["portfolio"]["leveraged_etf_max_single_position"] == 0.15
     assert updated["portfolio"]["leveraged_etf_max_group_exposure"] == 0.50
+
+
+def test_live_top_preserved_when_no_candidates(tmp_path, monkeypatch):
+    """Live TOP config must NOT be overwritten by disabled slot when 0 candidates."""
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    # Pre-create a live TOP1 with allow_live_order=false, reduce_only=true
+    existing = {
+        "ticker": "SOXS",
+        "mode": "live",
+        "selection": {"source": "manual_override", "selection_date": "2026-07-21"},
+        "broker": {
+            "longbridge": {
+                "enabled": True,
+                "environment": "prod",
+                "account_type": "live",
+                "allow_live_order": False,
+                "reduce_only": True,
+            }
+        },
+    }
+    (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+    # Zero candidates → disabled-slot path
+    write_top_configs([])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    assert updated["mode"] == "live"
+    assert updated["ticker"] == "SOXS"
+    assert updated["broker"]["longbridge"]["allow_live_order"] is False
+    assert updated["broker"]["longbridge"]["reduce_only"] is True
+    assert updated["broker"]["longbridge"]["environment"] == "prod"
+    assert updated["broker"]["longbridge"]["account_type"] == "live"
+
+
+def test_paper_top_normal_disabled_write_when_no_candidates(tmp_path, monkeypatch):
+    """Paper TOP config SHOULD be overwritten by disabled slot when 0 candidates."""
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    existing = {
+        "ticker": "SOFI",
+        "mode": "paper",
+        "broker": {"longbridge": {"enabled": False}},
+    }
+    (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+    write_top_configs([])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    # Paper mode gets overwritten to disabled
+    assert updated.get("mode") is None or updated["mode"] != "live"
+
+
+def test_sandbox_top_normal_disabled_write_when_no_candidates(tmp_path, monkeypatch):
+    """Sandbox TOP config SHOULD be overwritten by disabled slot when 0 candidates."""
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    existing = {
+        "ticker": "LABD",
+        "mode": "sandbox",
+        "broker": {"longbridge": {"enabled": True, "environment": "sandbox", "account_type": "paper"}},
+    }
+    (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+    write_top_configs([])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    # Sandbox mode gets overwritten to disabled — not preserved
+    assert updated.get("mode") is None or updated["mode"] != "sandbox"
+
+
+def test_existing_mode_is_live_returns_true_for_live():
+    """_existing_mode_is_live(1) should return True when TOP1.yaml has mode=live."""
+    import tempfile, os
+    from unittest.mock import patch
+
+    td = tempfile.mkdtemp()
+    try:
+        configs_dir = Path(td) / "configs"
+        configs_dir.mkdir(parents=True)
+        existing = {"ticker": "SOXS", "mode": "live"}
+        (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+        with patch("src.ai_selector.config_writer.BASE", td):
+            assert _existing_mode_is_live(1) is True
+    finally:
+        import shutil
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def test_existing_mode_is_live_returns_false_for_paper():
+    """_existing_mode_is_live(1) should return False when TOP1.yaml has mode=paper."""
+    import tempfile
+    from unittest.mock import patch
+
+    td = tempfile.mkdtemp()
+    try:
+        configs_dir = Path(td) / "configs"
+        configs_dir.mkdir(parents=True)
+        existing = {"ticker": "SOFI", "mode": "paper"}
+        (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+        with patch("src.ai_selector.config_writer.BASE", td):
+            assert _existing_mode_is_live(1) is False
+    finally:
+        import shutil
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def test_live_top_allows_candidate_write(tmp_path, monkeypatch):
+    """Live TOP with candidates present: normal write still works."""
+    repo_root = tmp_path
+    configs_dir = repo_root / "configs"
+    configs_dir.mkdir()
+    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+
+    existing = {
+        "ticker": "OLD_SYMBOL",
+        "mode": "live",
+        "broker": {"longbridge": {"enabled": True, "environment": "prod", "account_type": "live"}},
+    }
+    (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+
+    # Has candidates → normal write path
+    write_top_configs([{
+        "ticker": "SOXS",
+        "range_low": 20.0,
+        "range_high": 30.0,
+        "risk": {"stop_loss_pct": 1.5},
+        "size": 10,
+    }])
+
+    updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
+    # Normal write: preserves mode but updates ticker
+    assert updated["mode"] == "live"
+    assert updated["ticker"] == "SOXS"
 
 
 def run_test_direct():
