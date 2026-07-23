@@ -21,7 +21,7 @@ from src.outcome.collector import (
     FillEvent,
     BuyLot,
     SCHEMA_VERSION,
-    _OUTCOME_CSV_COLUMNS_V2,
+    _OUTCOME_COLUMNS_V3,
     _make_outcome_id,
     _match_closed_trades_lots,
     _enrich_outcomes,
@@ -374,7 +374,7 @@ class TestSelectionContextBinding:
 class TestCSVAndState:
     def test_append_csv_creates_with_v2_columns(self, tmp_path: Path):
         with patch.object(module, "OUTCOME_CSV_PATH", tmp_path / "outcomes.csv"):
-            rows = [dict.fromkeys(_OUTCOME_CSV_COLUMNS_V2, "")]
+            rows = [dict.fromkeys(_OUTCOME_COLUMNS_V3, "")]
             rows[0].update(outcome_id="ok", symbol="AAPL", entry_price=100.0,
                           exit_price=110.0, quantity=10, execution_mode="paper")
             w = _append_csv(rows)
@@ -384,7 +384,7 @@ class TestCSVAndState:
     def test_ids_from_csv(self, tmp_path: Path):
         csv_path = tmp_path / "oc.csv"
         with patch.object(module, "OUTCOME_CSV_PATH", csv_path):
-            _append_csv([{**dict.fromkeys(_OUTCOME_CSV_COLUMNS_V2, ""),
+            _append_csv([{**dict.fromkeys(_OUTCOME_COLUMNS_V3, ""),
                            "outcome_id": "id-001", "symbol": "A", "entry_price": 1,
                            "exit_price": 2, "quantity": 1, "execution_mode": "paper"}])
             ids = _ids_from_csv()
@@ -431,7 +431,7 @@ class TestCSVAndState:
 
         with patch.object(module, "OUTCOME_STATE_PATH", state_path):
             with patch.object(module, "OUTCOME_CSV_PATH", csv_path):
-                written = _append_csv([{**dict.fromkeys(_OUTCOME_CSV_COLUMNS_V2, ""),
+                written = _append_csv([{**dict.fromkeys(_OUTCOME_COLUMNS_V3, ""),
                                           "outcome_id": "should-fail",
                                           "symbol": "Z", "entry_price": 1,
                                           "exit_price": 2, "quantity": 1,
@@ -454,7 +454,7 @@ class TestSummary:
     def test_with_trades(self, tmp_path: Path):
         csv_path = tmp_path / "oc.csv"
         with patch.object(module, "OUTCOME_CSV_PATH", csv_path):
-            base = dict.fromkeys(_OUTCOME_CSV_COLUMNS_V2, "")
+            base = dict.fromkeys(_OUTCOME_COLUMNS_V3, "")
             base["training_eligible"] = "true"
             _append_csv([
                 {**base, "outcome_id": "w1", "symbol": "AAPL",
@@ -686,9 +686,164 @@ def run_test_direct():
         c2 = TestCSVAndState()
         c2.test_corrupt_state_rebuilds_from_csv(td)
     finally:
+        TestImmutableRecords().test_immutable_hash_populated()
+        TestImmutableRecords().test_changing_quantity_changes_hash()
+        TestImmutableRecords().test_identical_trades_same_hash()
+        TestEnhancedSchema().test_v3_columns_present()
+        TestEnhancedSchema().test_feature_snapshot_populated()
+        TestEnhancedSchema().test_outcome_win_loss_label()
+        TestEnhancedSchema().test_risk_metrics_populated()
+        TestEnhancedSchema().test_derived_metrics_populated()
+        TestVersioning().test_dataset_version_created()
+        TestVersioning().test_hash_chain_appended()
+        TestSafety().test_no_broker_in_v3()
+        TestStrategyAnalysis().test_strategies_tracked_in_summary()
         import shutil
         shutil.rmtree(td, ignore_errors=True)
     print("direct run: all passed")
+
+# ═══════════════════════════════════════════════════════════════════════
+# V3 enhanced schema tests
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestImmutableRecords:
+    def test_immutable_hash_populated(self):
+        trade = {"outcome_id": "abc", "symbol": "AAPL", "buy_fill_id": "B1",
+                 "sell_fill_id": "S1", "entry_price": 100.0, "exit_price": 110.0,
+                 "quantity": 10, "pnl_pct": 10.0, "realized_pnl": 100.0,
+                 "entry_time": "2026-07-01", "exit_time": "2026-07-02"}
+        h = module._make_immutable_hash(trade)
+        assert len(h) == 24
+        assert h != ""
+
+    def test_changing_quantity_changes_hash(self):
+        base = {"outcome_id": "abc", "symbol": "AAPL", "quantity": 10}
+        h1 = module._make_immutable_hash(base)
+        base["quantity"] = 20
+        h2 = module._make_immutable_hash(base)
+        assert h1 != h2
+
+    def test_identical_trades_same_hash(self):
+        t1 = {"outcome_id": "x", "symbol": "A", "quantity": 5, "entry_price": 100.0}
+        t2 = {"outcome_id": "x", "symbol": "A", "quantity": 5, "entry_price": 100.0}
+        assert module._make_immutable_hash(t1) == module._make_immutable_hash(t2)
+
+
+class TestEnhancedSchema:
+    def test_v3_columns_present(self):
+        cols = module._OUTCOME_COLUMNS_V3
+        assert "outcome" in cols
+        assert "strategy" in cols
+        assert "holding_days" in cols
+        assert "gross_return" in cols
+        assert "net_return" in cols
+        assert "fees" in cols
+        assert "immutable_hash" in cols
+        assert "mfe_pct" in cols
+        assert "mae_pct" in cols
+        assert "max_drawdown_pct" in cols
+        assert "alpha_vs_benchmark" in cols
+        assert "feature_volatility_score" in cols
+
+    def test_feature_snapshot_populated(self):
+        ctx = {"AAPL": {"feature_volatility_score": 65.0, "feature_volume_score": 70.0,
+                         "feature_trend_score": 55.0, "candidate_score": 85.0,
+                         "strategy_family": "range_detector", "benchmark": "SPY"}}
+        trades = [{"outcome_id": "t1", "symbol": "AAPL", "entry_price": 100.0,
+                    "exit_price": 110.0, "realized_pnl": 100.0, "pnl_pct": 10.0,
+                    "quantity": 10, "hold_duration_seconds": 86400}]
+        enriched = module._enrich_outcomes(trades, ctx)
+        r = enriched[0]
+        assert r["feature_volatility_score"] == 65.0
+        assert r["strategy"] == "range_detector"
+        assert r["benchmark"] == "SPY"
+
+    def test_outcome_win_loss_label(self):
+        trades = [
+            {"outcome_id": "w", "symbol": "A", "entry_price": 100, "exit_price": 120,
+             "realized_pnl": 200, "pnl_pct": 20.0, "quantity": 10},
+            {"outcome_id": "l", "symbol": "B", "entry_price": 100, "exit_price": 80,
+             "realized_pnl": -200, "pnl_pct": -20.0, "quantity": 10},
+            {"outcome_id": "e", "symbol": "C", "entry_price": 100, "exit_price": 100,
+             "realized_pnl": 0, "pnl_pct": 0.0, "quantity": 10},
+        ]
+        enriched = module._enrich_outcomes(trades, {})
+        assert enriched[0]["outcome"] == "WIN"
+        assert enriched[1]["outcome"] == "LOSS"
+        assert enriched[2]["outcome"] == "EVEN"
+
+    def test_risk_metrics_populated(self):
+        trades = [{"outcome_id": "r1", "symbol": "AAPL", "entry_price": 100,
+                    "exit_price": 110, "realized_pnl": 100, "pnl_pct": 10.0,
+                    "quantity": 10, "hold_duration_seconds": 86400}]
+        enriched = module._enrich_outcomes(trades, {})
+        r = enriched[0]
+        assert r["mfe_pct"] == 10.0
+        assert r["mae_pct"] == 0.0
+        assert r["max_drawdown_pct"] == 0.0
+        assert r["volatility_pct"] > 0
+
+    def test_derived_metrics_populated(self):
+        trades = [{"outcome_id": "d1", "symbol": "AAPL", "entry_price": 100,
+                    "exit_price": 105, "realized_pnl": 50, "pnl_pct": 5.0,
+                    "quantity": 10, "hold_duration_seconds": 86400}]
+        enriched = module._enrich_outcomes(trades, {})
+        r = enriched[0]
+        assert r["holding_days"] == 1.0
+        assert r["gross_return"] == 5.0
+        assert r["net_return"] < 5.0  # fees deducted
+        assert r["fees"] > 0
+
+
+class TestVersioning:
+    def test_dataset_version_created(self, tmp_path: Path):
+        v = tmp_path / "version.json"
+        with patch.object(module, "OUTCOME_VERSION_PATH", v):
+            with patch.object(module, "LEARNING_DIR", tmp_path):
+                module._update_dataset_version(50, "abc123def")
+                assert v.exists()
+                data = json.loads(v.read_text(encoding="utf-8"))
+                assert data["last_row_count"] == 50
+
+    def test_hash_chain_appended(self, tmp_path: Path):
+        v = tmp_path / "version.json"
+        with patch.object(module, "OUTCOME_VERSION_PATH", v):
+            with patch.object(module, "LEARNING_DIR", tmp_path):
+                module._update_dataset_version(10, "hash1")
+                module._update_dataset_version(20, "hash2")
+                data = json.loads(v.read_text(encoding="utf-8"))
+                chain = data["last_hash_chain"]
+                assert "hash2" in chain
+
+
+class TestSafety:
+    def test_no_broker_in_v3(self):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert "LongBridgeBroker" not in source
+        assert "PaperBroker" not in source
+        assert "place_order" not in source
+        assert "TradeContext" not in source
+
+
+class TestStrategyAnalysis:
+    def test_strategies_tracked_in_summary(self, tmp_path: Path):
+        csv_path = tmp_path / "outcomes.csv"
+        with patch.object(module, "OUTCOME_CSV_PATH", csv_path):
+            from src.outcome.collector import _append_csv, _OUTCOME_COLUMNS_V3
+            base = {c: "" for c in _OUTCOME_COLUMNS_V3}
+            base["return_pct"] = "5.0"; base["realized_pnl"] = "500.0"
+            base["strategy"] = "range_detector"; base["outcome"] = "WIN"
+            base["pnl_pct"] = "5.0"; base["quantity"] = "10"
+            base["hold_duration_seconds"] = "86400"
+            base["execution_mode"] = "paper"; base["training_eligible"] = "true"
+            _append_csv([
+                {**base, "outcome_id": "s1", "symbol": "A", "entry_price": 100, "exit_price": 110},
+                {**base, "outcome_id": "s2", "symbol": "B", "entry_price": 100, "exit_price": 105,
+                 "return_pct": "-3.0", "realized_pnl": "-300.0", "outcome": "LOSS", "strategy": "mean_reversion"},
+            ])
+            s = module.compute_summary()
+            assert s["closed_trade_count"] == 2
+            assert s["best_strategy"] == "range_detector"
 
 
 if __name__ == "__main__":

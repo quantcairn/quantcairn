@@ -2096,6 +2096,13 @@ def _learning_summary_payload() -> dict[str, object]:
                 "total_pnl": _safe_float_str(s.get("total_pnl"), 2),
             })
 
+    # Enhanced outcome analysis fields (v3)
+    avg_return_str = _safe_pct_str(outcome.get("avg_return_pct"), 2)
+    best_strategy = str(outcome.get("best_strategy") or "暂无")
+    worst_strategy = str(outcome.get("worst_strategy") or "暂无")
+    top_factors = outcome.get("top_factors") or []
+    bottom_factors = outcome.get("bottom_factors") or []
+
     # Weight Advisor — sanitize every numeric field
     wa_available = bool(weights.get("available", True))
     wa_status = str(weights.get("status") or "")
@@ -2215,6 +2222,11 @@ def _learning_summary_payload() -> dict[str, object]:
         "wa_improved": wa_improved,
         "governance": governance,
         "data_sufficient": closed_trades >= 20,
+        "avg_return_str": avg_return_str,
+        "best_strategy": best_strategy,
+        "worst_strategy": worst_strategy,
+        "top_factors": top_factors,
+        "bottom_factors": bottom_factors,
     }
 
 
