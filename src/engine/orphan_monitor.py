@@ -27,6 +27,12 @@ EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 TOP_CONFIGS = [PROJECT_DIR / "configs" / f"TOP{idx}.yaml" for idx in range(1, 6)]
 TOP_PORTS = [8091, 8092, 8093, 8094, 8095]
 
+# ── Orphan ownership: identity verification status ──────────────────
+_ASSIGNED_ACTIVE = "ASSIGNED_ACTIVE"
+_ASSIGNED_UNVERIFIED = "ASSIGNED_UNVERIFIED"
+_ASSIGNED_STALE = "ASSIGNED_STALE"
+_ORPHAN_CONFIRMED = "ORPHAN_CONFIRMED"
+
 
 def _normalize_ticker(value: str) -> str:
     return str(value or "").strip().upper().split(".")[0]
@@ -45,16 +51,24 @@ def _load_assigned_symbols() -> set[str]:
     return symbols
 
 
-def _load_configured_assignments() -> dict[int, str]:
-    assignments: dict[int, str] = {}
+def _load_configured_assignments() -> dict[int, dict[str, str]]:
+    """Return {port: {ticker, expected_mode, expected_environment, expected_account_type}}."""
+    assignments: dict[int, dict[str, str]] = {}
     for path, port in zip(TOP_CONFIGS, TOP_PORTS):
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except Exception:
             continue
         ticker = _normalize_ticker(data.get("ticker"))
-        if ticker and EQUITY_SYMBOL_RE.fullmatch(ticker):
-            assignments[port] = ticker
+        if not ticker or not EQUITY_SYMBOL_RE.fullmatch(ticker):
+            continue
+        lb = (data.get("broker") or {}).get("longbridge") or {}
+        assignments[port] = {
+            "ticker": ticker,
+            "expected_mode": str(data.get("mode") or "").strip().lower(),
+            "expected_environment": str(lb.get("environment") or "").strip().lower(),
+            "expected_account_type": str(lb.get("account_type") or "").strip().lower(),
+        }
     return assignments
 
 
@@ -103,6 +117,8 @@ class OrphanPositionMonitor:
         self._startup_at = time.monotonic()
         self._assignment_failures: dict[int, int] = {}
         self._last_orphan_symbols: set[str] | None = None
+        # ── Identity tracking per port ──
+        self._identity_status: dict[int, str] = {}
 
     def verify_broker_positions(self) -> list[Position] | None:
         positions = self.broker.get_positions()
@@ -182,32 +198,111 @@ class OrphanPositionMonitor:
             orphans[ticker] = pos
         return orphans
 
-    def _is_top_process_active(self, port: int) -> bool:
+    def _fetch_engine_status(self, port: int) -> dict | None:
+        """Return the parsed API status payload or None on any failure."""
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             with opener.open(f"http://127.0.0.1:{port}/api/status", timeout=1.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            return bool(isinstance(payload, dict) and payload.get("running"))
+            if isinstance(payload, dict):
+                return payload
+            return None
         except Exception:
-            return False
+            return None
+
+    def _is_top_process_active(self, port: int) -> bool:
+        payload = self._fetch_engine_status(port)
+        return bool(payload and payload.get("running"))
+
+    def _verify_engine_identity(self, port: int, expected: dict[str, str]) -> str:
+        """Verify that the engine at *port* matches its configured identity.
+
+        Returns one of: ASSIGNED_ACTIVE, ASSIGNED_UNVERIFIED, ASSIGNED_STALE,
+        ORPHAN_CONFIRMED.
+        """
+        payload = self._fetch_engine_status(port)
+
+        # Port unreachable → unverified (may still be starting)
+        if not payload:
+            return _ASSIGNED_UNVERIFIED
+
+        if not payload.get("running"):
+            return _ASSIGNED_UNVERIFIED
+
+        # ── Identity checks ──────────────────────────────────────────
+        mismatches: list[str] = []
+
+        api_ticker = _normalize_ticker(str(payload.get("ticker") or ""))
+        expected_ticker = expected.get("ticker", "")
+        if expected_ticker and api_ticker != expected_ticker:
+            mismatches.append(f"ticker:{api_ticker}!={expected_ticker}")
+
+        api_mode = str(payload.get("execution_mode") or payload.get("mode") or "").strip().lower()
+        expected_mode = expected.get("expected_mode", "")
+        if expected_mode and api_mode != expected_mode:
+            mismatches.append(f"mode:{api_mode}!={expected_mode}")
+
+        api_env = str(payload.get("broker_environment") or "").strip().lower()
+        expected_env = expected.get("expected_environment", "")
+        if expected_env and api_env != expected_env:
+            mismatches.append(f"environment:{api_env}!={expected_env}")
+
+        api_acct = str(payload.get("account_type") or "").strip().lower()
+        expected_acct = expected.get("expected_account_type", "")
+        if expected_acct and api_acct != expected_acct:
+            mismatches.append(f"account_type:{api_acct}!={expected_acct}")
+
+        if mismatches:
+            mismatch_detail = "; ".join(mismatches)
+            append_runtime_audit(
+                {
+                    "phase": "orphan_identity_mismatch",
+                    "port": port,
+                    "expected_ticker": expected_ticker,
+                    "mismatches": mismatch_detail,
+                }
+            )
+            logger.warning(
+                "Orphan monitor: port %d identity mismatch — %s",
+                port,
+                mismatch_detail,
+            )
+            return _ASSIGNED_UNVERIFIED
+
+        return _ASSIGNED_ACTIVE
 
     def _active_assigned_symbols(self) -> set[str]:
         assignments = _load_configured_assignments()
         # TOP processes are started after the orphan monitor. Avoid takeover
         # during their normal sequential startup window.
         if (time.monotonic() - self._startup_at) < 120:
-            return set(assignments.values())
+            return set(info["ticker"] for info in assignments.values())
 
         active: set[str] = set()
-        for port, ticker in assignments.items():
-            if self._is_top_process_active(port):
+        for port, info in assignments.items():
+            status = self._verify_engine_identity(port, info)
+            self._identity_status[port] = status
+            if status == _ASSIGNED_ACTIVE:
                 self._assignment_failures[port] = 0
-                active.add(ticker)
+                active.add(info["ticker"])
                 continue
+            # Not fully verified — track consecutive failures
             failures = self._assignment_failures.get(port, 0) + 1
             self._assignment_failures[port] = failures
             if failures < 3:
-                active.add(ticker)
+                # Grace period: still treat as assigned to avoid premature orphan takeover
+                active.add(info["ticker"])
+                continue
+            # Consecutive failures threshold reached — confirm as orphan
+            self._identity_status[port] = _ORPHAN_CONFIRMED
+            append_runtime_audit(
+                {
+                    "phase": "orphan_confirmed",
+                    "port": port,
+                    "ticker": info["ticker"],
+                    "consecutive_failures": failures,
+                }
+            )
         return active
 
     def log_startup_scan(self, orphans: dict[str, Position]) -> None:

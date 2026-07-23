@@ -376,17 +376,237 @@ def test_offline_assigned_process_becomes_orphan_after_three_failures():
     broker = FakeBroker(positions=[pos])
     monitor = OrphanPositionMonitor(broker=broker)
     monitor._startup_at = 0
-    monitor._is_top_process_active = lambda _port: False
+    # Mock the status fetch to always return None (simulate offline process)
+    monitor._fetch_engine_status = lambda _port: None
     import src.engine.orphan_monitor as module
 
     original = module._load_configured_assignments
-    module._load_configured_assignments = lambda: {8091: "PLTR"}
+    module._load_configured_assignments = lambda: {
+        8091: {
+            "ticker": "PLTR",
+            "expected_mode": "live",
+            "expected_environment": "prod",
+            "expected_account_type": "live",
+        }
+    }
     try:
         assert "PLTR" not in monitor.scan_orphans([pos])
         assert "PLTR" not in monitor.scan_orphans([pos])
         assert "PLTR" in monitor.scan_orphans([pos])
     finally:
         module._load_configured_assignments = original
+
+
+# ── Orphan identity verification tests ────────────────────────────────
+
+def test_identity_correct_ticker_mode_account_returns_active():
+    """Correct ticker, mode, environment, account_type → ASSIGNED_ACTIVE."""
+    monitor = OrphanPositionMonitor(broker=FakeBroker())
+    monitor._fetch_engine_status = lambda _port: {
+        "running": True,
+        "ticker": "SOXS",
+        "execution_mode": "live",
+        "broker_environment": "prod",
+        "account_type": "live",
+    }
+    expected = {
+        "ticker": "SOXS",
+        "expected_mode": "live",
+        "expected_environment": "prod",
+        "expected_account_type": "live",
+    }
+    status = monitor._verify_engine_identity(8091, expected)
+    assert status == "ASSIGNED_ACTIVE"
+
+
+def test_identity_wrong_ticker_returns_unverified():
+    """Port online but wrong ticker → ASSIGNED_UNVERIFIED."""
+    monitor = OrphanPositionMonitor(broker=FakeBroker())
+    monitor._fetch_engine_status = lambda _port: {
+        "running": True,
+        "ticker": "LABD",
+        "execution_mode": "live",
+        "broker_environment": "prod",
+        "account_type": "live",
+    }
+    expected = {
+        "ticker": "SOXS",
+        "expected_mode": "live",
+        "expected_environment": "prod",
+        "expected_account_type": "live",
+    }
+    status = monitor._verify_engine_identity(8091, expected)
+    assert status == "ASSIGNED_UNVERIFIED"
+
+
+def test_identity_sandbox_vs_live_mode_mismatch_returns_unverified():
+    """Ticker correct but live vs sandbox mode mismatch → ASSIGNED_UNVERIFIED."""
+    monitor = OrphanPositionMonitor(broker=FakeBroker())
+    monitor._fetch_engine_status = lambda _port: {
+        "running": True,
+        "ticker": "SOXS",
+        "execution_mode": "sandbox",
+        "broker_environment": "sandbox",
+        "account_type": "paper",
+    }
+    expected = {
+        "ticker": "SOXS",
+        "expected_mode": "live",
+        "expected_environment": "prod",
+        "expected_account_type": "live",
+    }
+    status = monitor._verify_engine_identity(8091, expected)
+    assert status == "ASSIGNED_UNVERIFIED"
+
+
+def test_identity_account_type_mismatch_returns_unverified():
+    """Account type paper vs live → ASSIGNED_UNVERIFIED."""
+    monitor = OrphanPositionMonitor(broker=FakeBroker())
+    monitor._fetch_engine_status = lambda _port: {
+        "running": True,
+        "ticker": "SOXS",
+        "execution_mode": "live",
+        "broker_environment": "prod",
+        "account_type": "paper",
+    }
+    expected = {
+        "ticker": "SOXS",
+        "expected_mode": "live",
+        "expected_environment": "prod",
+        "expected_account_type": "live",
+    }
+    status = monitor._verify_engine_identity(8091, expected)
+    assert status == "ASSIGNED_UNVERIFIED"
+
+
+def test_identity_single_failure_does_not_takeover():
+    """One fetch failure → unverified but ticker still assigned."""
+    pos = _position("SOXS", 5, 100.0, 105.0)
+    broker = FakeBroker(positions=[pos])
+    monitor = OrphanPositionMonitor(broker=broker)
+    monitor._startup_at = 0
+    monitor._fetch_engine_status = lambda _port: None
+    import src.engine.orphan_monitor as module
+
+    original = module._load_configured_assignments
+    module._load_configured_assignments = lambda: {
+        8091: {
+            "ticker": "SOXS",
+            "expected_mode": "live",
+            "expected_environment": "prod",
+            "expected_account_type": "live",
+        }
+    }
+    try:
+        # Single failure — SOXS still assigned, not orphaned
+        orphans = monitor.scan_orphans([pos])
+        assert "SOXS" not in orphans
+    finally:
+        module._load_configured_assignments = original
+
+
+def test_identity_three_consecutive_failures_confirms_orphan():
+    """Three consecutive fetch failures → ORPHAN_CONFIRMED."""
+    pos = _position("SOXS", 5, 100.0, 105.0)
+    broker = FakeBroker(positions=[pos])
+    monitor = OrphanPositionMonitor(broker=broker)
+    monitor._startup_at = 0
+    monitor._fetch_engine_status = lambda _port: None
+    import src.engine.orphan_monitor as module
+
+    original = module._load_configured_assignments
+    module._load_configured_assignments = lambda: {
+        8091: {
+            "ticker": "SOXS",
+            "expected_mode": "live",
+            "expected_environment": "prod",
+            "expected_account_type": "live",
+        }
+    }
+    try:
+        assert "SOXS" not in monitor.scan_orphans([pos])
+        assert "SOXS" not in monitor.scan_orphans([pos])
+        orphans = monitor.scan_orphans([pos])
+        assert "SOXS" in orphans
+    finally:
+        module._load_configured_assignments = original
+
+
+def test_identity_owner_recovery_resets_failure_count():
+    """After recovery (identity match), failure count resets."""
+    pos = _position("SOXS", 5, 100.0, 105.0)
+    broker = FakeBroker(positions=[pos])
+    monitor = OrphanPositionMonitor(broker=broker)
+    monitor._startup_at = 0
+
+    # Start with the engine offline (no fetch)
+    monitor._fetch_engine_status = lambda _port: None
+    import src.engine.orphan_monitor as module
+
+    original = module._load_configured_assignments
+    module._load_configured_assignments = lambda: {
+        8091: {
+            "ticker": "SOXS",
+            "expected_mode": "live",
+            "expected_environment": "prod",
+            "expected_account_type": "live",
+        }
+    }
+    try:
+        # Two failures — still assigned
+        assert "SOXS" not in monitor.scan_orphans([pos])
+        assert "SOXS" not in monitor.scan_orphans([pos])
+        assert monitor._assignment_failures.get(8091, 0) == 2
+
+        # Engine comes back online with correct identity
+        monitor._fetch_engine_status = lambda _port: {
+            "running": True,
+            "ticker": "SOXS",
+            "execution_mode": "live",
+            "broker_environment": "prod",
+            "account_type": "live",
+        }
+        # This should reset failure count
+        orphans = monitor.scan_orphans([pos])
+        assert "SOXS" not in orphans
+        assert monitor._assignment_failures.get(8091, 0) == 0
+    finally:
+        module._load_configured_assignments = original
+
+
+def test_identity_pending_sell_prevents_duplicate():
+    """Even when orphan confirmed, pending sell blocks duplicate submission."""
+    broker = FakeBroker(positions=[_position("SOXS", 7, 100.0, 105.0)])
+    monitor = OrphanPositionMonitor(broker=broker)
+    monitor._active_assigned_symbols = lambda: set()  # Force orphan
+    pos = _position("SOXS", 7, 100.0, 105.0)
+    engine = monitor._engine_for_symbol("SOXS")
+    engine._pending_order_state_path = Path(tempfile.gettempdir()) / "soxs-identity-pending-order.json"
+    engine._position_sync_state_path = Path(tempfile.gettempdir()) / "soxs-identity-pending-sync.json"
+    engine._sell_lock_path = Path(tempfile.gettempdir()) / "soxs-identity-pending-sell.lock"
+    engine._pending_order_state_path.unlink(missing_ok=True)
+    engine._position_sync_state_path.unlink(missing_ok=True)
+    engine._sell_lock_path.unlink(missing_ok=True)
+    engine._pending_order = {"side": "SELL", "order_id": "PENDING-001"}
+    engine._position_sync_fence = None
+
+    monitor._evaluate_symbol("SOXS", pos)
+
+    assert broker.orders == []
+
+
+def test_identity_unreachable_engine_returns_unverified():
+    """Unreachable engine → ASSIGNED_UNVERIFIED."""
+    monitor = OrphanPositionMonitor(broker=FakeBroker())
+    monitor._fetch_engine_status = lambda _port: None
+    expected = {
+        "ticker": "SOXS",
+        "expected_mode": "live",
+        "expected_environment": "prod",
+        "expected_account_type": "live",
+    }
+    status = monitor._verify_engine_identity(8091, expected)
+    assert status == "ASSIGNED_UNVERIFIED"
 
 
 def test_market_hours_check_prevents_execution_outside_regular_hours():
@@ -437,4 +657,13 @@ def run_test_direct():
     test_existing_sell_lock_prevents_duplicate_sell()
     test_position_qty_zero_stops_orphan_monitoring()
     test_offline_assigned_process_becomes_orphan_after_three_failures()
+    test_identity_correct_ticker_mode_account_returns_active()
+    test_identity_wrong_ticker_returns_unverified()
+    test_identity_sandbox_vs_live_mode_mismatch_returns_unverified()
+    test_identity_account_type_mismatch_returns_unverified()
+    test_identity_single_failure_does_not_takeover()
+    test_identity_three_consecutive_failures_confirms_orphan()
+    test_identity_owner_recovery_resets_failure_count()
+    test_identity_pending_sell_prevents_duplicate()
+    test_identity_unreachable_engine_returns_unverified()
     test_market_hours_check_prevents_execution_outside_regular_hours()

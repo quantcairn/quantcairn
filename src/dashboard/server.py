@@ -300,6 +300,17 @@ def get_dashboard_data() -> dict:
             "worst_trade": _nz(stats.get("worst_trade"), 0.0),
             "avg_pnl": _nz(stats.get("avg_pnl"), 0.0),
             "running": _engine._running if _engine._running is not None else False,
+            "execution_mode": _engine.mode,
+            "broker_environment": (
+                str(getattr(_engine.config.broker.longbridge, "environment", "") or "").strip().lower()
+                if hasattr(_engine.config, "broker") and hasattr(_engine.config.broker, "longbridge")
+                else ""
+            ),
+            "account_type": (
+                str(getattr(_engine.config.broker.longbridge, "account_type", "") or "").strip().lower()
+                if hasattr(_engine.config, "broker") and hasattr(_engine.config.broker, "longbridge")
+                else ""
+            ),
             "halted": stats.get("halted", False) or False,
             "trade_in_progress": trade_in_progress,
             "last_signal": _nz(last_signal, "HOLD"),

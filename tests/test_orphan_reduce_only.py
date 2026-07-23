@@ -131,6 +131,8 @@ def test_orphan_only_submits_sell():
 def test_soxs_orphan_special_exits_are_sell_only():
     broker = FakeBroker(positions=[_position("SOXS", 5, 100.0, 105.0)])
     monitor = OrphanPositionMonitor(broker=broker)
+    # B4: mock TOP engine offline so SOXS is treated as an orphan
+    monitor._active_assigned_symbols = lambda: set()
     engine = monitor._engine_for_symbol("SOXS")
     engine._pending_order_state_path = _tmpdir / "soxs-special-exit-pending.json"
     engine._position_sync_state_path = _tmpdir / "soxs-special-exit-sync.json"
