@@ -1651,6 +1651,30 @@ def _safe_ratio_str(value: object, digits: int = 4) -> str:
     return f"{num:.{digits}f}"
 
 
+def _governance_payload() -> dict[str, object]:
+    """Load the full governance snapshot for 8090 display."""
+    try:
+        from src.outcome.governance import LearningGovernance
+        gov = LearningGovernance()
+        return gov.governance_snapshot()
+    except Exception:
+        return {
+            "champion_version": "baseline_v1",
+            "champion_weights": {},
+            "champion_status": "ACTIVE",
+            "challenger_version": "",
+            "challenger_weights": {},
+            "challenger_status": "",
+            "approval_status": "UNAVAILABLE",
+            "approved_by_human": False,
+            "human_approval_required": True,
+            "auto_activation_blocked": True,
+            "proposal_count": 0,
+            "proposals": [],
+            "error": "governance_unavailable",
+        }
+
+
 def _load_weight_advisor_data() -> dict[str, object]:
     """Load the latest Weight Advisor report from artifacts/learning/."""
     try:
@@ -2145,16 +2169,27 @@ def _learning_summary_payload() -> dict[str, object]:
             "importance": _safe_ratio_str(val),
         })
 
-    # Model governance status from weight advisor
+    # ── Governance: read from the governance registry (not raw JSON) ──
+    gov = _governance_payload()
+
     governance: dict[str, str] = {
-        "champion": "baseline_v1 (固定权重)" if wa_status != "COMPLETED" else "baseline_v1 (基准模型)",
-        "challenger": "weight_advisor_v1" if wa_status == "COMPLETED" else "无挑战模型",
-        "approval": wa_approval if wa_status == "COMPLETED" else "WAITING_FOR_DATA",
-        "action": "collect_more_trades" if closed_trades < 20 else "review_weight_proposal",
+        "champion": f"{gov.get('champion_version', 'baseline_v1')} (正式模型)"
+            if gov.get("champion_status", "") == "ACTIVE" else "baseline_v1 (固定权重)",
+        "challenger": gov.get("challenger_version", "") or "无挑战模型",
+        "approval": gov.get("approval_status", "WAITING_FOR_DATA"),
+        "action": (
+            "collect_more_trades" if closed_trades < 20
+            else "approve_proposal" if gov.get("approval_status") == "REVIEW_REQUIRED"
+            else "review_weight_proposal"
+        ),
     }
+    human_approval_required = bool(gov.get("human_approval_required", True))
+    auto_activation_blocked = bool(gov.get("auto_activation_blocked", True))
 
     return {
         "available": True,
+        "human_approval_required": human_approval_required,
+        "auto_activation_blocked": auto_activation_blocked,
         "outcome_available": outcome_available,
         "closed_trades": closed_trades,
         "training_eligible": training_eligible,
@@ -6632,6 +6667,7 @@ def _api_status_payload() -> dict[str, object]:
         "research_status": _research_status_payload(),
         "learning_summary": _learning_summary_payload(),
         "regime_shadow": _regime_shadow_payload(),
+        "governance": _governance_payload(),
         "research_report": _candidate_research_report_payload(),
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),
