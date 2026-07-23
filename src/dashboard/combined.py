@@ -127,29 +127,40 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         ]
 
     funnel = ai_selection.get("selection_funnel") or {}
-    funnel_labels = {
-        "universe_scanned": "初始股票池",
-        "universe_passed": "股票池筛选",
-        "data_complete": "数据完整",
-        "scoring_eligible": "可评分候选",
-        "ranked_candidates": "正式排名",
-        "quality_threshold_passed": "通过质量门槛",
-        "preliminary_selected": "初步入选",
-        "refined_selected": "精筛通过",
-        "final_selected": "正式入选",
+    funnel_stages = funnel.get("stages") or []
+    # Chinese stage labels for the 11-stage funnel
+    _stage_labels_cn = {
+        "UNIVERSE": "初始股票池",
+        "UNIVERSE_FILTER": "股票池筛选",
+        "MARKET_DATA": "行情数据采集",
+        "DATA_QUALITY": "数据质量过滤",
+        "SCORING_ELIGIBLE": "可评分候选",
+        "BASE_RANKING": "基础排名",
+        "RESEARCH_PROVIDER": "研究供应商",
+        "REFINEMENT": "精筛优化",
+        "FORMAL_ELIGIBILITY": "正式入选资格",
+        "COMPOSITION_FILTER": "组合分散过滤",
+        "FORMAL_TOP": "正式 TOP 入选",
     }
-    funnel_rows = [
-        {"label": label, "value": funnel.get(key)}
-        for key, label in funnel_labels.items()
-        if funnel.get(key) is not None
-    ]
-    reason_counts = ai_selection.get("rejection_reason_counts") or {}
+    funnel_rows = []
+    for stage in funnel_stages:
+        label = _stage_labels_cn.get(stage.get("stage", ""), stage.get("stage", ""))
+        funnel_rows.append({
+            "label": label,
+            "stage": stage.get("stage"),
+            "input_count": stage.get("input_count", 0),
+            "output_count": stage.get("output_count", 0),
+            "dropped_count": len(stage.get("dropped_symbols") or []),
+            "drop_reasons": stage.get("drop_reason_counts") or {},
+        })
+    reason_counts = funnel.get("rejection_reason_counts") or ai_selection.get("rejection_reason_counts") or {}
     if not reason_counts:
         reason_counts = {
             str(item.get("warning_code") or item.get("reason_code") or item.get("code")): 1
             for item in (ai_selection.get("warnings_structured") or [])
             if isinstance(item, dict) and str(item.get("warning_code") or item.get("reason_code") or item.get("code") or "").strip()
         }
+    nearest_rejected = funnel.get("nearest_rejected_candidates") or ai_selection.get("nearest_rejected_candidates") or []
     def reason_sort_key(item):
         try:
             count = int(item[1] or 0)
@@ -189,12 +200,13 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "sync_detail": format_optional(selection_sync.get("detail")),
         "data_status": translate_status(ai_selection.get("data_status") or first_candidate.get("data_status") or "UNAVAILABLE"),
         "universe_filter": "通过" if first_candidate.get("trade_filter_passed") else "暂无合格结果" if not formal_candidates else "未通过",
-        "scoring_eligible_count": funnel.get("scoring_eligible", 0),
-        "formal_candidate_count": funnel.get("quality_threshold_passed", selected_count),
+        "scoring_eligible_count": _funnel_stage_output(funnel, "SCORING_ELIGIBLE"),
+        "formal_candidate_count": _funnel_stage_output(funnel, "FORMAL_TOP"),
         "target_complete": selected_count >= requested_count if requested_count else False,
         "trade_admission": translate_status(first_candidate.get("trade_admission_status") or "NOT_TRADABLE"),
         "funnel_rows": funnel_rows,
         "reason_rows": reason_rows,
+        "nearest_rejected": nearest_rejected,
         "selection_run_id": format_optional(ai_selection.get("selection_run_id")),
         "bundle_version": format_optional(ai_selection.get("bundle_version")),
         "bundle_hash": format_optional(ai_selection.get("bundle_hash")),
@@ -1074,6 +1086,15 @@ def _ai_universe_filter_summary(ai_selection: dict | None = None) -> dict[str, o
             "先检查20日成交额，再检查价格、市值和ATR波动率。"
         ),
     }
+
+
+def _funnel_stage_output(funnel: dict, stage_name: str) -> int:
+    """Extract output_count for a given stage from the new stage-array funnel format."""
+    stages = funnel.get("stages") or []
+    for stage in stages:
+        if str(stage.get("stage") or "").strip().upper() == str(stage_name).strip().upper():
+            return int(stage.get("output_count", 0) or 0)
+    return 0
 
 
 def _ai_selection_rejection_reason_counts(ai_selection: dict | None = None) -> dict[str, int]:
@@ -3997,10 +4018,10 @@ HTML = """<!DOCTYPE html>
             <div class="selection-overview-item">
                 <strong style="margin-top:0">候选漏斗</strong>
                 <table class="display-table" aria-label="候选漏斗">
-                    <thead><tr><th>阶段</th><th>数量</th></tr></thead>
+                    <thead><tr><th>阶段</th><th>输入</th><th>输出</th><th>淘汰</th></tr></thead>
                     <tbody id="selection-funnel-rows">
-                        {% for row in selection_dashboard.funnel_rows %}<tr><td>{{ row.label }}</td><td>{{ row.value }}</td></tr>{% endfor %}
-                        {% if not selection_dashboard.funnel_rows %}<tr><td>暂无数据</td><td>0</td></tr>{% endif %}
+                        {% for row in selection_dashboard.funnel_rows %}<tr><td>{{ row.label }}</td><td>{{ row.input_count }}</td><td>{{ row.output_count }}</td><td>{{ row.dropped_count }}</td></tr>{% endfor %}
+                        {% if not selection_dashboard.funnel_rows %}<tr><td colspan="4">暂无漏斗数据</td></tr>{% endif %}
                     </tbody>
                 </table>
             </div>
@@ -4014,6 +4035,17 @@ HTML = """<!DOCTYPE html>
                     </tbody>
                 </table>
             </div>
+            {% if selection_dashboard.nearest_rejected %}
+            <div class="selection-overview-item" style="grid-column:1 / -1">
+                <strong style="margin-top:0">最近淘汰候选</strong>
+                <table class="display-table" aria-label="最近淘汰候选">
+                    <thead><tr><th>标的</th><th>淘汰阶段</th><th>原因</th></tr></thead>
+                    <tbody>
+                        {% for item in selection_dashboard.nearest_rejected[:10] %}<tr><td>{{ item.symbol }}</td><td>{{ item.stage }}</td><td title="{{ item.reason_detail }}">{{ item.reason_code }}</td></tr>{% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
         </div>
         <details class="technical-details" id="selection-technical-details">
             <summary>展开技术详情</summary>
@@ -5832,7 +5864,14 @@ HTML = """<!DOCTYPE html>
                 }
             }
             setText('selection-process-data-status', displayStatus(formalTop.length ? formalTop[0].data_status : 'UNAVAILABLE'));
-            setText('selection-process-scoring-count', aiSelection.selection_funnel && aiSelection.selection_funnel.scoring_eligible != null ? String(aiSelection.selection_funnel.scoring_eligible) : '0');
+            setText('selection-process-scoring-count', (function() {
+                const funnel = aiSelection.selection_funnel || {};
+                const stages = funnel.stages || [];
+                for (const s of stages) {
+                    if (s.stage === 'SCORING_ELIGIBLE') return String(s.output_count || 0);
+                }
+                return '0';
+            })());
             setText('selection-process-next-validation', nextValidationStage ? `${nextValidationLabel || nextValidationStage}（${nextValidationStage}）` : '暂无');
             setText('selection-process-paper-live', tradableSelectedCount > 0 ? '按交易 Gate 继续校验' : '阻断');
             setText('selection-process-target-complete', displayBool(requestedCount > 0 && selectedSymbols.length >= requestedCount));
@@ -6177,22 +6216,7 @@ def _api_status_payload() -> dict[str, object]:
             ),
             "selection_funnel": dict(
                 ai_selection.get("selection_funnel")
-                or {
-                    "universe_scanned": len(ai_selection.get("top10") or ai_selection.get("top3") or []),
-                    "universe_passed": len(ai_selection.get("top10") or ai_selection.get("top3") or []),
-                    "data_complete": int(sum(1 for item in (ai_selection.get("top10") or ai_selection.get("top3") or []) if str((item or {}).get("data_status") or "").strip().upper() == "VALID")),
-                    "scoring_eligible": int(sum(1 for item in (ai_selection.get("top10") or ai_selection.get("top3") or []) if bool((item or {}).get("scoring_eligible", False)))),
-                    "ranked_candidates": len(ai_selection.get("top10") or ai_selection.get("top3") or []),
-                    "quality_threshold_passed": int(sum(1 for item in (ai_selection.get("top10") or ai_selection.get("top3") or []) if bool((item or {}).get("trade_filter_passed", False)))),
-                    "preliminary_selected": len(ai_selection.get("top3") or ai_selection.get("top5") or []),
-                    "refined_selected": len(ai_selection.get("top3") or ai_selection.get("top5") or []),
-                    "final_selected": len(ai_selection.get("top3") or ai_selection.get("top5") or []),
-                    "provider_timeouts": int((ai_selection.get("provider_audit") or {}).get("provider_timeouts", 0) or 0),
-                    "provider_failures": int((ai_selection.get("provider_audit") or {}).get("provider_failures", 0) or 0),
-                    "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
-                    "budget_exhausted": bool((ai_selection.get("quality_filter_report") or {}).get("timed_out", False)),
-                    "run_mode": "full",
-                }
+                or {"stages": []}
             ),
             "rejection_trace": list(ai_selection.get("rejection_trace") or []),
             "rejection_reason_counts": dict(

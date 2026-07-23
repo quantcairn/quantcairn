@@ -66,6 +66,7 @@ broker:
     try:
         monkeypatch.delenv("LONGBRIDGE_APP_KEY", raising=False)
         monkeypatch.delenv("LONGBRIDGE_APP_SECRET", raising=False)
+        monkeypatch.delenv("LONGBRIDGE_ENV", raising=False)
         monkeypatch.setenv("LONGBRIDGE_API_KEY", "alias-key")
         monkeypatch.setenv("LONGBRIDGE_API_SECRET", "alias-secret")
         monkeypatch.setenv("LONGBRIDGE_ACCOUNT_TYPE", "paper")
@@ -73,6 +74,7 @@ broker:
         monkeypatch.setenv("LONGBRIDGE_SANDBOX_QUOTE_WS_URL", "wss://openapi-quote.longbridge.com/v2")
         monkeypatch.setenv("LONGBRIDGE_SANDBOX_TRADE_WS_URL", "wss://openapi-trade.longbridge.com/v2")
         monkeypatch.setenv("SOXS_CONFIG", str(config_path))
+        monkeypatch.setattr("src.config.runtime_values.get_runtime_env", lambda key, default="": default)
 
         config = load_config(str(config_path))
         assert config.broker.longbridge.app_key == "alias-key"

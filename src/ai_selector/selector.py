@@ -15,6 +15,7 @@ from src.news_agent.news_collector import NewsCollector
 from src.ai_selector.settings import load_runtime_settings
 from src.data.fetcher import PriceFetcher
 from src.ai_selector.candidate_ranking import score_candidate
+from src.ai_selector.funnel_tracker import FunnelTracker
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = PROJECT_DIR / "logs"
@@ -451,6 +452,13 @@ class AIStrategySelector:
 
     def run_selection(self, write_configs: bool = True, symbols_override: List[str] | None = None):
         selection_started_at = datetime.now().timestamp()
+        selection_run_id = uuid.uuid4().hex
+        selection_date = datetime.now().strftime("%Y-%m-%d")
+        tracker = FunnelTracker(
+            selection_run_id=selection_run_id,
+            selection_date=selection_date,
+        )
+
         # 1. build universe
         if symbols_override:
             symbols = []
@@ -467,7 +475,10 @@ class AIStrategySelector:
             else:
                 symbols = self.universe.build_universe(source=source)
 
+        tracker.add_stage("UNIVERSE", symbols, symbols)
+
         symbols = symbols[:self.max_symbols]
+        tracker.add_stage("UNIVERSE_FILTER", symbols, symbols)
 
         # 2. collect data & news. News scraping is optional because it can be
         # slow/unreliable before the open; technical/volume scoring still works.
@@ -475,11 +486,21 @@ class AIStrategySelector:
             news_map = self.news.collect_for_symbols(symbols)
         else:
             news_map = {symbol: [] for symbol in symbols}
+        tracker.add_stage("MARKET_DATA", symbols, symbols)
 
         # 3. score
         live_requested = self._live_data_requested()
         scored = self._score_with_live_flag(symbols, news_map, live_enabled=live_requested)
         scored = [score_candidate(item) for item in scored]
+        scoring_eligible = [item for item in scored if bool(item.get("scoring_eligible", True))]
+        scoring_dropped = [
+            {"symbol": _normalize_ticker(item.get("ticker")),
+             "reason_code": item.get("scoring_block_reason") or "scoring_ineligible"}
+            for item in scored if not bool(item.get("scoring_eligible", True))
+        ]
+        tracker.add_stage("SCORING_ELIGIBLE", scored, scoring_eligible, dropped=scoring_dropped)
+        tracker.add_stage("BASE_RANKING", scoring_eligible, scoring_eligible)
+
         data_mode = "live" if live_requested else "fallback"
         fallback_used = False
 
@@ -493,8 +514,23 @@ class AIStrategySelector:
                 data_mode = "mixed" if existing else "fallback"
 
         scored = sorted(scored, key=lambda item: item.get("score", 0.0), reverse=True)
+        # Track formal eligibility
+        formal_eligible = [item for item in scored if item.get("formal_scoring_eligibility", True)]
+        formal_dropped = [
+            {"symbol": _normalize_ticker(item.get("ticker")),
+             "reason_code": item.get("scoring_block_reason") or "formal_scoring_ineligible"}
+            for item in scored if not item.get("formal_scoring_eligibility", True)
+        ]
+        tracker.add_stage("FORMAL_ELIGIBILITY", scored, formal_eligible, dropped=formal_dropped)
+
         preliminary_pool = [dict(item) for item in scored[: max(self.selection_size, self._filter_candidate_limit_from_env())]]
         preliminary_topk = self._select_diversified_top_k(preliminary_pool, self.selection_size)
+        tracker.add_stage("COMPOSITION_FILTER", preliminary_pool, preliminary_topk,
+                          dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
+                                     "reason_code": "composition_limit"}
+                                    for item in preliminary_pool
+                                    if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker")) for t in preliminary_topk)])
+
         default_reduce_only = self._default_reduce_only()
         for item in preliminary_topk:
             item["reduce_only"] = default_reduce_only
@@ -530,6 +566,14 @@ class AIStrategySelector:
                 candidates_for_filter,
                 max_seconds=quality_budget,
             )
+        # Track data quality drop
+        quality_input_symbols = [_normalize_ticker(item.get("ticker")) for item in candidates_for_filter]
+        quality_dropped = [
+            row for row in (filter_report.get("rows") or [])
+            if row.get("removed")
+        ]
+        tracker.add_stage("DATA_QUALITY", candidates_for_filter, filtered_candidates,
+                          dropped=quality_dropped)
         filter_report["pre_filter_candidate_limit"] = candidate_limit
         self._last_quality_filter_report = filter_report
 
@@ -564,6 +608,14 @@ class AIStrategySelector:
         filter_report["backfilled_symbols"] = backfilled_symbols
         filter_report["selection_stage"] = selection_stage
         write_selection_filter_log(filter_report)
+        tracker.add_stage("FORMAL_TOP", top10, topk)
+
+        # Write funnel report
+        funnel_summary = tracker.to_dict()
+        try:
+            tracker.write_report()
+        except Exception:
+            pass
 
         # write configs for selected TopK
         if write_configs:
@@ -587,6 +639,10 @@ class AIStrategySelector:
                 "selection_stage": selection_stage,
             },
             "quality_filter_report": filter_report,
+            "selection_run_id": selection_run_id,
+            "selection_funnel": funnel_summary,
+            "rejection_reason_counts": funnel_summary.get("rejection_reason_counts", {}),
+            "nearest_rejected_candidates": funnel_summary.get("nearest_rejected_candidates", []),
         }
 
     def _select_diversified_top_k(self, candidates: List[dict], max_items: int) -> List[dict]:
