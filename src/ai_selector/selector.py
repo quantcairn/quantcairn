@@ -647,11 +647,25 @@ class AIStrategySelector:
         write_selection_filter_log(filter_report)
 
         # ── FORMAL_TOP: record the ACTUAL input pool, not the empty quality-passed set ──
+        quality_fallback_active = False
+        preview_symbols: list[str] = []
+        formal_symbols: list[str] = []
         if not top10 and topk:
-            # Backfill: input is the preliminary pool that got promoted
+            # Backfill: quality gate rejected all, preliminary pool used as preview
             tracker.add_stage("FORMAL_TOP", preliminary_topk, topk)
+            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+            formal_symbols: list[str] = []
+            quality_fallback_active = True
+            tracker.mark_quality_fallback(
+                preview_symbols=preview_symbols,
+                formal_symbols=formal_symbols,
+            )
         else:
             tracker.add_stage("FORMAL_TOP", top10, topk)
+            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in top10]
+            formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+            if preview_symbols == formal_symbols:
+                quality_fallback_active = False  # Normal path
 
         # Write funnel report
         funnel_summary = tracker.to_dict()
@@ -695,6 +709,10 @@ class AIStrategySelector:
             "nearest_rejected_candidates": funnel_summary.get("nearest_rejected_candidates", []),
             "universe_source": "managed" if (source == "managed" and _load_managed_universe()) else source,
             "universe_symbol_count": len(symbols),
+            "preview_candidates": preview_symbols,
+            "formal_candidates": formal_symbols,
+            "quality_fallback_active": quality_fallback_active,
+            "quality_fallback_reason": "QUALITY_GATE" if quality_fallback_active else "",
         }
 
     def _select_diversified_top_k(self, candidates: List[dict], max_items: int) -> List[dict]:

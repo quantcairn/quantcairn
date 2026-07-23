@@ -216,6 +216,19 @@ class FunnelTracker:
         self.selection_date = str(selection_date)
         self.project_dir = Path(project_dir).expanduser().resolve() if project_dir else _project_dir()
         self.records: list[FunnelStageRecord] = []
+        self._quality_fallback = False
+        self._preview_candidates: list[str] = []
+        self._formal_candidates: list[str] = []
+
+    def mark_quality_fallback(self, *, preview_symbols: list[str], formal_symbols: list[str]) -> None:
+        """Record that quality gate rejected all candidates and preview pool was used.
+
+        Preview candidates are research-only — never tradable.
+        Formal TOP is empty — no candidate passed all gates.
+        """
+        self._quality_fallback = True
+        self._preview_candidates = list(preview_symbols or [])
+        self._formal_candidates = list(formal_symbols or [])
 
     def add_stage(
         self,
@@ -288,6 +301,9 @@ class FunnelTracker:
                 prev_output = len(_symbols(prev.output_symbols))
                 curr_input = len(_symbols(rec.input_symbols))
                 if curr_input != prev_output:
+                    # ── Quality fallback: DATA_QUALITY rejected all, FORMAL_TOP drew from preliminary pool ──
+                    if self._quality_fallback and rec.stage == "FORMAL_TOP" and prev.stage == "DATA_QUALITY":
+                        continue  # Expected runtime path, not a consistency violation
                     warnings.append({
                         "stage": rec.stage,
                         "check": "chain_break",
@@ -300,6 +316,7 @@ class FunnelTracker:
         return {
             "warnings": warnings,
             "consistent": len(warnings) == 0,
+            "quality_fallback_active": self._quality_fallback,
         }
 
     def pipeline_success_rate(self) -> float:
@@ -327,7 +344,10 @@ class FunnelTracker:
             d = rec.to_dict()
             chain_str = ""
             if prev_output is not None and rec.input_count != prev_output:
-                chain_str = "  ⚠ chain break"
+                if self._quality_fallback and rec.stage == "FORMAL_TOP":
+                    chain_str = "  ← quality fallback"
+                else:
+                    chain_str = "  ⚠ chain break"
             elif rec.status == "WARN":
                 chain_str = "  ⚠ warn"
             print(f"  {d['stage']:<24s}  {d['input_count']:>4d} → {d['output_count']:>4d}  "
@@ -341,10 +361,13 @@ class FunnelTracker:
         print("-" * 50)
         universe_in = len(_symbols(first_stage.input_symbols)) if first_stage else 0
         final_out = len(_symbols(last_stage.output_symbols)) if last_stage else 0
-        print(f"  Universe Loaded          {universe_in}")
-        print(f"  Final Candidates         {final_out}")
-        print(f"  Pipeline Success Rate    {success_rate:.2%}")
-        print(f"  Overall Consistency      {'✅ PASS' if validation['consistent'] else '⚠️  WARNINGS'}")
+        print(f"  Preview Candidates        {len(self._preview_candidates)}")
+        print(f"  Formal Candidates         {len(self._formal_candidates)}")
+        if self._quality_fallback:
+            print(f"  Quality Fallback          ACTIVE (preview=research only, formal=none)")
+        print(f"  Universe Loaded           {universe_in}")
+        print(f"  Pipeline Success Rate     {success_rate:.2%}")
+        print(f"  Overall Consistency       {'✅ PASS' if validation['consistent'] else '⚠️  WARNINGS'}")
         if validation["warnings"]:
             print("-" * 50)
             print("  Consistency Warnings:")
@@ -369,8 +392,13 @@ class FunnelTracker:
                 "pipeline_consistent": validation["consistent"],
                 "pipeline_success_rate": self.pipeline_success_rate(),
                 "universe_loaded": len(_symbols(first.input_symbols)) if first else 0,
-                "formal_candidates": len(_symbols(last.output_symbols)) if last else 0,
+                "preview_candidates": len(self._preview_candidates),
+                "formal_candidates": len(self._formal_candidates),
                 "final_top": len(_symbols(last.output_symbols)) if last else 0,
+                "fallback_used": self._quality_fallback,
+                "fallback_reason": "QUALITY_GATE" if self._quality_fallback else "",
+                "preview_symbols": self._preview_candidates,
+                "formal_symbols": self._formal_candidates,
                 "stages": [rec.to_dict() for rec in self.records],
                 "warnings": validation["warnings"],
             }
