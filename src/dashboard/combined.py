@@ -2736,6 +2736,22 @@ def _shadow_status_payload() -> dict[str, object]:
     }
 
 
+def _detect_selector_universe_source() -> str:
+    """Read the latest AI selection report and return the universe source."""
+    try:
+        path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
+        if not path.exists():
+            return "unknown"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        src = str(data.get("universe_source") or "").strip()
+        count = int(data.get("universe_symbol_count") or 0)
+        if src:
+            return f"{src} ({count} 标的)"
+        return "legacy"
+    except Exception:
+        return "legacy"
+
+
 def _universe_payload() -> dict[str, object]:
     """Read the managed universe snapshot for 8090 display."""
     try:
@@ -2749,6 +2765,7 @@ def _universe_payload() -> dict[str, object]:
         ]
         return {
             "available": True,
+            "source": "Managed Universe v1",
             "total_symbols": snap.total_symbols,
             "enabled_symbols": snap.enabled_symbols,
             "disabled_count": snap.total_symbols - snap.enabled_symbols,
@@ -2757,6 +2774,7 @@ def _universe_payload() -> dict[str, object]:
             "filter_results": dict(snap.filter_results),
             "enabled_list": enabled_list,
             "disabled_list": disabled_list[len(disabled_list) - 10:] if len(disabled_list) > 10 else disabled_list,
+            "ai_selector_status": _detect_selector_universe_source(),
         }
     except Exception:
         return {"available": False}

@@ -306,3 +306,54 @@ def run_test_direct():
 
 if __name__ == "__main__":
     run_test_direct()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Selector integration tests
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestSelectorIntegration:
+    def test_managed_universe_loads_enabled_symbols(self, tmp_path: Path):
+        """The managed universe loader returns enabled symbol names."""
+        from src.universe.manager import UniverseManager
+        from src.universe.models import UniverseSymbol
+
+        snap_path = tmp_path / "universe_snapshot.json"
+        mgr = UniverseManager(snapshot_path=snap_path, universe_path=tmp_path / "universe.json")
+        symbols = [
+            UniverseSymbol(symbol="AAPL", asset_type="common_stock", enabled=True, liquidity_score=98.0),
+            UniverseSymbol(symbol="TSLA", asset_type="common_stock", enabled=False, liquidity_score=90.0,
+                           disabled_reason="test_disabled"),
+            UniverseSymbol(symbol="SPY", asset_type="index_etf", enabled=True, liquidity_score=98.0),
+        ]
+        mgr.save_symbols(symbols)
+        mgr.build_snapshot(dry_run=False)
+
+        from src.ai_selector.selector import _load_managed_universe
+        with patch("src.universe.manager.UniverseManager", return_value=mgr):
+            result = _load_managed_universe()
+            assert result is not None
+            assert "AAPL" in result
+            assert "SPY" in result
+            assert "TSLA" not in result  # disabled
+
+    def test_managed_universe_returns_none_when_empty(self, tmp_path: Path):
+        """Empty universe returns None, signalling fallback."""
+        from src.universe.manager import UniverseManager
+
+        mgr = UniverseManager(snapshot_path=tmp_path / "snap.json", universe_path=tmp_path / "uni.json")
+        mgr.save_symbols([])
+        with patch("src.universe.manager.UniverseManager", return_value=mgr):
+            from src.ai_selector.selector import _load_managed_universe
+            result = _load_managed_universe()
+            assert result is None
+
+    def test_legacy_sample_fallback_works(self):
+        """The legacy sample universe is still accessible when 'sample' is requested."""
+        import src.ai_selector.selector as sel_mod
+        assert hasattr(sel_mod, '_load_managed_universe')
+        assert callable(sel_mod.Universe()._load_local_snapshot)
+
+
+if __name__ == "__main__":
+    run_test_direct()

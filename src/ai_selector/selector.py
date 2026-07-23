@@ -19,6 +19,25 @@ from src.ai_selector.funnel_tracker import FunnelTracker
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = PROJECT_DIR / "logs"
+
+
+def _load_managed_universe() -> list[str] | None:
+    """Load enabled symbols from the managed universe snapshot (Stage 10).
+
+    Returns None if the managed universe is unavailable, signalling the
+    caller to fall back to the legacy sample/SP500 universe.
+    """
+    try:
+        from src.universe.manager import UniverseManager
+        mgr = UniverseManager()
+        snap = mgr.load_snapshot()
+        if snap is None:
+            snap = mgr.build_snapshot(dry_run=True)
+        if snap is None or snap.enabled_symbols <= 0:
+            return None
+        return sorted(s.symbol for s in snap.symbols if s.enabled)
+    except Exception:
+        return None
 INVERSE_REDUCE_ONLY = {"SOXS"}
 LIQUID_SPECIAL_ETFS = {
     "SOXL", "SOXS", "LABU", "LABD", "TQQQ", "SQQQ",
@@ -469,8 +488,15 @@ class AIStrategySelector:
                     symbols.append(symbol)
                     seen.add(symbol)
         else:
-            source = os.environ.get("AI_SELECTOR_UNIVERSE", "sample")
-            if source == "sample":
+            source = os.environ.get("AI_SELECTOR_UNIVERSE", "managed")
+            if source == "managed":
+                managed = _load_managed_universe()
+                if managed:
+                    symbols = managed
+                else:
+                    # Fallback to legacy sample
+                    symbols = self.universe._load_local_snapshot()
+            elif source == "sample":
                 symbols = self.universe._load_local_snapshot()
             else:
                 symbols = self.universe.build_universe(source=source)
@@ -643,6 +669,8 @@ class AIStrategySelector:
             "selection_funnel": funnel_summary,
             "rejection_reason_counts": funnel_summary.get("rejection_reason_counts", {}),
             "nearest_rejected_candidates": funnel_summary.get("nearest_rejected_candidates", []),
+            "universe_source": "managed" if (source == "managed" and _load_managed_universe()) else source,
+            "universe_symbol_count": len(symbols),
         }
 
     def _select_diversified_top_k(self, candidates: List[dict], max_items: int) -> List[dict]:
