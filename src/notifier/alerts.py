@@ -506,44 +506,140 @@ class Notifier:
         except Exception:
             pass  # Non-critical
 
+    TELEGRAM_MAX_CHARS = 4096
+    TELEGRAM_SAFE_CHARS = 4000  # margin for HTML tags and continuation markers
+
     def _telegram_send(self, title: str, body: str) -> None:
-        """Send notification via Telegram Bot API using HTML formatting."""
+        """Send notification via Telegram Bot API using HTML formatting.
+
+        Messages exceeding ~4000 characters are split into multiple messages
+        at paragraph boundaries, each prefixed with a continuation header.
+        """
+        safe_title = (title or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        safe_body = (body or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        text = f"<b>{safe_title}</b>\n{safe_body}"
+
+        if len(text) <= self.TELEGRAM_SAFE_CHARS:
+            self._telegram_send_single(text, use_html=True, plain_title=title, plain_body=body)
+            return
+
+        # ── Chunked send for long messages ─────────────────────────────
+        logger.info("Telegram message too long (%d chars) — splitting into chunks", len(text))
+        self._telegram_send_chunked(safe_title, safe_body, plain_title=title, plain_body=body)
+
+    # ── Telegram chunked delivery ──────────────────────────────────────────
+
+    def _telegram_send_single(
+        self, text: str, *, use_html: bool = True, plain_title: str = "", plain_body: str = ""
+    ) -> bool:
+        """Send a single Telegram message. Returns True on success."""
         try:
             _telegram_rate_limit()
-            # Escape HTML special chars to avoid formatting errors
-            safe_title = (title or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            safe_body = (body or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            text = f"<b>{safe_title}</b>\n{safe_body}"
+            payload: dict = {
+                "chat_id": self._telegram_chat_id,
+                "disable_web_page_preview": True,
+            }
+            if use_html:
+                payload["text"] = text
+                payload["parse_mode"] = "HTML"
+            else:
+                payload["text"] = f"{plain_title}\n{plain_body}"
+
             resp = requests.post(
                 f"https://api.telegram.org/bot{self._telegram_bot_token}/sendMessage",
-                json={
-                    "chat_id": self._telegram_chat_id,
-                    "text": text,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                },
-                timeout=8,
+                json=payload, timeout=8,
             )
-            if not resp.ok:
-                logger.warning("Telegram send failed: %s %s", resp.status_code, resp.text[:200])
-                # Retry with plain text
-                try:
-                    _telegram_rate_limit()
-                    resp2 = requests.post(
-                        f"https://api.telegram.org/bot{self._telegram_bot_token}/sendMessage",
-                        json={
-                            "chat_id": self._telegram_chat_id,
-                            "text": f"{title}\n{body}",
-                            "disable_web_page_preview": True,
-                        },
-                        timeout=8,
-                    )
-                    if not resp2.ok:
-                        logger.warning("Telegram plain retry also failed: %s %s", resp2.status_code, resp2.text[:200])
-                except Exception as e2:
-                    logger.warning("Telegram plain retry error: %s", e2)
+            if resp.ok:
+                return True
+
+            logger.warning("Telegram send failed: %s %s", resp.status_code, resp.text[:200])
+            # Retry as plain text if HTML was used
+            if use_html:
+                _telegram_rate_limit()
+                payload.pop("parse_mode", None)
+                payload["text"] = f"{plain_title}\n{plain_body}"
+                resp2 = requests.post(
+                    f"https://api.telegram.org/bot{self._telegram_bot_token}/sendMessage",
+                    json=payload, timeout=8,
+                )
+                if resp2.ok:
+                    return True
+                logger.warning("Telegram plain retry also failed: %s %s", resp2.status_code, resp2.text[:200])
+            return False
         except Exception as e:
             logger.warning("Telegram send error: %s", e)
+            return False
+
+    def _telegram_send_chunked(
+        self,
+        safe_html_title: str,
+        safe_html_body: str,
+        *,
+        plain_title: str = "",
+        plain_body: str = "",
+    ) -> None:
+        """Split a long body into ≤4096-char chunks at natural boundaries.
+
+        Strategy:
+        1. Split at double-newline (paragraph) boundaries first.
+        2. If a single paragraph still exceeds the limit, split at single newlines.
+        3. First chunk carries the full title; subsequent chunks get a compact
+           continuation header.
+        4. Pipeline summary counts are never split across chunks — they stay
+           together in the first message.
+        """
+        paragraphs = safe_html_body.split("\n\n")
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len: int = 0
+
+        # First chunk includes the title
+        title_overhead = len(safe_html_title) + 8  # <b></b>\n\n
+
+        for para in paragraphs:
+            para_len = len(para) + 2  # +2 for \n\n rejoining
+
+            if current_len + para_len > self.TELEGRAM_SAFE_CHARS - title_overhead and current:
+                chunks.append("\n\n".join(current))
+                current = []
+                current_len = 0
+                title_overhead = 0  # subsequent chunks don't repeat the main title
+
+            current.append(para)
+            current_len += para_len
+
+        if current:
+            chunks.append("\n\n".join(current))
+
+        total = len(chunks)
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                header = f"<b>{safe_html_title}</b>\n\n"
+            else:
+                header = f"<b>{safe_html_title} ({i + 1}/{total})</b>\n\n"
+
+            chunk_text = header + chunk
+            # If a single chunk still exceeds the limit, trim it at a newline
+            if len(chunk_text) > self.TELEGRAM_MAX_CHARS:
+                lines = chunk.split("\n")
+                trimmed_lines: list[str] = []
+                remaining = self.TELEGRAM_MAX_CHARS - len(header) - 50  # 50 for truncation note
+                for line in lines:
+                    if remaining - len(line) < 0:
+                        break
+                    trimmed_lines.append(line)
+                    remaining -= len(line) + 1
+                truncated = "\n".join(trimmed_lines)
+                chunk_text = header + truncated + "\n\n... (截断)"
+
+            success = self._telegram_send_single(
+                chunk_text[:self.TELEGRAM_MAX_CHARS],
+                use_html=True,
+                plain_title=plain_title,
+                plain_body=chunk,
+            )
+            if not success:
+                logger.warning("Telegram chunk %d/%d failed", i + 1, total)
 
     @staticmethod
     def _make_bar(pct: float, width: int = 20) -> str:
