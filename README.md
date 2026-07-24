@@ -129,6 +129,30 @@ cp config.sample.yaml config.yaml
 .venv/bin/python -m pytest tests/ -q
 ```
 
+### Try QuantCairn Demo
+
+**No API keys or broker connection required.** The demo runs the full 9-stage AI research pipeline using deterministic synthetic market data.
+
+```bash
+# Run the demo — works immediately after pip install
+.venv/bin/python scripts/run_demo_selector.py
+```
+
+What the demo does:
+- Generates 252 trading days of synthetic OHLCV data for 5 well-known symbols (AAPL, MSFT, NVDA, SPY, TSLA)
+- Runs the complete selection pipeline — scoring, quality filtering, diversification, TOP selection
+- Produces a formatted terminal report with pipeline status and research candidates
+- Writes demo artifacts to `artifacts/demo/` (JSON + Markdown)
+
+Sample output:
+```
+Pipeline Status:    8 stages ✅ PASS, 1 ⚠️ WARN
+Candidates:         2 (AAPL 68.0, NVDA 68.0) — RESEARCH_ONLY
+Safety:             Execution DISABLED | Trading NOT AVAILABLE
+```
+
+The demo uses a seeded random walk — results are fully reproducible. No network access, no broker calls, no trading capability.
+
 ### Run AI Selection
 
 ```bash
@@ -207,11 +231,11 @@ quantcairn/
 - [x] Funnel consistency validation
 - [x] Telegram message chunking for long reports
 - [x] Paper trading foundation
+- [x] Demo mode with sample data (no API keys required) — `scripts/run_demo_selector.py`
 - [x] AI engineering context layer (`.ai/`)
 
 ### Next
 
-- [ ] Demo mode with sample data (no API keys required)
 - [ ] Public documentation site
 - [ ] Dashboard usability improvements
 - [ ] Multi-provider data fallback (Alpha Vantage, Polygon)
