@@ -532,10 +532,16 @@ class AIStrategySelector:
         # Fix chain: MARKET_DATA output is the pool that actually reached scoring
         # (replace the stage with correct output now that scoring has run)
         _valid_scored_symbols = [_normalize_ticker(item.get("ticker")) for item in scored]
+        _market_data_dropped = [
+            {"symbol": sym, "reason_code": "market_data_sufficiency_failed",
+             "reason_detail": "scoring pipeline returned no result for this symbol"}
+            for sym in symbols if _normalize_ticker(sym) not in set(_valid_scored_symbols)
+        ]
         tracker.records[-1] = FunnelStageRecord(
             stage="MARKET_DATA",
             input_symbols=list(symbols),
             output_symbols=_valid_scored_symbols,
+            dropped=_market_data_dropped,
         )
 
         scoring_eligible = [item for item in scored if bool(item.get("scoring_eligible", True))]
@@ -665,6 +671,7 @@ class AIStrategySelector:
             tracker.add_stage("FORMAL_TOP", top10, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in top10]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+            tracker.set_formal_candidates(formal_symbols)
 
         # Write funnel report
         funnel_summary = tracker.to_dict()
@@ -675,6 +682,7 @@ class AIStrategySelector:
 
         # ── Consistency report ──────────────────────────────────────────
         tracker.print_consistency_report()
+        tracker.print_diagnostic_report()
         try:
             tracker.write_debug_artifact()
         except Exception:

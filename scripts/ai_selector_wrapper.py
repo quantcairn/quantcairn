@@ -104,6 +104,14 @@ def _run_selection_if_due():
     env.setdefault("OPENALPHA_LIVE_DATA", "1")
     env.setdefault("OPENALPHA_FETCH_NEWS", "0")
     env.setdefault("OPENALPHA_MAX_SYMBOLS", "50")
+    # Disable curl_cffi to avoid TLS library conflicts with Surge proxy.
+    # curl_cffi bundles its own libcurl/TLS which can't validate Surge's
+    # MITM certificates, producing:
+    #   curl: (35) TLS connect error: error:00000000:invalid library (0)
+    #   :OPENSSL_internal:invalid library (0)
+    # Python's native requests + Homebrew OpenSSL works correctly with Surge.
+    # Set YF_DISABLE_CURL_CFFI=0 to override (e.g. when not behind Surge).
+    env.setdefault("YF_DISABLE_CURL_CFFI", "1")
     os.makedirs(os.path.dirname(OUT_LOG), exist_ok=True)
     with open(OUT_LOG, 'a') as out, open(ERR_LOG, 'a') as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err, cwd=PROJECT_DIR, env=env)

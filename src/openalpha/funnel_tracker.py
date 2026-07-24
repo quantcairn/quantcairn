@@ -230,6 +230,11 @@ class FunnelTracker:
         self._preview_candidates = list(preview_symbols or [])
         self._formal_candidates = list(formal_symbols or [])
 
+    def set_formal_candidates(self, formal_symbols: list[str]) -> None:
+        """Set formal candidates from the normal (non-fallback) path."""
+        if not self._quality_fallback:
+            self._formal_candidates = list(formal_symbols or [])
+
     def add_stage(
         self,
         stage: str,
@@ -464,3 +469,146 @@ class FunnelTracker:
             print(f"{row['stage'].replace('_', ' ').title()}:")
             for item in dropped[:20]:
                 print(f"  {item.get('symbol')}  {item.get('reason_code')}")
+
+    # ── Diagnostic report ─────────────────────────────────────────────────
+
+    REASON_LABELS: dict[str, str] = {
+        "missing_market_data": "OHLCV/报价数据缺失",
+        "volume_filter": "日均成交量不足 50 万股",
+        "spread_filter": "买卖价差 ≥ 0.5%",
+        "spread_unavailable": "无法获取买卖报价",
+        "volatility_filter": "3 日波动超限",
+        "ohlcv_missing": "OHLCV 历史数据缺失",
+        "quote_missing": "实时报价缺失",
+        "history_insufficient": "历史数据不足（<4 条 K 线）",
+        "scoring_ineligible": "不具备评分资格",
+        "formal_scoring_ineligible": "不具备正式评分资格",
+        "composition_limit": "组合分散化上限",
+        "market_data_sufficiency_failed": "市场数据不满足最低要求",
+        "unknown": "原因未记录",
+    }
+
+    def print_diagnostic_report(self) -> None:
+        """Print a detailed per-stage diagnostic report.
+
+        For each stage, shows every eliminated symbol with its elimination
+        reason.  When FORMAL_TOP is empty, also produces a per-candidate
+        trace showing exactly which stage rejected each symbol and why.
+        """
+        validation = self.validate()
+        formal_top_empty = bool(
+            self.records
+            and _symbols(self.records[-1].output_symbols) == []
+        )
+
+        print()
+        print("=" * 68)
+        print("  PIPELINE DIAGNOSTIC REPORT")
+        print("=" * 68)
+
+        # ── 1. Per-stage breakdown ────────────────────────────────────────
+        zero_stage: str | None = None
+        for i, rec in enumerate(self.records):
+            d = rec.to_dict()
+            eliminated = d["eliminated"]
+            label = d["stage"].replace("_", " ").title()
+            dropped_items = d.get("dropped") or []
+
+            # Mark first zero-output stage
+            if d["output_count"] == 0 and zero_stage is None:
+                zero_stage = d["stage"]
+
+            print()
+            print(f"  ┌─ Stage {i+1}: {label}")
+            print(f"  │  Input:  {d['input_count']:>4d}  →  Output: {d['output_count']:>4d}  "
+                  f" Eliminated: {eliminated:>4d}  [{d['duration_ms']}ms]")
+
+            if eliminated == 0 and d["input_count"] > 0:
+                print(f"  │  All {d['output_count']} passed — no eliminations.")
+
+            for item in dropped_items:
+                symbol = str(item.get("symbol") or "?").upper()
+                code = str(item.get("reason_code") or "unknown")
+                detail = str(item.get("reason_detail") or "")
+                label_text = self.REASON_LABELS.get(code, code.replace("_", " ").title())
+                if detail:
+                    print(f"  │  ✗ {symbol:<6s}  {label_text:<40s} ({detail})")
+                else:
+                    print(f"  │  ✗ {symbol:<6s}  {label_text}")
+
+        # ── 2. Zero-output diagnosis ──────────────────────────────────────
+        if zero_stage:
+            print()
+            print(f"  ════  FIRST ZERO-OUTPUT STAGE: {zero_stage}  ════")
+            print(f"  No candidates survived beyond this stage.")
+            print(f"  Check data freshness, market hours, or filter thresholds.")
+
+        # ── 3. FORMAL_TOP empty → full candidate trace ────────────────────
+        if formal_top_empty:
+            print()
+            print("  ════  FORMAL TOP EMPTY — Full Candidate Trace  ════")
+            self._print_candidate_trace()
+
+        # ── 4. Summary ────────────────────────────────────────────────────
+        print()
+        print("-" * 68)
+        print(f"  Universe Loaded     {_symbols(self.records[0].input_symbols) if self.records else []}")
+        print(f"  Pipeline Rate       {self.pipeline_success_rate():.2%}")
+        print(f"  Preview Candidates  {len(self._preview_candidates)} (research-only)")
+        print(f"  Formal Candidates   {len(self._formal_candidates)}")
+        if self._quality_fallback:
+            print(f"  Quality Fallback    ACTIVE — no candidate passed all gates")
+        if zero_stage:
+            print(f"  First Empty Stage   {zero_stage}")
+        if formal_top_empty:
+            print(f"  FORMAL TOP          EMPTY (0 tradable candidates)")
+        print(f"  Consistency         {'✅ PASS' if validation['consistent'] else '⚠️  WARNINGS'}")
+        print("=" * 68)
+        print()
+
+    def _print_candidate_trace(self) -> None:
+        """Trace every symbol from UNIVERSE through each stage: where did each one drop?"""
+        if not self.records:
+            print("  (no pipeline records)")
+            return
+
+        # Build a lookup: symbol → (stage, reason_code, reason_detail)
+        first_stage = _symbols(self.records[0].input_symbols)
+        if not first_stage:
+            print("  Universe was empty — nothing to trace.")
+            return
+
+        # Track every symbol's fate
+        fates: dict[str, dict] = {}
+        for sym in first_stage:
+            fates[sym] = {"symbol": sym, "eliminated_at": None, "reason_code": None, "reason_detail": None}
+
+        for rec in self.records:
+            d = rec.to_dict()
+            stage_name = d["stage"]
+            # Build a set of symbols that survived this stage
+            survivors = set(d["output_symbols"])
+            dropped_items = {str(item.get("symbol") or "").upper(): item for item in (d.get("dropped") or [])}
+
+            for sym in first_stage:
+                if fates[sym]["eliminated_at"] is not None:
+                    continue  # already eliminated earlier
+                if sym not in survivors:
+                    item = dropped_items.get(sym, {})
+                    fates[sym]["eliminated_at"] = stage_name
+                    fates[sym]["reason_code"] = item.get("reason_code") or "unknown"
+                    fates[sym]["reason_detail"] = item.get("reason_detail") or ""
+
+        print()
+        print(f"  {'Symbol':<6s}  {'Eliminated At':<28s}  {'Reason':<40s}  Detail")
+        print(f"  {'------':<6s}  {'-------------':<28s}  {'------':<40s}  ------")
+        for sym in sorted(first_stage):
+            f = fates.get(sym, {})
+            stage_name = f.get("eliminated_at") or "FINAL"
+            code = f.get("reason_code") or "passed"
+            label = self.REASON_LABELS.get(code, code.replace("_", " ").title())
+            detail = f.get("reason_detail") or ""
+            if stage_name == "FINAL":
+                print(f"  {sym:<6s}  ✅ survived all stages — {label}")
+            else:
+                print(f"  {sym:<6s}  ✗ {stage_name:<26s}  {label:<40s}  {detail}")
