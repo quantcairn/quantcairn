@@ -1647,7 +1647,13 @@ def _selection_outcome(summary: dict, *, provider_audit: dict[str, dict] | None 
     elif missing_count > 0 or bool(degraded_reasons):
         result_quality = "DEGRADED"
     research_admission = "RESEARCH_READY"
-    if result_quality == "DEGRADED" or fallback_used or mock_used or timed_out or provider_budget_exhausted or provider_unavailable or provider_malformed or provider_empty or bool(research_only_reasons):
+    # Check whether candidates carry PAPER_ELIGIBLE type from execution_mode separation
+    _top_candidate_types = {str(item.get("candidate_type") or "") for item in top_items if isinstance(item, dict)}
+    if "PAPER_ELIGIBLE" in _top_candidate_types:
+        research_admission = "PAPER_ELIGIBLE"
+    elif "LIVE_TRADABLE" in _top_candidate_types:
+        research_admission = "RESEARCH_READY"  # LIVE → ready for trading
+    elif result_quality == "DEGRADED" or fallback_used or mock_used or timed_out or provider_budget_exhausted or provider_unavailable or provider_malformed or provider_empty or bool(research_only_reasons):
         research_admission = "RESEARCH_ONLY"
     elif result_quality == "INVALID":
         research_admission = "BLOCKED"

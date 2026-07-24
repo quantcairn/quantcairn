@@ -268,7 +268,15 @@ def write_top_configs(
     selection_bundle_version: str | None = None,
     output_dir: str | os.PathLike[str] | None = None,
 ):
-    default_mode = _default_top_mode()
+    # Default mode: respect research_admission — PAPER_ELIGIBLE → paper,
+    # LIVE_TRADABLE → live, otherwise use env/config
+    admission = str(research_admission or "").strip().upper()
+    if admission == "PAPER_ELIGIBLE":
+        default_mode = "paper"
+    elif admission == "LIVE_TRADABLE":
+        default_mode = "live"
+    else:
+        default_mode = _default_top_mode()
     global_reduce_only = _global_reduce_only_enabled()
     portfolio_cfg = _load_portfolio_config()
     ai_selector_cfg = _load_ai_selector_config()
@@ -314,6 +322,9 @@ def write_top_configs(
                 requested_size = int(item.get("size") or fallback_size)
                 size_per_trade = max(1, min(requested_size, fallback_size))
                 mode = _load_existing_mode(i, default_mode)
+                _item_ct = str(item.get("candidate_type") or "").strip().upper()
+                if _item_ct == "PAPER_ELIGIBLE":
+                    mode = "paper"  # always paper for paper-eligible candidates
                 live_enabled = mode == "live"
                 reduce_only = bool(item.get("reduce_only", False) or global_reduce_only)
                 protected_position = bool(item.get("protected_position") or item.get("existing_position"))
