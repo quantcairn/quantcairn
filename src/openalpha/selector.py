@@ -623,58 +623,48 @@ class AIStrategySelector:
         filter_report["pre_filter_candidate_limit"] = candidate_limit
         self._last_quality_filter_report = filter_report
 
-        # 4. prefer liquidity after quality checks, then diversify TopK by sector/correlation
-        scored_sorted = list(filtered_candidates)
-        top10 = scored_sorted[:10]
+        # 4. prefer liquidity after quality checks, then diversify TopK by sector/correlation.
+        #    FORMAL_TOP must only use candidates that passed DATA_QUALITY — never
+        #    backfill or expand beyond what the quality gate produced.
+        quality_passed = list(filtered_candidates)
+        top10 = quality_passed[:max(self.selection_size, self._filter_candidate_limit_from_env())]
         topk = self._select_diversified_top_k(top10, self.selection_size)
+        quality_fallback_active = False
         if not topk:
+            # Quality gate rejected every candidate (or timed out).
+            # Fall back to the preliminary pool as Preview Candidates (research-only).
+            # Formal TOP remains empty — no candidate passed all gates.
             topk = [dict(item) for item in preliminary_topk]
+            top10: list[dict] = []
             selection_stage = "fast_preliminary"
+            quality_fallback_active = True
+        else:
+            selection_stage = "quality_refined"
+
         backfilled_symbols: list[str] = []
-        if len(topk) < self.selection_size:
-            selected_tickers = {_normalize_ticker(item.get("ticker")) for item in topk}
-            for item in scored:
-                ticker = _normalize_ticker(item.get("ticker"))
-                if not ticker or ticker in selected_tickers:
-                    continue
-                candidate = dict(item)
-                candidate["reduce_only"] = default_reduce_only
-                candidate["quality_backfill"] = True
-                candidate["selection_penalty_reason"] = "quality_filter_backfill"
-                topk.append(candidate)
-                selected_tickers.add(ticker)
-                backfilled_symbols.append(ticker)
-                if len(topk) >= self.selection_size:
-                    break
-            if filter_report.get("timed_out"):
-                selection_stage = "quality_timed_out_backfilled"
-            elif selection_stage != "fast_preliminary":
-                selection_stage = "quality_backfilled"
         filter_report["final_selected_symbols"] = [_normalize_ticker(item.get("ticker")) for item in topk]
         filter_report["backfilled_symbols"] = backfilled_symbols
         filter_report["selection_stage"] = selection_stage
         write_selection_filter_log(filter_report)
 
-        # ── FORMAL_TOP: record the ACTUAL input pool, not the empty quality-passed set ──
-        quality_fallback_active = False
+        # ── FORMAL_TOP: always record with the quality-passed pool as input ──
         preview_symbols: list[str] = []
         formal_symbols: list[str] = []
-        if not top10 and topk:
-            # Backfill: quality gate rejected all, preliminary pool used as preview
+        if quality_fallback_active:
+            # Quality gate rejected all — preliminary pool becomes Preview (research-only).
+            # Formal TOP is empty.
             tracker.add_stage("FORMAL_TOP", preliminary_topk, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             formal_symbols: list[str] = []
-            quality_fallback_active = True
             tracker.mark_quality_fallback(
                 preview_symbols=preview_symbols,
                 formal_symbols=formal_symbols,
             )
         else:
+            # Normal path: topk ⊆ top10 ⊆ filtered_candidates → invariant holds.
             tracker.add_stage("FORMAL_TOP", top10, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in top10]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
-            if preview_symbols == formal_symbols:
-                quality_fallback_active = False  # Normal path
 
         # Write funnel report
         funnel_summary = tracker.to_dict()

@@ -146,7 +146,10 @@ def test_apply_quality_filters_allows_liquid_special_etf_with_unconfirmed_quote_
         monkeypatch.restore()
 
 
-def test_selector_runs_quality_filters_before_final_top5_and_writes_log():
+def test_selector_respects_quality_filter_output_without_backfill():
+    """After removing the backfill loop, FORMAL_TOP only includes quality-passed candidates.
+    AAA has low volume (100K avg) → rejected by volume filter.
+    BBB has good volume (2M avg) → passes quality. Only BBB appears in topk."""
     monkeypatch = SimpleMonkeyPatch()
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -177,19 +180,28 @@ def test_selector_runs_quality_filters_before_final_top5_and_writes_log():
 
             result = selector.run_selection(write_configs=False)
 
-            assert [item["ticker"] for item in result["top5"]] == ["BBB", "AAA"]
-            assert result["top5"][1]["quality_backfill"] is True
+            # Only BBB passed quality; AAA was rejected by volume filter — NOT backfilled.
+            assert [item["ticker"] for item in result["top5"]] == ["BBB"]
+            assert not any(item.get("quality_backfill") for item in result["top5"])
+            # Funnel invariant: FORMAL_TOP output (1) ≤ DATA_QUALITY output (1)
+            funnel = result["selection_funnel"]
+            formal_top = [s for s in funnel["stages"] if s["stage"] == "FORMAL_TOP"][0]
+            data_quality = [s for s in funnel["stages"] if s["stage"] == "DATA_QUALITY"][0]
+            assert formal_top["output_count"] <= data_quality["output_count"]
+
             log_path = log_dir / f"selection_{selector_module.datetime.now().strftime('%Y-%m-%d')}.log"
             assert log_path.exists()
             lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
             assert lines[0]["summary"]["removed_by_volume_filter"] == 1
-            assert lines[0]["summary"]["final_selected_symbols"] == ["BBB", "AAA"]
-            assert lines[0]["summary"]["backfilled_symbols"] == ["AAA"]
+            assert lines[0]["summary"]["final_selected_symbols"] == ["BBB"]
+            assert lines[0]["summary"]["backfilled_symbols"] == []  # No backfill
     finally:
         monkeypatch.restore()
 
 
-def test_selector_backfills_reduce_only_when_quality_filters_leave_too_few():
+def test_selector_never_pads_quality_output_to_reach_selection_size():
+    """When only 1 out of 3 candidates passes quality, topk must be 1 — not padded to 3.
+    This is the regression test for the FORMAL_TOP 2→3 injection bug."""
     monkeypatch = SimpleMonkeyPatch()
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -221,9 +233,19 @@ def test_selector_backfills_reduce_only_when_quality_filters_leave_too_few():
 
             result = selector.run_selection(write_configs=False)
 
-            assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
-            assert result["top5"][1]["quality_backfill"] is True
-            assert result["quality_filter_report"]["backfilled_symbols"] == ["BBB", "CCC"]
+            # Only AAA passed quality (2M vol). BBB and CCC rejected (100K vol).
+            # No backfill — topk must be exactly 1.
+            assert [item["ticker"] for item in result["top5"]] == ["AAA"]
+            assert not any(item.get("quality_backfill") for item in result["top5"])
+            assert result["quality_filter_report"]["backfilled_symbols"] == []
+
+            # Funnel invariant: FORMAL_TOP output (1) ≤ DATA_QUALITY output (1)
+            funnel = result["selection_funnel"]
+            formal_top = [s for s in funnel["stages"] if s["stage"] == "FORMAL_TOP"][0]
+            data_quality = [s for s in funnel["stages"] if s["stage"] == "DATA_QUALITY"][0]
+            assert formal_top["output_count"] <= data_quality["output_count"]
+            assert formal_top["output_count"] == 1
+            assert data_quality["output_count"] == 1
     finally:
         monkeypatch.restore()
 
@@ -278,8 +300,8 @@ def run_test_direct():
     test_apply_quality_filters_blocks_unconfirmed_spread()
     test_apply_quality_filters_accepts_fallback_candidate_with_quote_and_volume_hint()
     test_apply_quality_filters_allows_liquid_special_etf_with_unconfirmed_quote_spread()
-    test_selector_runs_quality_filters_before_final_top5_and_writes_log()
-    test_selector_backfills_reduce_only_when_quality_filters_leave_too_few()
+    test_selector_respects_quality_filter_output_without_backfill()
+    test_selector_never_pads_quality_output_to_reach_selection_size()
     test_selector_returns_fast_preliminary_when_quality_stage_times_out()
 
 
