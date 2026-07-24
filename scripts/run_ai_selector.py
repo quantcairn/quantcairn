@@ -726,7 +726,14 @@ def _attach_current_run_score_provenance(item: dict, *, generated_at: str | None
 
 def _apply_formal_score_semantics(item: dict) -> dict:
     payload = dict(item or {})
-    is_formal = bool(payload.get("formal_scoring_eligibility", payload.get("scoring_eligible", False)))
+    # Match score_candidate() semantics: check score_is_formal (set by score_candidate)
+    # and score_type first, then fall back to eligibility fields.  Default to
+    # True — same as score_candidate() in candidate_ranking.py.
+    is_formal = bool(
+        payload.get("score_is_formal")
+        or payload.get("score_type") == "FORMAL"
+        or payload.get("formal_scoring_eligibility", payload.get("scoring_eligible", True))
+    )
     score_value = _coalesce_float(
         payload.get("candidate_score"),
         payload.get("final_score"),
