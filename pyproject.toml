@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantcairn"
+version = "0.12.0"
+description = "AI-driven quantitative research platform for US stock selection"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+authors = [
+    {name = "QuantCairn Contributors"},
+]
+keywords = [
+    "quantitative-trading",
+    "stock-selection",
+    "range-trading",
+    "yfinance",
+    "research",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# ── Runtime dependencies (mirrors requirements.txt) ──────────────────────
+dependencies = [
+    "yfinance>=0.2.40",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "rich>=13.0",
+    "flask>=3.0",
+    "flask-socketio>=5.3",
+    "requests>=2.31",
+    "longbridge>=4.0",
+    "pandas>=2.0",
+    "numpy>=1.25",
+    "ta>=0.11.0",
+    "beautifulsoup4>=4.12.2",
+    "lxml>=4.9.3",
+]
+
+[project.optional-dependencies]
+# Dependencies needed to run the demo (minimal set)
+demo = [
+    "pandas>=2.0",
+    "numpy>=1.25",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+]
+# Dependencies for testing
+test = [
+    "pytest>=7.0",
+]
+# Dependencies for development (all extras)
+dev = [
+    "quantcairn[demo,test]",
+    "yfinance>=0.2.40",
+    "requests>=2.31",
+    "rich>=13.0",
+    "ta>=0.11.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/quantcairn/quantcairn"
+Documentation = "https://github.com/quantcairn/quantcairn#readme"
+Repository = "https://github.com/quantcairn/quantcairn"
+Issues = "https://github.com/quantcairn/quantcairn/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]
+
+[tool.setuptools.package-data]
+src = ["*.yaml", "*.json", "*.csv"]
+
+# ── pytest ───────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-q", "--tb=short"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+# ── mypy / type checking (future) ────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
