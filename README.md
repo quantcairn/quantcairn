@@ -129,6 +129,31 @@ cp config.sample.yaml config.yaml
 .venv/bin/python -m pytest tests/ -q
 ```
 
+### Development Setup
+
+**For first-time contributors** — get up and running in under 60 seconds:
+
+```bash
+# 1. Clone and enter the project
+git clone https://github.com/quantcairn/quantcairn.git
+cd quantcairn
+
+# 2. Create a virtual environment and install in editable mode
+python3 -m venv .venv
+.venv/bin/pip install -e .
+
+# 3. Verify everything works
+.venv/bin/python scripts/check_dev_environment.py
+
+# 4. Run the demo pipeline (no API keys required)
+.venv/bin/python scripts/run_demo_selector.py
+
+# 5. Run the basic API example
+.venv/bin/python examples/basic_demo.py
+```
+
+Editable install (`-e`) means changes to source code take effect immediately — no need to reinstall.
+
 ### Try QuantCairn Demo
 
 **No API keys or broker connection required.** The demo runs the full 9-stage AI research pipeline using deterministic synthetic market data.

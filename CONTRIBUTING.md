@@ -56,9 +56,59 @@ See [`.ai/safety.md`](.ai/safety.md) for the complete safety specification.
 - Run `pytest tests/ -q` and confirm no new failures
 - The 5 pre-existing env-leak failures are known and unrelated
 
-## Code Standards
+## Local Development
 
-### Python Style
+### Environment Setup
+
+```bash
+# 1. Clone
+git clone https://github.com/quantcairn/quantcairn.git
+cd quantcairn
+
+# 2. Create venv and install in editable mode
+python3 -m venv .venv
+.venv/bin/pip install -e .
+
+# 3. Verify your environment
+.venv/bin/python scripts/check_dev_environment.py
+```
+
+### Running Tests
+
+```bash
+# Full suite
+.venv/bin/python -m pytest tests/ -q
+
+# Specific test groups
+.venv/bin/python -m pytest tests/test_demo_data.py -v
+.venv/bin/python -m pytest tests/test_public_api.py -v
+.venv/bin/python -m pytest tests/test_funnel_invariant.py -v
+
+# Skip slow tests
+.venv/bin/python -m pytest tests/ -q -m "not slow"
+```
+
+### Running the Demo
+
+```bash
+# Full pipeline (9 stages, deterministic data, no API keys)
+.venv/bin/python scripts/run_demo_selector.py
+
+# Basic Python API example
+.venv/bin/python examples/basic_demo.py
+```
+
+### Checking Your Work
+
+```bash
+# Environmental checks (Python version, imports, demo)
+.venv/bin/python scripts/check_dev_environment.py
+
+# Market data diagnostics (if you have network access)
+.venv/bin/python scripts/diag_market_data.py
+```
+
+
 
 - Follow existing code conventions in each module
 - Use type hints for function signatures
