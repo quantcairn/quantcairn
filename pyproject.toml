@@ -80,7 +80,7 @@ Issues = "https://github.com/quantcairn/quantcairn/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src", "src.*"]
+include = ["quantcairn", "quantcairn.*", "src", "src.*"]
 
 [tool.setuptools.package-data]
 src = ["*.yaml", "*.json", "*.csv"]
