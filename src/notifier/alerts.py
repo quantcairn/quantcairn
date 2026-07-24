@@ -890,10 +890,14 @@ def build_research_admission_notice(
     admission = str(research_admission or "").strip().upper() or "RESEARCH_READY"
     if admission == "BLOCKED" or quality == "INVALID":
         return "本次流程已完成，但结果数据无效或包含不可接受的降级数据。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
+    if admission == "PAPER_ELIGIBLE":
+        return "本次产生模拟交易候选，可创建模拟持仓。不可直接进入 Live 实盘。"
     if admission == "RESEARCH_ONLY" or quality == "DEGRADED" or mock_used:
         return "本次结果仅供研究，必须通过独立真实数据验证后，才可进入 Backtest 或 Paper。不得直接进入 Live。"
     if admission == "RESEARCH_READY":
         return "候选可进入独立数据验证，不代表具备交易资格。"
+    if admission == "LIVE_TRADABLE":
+        return "候选已通过实时数据质量验证，具备实盘交易资格。请确认风控参数后执行。"
     if execution == "FAILED":
         return "本次流程已完成，但执行失败或结果不可用。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
     return "候选可进入独立数据验证，不代表具备交易资格。"
@@ -1304,7 +1308,11 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         # fail closed for otherwise unclassified payloads.
         result_quality = "DEGRADED" if fallback_used else "INVALID"
         warnings.append("result_quality_missing")
-    if not research_admission:
+    # Prefer candidate_type from report over research_admission (execution mode aware)
+    candidate_type = str(report.get("candidate_type") or "").strip().upper()
+    if candidate_type in {"LIVE_TRADABLE", "PAPER_ELIGIBLE", "RESEARCH_ONLY"}:
+        research_admission = candidate_type
+    elif not research_admission:
         research_admission = "RESEARCH_ONLY" if result_quality == "DEGRADED" else ("BLOCKED" if result_quality == "INVALID" else "RESEARCH_READY")
         warnings.append("research_admission_missing")
     pipeline_status = str(report.get("pipeline_status") or report.get("execution_status") or execution_status or "COMPLETED").strip().upper()
@@ -1399,7 +1407,13 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         warnings.insert(0, "selection_date_missing")
     execution_text = "已完成" if execution_status != "FAILED" else "已失败"
     result_text = {"COMPLETE": "完整", "DEGRADED": "降级", "INVALID": "无效"}.get(result_quality, result_quality or "未知")
-    admission_text = {"RESEARCH_READY": "已就绪", "RESEARCH_ONLY": "仅研究", "BLOCKED": "已阻止"}.get(research_admission, research_admission or "未知")
+    admission_text = {
+        "RESEARCH_READY": "已就绪",
+        "RESEARCH_ONLY": "仅研究",
+        "PAPER_ELIGIBLE": "模拟交易就绪",
+        "LIVE_TRADABLE": "可实盘交易",
+        "BLOCKED": "已阻止",
+    }.get(research_admission, research_admission or "未知")
     notice = build_research_admission_notice(
         execution_status,
         result_quality,
@@ -1410,11 +1424,14 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     if selection_outcome == "NO_TRADABLE_SELECTION":
         notice = "本次流程已完成，但没有生成任何正式可交易候选。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
     shortfall_reasons = _selection_shortfall_reasons(report)
+    execution_mode = str(report.get("execution_mode") or "").strip().upper()
+    execution_mode_text = {"LIVE": "实盘", "PAPER": "模拟", "RESEARCH": "研究"}.get(execution_mode, execution_mode or "未知")
     lines = [
         f"选股数据日：{selection_date_display}{'（美东交易日）' if selection_date_display != '未知' else ''}",
         f"选股日期来源：{selection_date_source}",
         f"结果生成：{generated_at_text}",
         f"通知发送：{notification_sent_at_text}",
+        f"执行模式：{execution_mode_text} ({execution_mode or 'UNKNOWN'})",
         f"流程：{selection_stage or 'UNKNOWN'}",
         f"流程状态：{pipeline_status}",
         f"选股结果：{selection_outcome}",
@@ -1498,6 +1515,8 @@ def _stage_explanation(selection_stage: str, result_quality: str, research_admis
         "INVALID": "核心数据无效",
         "RESEARCH_READY": "可进入下一阶段研究",
         "RESEARCH_ONLY": "仅供研究，不代表交易资格",
+        "PAPER_ELIGIBLE": "模拟交易候选，可创建模拟持仓",
+        "LIVE_TRADABLE": "实盘候选，已通过实时数据验证",
         "BLOCKED": "阻断后续研究或交易准入",
     }
     parts = [

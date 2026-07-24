@@ -44,6 +44,36 @@ LIQUID_SPECIAL_ETFS = {
     "TNA", "TZA", "FAS", "FAZ", "GUSH", "DRIP", "YINN", "YANG", "NAIL", "DPST",
 }
 
+# ── Execution modes ─────────────────────────────────────────────────────────
+# Separate from preflight run_mode.
+# LIVE:   strict quality, real trading
+# PAPER:  relaxed quality, simulated trading, records data_source + confidence
+# RESEARCH: relaxed quality, no trades, candidates only
+EXECUTION_MODES = ("LIVE", "PAPER", "RESEARCH")
+_DEFAULT_EXECUTION_MODE = "RESEARCH"
+
+
+def _resolve_execution_mode(run_mode: str) -> str:
+    """Determine execution mode from environment or preflight run_mode.
+
+    Priority:
+      1. QUANTCAIRN_EXECUTION_MODE env var (LIVE / PAPER / RESEARCH)
+      2. Derived from preflight: FULL → LIVE, all others → RESEARCH
+
+    PAPER mode must be explicitly requested — it is never auto-selected.
+    """
+    env_val = str(os.environ.get("QUANTCAIRN_EXECUTION_MODE") or "").strip().upper()
+    if env_val in EXECUTION_MODES:
+        return env_val
+    if _quality_mode_is_strict(run_mode):
+        return "LIVE"
+    return "RESEARCH"
+
+
+def _quality_mode_is_strict(run_mode: str) -> bool:
+    """Quality checks are strict only in FULL mode when live quotes are available."""
+    return str(run_mode or "").strip().upper() == "FULL"
+
 
 def _selection_log_path(now: datetime | None = None) -> Path:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d")
@@ -85,6 +115,36 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _normalize_ticker(value: Any) -> str:
     return str(value or "").strip().upper().split(".")[0]
+
+
+def _compute_confidence(item: dict[str, Any], data_source: str = "") -> float:
+    """Estimate confidence for a paper-trading candidate.
+
+    Confidence is reduced for EOD/fallback data sources because they lack
+    real-time quote verification.  LIVE data gets the full score.
+
+    Formula: base_score weight × data_source factor
+      - live:       0.85  (real quotes available)
+      - eod_validated: 0.60  (OHLCV data, no live spread)
+      - eod_fallback:  0.40  (pre-quality pool, synthetic data)
+      - fallback:      0.30  (no market data)
+    """
+    score = _safe_float(item.get("score") or item.get("base_score"), 50.0)
+    src = (data_source or str(item.get("data_source") or "")).strip().lower()
+
+    factors = {
+        "live": 0.85,
+        "eod_validated": 0.60,
+        "eod_fallback": 0.40,
+        "fallback": 0.30,
+    }
+    factor = 0.50  # default: unknown source
+    for key, val in factors.items():
+        if key in src:
+            factor = val
+            break
+
+    return round(min(1.0, max(0.0, (score / 100.0) * factor)), 4)
 
 
 def _build_market_data_diagnostics(
@@ -257,9 +317,6 @@ class _QualityFilterContext:
         return result
 
 
-def _quality_mode_is_strict(run_mode: str) -> bool:
-    """Quality checks are strict only in FULL mode when live quotes are available."""
-    return str(run_mode or "").strip().upper() == "FULL"
 
 
 def _apply_quality_filters_with_report(
@@ -558,6 +615,9 @@ class AIStrategySelector:
         except Exception:
             _preflight_report = {"market_state": "UNKNOWN", "run_mode": "FULL"}
 
+        # ── Execution mode: LIVE / PAPER / RESEARCH ─────────────────────
+        _execution_mode = _resolve_execution_mode(_run_mode)
+
         # 1. build universe
         source = "override"
         if symbols_override:
@@ -696,11 +756,21 @@ class AIStrategySelector:
         self._last_quality_filter_report = filter_report
 
         # 5. COMPOSITION_FILTER: diversify the quality-passed pool by sector/correlation.
-        #    When quality rejects all in FULL mode: use pre-quality pool as Preview Candidates
-        #    (research-only). In non-FULL modes, relaxed quality checks keep candidates alive.
+        #    Candidate type depends on execution_mode (LIVE / PAPER / RESEARCH), not just run_mode.
         quality_mode_is_strict = _quality_mode_is_strict(_run_mode)
-        if not filtered_candidates and _pre_quality_pool and quality_mode_is_strict:
-            # FULL mode: quality gate rejected all → preview only, no formal TOP
+        _is_live = _execution_mode == "LIVE"
+        _is_paper = _execution_mode == "PAPER"
+
+        # ── Determine candidate type label for this execution mode ─────────
+        if _is_live:
+            _type_label = "LIVE_TRADABLE"
+        elif _is_paper:
+            _type_label = "PAPER_ELIGIBLE"
+        else:
+            _type_label = "RESEARCH_ONLY"
+
+        if not filtered_candidates and _pre_quality_pool and quality_mode_is_strict and _is_live:
+            # LIVE mode: strict quality gate rejected all → preview only, no formal TOP
             topk = self._select_diversified_top_k(_pre_quality_pool, self.selection_size)
             for item in topk:
                 item["reduce_only"] = default_reduce_only
@@ -715,12 +785,14 @@ class AIStrategySelector:
             selection_stage = "fast_preliminary"
             quality_fallback_active = True
         elif not filtered_candidates and _pre_quality_pool:
-            # Non-FULL mode: relaxed quality still rejected (e.g., no data at all)
-            # Use pre-quality pool, but mark as EOD mode — these become formal in EOD context
+            # PAPER or RESEARCH mode: relaxed quality still rejected (e.g., no data at all).
+            # Use pre-quality pool — these become formal in PAPER/RESEARCH context.
             quality_passed = [dict(item) for item in _pre_quality_pool]
             for item in quality_passed:
                 item["data_source"] = item.get("data_source", "eod_fallback")
-                item["candidate_type"] = "RESEARCH_ONLY"
+                item["candidate_type"] = _type_label
+                if _is_paper:
+                    item["confidence"] = item.get("confidence", _compute_confidence(item, data_source="eod_fallback"))
             topk_input = quality_passed[:max(self.selection_size, candidate_limit)]
             topk = self._select_diversified_top_k(topk_input, self.selection_size)
             for item in topk:
@@ -740,12 +812,14 @@ class AIStrategySelector:
                     item["data_source"] = item.get("data_source", "eod_fallback")
                 selection_stage = "eod_no_quality_pass"
 
-            # In non-FULL modes, mark candidates as EOD-validated
-            if not quality_mode_is_strict:
+            # Label candidates with the execution-mode-appropriate type
+            if not quality_mode_is_strict or _is_paper:
                 for item in quality_passed:
                     if not item.get("data_source"):
                         item["data_source"] = "eod_validated"
-                    item["candidate_type"] = "RESEARCH_ONLY"
+                    item["candidate_type"] = _type_label
+                    if _is_paper:
+                        item["confidence"] = item.get("confidence", _compute_confidence(item, data_source=item["data_source"]))
 
             topk_input = quality_passed[:max(self.selection_size, candidate_limit)]
             topk = self._select_diversified_top_k(topk_input, self.selection_size)
@@ -765,11 +839,11 @@ class AIStrategySelector:
         filter_report["selection_stage"] = selection_stage
         write_selection_filter_log(filter_report)
 
-        # ── FORMAL_TOP: output depends on mode ──
+        # ── FORMAL_TOP: output depends on execution_mode ──
         preview_symbols: list[str] = []
         formal_symbols: list[str] = []
         if quality_fallback_active:
-            # FULL mode only: quality gate rejected all → preview only
+            # LIVE mode only: strict quality gate rejected all → preview only
             tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             formal_symbols: list[str] = []
@@ -777,25 +851,44 @@ class AIStrategySelector:
                 preview_symbols=preview_symbols,
                 formal_symbols=formal_symbols,
             )
-        elif not quality_mode_is_strict and not filtered_candidates:
-            # Non-FULL mode: all quality-rejected but mode-aware — topk = pre_quality pool
+        elif _is_paper and not filtered_candidates:
+            # PAPER mode: all quality-rejected → pre-quality pool becomes paper-eligible
             tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             tracker.set_formal_candidates(formal_symbols)
             tracker.mark_quality_relaxed()
-        elif not quality_mode_is_strict:
-            # Non-FULL mode with quality-passed candidates → they become formal
+        elif _is_paper:
+            # PAPER mode with quality-passed candidates → paper-eligible formal
+            tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
+            formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+            tracker.set_formal_candidates(formal_symbols)
+        elif _is_live:
+            # LIVE mode (FULL run_mode): strict quality → live-tradable formal
             tracker.add_stage("FORMAL_TOP", quality_passed, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             tracker.set_formal_candidates(formal_symbols)
         else:
-            # FULL mode, normal path: topk ⊆ quality_passed → invariant holds.
-            tracker.add_stage("FORMAL_TOP", quality_passed, topk)
-            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
-            formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
-            tracker.set_formal_candidates(formal_symbols)
+            # RESEARCH mode: relaxed quality → research-only formal
+            if not quality_mode_is_strict and not filtered_candidates:
+                tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
+                preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+                formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+                tracker.set_formal_candidates(formal_symbols)
+                tracker.mark_quality_relaxed()
+            elif not quality_mode_is_strict:
+                tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+                preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
+                formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+                tracker.set_formal_candidates(formal_symbols)
+            else:
+                # RESEARCH mode, strict quality passed (unusual but handled)
+                tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+                preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
+                formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+                tracker.set_formal_candidates(formal_symbols)
 
         if not topk:
             topk = [dict(item) for item in (_pre_quality_pool if quality_fallback_active else (filtered_candidates or _pre_quality_pool))]
@@ -824,9 +917,9 @@ class AIStrategySelector:
             write_top_configs(topk)
 
         report_rows = self._format_report_rows(topk)
-        # Determine candidate type based on mode
-        _candidate_type = "LIVE_TRADABLE" if quality_mode_is_strict and not quality_fallback_active else "RESEARCH_ONLY"
-        # Mark all top candidates with their type
+        # Determine candidate type based on execution_mode + quality fallback
+        _candidate_type = _type_label if not quality_fallback_active else "RESEARCH_ONLY"
+        # Mark all top candidates with their execution-mode-appropriate type
         for item in topk:
             if "candidate_type" not in item:
                 item["candidate_type"] = _candidate_type
@@ -858,6 +951,7 @@ class AIStrategySelector:
             "quality_fallback_active": quality_fallback_active,
             "quality_fallback_reason": "QUALITY_GATE" if quality_fallback_active else "",
             "run_mode": _run_mode,
+            "execution_mode": _execution_mode,
             "candidate_type": _candidate_type,
             "preflight": _preflight_report,
         }
