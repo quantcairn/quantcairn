@@ -214,6 +214,7 @@ def evaluate_universe_candidate(
     candidate: dict[str, Any],
     *,
     rules: dict[str, UniverseRule] | None = None,
+    skip_atr_validation: bool = False,
 ) -> UniverseEvaluation:
     symbol = _normalize_symbol(candidate.get("ticker") or candidate.get("symbol"))
     asset_type = infer_asset_type(symbol, candidate)
@@ -238,12 +239,13 @@ def evaluate_universe_candidate(
         elif market_cap < rule.min_market_cap:
             reasons.append("market_cap_too_small")
 
-    if atr_pct is None:
-        reasons.append("volatility_missing")
-    elif atr_pct < rule.atr_20_pct_min:
-        reasons.append("volatility_too_low")
-    elif atr_pct > rule.atr_20_pct_max:
-        reasons.append("volatility_too_high")
+    if not skip_atr_validation:
+        if atr_pct is None:
+            reasons.append("volatility_missing")
+        elif atr_pct < rule.atr_20_pct_min:
+            reasons.append("volatility_too_low")
+        elif atr_pct > rule.atr_20_pct_max:
+            reasons.append("volatility_too_high")
 
     return UniverseEvaluation(
         symbol=symbol,

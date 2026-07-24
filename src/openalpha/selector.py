@@ -545,47 +545,39 @@ class AIStrategySelector:
         symbols = symbols[:self.max_symbols]
         tracker.add_stage("UNIVERSE_FILTER", symbols, symbols)
 
-        # 2. collect data & news. News scraping is optional because it can be
-        # slow/unreliable before the open; technical/volume scoring still works.
+        # 2. Market data: validate OHLCV availability independently of scoring.
+        #    MARKET_DATA output = symbols with >= 60 rows of OHLCV data,
+        #    regardless of whether scoring succeeds.
+        #    SCORING_ELIGIBLE then tracks which of those symbols produce a score.
         if os.environ.get("OPENALPHA_FETCH_NEWS", "0") == "1":
             news_map = self.news.collect_for_symbols(symbols)
         else:
             news_map = {symbol: [] for symbol in symbols}
-        tracker.add_stage("MARKET_DATA", symbols, symbols)
 
-        # 3. score
+        # Determine data availability per symbol (pre-scoring check)
+        try:
+            from src.openalpha.data_diagnostics import check_data_availability
+            _data_available, _market_data_dropped = check_data_availability(symbols)
+        except Exception:
+            _data_available = list(symbols)
+            _market_data_dropped = []
+        # Never let data availability reduce the pool to zero — that prevents
+        # scoring from running at all.  Scoring will still reject bad symbols.
+        if not _data_available:
+            _data_available = list(symbols)
+        tracker.add_stage("MARKET_DATA", symbols, _data_available, dropped=_market_data_dropped)
+
+        # 3. score only data-available symbols
         live_requested = self._live_data_requested()
-        scored = self._score_with_live_flag(symbols, news_map, live_enabled=live_requested)
+        scored = self._score_with_live_flag(_data_available, news_map, live_enabled=live_requested)
         scored = [score_candidate(item) for item in scored]
-
-        # Fix chain: MARKET_DATA output is the pool that actually reached scoring
-        # (replace the stage with correct output now that scoring has run)
-        _valid_scored_symbols = [_normalize_ticker(item.get("ticker")) for item in scored]
-        _valid_set = set(_valid_scored_symbols)
-        _market_data_dropped = _build_market_data_diagnostics(
-            symbols, _valid_set
-        )
-        tracker.records[-1] = FunnelStageRecord(
-            stage="MARKET_DATA",
-            input_symbols=list(symbols),
-            output_symbols=_valid_scored_symbols,
-            dropped=_market_data_dropped,
-        )
-
-        scoring_eligible = [item for item in scored if bool(item.get("scoring_eligible", True))]
-        scoring_dropped = [
-            {"symbol": _normalize_ticker(item.get("ticker")),
-             "reason_code": item.get("scoring_block_reason") or "scoring_ineligible"}
-            for item in scored if not bool(item.get("scoring_eligible", True))
-        ]
-        tracker.add_stage("SCORING_ELIGIBLE", scored, scoring_eligible, dropped=scoring_dropped)
-        tracker.add_stage("BASE_RANKING", scoring_eligible, scoring_eligible)
 
         data_mode = "live" if live_requested else "fallback"
         fallback_used = False
 
+        # ── Fallback scoring (live→EOD) run BEFORE pipeline stages so chain stays consistent ──
         if live_requested and len(scored) < self.selection_size:
-            fallback_scored = self._score_with_live_flag(symbols, news_map, live_enabled=False)
+            fallback_scored = self._score_with_live_flag(_data_available, news_map, live_enabled=False)
             if fallback_scored:
                 fallback_used = True
                 existing = {item.get("ticker") for item in scored}
@@ -594,6 +586,16 @@ class AIStrategySelector:
                 data_mode = "mixed" if existing else "fallback"
 
         scored = sorted(scored, key=lambda item: item.get("score", 0.0), reverse=True)
+
+        scoring_eligible = [item for item in scored if bool(item.get("scoring_eligible", True))]
+        scoring_dropped = [
+            {"symbol": _normalize_ticker(item.get("ticker")),
+             "reason_code": item.get("scoring_block_reason") or "scoring_ineligible"}
+            for item in scored if not bool(item.get("scoring_eligible", True))
+        ]
+        tracker.add_stage("SCORING_ELIGIBLE", _data_available, scoring_eligible, dropped=scoring_dropped)
+        tracker.add_stage("BASE_RANKING", scoring_eligible, scoring_eligible)
+
         # Track formal eligibility
         formal_eligible = [item for item in scored if item.get("formal_scoring_eligibility", True)]
         formal_dropped = [
@@ -603,29 +605,21 @@ class AIStrategySelector:
         ]
         tracker.add_stage("FORMAL_ELIGIBILITY", scored, formal_eligible, dropped=formal_dropped)
 
-        preliminary_pool = [dict(item) for item in scored[: max(self.selection_size, self._filter_candidate_limit_from_env())]]
-        preliminary_topk = self._select_diversified_top_k(preliminary_pool, self.selection_size)
-        tracker.add_stage("COMPOSITION_FILTER", preliminary_pool, preliminary_topk,
-                          dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
-                                     "reason_code": "composition_limit"}
-                                    for item in preliminary_pool
-                                    if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker")) for t in preliminary_topk)])
-
+        # 4. DATA_QUALITY: apply market data quality checks (spread, volume, volatility).
+        #    Runs BEFORE COMPOSITION_FILTER so diversity picks come from quality-passed pool.
         default_reduce_only = self._default_reduce_only()
-        for item in preliminary_topk:
-            item["reduce_only"] = default_reduce_only
-            item["selection_penalty_reason"] = item.get("selection_penalty_reason") or "fast_start_preliminary"
-            item["fast_start_preliminary"] = True
-
         candidate_limit = self._filter_candidate_limit_from_env()
-        candidates_for_filter = scored[:candidate_limit]
         total_budget = self._total_budget_seconds_from_env()
         elapsed_before_quality = max(0.0, datetime.now().timestamp() - selection_started_at)
         quality_budget = min(
             self._quality_budget_seconds_from_env(),
             max(0.0, total_budget - elapsed_before_quality),
         )
+
+        candidates_for_filter = formal_eligible[:candidate_limit]
+        quality_fallback_active = False
         selection_stage = "quality_refined"
+
         if quality_budget <= 0 or os.environ.get("OPENALPHA_FAST_START_ONLY", "0") == "1":
             filtered_candidates = []
             filter_report = {
@@ -646,34 +640,52 @@ class AIStrategySelector:
                 candidates_for_filter,
                 max_seconds=quality_budget,
             )
-        # Track data quality drop
-        quality_input_symbols = [_normalize_ticker(item.get("ticker")) for item in candidates_for_filter]
+
         quality_dropped = [
             row for row in (filter_report.get("rows") or [])
             if row.get("removed")
         ]
+        # Save pre-quality pool for fallback before recording the stage
+        _pre_quality_pool = [dict(item) for item in formal_eligible[:max(self.selection_size, candidate_limit)]]
         tracker.add_stage("DATA_QUALITY", candidates_for_filter, filtered_candidates,
                           dropped=quality_dropped)
         filter_report["pre_filter_candidate_limit"] = candidate_limit
         self._last_quality_filter_report = filter_report
 
-        # 4. prefer liquidity after quality checks, then diversify TopK by sector/correlation.
-        #    FORMAL_TOP must only use candidates that passed DATA_QUALITY — never
-        #    backfill or expand beyond what the quality gate produced.
-        quality_passed = list(filtered_candidates)
-        top10 = quality_passed[:max(self.selection_size, self._filter_candidate_limit_from_env())]
-        topk = self._select_diversified_top_k(top10, self.selection_size)
-        quality_fallback_active = False
-        if not topk:
-            # Quality gate rejected every candidate (or timed out).
-            # Fall back to the preliminary pool as Preview Candidates (research-only).
-            # Formal TOP remains empty — no candidate passed all gates.
-            topk = [dict(item) for item in preliminary_topk]
-            top10: list[dict] = []
+        # 5. COMPOSITION_FILTER: diversify the quality-passed pool by sector/correlation.
+        #    When quality rejects all, use pre-quality pool as Preview Candidates (research-only).
+        if not filtered_candidates and _pre_quality_pool:
+            # Quality fallback: no candidate passed quality → preview only, no formal TOP
+            topk = self._select_diversified_top_k(_pre_quality_pool, self.selection_size)
+            for item in topk:
+                item["reduce_only"] = default_reduce_only
+                item["selection_penalty_reason"] = "quality_fallback_preview"
+                item["data_source"] = item.get("data_source", "fallback")
+            tracker.add_stage("COMPOSITION_FILTER", _pre_quality_pool, _pre_quality_pool,
+                              dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
+                                        "reason_code": "quality_fallback_preview"}
+                                       for item in _pre_quality_pool
+                                       if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
+                                                  for t in topk)])
             selection_stage = "fast_preliminary"
             quality_fallback_active = True
         else:
-            selection_stage = "quality_refined"
+            quality_passed = list(filtered_candidates)
+            if not quality_passed:
+                quality_passed = [dict(item) for item in _pre_quality_pool]
+                selection_stage = "fast_preliminary"
+
+            topk_input = quality_passed[:max(self.selection_size, candidate_limit)]
+            topk = self._select_diversified_top_k(topk_input, self.selection_size)
+            for item in topk:
+                item["reduce_only"] = default_reduce_only
+
+            tracker.add_stage("COMPOSITION_FILTER", topk_input, topk,
+                              dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
+                                        "reason_code": "composition_limit"}
+                                       for item in topk_input
+                                       if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
+                                                  for t in topk)])
 
         backfilled_symbols: list[str] = []
         filter_report["final_selected_symbols"] = [_normalize_ticker(item.get("ticker")) for item in topk]
@@ -687,7 +699,7 @@ class AIStrategySelector:
         if quality_fallback_active:
             # Quality gate rejected all — preliminary pool becomes Preview (research-only).
             # Formal TOP is empty.
-            tracker.add_stage("FORMAL_TOP", preliminary_topk, topk)
+            tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             formal_symbols: list[str] = []
             tracker.mark_quality_fallback(
@@ -695,13 +707,19 @@ class AIStrategySelector:
                 formal_symbols=formal_symbols,
             )
         else:
-            # Normal path: topk ⊆ top10 ⊆ filtered_candidates → invariant holds.
-            tracker.add_stage("FORMAL_TOP", top10, topk)
-            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in top10]
+            # Normal path: topk ⊆ quality_passed → invariant holds.
+            tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             tracker.set_formal_candidates(formal_symbols)
 
-        # Write funnel report
+        if not topk:
+            topk = [dict(item) for item in (_pre_quality_pool if quality_fallback_active else (filtered_candidates or _pre_quality_pool))]
+            selection_stage = "fast_preliminary"
+
+        # Compute top10 for downstream consumers
+        _pool_for_top10 = _pre_quality_pool if quality_fallback_active else (filtered_candidates or _pre_quality_pool)
+        top10 = [dict(item) for item in (_pool_for_top10[: max(self.selection_size, self._filter_candidate_limit_from_env())])]
         funnel_summary = tracker.to_dict()
         try:
             tracker.write_report()

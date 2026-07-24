@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os as _os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +22,20 @@ class SimpleMonkeyPatch:
     def restore(self):
         for obj, name, original in reversed(self._originals):
             setattr(obj, name, original)
+
+
+@contextmanager
+def _with_sample_universe():
+    """Force OPENALPHA_UNIVERSE=sample so mocked _load_local_snapshot takes effect."""
+    prev = _os.environ.get("OPENALPHA_UNIVERSE")
+    _os.environ["OPENALPHA_UNIVERSE"] = "sample"
+    try:
+        yield
+    finally:
+        if prev is None:
+            _os.environ.pop("OPENALPHA_UNIVERSE", None)
+        else:
+            _os.environ["OPENALPHA_UNIVERSE"] = prev
 
 
 def _candidate(ticker: str, score: float, existing_position: bool = False) -> dict:
@@ -170,18 +186,19 @@ def test_selector_respects_quality_filter_output_without_backfill():
             monkeypatch.setattr(selector_module, "_QualityFilterContext", FakeContext)
             monkeypatch.setattr(selector_module, "LOG_DIR", log_dir)
 
-            selector = AIStrategySelector()
-            selector.universe._load_local_snapshot = lambda: ["AAA", "BBB"]
-            selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
-            selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
-                _candidate("AAA", 95.0),
-                _candidate("BBB", 85.0),
-            ]
+            with _with_sample_universe():
+                selector = AIStrategySelector()
+                selector.universe._load_local_snapshot = lambda: ["AAA", "BBB"]
+                selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
+                selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
+                    _candidate("AAA", 95.0),
+                    _candidate("BBB", 85.0),
+                ]
 
-            result = selector.run_selection(write_configs=False)
+                result = selector.run_selection(write_configs=False)
 
-            # Only BBB passed quality; AAA was rejected by volume filter — NOT backfilled.
-            assert [item["ticker"] for item in result["top5"]] == ["BBB"]
+                # Only BBB passed quality; AAA was rejected by volume filter — NOT backfilled.
+                assert [item["ticker"] for item in result["top5"]] == ["BBB"]
             assert not any(item.get("quality_backfill") for item in result["top5"])
             # Funnel invariant: FORMAL_TOP output (1) ≤ DATA_QUALITY output (1)
             funnel = result["selection_funnel"]
@@ -221,31 +238,32 @@ def test_selector_never_pads_quality_output_to_reach_selection_size():
             monkeypatch.setattr(selector_module, "_QualityFilterContext", FakeContext)
             monkeypatch.setattr(selector_module, "LOG_DIR", log_dir)
 
-            selector = AIStrategySelector()
-            selector.selection_size = 3
-            selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
-            selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
-            selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
-                _candidate("AAA", 95.0),
-                _candidate("BBB", 90.0),
-                _candidate("CCC", 85.0),
-            ]
+            with _with_sample_universe():
+                selector = AIStrategySelector()
+                selector.selection_size = 3
+                selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
+                selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
+                selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
+                    _candidate("AAA", 95.0),
+                    _candidate("BBB", 90.0),
+                    _candidate("CCC", 85.0),
+                ]
 
-            result = selector.run_selection(write_configs=False)
+                result = selector.run_selection(write_configs=False)
 
-            # Only AAA passed quality (2M vol). BBB and CCC rejected (100K vol).
-            # No backfill — topk must be exactly 1.
-            assert [item["ticker"] for item in result["top5"]] == ["AAA"]
-            assert not any(item.get("quality_backfill") for item in result["top5"])
-            assert result["quality_filter_report"]["backfilled_symbols"] == []
+                # Only AAA passed quality (2M vol). BBB and CCC rejected (100K vol).
+                # No backfill — topk must be exactly 1.
+                assert [item["ticker"] for item in result["top5"]] == ["AAA"]
+                assert not any(item.get("quality_backfill") for item in result["top5"])
+                assert result["quality_filter_report"]["backfilled_symbols"] == []
 
-            # Funnel invariant: FORMAL_TOP output (1) ≤ DATA_QUALITY output (1)
-            funnel = result["selection_funnel"]
-            formal_top = [s for s in funnel["stages"] if s["stage"] == "FORMAL_TOP"][0]
-            data_quality = [s for s in funnel["stages"] if s["stage"] == "DATA_QUALITY"][0]
-            assert formal_top["output_count"] <= data_quality["output_count"]
-            assert formal_top["output_count"] == 1
-            assert data_quality["output_count"] == 1
+                # Funnel invariant: FORMAL_TOP output (1) ≤ DATA_QUALITY output (1)
+                funnel = result["selection_funnel"]
+                formal_top = [s for s in funnel["stages"] if s["stage"] == "FORMAL_TOP"][0]
+                data_quality = [s for s in funnel["stages"] if s["stage"] == "DATA_QUALITY"][0]
+                assert formal_top["output_count"] <= data_quality["output_count"]
+                assert formal_top["output_count"] == 1
+                assert data_quality["output_count"] == 1
     finally:
         monkeypatch.restore()
 
@@ -277,20 +295,21 @@ def test_selector_returns_fast_preliminary_when_quality_stage_times_out():
                 ),
             )
 
-            selector = AIStrategySelector()
-            selector.selection_size = 3
-            selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
-            selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
-            selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
-                _candidate("AAA", 95.0),
-                _candidate("BBB", 90.0),
-                _candidate("CCC", 85.0),
-            ]
+            with _with_sample_universe():
+                selector = AIStrategySelector()
+                selector.selection_size = 3
+                selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
+                selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
+                selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
+                    _candidate("AAA", 95.0),
+                    _candidate("BBB", 90.0),
+                    _candidate("CCC", 85.0),
+                ]
 
-            result = selector.run_selection(write_configs=False)
+                result = selector.run_selection(write_configs=False)
 
-            assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
-            assert result["settings"]["selection_stage"] == "fast_preliminary"
+                assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
+                assert result["settings"]["selection_stage"] == "fast_preliminary"
     finally:
         monkeypatch.restore()
 

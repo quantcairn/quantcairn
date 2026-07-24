@@ -69,6 +69,42 @@ def diagnose_market_data_drops(
     return records
 
 
+def check_data_availability(
+    symbols: list[str],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Pre-scoring market data check. Determines which symbols have actual
+    OHLCV data available, independently of scoring logic.
+
+    Returns:
+        available  — symbols with >= MIN_HISTORY_ROWS of OHLCV data
+        dropped    — per-symbol diagnostic records for unavailable symbols
+    """
+    available: list[str] = []
+    dropped: list[dict[str, Any]] = []
+
+    for symbol in symbols:
+        sym = symbol.strip().upper()
+        diag = _diagnose_one(sym)
+        if diag["available_rows"] >= MIN_HISTORY_ROWS:
+            available.append(sym)
+        else:
+            dropped.append(
+                {
+                    "symbol": sym,
+                    "reason_code": diag["reason_code"],
+                    "reason_detail": diag["reason_detail"],
+                    "available_rows": diag["available_rows"],
+                    "required_rows": diag["required_rows"],
+                    "missing_fields": diag["missing_fields"],
+                    "ohlcv_error": diag.get("ohlcv_error"),
+                    "has_fallback_profile": diag["has_fallback_profile"],
+                    "fallback_rejected_by_universe": diag["fallback_rejected_by_universe"],
+                }
+            )
+
+    return available, dropped
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Symbol-level diagnostic
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -258,7 +294,8 @@ def _evaluate_fallback_against_universe_filter(
         "atr_20_percentage": band_pct / 2.0,
     }
 
-    return evaluate_universe_candidate(candidate)
+    # Fallback uses skip_atr_validation to avoid rejecting synthetic volatility
+    return evaluate_universe_candidate(candidate, skip_atr_validation=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

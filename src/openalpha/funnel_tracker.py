@@ -318,6 +318,8 @@ class FunnelTracker:
                     # ── Quality fallback: DATA_QUALITY rejected all, FORMAL_TOP drew from preliminary pool ──
                     if self._quality_fallback and rec.stage == "FORMAL_TOP" and prev.stage == "DATA_QUALITY":
                         continue  # Expected runtime path, not a consistency violation
+                    if self._quality_fallback and rec.stage == "COMPOSITION_FILTER" and prev.stage == "DATA_QUALITY":
+                        continue  # Quality fallback: COMPOSITION_FILTER draws from pre-quality pool
                     warnings.append({
                         "stage": rec.stage,
                         "check": "chain_break",
@@ -358,7 +360,7 @@ class FunnelTracker:
             d = rec.to_dict()
             chain_str = ""
             if prev_output is not None and rec.input_count != prev_output:
-                if self._quality_fallback and rec.stage == "FORMAL_TOP":
+                if self._quality_fallback and rec.stage in ("FORMAL_TOP", "COMPOSITION_FILTER"):
                     chain_str = "  ← quality fallback"
                 else:
                     chain_str = "  ⚠ chain break"

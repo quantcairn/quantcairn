@@ -78,6 +78,32 @@ class Scorer:
         "YANG": {"score": 64.0, "range_low": 9.8, "range_high": 13.9, "volume": 9_000_000},
         "NAIL": {"score": 65.0, "range_low": 18.4, "range_high": 25.1, "volume": 6_000_000},
         "DPST": {"score": 65.0, "range_low": 17.6, "range_high": 24.2, "volume": 5_000_000},
+        # ── Universe expansion: 25 active managed-universe symbols (2026-07-24 pricing) ──
+        "ADBE": {"score": 54.0, "range_low": 211.5, "range_high": 227.5, "volume": 3_900_000},
+        "BAC":  {"score": 56.0, "range_low": 60.3,  "range_high": 63.3,  "volume": 29_300_000},
+        "CRM":  {"score": 55.0, "range_low": 155.6, "range_high": 166.9, "volume": 10_600_000},
+        "DIA":  {"score": 58.0, "range_low": 507.0, "range_high": 528.0, "volume": 2_800_000},
+        "DIS":  {"score": 53.0, "range_low": 91.2,  "range_high": 97.9,  "volume": 8_800_000},
+        "INTC": {"score": 50.0, "range_low": 92.3,  "range_high": 100.0, "volume": 91_400_000},
+        "IWM":  {"score": 57.0, "range_low": 285.6, "range_high": 297.2, "volume": 17_900_000},
+        "JNJ":  {"score": 52.0, "range_low": 253.8, "range_high": 269.5, "volume": 6_800_000},
+        "JPM":  {"score": 55.0, "range_low": 340.0, "range_high": 361.0, "volume": 6_700_000},
+        "PG":   {"score": 54.0, "range_low": 143.4, "range_high": 150.8, "volume": 5_100_000},
+        "QQQ":  {"score": 60.0, "range_low": 672.4, "range_high": 700.0, "volume": 27_700_000},
+        "SPY":  {"score": 62.0, "range_low": 725.0, "range_high": 752.0, "volume": 35_500_000},
+        "SSO":  {"score": 51.0, "range_low": 63.4,  "range_high": 67.8,  "volume": 1_900_000},
+        "UNH":  {"score": 53.0, "range_low": 408.4, "range_high": 438.0, "volume": 4_200_000},
+        "V":    {"score": 56.0, "range_low": 342.6, "range_high": 363.8, "volume": 4_600_000},
+        "WMT":  {"score": 55.0, "range_low": 105.6, "range_high": 112.1, "volume": 17_600_000},
+        "XLB":  {"score": 50.0, "range_low": 49.2,  "range_high": 51.7,  "volume": 8_500_000},
+        "XLE":  {"score": 52.0, "range_low": 58.2,  "range_high": 61.7,  "volume": 23_700_000},
+        "XLF":  {"score": 53.0, "range_low": 54.8,  "range_high": 57.0,  "volume": 23_700_000},
+        "XLI":  {"score": 51.0, "range_low": 177.6, "range_high": 187.7, "volume": 5_000_000},
+        "XLK":  {"score": 57.0, "range_low": 171.9, "range_high": 180.7, "volume": 5_800_000},
+        "XLU":  {"score": 52.0, "range_low": 45.0,  "range_high": 47.8,  "volume": 13_600_000},
+        "XLV":  {"score": 50.0, "range_low": 158.4, "range_high": 166.6, "volume": 5_300_000},
+        "XLY":  {"score": 51.0, "range_low": 105.8, "range_high": 112.3, "volume": 7_100_000},
+        "XOM":  {"score": 54.0, "range_low": 150.9, "range_high": 163.5, "volume": 11_300_000},
     }
 
     FALLBACK_RANGE_PCT = {
@@ -116,6 +142,12 @@ class Scorer:
         "YANG": 0.1,
         "NAIL": 0.1,
         "DPST": 0.1,
+        # ── Universe expansion ──
+        "ADBE": 0.03, "BAC": 0.025, "CRM": 0.035, "DIA": 0.02, "DIS": 0.035,
+        "INTC": 0.04, "IWM": 0.02, "JNJ": 0.03, "JPM": 0.03, "PG": 0.025,
+        "QQQ": 0.02, "SPY": 0.018, "SSO": 0.035, "UNH": 0.035, "V": 0.03,
+        "WMT": 0.03, "XLB": 0.025, "XLE": 0.03, "XLF": 0.02, "XLI": 0.025,
+        "XLK": 0.025, "XLU": 0.03, "XLV": 0.025, "XLY": 0.03, "XOM": 0.04,
     }
 
     FALLBACK_SECTOR = {
@@ -154,6 +186,32 @@ class Scorer:
         "YANG": "Inverse China ETF",
         "NAIL": "Leveraged Homebuilders ETF",
         "DPST": "Leveraged Regional Banks ETF",
+        # ── Universe expansion ──
+        "ADBE": "Technology",
+        "BAC": "Financial Services",
+        "CRM": "Technology",
+        "DIA": "Index ETF",
+        "DIS": "Communication Services",
+        "INTC": "Technology",
+        "IWM": "Index ETF",
+        "JNJ": "Healthcare",
+        "JPM": "Financial Services",
+        "PG": "Consumer Defensive",
+        "QQQ": "Index ETF",
+        "SPY": "Index ETF",
+        "SSO": "Leveraged Index ETF",
+        "UNH": "Healthcare",
+        "V": "Financial Services",
+        "WMT": "Consumer Defensive",
+        "XLB": "Materials Sector ETF",
+        "XLE": "Energy Sector ETF",
+        "XLF": "Financial Sector ETF",
+        "XLI": "Industrial Sector ETF",
+        "XLK": "Technology Sector ETF",
+        "XLU": "Utilities Sector ETF",
+        "XLV": "Healthcare Sector ETF",
+        "XLY": "Consumer Discretionary ETF",
+        "XOM": "Energy",
     }
 
     FALLBACK_MARKET_CAP = {
@@ -173,6 +231,19 @@ class Scorer:
         "PLTR": 300_000_000_000,
         "SOFI": 15_000_000_000,
         "NIO": 10_000_000_000,
+        # ── Universe expansion ──
+        "ADBE": 210_000_000_000,
+        "BAC": 280_000_000_000,
+        "CRM": 150_000_000_000,
+        "DIS": 170_000_000_000,
+        "INTC": 400_000_000_000,
+        "JNJ": 630_000_000_000,
+        "JPM": 500_000_000_000,
+        "PG": 350_000_000_000,
+        "UNH": 390_000_000_000,
+        "V": 650_000_000_000,
+        "WMT": 870_000_000_000,
+        "XOM": 700_000_000_000,
     }
 
     def __init__(self):
@@ -723,7 +794,9 @@ class Scorer:
                 "market_cap": market_cap,
                 "average_dollar_volume_20d": float(profile["volume"]) * price_mid,
                 "atr_20_percentage": band_pct / 2.0,
-            }
+                "data_source": "fallback",
+            },
+            skip_atr_validation=True,
         )
         if universe_eval.rejected:
             return None
