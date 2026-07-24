@@ -1,8 +1,10 @@
-# OpenAlpha
+# QuantCairn
 
 **AI-driven US stock selection pipeline for range-bound swing trading.**
 
-OpenAlpha runs a 9-stage analytical pipeline that screens a managed universe of 35 US equities and ETFs, scores them with a multi-factor model, applies mode-aware quality filtering, and produces daily candidate selections. Designed for research, paper trading, and transparency — not autonomous execution.
+QuantCairn runs a 9-stage analytical pipeline that screens a managed universe of 35 US equities and ETFs, scores them with a multi-factor model, applies mode-aware quality filtering, and produces daily candidate selections. Designed for research, paper trading, and transparency — not autonomous execution.
+
+> *Formerly developed under the internal project name OpenAlpha.*
 
 ---
 
@@ -71,7 +73,7 @@ Preflight ──→ Run Mode (FULL / AFTER_MARKET / EOD_ONLY / DEGRADED)
 
 ## Safety Architecture
 
-OpenAlpha is designed with defense-in-depth safety:
+QuantCairn is designed with defense-in-depth safety:
 
 ### Trading Isolation
 
@@ -112,8 +114,8 @@ See [`.ai/safety.md`](.ai/safety.md) for the complete safety constraint specific
 
 ```bash
 # Clone
-git clone https://github.com/example/openalpha.git
-cd openalpha
+git clone https://github.com/quantcairn/quantcairn.git
+cd quantcairn
 
 # Create venv and install
 python3 -m venv .venv
@@ -162,7 +164,7 @@ bash monitor.sh
 ## Project Structure
 
 ```
-openalpha/
+quantcairn/
 ├── src/
 │   ├── openalpha/            # Core: selection pipeline, diagnostics, preflight
 │   ├── scoring/              # Multi-factor scoring model
@@ -219,7 +221,7 @@ openalpha/
 
 **This project is for research and educational purposes only.**
 
-OpenAlpha is not financial advice, investment advice, or a trading recommendation. It does not guarantee any trading outcome. The system is designed to run in paper/sandbox mode by default. Live trading requires explicit multi-layer configuration changes that are architecturally prevented from being enabled by accident.
+QuantCairn is not financial advice, investment advice, or a trading recommendation. It does not guarantee any trading outcome. The system is designed to run in paper/sandbox mode by default. Live trading requires explicit multi-layer configuration changes that are architecturally prevented from being enabled by accident.
 
 Past performance of the selection pipeline does not guarantee future results. All trading involves risk. Use at your own discretion.
 

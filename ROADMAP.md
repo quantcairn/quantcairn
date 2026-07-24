@@ -1,4 +1,6 @@
-# OpenAlpha Roadmap
+# QuantCairn Roadmap
+
+> *Formerly developed under the internal project name OpenAlpha.*
 
 > Last updated: 2026-07-25
 >

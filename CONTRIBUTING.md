@@ -1,8 +1,10 @@
-# Contributing to OpenAlpha
+# Contributing to QuantCairn
+
+> *Formerly developed under the internal project name OpenAlpha.*
 
 ## Welcome
 
-OpenAlpha is an open-source AI-driven research system for US stock selection. We welcome contributions that improve the pipeline, diagnostics, documentation, and developer experience.
+QuantCairn is an open-source AI-driven research system for US stock selection. We welcome contributions that improve the pipeline, diagnostics, documentation, and developer experience.
 
 Before contributing, please read through this guide and our safety documentation.
 
@@ -19,7 +21,7 @@ The `.ai/` directory contains the authoritative project context used by both hum
 
 ### 2. Understand the Architecture
 
-OpenAlpha has strict module boundaries. Key principles:
+QuantCairn has strict module boundaries. Key principles:
 
 - **The Selector writes configs; the Engine reads them.** No runtime coupling.
 - **The Dashboard is read-only.** It reads artifacts, never initiates actions.
