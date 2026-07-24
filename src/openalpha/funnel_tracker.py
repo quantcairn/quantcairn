@@ -226,6 +226,7 @@ class FunnelTracker:
         self.project_dir = Path(project_dir).expanduser().resolve() if project_dir else _project_dir()
         self.records: list[FunnelStageRecord] = []
         self._quality_fallback = False
+        self._quality_relaxed = False  # EOD mode: quality rejected all, relaxed path used
         self._preview_candidates: list[str] = []
         self._formal_candidates: list[str] = []
 
@@ -238,6 +239,10 @@ class FunnelTracker:
         self._quality_fallback = True
         self._preview_candidates = list(preview_symbols or [])
         self._formal_candidates = list(formal_symbols or [])
+
+    def mark_quality_relaxed(self) -> None:
+        """Record that EOD/relaxed mode used pre-quality pool after quality rejection."""
+        self._quality_relaxed = True
 
     def set_formal_candidates(self, formal_symbols: list[str]) -> None:
         """Set formal candidates from the normal (non-fallback) path."""
@@ -315,11 +320,11 @@ class FunnelTracker:
                 prev_output = len(_symbols(prev.output_symbols))
                 curr_input = len(_symbols(rec.input_symbols))
                 if curr_input != prev_output:
-                    # ── Quality fallback: DATA_QUALITY rejected all, FORMAL_TOP drew from preliminary pool ──
-                    if self._quality_fallback and rec.stage == "FORMAL_TOP" and prev.stage == "DATA_QUALITY":
+                    # ── Quality fallback / relaxed: DATA_QUALITY rejected all, next stage drew from preliminary pool ──
+                    if (self._quality_fallback or self._quality_relaxed) and rec.stage in ("FORMAL_TOP", "COMPOSITION_FILTER") and prev.stage == "DATA_QUALITY":
                         continue  # Expected runtime path, not a consistency violation
-                    if self._quality_fallback and rec.stage == "COMPOSITION_FILTER" and prev.stage == "DATA_QUALITY":
-                        continue  # Quality fallback: COMPOSITION_FILTER draws from pre-quality pool
+                    if self._quality_relaxed and rec.stage == "FORMAL_TOP" and prev.stage == "COMPOSITION_FILTER":
+                        continue  # EOD relaxed: FORMAL_TOP draws from pre-quality pool
                     warnings.append({
                         "stage": rec.stage,
                         "check": "chain_break",
@@ -360,8 +365,8 @@ class FunnelTracker:
             d = rec.to_dict()
             chain_str = ""
             if prev_output is not None and rec.input_count != prev_output:
-                if self._quality_fallback and rec.stage in ("FORMAL_TOP", "COMPOSITION_FILTER"):
-                    chain_str = "  ← quality fallback"
+                if (self._quality_fallback or self._quality_relaxed) and rec.stage in ("FORMAL_TOP", "COMPOSITION_FILTER"):
+                    chain_str = "  ← quality relaxed" if self._quality_relaxed else "  ← quality fallback"
                 else:
                     chain_str = "  ⚠ chain break"
             elif rec.status == "WARN":

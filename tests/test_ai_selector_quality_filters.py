@@ -275,10 +275,19 @@ def test_selector_returns_fast_preliminary_when_quality_stage_times_out():
             log_dir = Path(tmpdir) / "logs"
 
             monkeypatch.setattr(selector_module, "LOG_DIR", log_dir)
+            # Force FULL mode so quality fallback is triggered (not EOD relaxed)
+            try:
+                from src.openalpha import preflight as pf_module
+                monkeypatch.setattr(pf_module, "run_preflight",
+                    lambda dry_run=True: type("_FP", (), {
+                        "to_dict": lambda self: {"run_mode": "FULL", "market_state": "MARKET_OPEN", "is_trading_day": True},
+                    })())
+            except Exception:
+                pass
             monkeypatch.setattr(
                 selector_module,
                 "_apply_quality_filters_with_report",
-                lambda candidates, max_seconds=None: (
+                lambda candidates, max_seconds=None, run_mode="FULL": (
                     [],
                     {
                         "generated_at": "2026-07-05T09:00:00",

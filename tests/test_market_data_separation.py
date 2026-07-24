@@ -180,10 +180,19 @@ class TestFallbackDataDiagnosable:
             with tempfile.TemporaryDirectory() as tmpdir:
                 log_dir = Path(tmpdir) / "logs"
                 p.setattr(selector_module, "LOG_DIR", log_dir)
+                # Force FULL mode so quality_fallback_active=True (not EOD relaxed)
+                try:
+                    from src.openalpha import preflight as pf_module
+                    p.setattr(pf_module, "run_preflight",
+                        lambda dry_run=True: type("_PF", (), {
+                            "to_dict": lambda self: {"run_mode": "FULL", "market_state": "MARKET_OPEN", "is_trading_day": True},
+                        })())
+                except Exception:
+                    pass
                 p.setattr(
                     selector_module,
                     "_apply_quality_filters_with_report",
-                    lambda candidates, max_seconds=None: (
+                    lambda candidates, max_seconds=None, run_mode="FULL": (
                         [],
                         {
                             "generated_at": "2026-07-24T09:00:00",

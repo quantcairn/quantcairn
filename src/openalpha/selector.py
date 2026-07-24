@@ -257,11 +257,18 @@ class _QualityFilterContext:
         return result
 
 
+def _quality_mode_is_strict(run_mode: str) -> bool:
+    """Quality checks are strict only in FULL mode when live quotes are available."""
+    return str(run_mode or "").strip().upper() == "FULL"
+
+
 def _apply_quality_filters_with_report(
     candidates: Sequence[dict],
     *,
     max_seconds: float | None = None,
+    run_mode: str = "FULL",
 ) -> tuple[list[dict], dict[str, Any]]:
+    strict = _quality_mode_is_strict(run_mode)
     context = _QualityFilterContext()
     rows: list[dict[str, Any]] = []
     filtered: list[dict] = []
@@ -282,16 +289,30 @@ def _apply_quality_filters_with_report(
             symbol = _normalize_ticker(item.get("ticker"))
             existing_position = bool(item.get("existing_position"))
             ai_selected = bool(item.get("ai_selected", True))
+            is_fallback = item.get("data_source") == "fallback"
 
             avg_volume_10, three_day_change_pct, hist_price = context.history_metrics(symbol)
             current_price, bid, ask, bid_ask_confirmed = context.quote_metrics(symbol)
-            if item.get("data_source") == "fallback":
-                avg_volume_10 = avg_volume_10 or _safe_float(item.get("avg_daily_volume_hint"), 0.0) or None
-                current_price = current_price or _safe_float(item.get("price_midpoint_hint"), 0.0) or hist_price
+
+            # ── Fallback data augmentation ──────────────────────────────────
+            if is_fallback or not strict:
+                volume_hint = _safe_float(item.get("avg_daily_volume_hint"), 0.0) or None
+                price_hint = _safe_float(item.get("price_midpoint_hint"), 0.0) or None
+                avg_volume_10 = avg_volume_10 or volume_hint
+                current_price = current_price or price_hint or hist_price
                 if three_day_change_pct is None:
                     three_day_change_pct = 0.0
+            else:
+                if item.get("data_source") == "fallback":
+                    avg_volume_10 = avg_volume_10 or _safe_float(item.get("avg_daily_volume_hint"), 0.0) or None
+                    current_price = current_price or _safe_float(item.get("price_midpoint_hint"), 0.0) or hist_price
+                    if three_day_change_pct is None:
+                        three_day_change_pct = 0.0
+
             current_price = current_price or hist_price
+
             spread_pct = None
+            # Compute bid/ask spread only when quotes are confirmed
             if (
                 bid_ask_confirmed
                 and current_price
@@ -311,6 +332,7 @@ def _apply_quality_filters_with_report(
                 and ask >= bid > 0
             ):
                 spread_pct = ((ask - bid) / current_price) * 100.0
+
             liquidity_score = (
                 float(avg_volume_10) * float(current_price)
                 if avg_volume_10 is not None and current_price is not None
@@ -323,29 +345,47 @@ def _apply_quality_filters_with_report(
 
             if existing_position:
                 reason = "existing_position_bypass"
-            elif avg_volume_10 is None or three_day_change_pct is None or current_price is None:
+            elif avg_volume_10 is None or current_price is None:
+                # Always reject if we have zero data (no live, no history, no hints)
                 removed = True
                 reason = "missing_market_data"
                 removed_missing += 1
             elif avg_volume_10 <= 500_000:
+                # Volume filter — always enforced, uses hint data when available
                 removed = True
                 reason = "volume_filter"
                 removed_volume += 1
-            elif not bid_ask_confirmed or spread_pct is None:
-                if symbol in LIQUID_SPECIAL_ETFS and spread_pct is not None:
-                    reason = "special_etf_quote_override"
-                else:
+            elif strict:
+                # ── STRICT (FULL) mode: require realtime quotes ──────────
+                if three_day_change_pct is None:
                     removed = True
-                    reason = "spread_unavailable"
+                    reason = "missing_market_data"
                     removed_missing += 1
-            elif spread_pct >= 0.5:
-                removed = True
-                reason = "spread_filter"
-                removed_spread += 1
-            elif abs(float(three_day_change_pct)) > volatility_limit:
-                removed = True
-                reason = "volatility_filter"
-                removed_volatility += 1
+                elif not bid_ask_confirmed or spread_pct is None:
+                    if symbol in LIQUID_SPECIAL_ETFS and spread_pct is not None:
+                        reason = "special_etf_quote_override"
+                    else:
+                        removed = True
+                        reason = "spread_unavailable"
+                        removed_missing += 1
+                elif spread_pct >= 0.5:
+                    removed = True
+                    reason = "spread_filter"
+                    removed_spread += 1
+                elif abs(float(three_day_change_pct)) > volatility_limit:
+                    removed = True
+                    reason = "volatility_filter"
+                    removed_volatility += 1
+            else:
+                # ── RELAXED (EOD / AFTER_MARKET / DEGRADED) mode ────────
+                # Skip spread and volatility checks — only enforce:
+                #  - basic data presence (price + volume hints)
+                #  - volume filter
+                #  - existing position bypass
+                if three_day_change_pct is not None and abs(float(three_day_change_pct)) > volatility_limit:
+                    removed = True
+                    reason = "volatility_filter"
+                    removed_volatility += 1
 
             item["existing_position"] = existing_position
             item["avg_10d_volume"] = round(avg_volume_10, 2) if avg_volume_10 is not None else None
@@ -397,8 +437,8 @@ def _apply_quality_filters_with_report(
     return filtered, report
 
 
-def apply_quality_filters(candidates):
-    filtered, _report = _apply_quality_filters_with_report(candidates)
+def apply_quality_filters(candidates, run_mode: str = "FULL"):
+    filtered, _report = _apply_quality_filters_with_report(candidates, run_mode=run_mode)
     return filtered
 
 
@@ -509,10 +549,12 @@ class AIStrategySelector:
 
         # ── Preflight: check market state before building universe ───────
         _preflight_report: dict[str, Any] = {}
+        _run_mode: str = "FULL"
         try:
             from src.openalpha.preflight import run_preflight as _run_preflight, PreflightReport
             _pf = _run_preflight(dry_run=True)
             _preflight_report = _pf.to_dict()
+            _run_mode = str(_preflight_report.get("run_mode") or "FULL").strip().upper()
         except Exception:
             _preflight_report = {"market_state": "UNKNOWN", "run_mode": "FULL"}
 
@@ -639,6 +681,7 @@ class AIStrategySelector:
             filtered_candidates, filter_report = _apply_quality_filters_with_report(
                 candidates_for_filter,
                 max_seconds=quality_budget,
+                run_mode=_run_mode,
             )
 
         quality_dropped = [
@@ -653,9 +696,11 @@ class AIStrategySelector:
         self._last_quality_filter_report = filter_report
 
         # 5. COMPOSITION_FILTER: diversify the quality-passed pool by sector/correlation.
-        #    When quality rejects all, use pre-quality pool as Preview Candidates (research-only).
-        if not filtered_candidates and _pre_quality_pool:
-            # Quality fallback: no candidate passed quality → preview only, no formal TOP
+        #    When quality rejects all in FULL mode: use pre-quality pool as Preview Candidates
+        #    (research-only). In non-FULL modes, relaxed quality checks keep candidates alive.
+        quality_mode_is_strict = _quality_mode_is_strict(_run_mode)
+        if not filtered_candidates and _pre_quality_pool and quality_mode_is_strict:
+            # FULL mode: quality gate rejected all → preview only, no formal TOP
             topk = self._select_diversified_top_k(_pre_quality_pool, self.selection_size)
             for item in topk:
                 item["reduce_only"] = default_reduce_only
@@ -669,11 +714,38 @@ class AIStrategySelector:
                                                   for t in topk)])
             selection_stage = "fast_preliminary"
             quality_fallback_active = True
+        elif not filtered_candidates and _pre_quality_pool:
+            # Non-FULL mode: relaxed quality still rejected (e.g., no data at all)
+            # Use pre-quality pool, but mark as EOD mode — these become formal in EOD context
+            quality_passed = [dict(item) for item in _pre_quality_pool]
+            for item in quality_passed:
+                item["data_source"] = item.get("data_source", "eod_fallback")
+                item["candidate_type"] = "RESEARCH_ONLY"
+            topk_input = quality_passed[:max(self.selection_size, candidate_limit)]
+            topk = self._select_diversified_top_k(topk_input, self.selection_size)
+            for item in topk:
+                item["reduce_only"] = default_reduce_only
+            tracker.add_stage("COMPOSITION_FILTER", topk_input, topk,
+                              dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
+                                        "reason_code": "composition_limit"}
+                                       for item in topk_input
+                                       if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
+                                                  for t in topk)])
+            selection_stage = "eod_quality_relaxed"
         else:
             quality_passed = list(filtered_candidates)
             if not quality_passed:
                 quality_passed = [dict(item) for item in _pre_quality_pool]
-                selection_stage = "fast_preliminary"
+                for item in quality_passed:
+                    item["data_source"] = item.get("data_source", "eod_fallback")
+                selection_stage = "eod_no_quality_pass"
+
+            # In non-FULL modes, mark candidates as EOD-validated
+            if not quality_mode_is_strict:
+                for item in quality_passed:
+                    if not item.get("data_source"):
+                        item["data_source"] = "eod_validated"
+                    item["candidate_type"] = "RESEARCH_ONLY"
 
             topk_input = quality_passed[:max(self.selection_size, candidate_limit)]
             topk = self._select_diversified_top_k(topk_input, self.selection_size)
@@ -693,12 +765,11 @@ class AIStrategySelector:
         filter_report["selection_stage"] = selection_stage
         write_selection_filter_log(filter_report)
 
-        # ── FORMAL_TOP: always record with the quality-passed pool as input ──
+        # ── FORMAL_TOP: output depends on mode ──
         preview_symbols: list[str] = []
         formal_symbols: list[str] = []
         if quality_fallback_active:
-            # Quality gate rejected all — preliminary pool becomes Preview (research-only).
-            # Formal TOP is empty.
+            # FULL mode only: quality gate rejected all → preview only
             tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             formal_symbols: list[str] = []
@@ -706,8 +777,21 @@ class AIStrategySelector:
                 preview_symbols=preview_symbols,
                 formal_symbols=formal_symbols,
             )
+        elif not quality_mode_is_strict and not filtered_candidates:
+            # Non-FULL mode: all quality-rejected but mode-aware — topk = pre_quality pool
+            tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
+            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+            formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+            tracker.set_formal_candidates(formal_symbols)
+            tracker.mark_quality_relaxed()
+        elif not quality_mode_is_strict:
+            # Non-FULL mode with quality-passed candidates → they become formal
+            tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+            preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
+            formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
+            tracker.set_formal_candidates(formal_symbols)
         else:
-            # Normal path: topk ⊆ quality_passed → invariant holds.
+            # FULL mode, normal path: topk ⊆ quality_passed → invariant holds.
             tracker.add_stage("FORMAL_TOP", quality_passed, topk)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
@@ -740,6 +824,12 @@ class AIStrategySelector:
             write_top_configs(topk)
 
         report_rows = self._format_report_rows(topk)
+        # Determine candidate type based on mode
+        _candidate_type = "LIVE_TRADABLE" if quality_mode_is_strict and not quality_fallback_active else "RESEARCH_ONLY"
+        # Mark all top candidates with their type
+        for item in topk:
+            if "candidate_type" not in item:
+                item["candidate_type"] = _candidate_type
         return {
             "top10": top10,
             "top5": topk,
@@ -754,6 +844,7 @@ class AIStrategySelector:
                 "data_mode": data_mode,
                 "fallback_used": fallback_used,
                 "selection_stage": selection_stage,
+                "run_mode": _run_mode,
             },
             "quality_filter_report": filter_report,
             "selection_run_id": selection_run_id,
@@ -766,6 +857,8 @@ class AIStrategySelector:
             "formal_candidates": formal_symbols,
             "quality_fallback_active": quality_fallback_active,
             "quality_fallback_reason": "QUALITY_GATE" if quality_fallback_active else "",
+            "run_mode": _run_mode,
+            "candidate_type": _candidate_type,
             "preflight": _preflight_report,
         }
 
