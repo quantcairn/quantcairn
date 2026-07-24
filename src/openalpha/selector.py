@@ -87,6 +87,35 @@ def _normalize_ticker(value: Any) -> str:
     return str(value or "").strip().upper().split(".")[0]
 
 
+def _build_market_data_diagnostics(
+    universe_symbols: list[str],
+    scored_symbols_set: set[str],
+) -> list[dict[str, Any]]:
+    """Build per-symbol diagnostic records for every universe symbol that
+    didn't reach the scoring pipeline.
+
+    Each record carries the exact failure path:
+      - OHLCV fetch error / available rows
+      - Whether a fallback profile exists
+      - Whether the fallback profile was blocked by the universe filter
+    """
+    try:
+        from src.openalpha.data_diagnostics import diagnose_market_data_drops
+        return diagnose_market_data_drops(
+            universe_symbols=[_normalize_ticker(s) for s in universe_symbols],
+            scored_symbols=[_normalize_ticker(s) for s in scored_symbols_set],
+        )
+    except Exception:
+        # Never let diagnostics break selection — fall back to simple reason
+        return [
+            {"symbol": _normalize_ticker(sym),
+             "reason_code": "market_data_sufficiency_failed",
+             "reason_detail": "diagnostics unavailable; scoring returned no result"}
+            for sym in universe_symbols
+            if _normalize_ticker(sym) not in scored_symbols_set
+        ]
+
+
 class _QualityFilterContext:
     def __init__(self):
         self._quotes: dict[str, tuple[float | None, float | None, float | None, bool]] = {}
@@ -532,11 +561,10 @@ class AIStrategySelector:
         # Fix chain: MARKET_DATA output is the pool that actually reached scoring
         # (replace the stage with correct output now that scoring has run)
         _valid_scored_symbols = [_normalize_ticker(item.get("ticker")) for item in scored]
-        _market_data_dropped = [
-            {"symbol": sym, "reason_code": "market_data_sufficiency_failed",
-             "reason_detail": "scoring pipeline returned no result for this symbol"}
-            for sym in symbols if _normalize_ticker(sym) not in set(_valid_scored_symbols)
-        ]
+        _valid_set = set(_valid_scored_symbols)
+        _market_data_dropped = _build_market_data_diagnostics(
+            symbols, _valid_set
+        )
         tracker.records[-1] = FunnelStageRecord(
             stage="MARKET_DATA",
             input_symbols=list(symbols),

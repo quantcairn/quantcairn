@@ -40,6 +40,15 @@ KNOWN_REASON_CODES = {
     "provider_malformed_response", "refinement_rejected",
     "entry_quality_too_low", "leveraged_etf_limit_exceeded",
     "composition_limit", "top_n_limit", "top_n_not_filled", "unknown",
+    # Quality filter reasons (DATA_QUALITY stage)
+    "missing_market_data", "volume_filter", "spread_filter",
+    "spread_unavailable", "volatility_filter",
+    "existing_position_bypass", "special_etf_quote_override",
+    # Market data diagnostic reasons (MARKET_DATA stage)
+    "no_ohlcv_data_and_no_fallback",
+    "no_ohlcv_data_fallback_blocked_universe",
+    "insufficient_ohlcv_rows",
+    "ohlcv_success_but_scoring_failed",
 }
 
 
@@ -478,6 +487,8 @@ class FunnelTracker:
         "spread_filter": "买卖价差 ≥ 0.5%",
         "spread_unavailable": "无法获取买卖报价",
         "volatility_filter": "3 日波动超限",
+        "existing_position_bypass": "已持仓标的放行(跳过质量检查)",
+        "special_etf_quote_override": "特殊ETF报价覆盖",
         "ohlcv_missing": "OHLCV 历史数据缺失",
         "quote_missing": "实时报价缺失",
         "history_insufficient": "历史数据不足（<4 条 K 线）",
@@ -485,6 +496,21 @@ class FunnelTracker:
         "formal_scoring_ineligible": "不具备正式评分资格",
         "composition_limit": "组合分散化上限",
         "market_data_sufficiency_failed": "市场数据不满足最低要求",
+        # Market data diagnostic codes
+        "no_ohlcv_data_and_no_fallback": "无OHLCV数据且无回退配置",
+        "no_ohlcv_data_fallback_blocked_universe": "OHLCV缺失且回退被Universe拦截",
+        "insufficient_ohlcv_rows": "OHLCV历史数据不足",
+        "ohlcv_success_but_scoring_failed": "数据获取成功但评分管道失败",
+        # Universe filter codes
+        "price_out_of_range": "价格超范围",
+        "price_missing": "价格缺失",
+        "dollar_volume_missing": "成交额数据缺失",
+        "low_dollar_volume": "成交额不足",
+        "market_cap_missing": "市值数据缺失",
+        "market_cap_too_small": "市值过小",
+        "volatility_missing": "波动率数据缺失",
+        "volatility_too_low": "波动率过低",
+        "volatility_too_high": "波动率过高",
         "unknown": "原因未记录",
     }
 
