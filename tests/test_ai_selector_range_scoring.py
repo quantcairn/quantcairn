@@ -80,14 +80,14 @@ def test_flat_series_is_filtered_out():
 
 
 def test_high_price_series_is_filtered_out():
-    previous = os.environ.get("AI_SELECTOR_MAX_PRICE")
-    os.environ["AI_SELECTOR_MAX_PRICE"] = "110"
+    previous = os.environ.get("OPENALPHA_MAX_PRICE")
+    os.environ["OPENALPHA_MAX_PRICE"] = "110"
     try:
         scorer = Scorer()
         result = scorer.score_frame("EXPENSIVE", _make_range_like_df(base=115.0), news_items=[], sector="Technology")
         assert result is None
     finally:
         if previous is None:
-            os.environ.pop("AI_SELECTOR_MAX_PRICE", None)
+            os.environ.pop("OPENALPHA_MAX_PRICE", None)
         else:
-            os.environ["AI_SELECTOR_MAX_PRICE"] = previous
+            os.environ["OPENALPHA_MAX_PRICE"] = previous

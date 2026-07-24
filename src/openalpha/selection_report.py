@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.ai_selector.selection_bundle import (
+from src.openalpha.selection_bundle import (
     load_committed_selection_bundle,
     load_selection_bundle_manifest,
 )
-from src.ai_selector.selection_state import load_selection_state
+from src.openalpha.selection_state import load_selection_state
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
 

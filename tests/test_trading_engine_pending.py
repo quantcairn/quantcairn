@@ -595,7 +595,7 @@ def test_live_arming_top_true_local_false_blocks():
     with patch("src.config.runtime_values.load_private_longbridge_config",
                return_value={"allow_live_order": False}):
         # Mock selection state to be active with ticker included
-        with patch("src.ai_selector.selection_state.load_selection_state",
+        with patch("src.openalpha.selection_state.load_selection_state",
                    return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
             with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
                 engine._try_arm_live_ordering()
@@ -614,7 +614,7 @@ def test_live_arming_top_false_local_true_blocks():
     engine.config.broker.longbridge.account_type = "live"
     with patch("src.config.runtime_values.load_private_longbridge_config",
                return_value={"allow_live_order": True}):
-        with patch("src.ai_selector.selection_state.load_selection_state",
+        with patch("src.openalpha.selection_state.load_selection_state",
                    return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
             with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
                 engine._try_arm_live_ordering()
@@ -633,7 +633,7 @@ def test_live_arming_local_missing_blocks():
     engine.config.broker.longbridge.account_type = "live"
     # local config has no allow_live_order key
     with patch("src.config.runtime_values.load_private_longbridge_config", return_value={}):
-        with patch("src.ai_selector.selection_state.load_selection_state",
+        with patch("src.openalpha.selection_state.load_selection_state",
                    return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
             with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
                 engine._try_arm_live_ordering()
@@ -652,7 +652,7 @@ def test_live_arming_all_true_arms():
     engine.config.broker.longbridge.account_type = "live"
     with patch("src.config.runtime_values.load_private_longbridge_config",
                return_value={"allow_live_order": True}):
-        with patch("src.ai_selector.selection_state.load_selection_state",
+        with patch("src.openalpha.selection_state.load_selection_state",
                    return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
             with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
                 engine._try_arm_live_ordering()
@@ -691,7 +691,7 @@ def test_live_arming_prod_env_without_dual_approval_blocks():
     # local config: environment=prod but allow_live_order=false explicitly
     with patch("src.config.runtime_values.load_private_longbridge_config",
                return_value={"environment": "prod", "allow_live_order": False}):
-        with patch("src.ai_selector.selection_state.load_selection_state",
+        with patch("src.openalpha.selection_state.load_selection_state",
                    return_value={"et_date": "2026-07-23", "selected_symbols": ["PLTR"]}):
             with patch("src.utils.market_calendar.required_selection_date", return_value="2026-07-23"):
                 engine._try_arm_live_ordering()

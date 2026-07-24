@@ -165,7 +165,7 @@ case "$1" in
 
         # Refresh configs only after live holdings are verified. A failed
         # selector must prevent old TOP configs from entering live trading.
-        if ! FORCE_AI_RUN=1 AI_SELECTOR_RESTART_TOP=0 \
+        if ! FORCE_AI_RUN=1 OPENALPHA_RESTART_TOP=0 \
             "$PYTHON_BIN" "$PROJECT_DIR/scripts/ai_selector_wrapper.py" \
             >> "$LOG_FILE" 2>&1; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] AI selection failed; trading start aborted" \

@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import yaml
 
-from src.ai_selector import selection_state
-from src.ai_selector.config import AISelectorRuntimeConfig
+from src.openalpha import selection_state
+from src.openalpha.config import AISelectorRuntimeConfig
 from src.config.loader import AppConfig, PositionConfig, PositionPolicyConfig
 from src.engine import trading_engine as engine_module
 from src.engine.trading_engine import TradingEngine

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from src.ai_selector.config import load_runtime_config
+from src.openalpha.config import load_runtime_config
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
 

@@ -12,10 +12,10 @@ from src.config.runtime_values import get_runtime_env
 from src.universe.universe import Universe
 from src.scoring.scorer import Scorer
 from src.news_agent.news_collector import NewsCollector
-from src.ai_selector.settings import load_runtime_settings
+from src.openalpha.settings import load_runtime_settings
 from src.data.fetcher import PriceFetcher
-from src.ai_selector.candidate_ranking import score_candidate
-from src.ai_selector.funnel_tracker import FunnelTracker, FunnelStageRecord
+from src.openalpha.candidate_ranking import score_candidate
+from src.openalpha.funnel_tracker import FunnelTracker, FunnelStageRecord
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = PROJECT_DIR / "logs"
@@ -410,7 +410,7 @@ class AIStrategySelector:
         self._last_quality_filter_report: dict[str, Any] = {}
 
     def _selection_size_from_env(self) -> int:
-        raw = os.environ.get("AI_SELECTOR_TOP_K", "5")
+        raw = os.environ.get("OPENALPHA_TOP_K", "5")
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -418,7 +418,7 @@ class AIStrategySelector:
         return max(1, value)
 
     def _max_symbols_from_env(self) -> int:
-        raw = os.environ.get("AI_SELECTOR_MAX_SYMBOLS", "50")
+        raw = os.environ.get("OPENALPHA_MAX_SYMBOLS", "50")
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -426,7 +426,7 @@ class AIStrategySelector:
         return max(1, value)
 
     def _filter_candidate_limit_from_env(self) -> int:
-        raw = os.environ.get("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "12")
+        raw = os.environ.get("OPENALPHA_FILTER_CANDIDATE_LIMIT", "12")
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -434,7 +434,7 @@ class AIStrategySelector:
         return max(self.selection_size, value)
 
     def _total_budget_seconds_from_env(self) -> float:
-        raw = os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "15")
+        raw = os.environ.get("OPENALPHA_TOTAL_BUDGET_SECONDS", "15")
         try:
             value = float(raw)
         except (TypeError, ValueError):
@@ -442,7 +442,7 @@ class AIStrategySelector:
         return max(3.0, value)
 
     def _quality_budget_seconds_from_env(self) -> float:
-        raw = os.environ.get("AI_SELECTOR_QUALITY_BUDGET_SECONDS", "8")
+        raw = os.environ.get("OPENALPHA_QUALITY_BUDGET_SECONDS", "8")
         try:
             value = float(raw)
         except (TypeError, ValueError):
@@ -454,19 +454,19 @@ class AIStrategySelector:
         return raw in {"1", "true", "yes", "on"}
 
     def _live_data_requested(self) -> bool:
-        return os.environ.get("AI_SELECTOR_LIVE_DATA", "1") != "0"
+        return os.environ.get("OPENALPHA_LIVE_DATA", "1") != "0"
 
     def _score_with_live_flag(self, symbols: List[str], news_map: Dict[str, List[str]], live_enabled: bool) -> List[dict]:
-        previous = os.environ.get("AI_SELECTOR_LIVE_DATA")
-        os.environ["AI_SELECTOR_LIVE_DATA"] = "1" if live_enabled else "0"
+        previous = os.environ.get("OPENALPHA_LIVE_DATA")
+        os.environ["OPENALPHA_LIVE_DATA"] = "1" if live_enabled else "0"
         try:
             self.scorer = Scorer()
             return self.scorer.score_universe(symbols, news_map)
         finally:
             if previous is None:
-                os.environ.pop("AI_SELECTOR_LIVE_DATA", None)
+                os.environ.pop("OPENALPHA_LIVE_DATA", None)
             else:
-                os.environ["AI_SELECTOR_LIVE_DATA"] = previous
+                os.environ["OPENALPHA_LIVE_DATA"] = previous
             self.scorer = Scorer()
 
     def run_selection(self, write_configs: bool = True, symbols_override: List[str] | None = None):
@@ -481,7 +481,7 @@ class AIStrategySelector:
         # ── Preflight: check market state before building universe ───────
         _preflight_report: dict[str, Any] = {}
         try:
-            from src.ai_selector.preflight import run_preflight as _run_preflight, PreflightReport
+            from src.openalpha.preflight import run_preflight as _run_preflight, PreflightReport
             _pf = _run_preflight(dry_run=True)
             _preflight_report = _pf.to_dict()
         except Exception:
@@ -498,7 +498,7 @@ class AIStrategySelector:
                     symbols.append(symbol)
                     seen.add(symbol)
         else:
-            source = os.environ.get("AI_SELECTOR_UNIVERSE", "managed")
+            source = os.environ.get("OPENALPHA_UNIVERSE", "managed")
             if source == "managed":
                 managed = _load_managed_universe()
                 if managed:
@@ -518,7 +518,7 @@ class AIStrategySelector:
 
         # 2. collect data & news. News scraping is optional because it can be
         # slow/unreliable before the open; technical/volume scoring still works.
-        if os.environ.get("AI_SELECTOR_FETCH_NEWS", "0") == "1":
+        if os.environ.get("OPENALPHA_FETCH_NEWS", "0") == "1":
             news_map = self.news.collect_for_symbols(symbols)
         else:
             news_map = {symbol: [] for symbol in symbols}
@@ -592,7 +592,7 @@ class AIStrategySelector:
             max(0.0, total_budget - elapsed_before_quality),
         )
         selection_stage = "quality_refined"
-        if quality_budget <= 0 or os.environ.get("AI_SELECTOR_FAST_START_ONLY", "0") == "1":
+        if quality_budget <= 0 or os.environ.get("OPENALPHA_FAST_START_ONLY", "0") == "1":
             filtered_candidates = []
             filter_report = {
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -692,7 +692,7 @@ class AIStrategySelector:
 
         # write configs for selected TopK
         if write_configs:
-            from src.ai_selector.config_writer import write_top_configs
+            from src.openalpha.config_writer import write_top_configs
             write_top_configs(topk)
 
         report_rows = self._format_report_rows(topk)

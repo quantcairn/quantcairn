@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.ai_selector.data_quality import (
+from src.openalpha.data_quality import (
     enrich_candidate_quality,
     evaluate_candidate_data_quality,
     formal_selection_ineligibility_reasons,

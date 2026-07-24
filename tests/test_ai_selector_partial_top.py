@@ -290,7 +290,7 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
         (tmpdir / "configs" / "TOP2.yaml").write_text("ticker: OLD2\nmode: paper\n", encoding="utf-8")
         (tmpdir / "configs" / "TOP3.yaml").write_text("ticker: OLD3\nmode: paper\n", encoding="utf-8")
 
-        from src.ai_selector import config_writer
+        from src.openalpha import config_writer
 
         original_base = config_writer.BASE
         original_composition_filter = module._apply_composition_filter
@@ -366,13 +366,13 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
                 "report_path": "reports/ai_selection_latest.json",
                 "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
             }
-            os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-            os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+            os.environ["OPENALPHA_RESTART_TOP"] = "0"
+            os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
             try:
                 module.main()
             finally:
-                os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
-                os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+                os.environ.pop("OPENALPHA_RESTART_TOP", None)
+                os.environ.pop("OPENALPHA_BACKGROUND_REFINEMENT", None)
         finally:
             config_writer.BASE = original_base
 
@@ -399,7 +399,7 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
             (tmpdir / folder).mkdir()
         (tmpdir / "configs" / "TOP3.yaml").write_text("ticker: OLD\nmode: paper\n", encoding="utf-8")
 
-        from src.ai_selector import config_writer
+        from src.openalpha import config_writer
 
         original_base = config_writer.BASE
         original_fallback_builder = module._build_conservative_fallback_candidates
@@ -437,13 +437,13 @@ def test_partial_top_uses_conservative_fallback_pool_and_writes_top3():
                 "report_path": "reports/ai_selection_latest.json",
                 "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
             }
-            os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-            os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+            os.environ["OPENALPHA_RESTART_TOP"] = "0"
+            os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
             try:
                 module.main()
             finally:
-                os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
-                os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+                os.environ.pop("OPENALPHA_RESTART_TOP", None)
+                os.environ.pop("OPENALPHA_BACKGROUND_REFINEMENT", None)
         finally:
             module._live_candidate_price = original_live_candidate_price
             config_writer.BASE = original_base
@@ -469,7 +469,7 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
             (tmpdir / folder).mkdir()
         (tmpdir / "configs" / "TOP3.yaml").write_text("ticker: OLD\nmode: paper\n", encoding="utf-8")
 
-        from src.ai_selector import config_writer
+        from src.openalpha import config_writer
 
         original_base = config_writer.BASE
         captured_bundles: list[dict] = []
@@ -491,13 +491,13 @@ def test_partial_top_without_fallback_deletes_stale_top3_and_reports_missing_slo
                 "report_path": "reports/ai_selection_latest.json",
                 "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
             }
-            os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-            os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+            os.environ["OPENALPHA_RESTART_TOP"] = "0"
+            os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
             try:
                 module.main()
             finally:
-                os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
-                os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+                os.environ.pop("OPENALPHA_RESTART_TOP", None)
+                os.environ.pop("OPENALPHA_BACKGROUND_REFINEMENT", None)
         finally:
             config_writer.BASE = original_base
 
@@ -525,7 +525,7 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
         for folder in ("configs", "reports", "state", "logs", "runtime"):
             (tmpdir / folder).mkdir()
 
-        from src.ai_selector import config_writer
+        from src.openalpha import config_writer
 
         original_base = config_writer.BASE
         captured_bundles: list[dict] = []
@@ -701,13 +701,13 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                 "report_path": "reports/ai_selection_latest.json",
                 "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
             }
-            os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-            os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+            os.environ["OPENALPHA_RESTART_TOP"] = "0"
+            os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
             try:
                 module.main()
             finally:
-                os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
-                os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+                os.environ.pop("OPENALPHA_RESTART_TOP", None)
+                os.environ.pop("OPENALPHA_BACKGROUND_REFINEMENT", None)
         finally:
             config_writer.BASE = original_base
 

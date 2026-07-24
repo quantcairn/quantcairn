@@ -329,7 +329,7 @@ class TestSelectorIntegration:
         mgr.save_symbols(symbols)
         mgr.build_snapshot(dry_run=False)
 
-        from src.ai_selector.selector import _load_managed_universe
+        from src.openalpha.selector import _load_managed_universe
         with patch("src.universe.manager.UniverseManager", return_value=mgr):
             result = _load_managed_universe()
             assert result is not None
@@ -344,13 +344,13 @@ class TestSelectorIntegration:
         mgr = UniverseManager(snapshot_path=tmp_path / "snap.json", universe_path=tmp_path / "uni.json")
         mgr.save_symbols([])
         with patch("src.universe.manager.UniverseManager", return_value=mgr):
-            from src.ai_selector.selector import _load_managed_universe
+            from src.openalpha.selector import _load_managed_universe
             result = _load_managed_universe()
             assert result is None
 
     def test_legacy_sample_fallback_works(self):
         """The legacy sample universe is still accessible when 'sample' is requested."""
-        import src.ai_selector.selector as sel_mod
+        import src.openalpha.selector as sel_mod
         assert hasattr(sel_mod, '_load_managed_universe')
         assert callable(sel_mod.Universe()._load_local_snapshot)
 

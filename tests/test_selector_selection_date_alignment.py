@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from scripts import run_ai_selector
-from src.ai_selector import config_writer
+from src.openalpha import config_writer
 from src.utils.market_calendar import required_selection_date
 
 

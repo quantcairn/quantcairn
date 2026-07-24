@@ -36,9 +36,9 @@ from .ranked_position_policy import calculate_ranked_target_allocations
 from ..order.order_state import OrderStateManager
 from ..safety.live_guard import LiveGuard
 from ..reports.pretrade_report import PretradeReport
-from ..ai_selector.config import load_runtime_config as load_ai_selector_runtime_config
-from ..ai_selector.integration import AISelector
-from ..ai_selector.selection_state import (
+from ..openalpha.config import load_runtime_config as load_ai_selector_runtime_config
+from ..openalpha.integration import AISelector
+from ..openalpha.selection_state import (
     current_top_config_symbols,
     has_live_top_configs,
     load_selection_state,
@@ -46,9 +46,9 @@ from ..ai_selector.selection_state import (
     verify_selection_state,
     verify_live_startup_selection,
 )
-from ..ai_selector import selection_state as selection_state_module
-from ..ai_selector.selection_bundle import load_committed_selection_bundle
-from ..ai_selector.selection_report import load_latest_ai_selection_state
+from ..openalpha import selection_state as selection_state_module
+from ..openalpha.selection_bundle import load_committed_selection_bundle
+from ..openalpha.selection_report import load_latest_ai_selection_state
 from ..utils.market_calendar import required_selection_date
 
 logger = logging.getLogger(__name__)
@@ -460,7 +460,7 @@ class TradingEngine:
         selection_active = False
         ticker_selected = False
         try:
-            from ..ai_selector.selection_state import (
+            from ..openalpha.selection_state import (
                 load_selection_state,
                 current_top_config_symbols,
             )

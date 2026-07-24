@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-AI_SELECTOR_ENABLED = False
+OPENALPHA_ENABLED = False
 OPENBB_ENABLED = False
 FMP_API_KEY = os.getenv("FMP_API_KEY", "").strip()
 FMP_ENABLED = bool(FMP_API_KEY)
@@ -95,17 +95,17 @@ def _list_env(name: str, default: list[str]) -> list[str]:
 
 def load_runtime_config() -> AISelectorRuntimeConfig:
     return AISelectorRuntimeConfig(
-        enabled=_bool_env("SOXS_AI_SELECTOR_ENABLED", AI_SELECTOR_ENABLED),
-        top_n=_int_env("SOXS_AI_SELECTOR_TOP_N", TOP_N),
+        enabled=_bool_env("SOXS_OPENALPHA_ENABLED", OPENALPHA_ENABLED),
+        top_n=_int_env("SOXS_OPENALPHA_TOP_N", TOP_N),
         analysis_universe_limit=_int_env(
-            "SOXS_AI_SELECTOR_ANALYSIS_UNIVERSE_LIMIT",
+            "SOXS_OPENALPHA_ANALYSIS_UNIVERSE_LIMIT",
             ANALYSIS_UNIVERSE_LIMIT,
         ),
         provider_refine_candidate_limit=_int_env(
-            "SOXS_AI_SELECTOR_PROVIDER_REFINE_CANDIDATE_LIMIT",
+            "SOXS_OPENALPHA_PROVIDER_REFINE_CANDIDATE_LIMIT",
             PROVIDER_REFINE_CANDIDATE_LIMIT,
         ),
-        universe=_list_env("SOXS_AI_SELECTOR_UNIVERSE", UNIVERSE),
+        universe=_list_env("SOXS_OPENALPHA_UNIVERSE", UNIVERSE),
         top10_path=LATEST_TOP10_PATH,
         tradingagents_path=os.environ.get("SOXS_TRADINGAGENTS_PATH", "").strip(),
         tradingagents_python=os.environ.get("SOXS_TRADINGAGENTS_PYTHON", "").strip() or "python3",
@@ -120,23 +120,23 @@ def load_runtime_config() -> AISelectorRuntimeConfig:
         ),
         fmp_api_key=os.environ.get("FMP_API_KEY", FMP_API_KEY).strip(),
         allow_fallback_paper_entries=_bool_env(
-            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_PAPER_ENTRIES",
+            "SOXS_OPENALPHA_ALLOW_FALLBACK_PAPER_ENTRIES",
             ALLOW_FALLBACK_PAPER_ENTRIES,
         ),
         allow_fallback_live_entries=_bool_env(
-            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_LIVE_ENTRIES",
+            "SOXS_OPENALPHA_ALLOW_FALLBACK_LIVE_ENTRIES",
             ALLOW_FALLBACK_LIVE_ENTRIES,
         ),
         fallback_paper_position_multiplier=_float_env(
-            "SOXS_AI_SELECTOR_FALLBACK_PAPER_POSITION_MULTIPLIER",
+            "SOXS_OPENALPHA_FALLBACK_PAPER_POSITION_MULTIPLIER",
             FALLBACK_PAPER_POSITION_MULTIPLIER,
         ),
         entry_proximity_enabled=_bool_env(
-            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_ENABLED",
+            "SOXS_OPENALPHA_ENTRY_PROXIMITY_ENABLED",
             ENTRY_PROXIMITY_ENABLED,
         ),
         entry_proximity_weight=_float_env(
-            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_WEIGHT",
+            "SOXS_OPENALPHA_ENTRY_PROXIMITY_WEIGHT",
             ENTRY_PROXIMITY_WEIGHT,
         ),
     )

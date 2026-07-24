@@ -7,7 +7,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from src.ai_selector.scoring import combine_scores
+from src.openalpha.scoring import combine_scores
 
 
 def test_combine_scores_sorts_descending():

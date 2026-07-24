@@ -1,4 +1,4 @@
-from src.ai_selector.selector import AIStrategySelector
+from src.openalpha.selector import AIStrategySelector
 
 
 def _candidate(ticker, sector, score, corr_seed):
@@ -44,10 +44,10 @@ def test_top5_selection_spreads_across_sectors():
 
 def test_selector_falls_back_when_live_scoring_returns_too_few(monkeypatch):
     selector = AIStrategySelector()
-    monkeypatch.setenv("AI_SELECTOR_LIVE_DATA", "1")
-    monkeypatch.setenv("AI_SELECTOR_TOP_K", "3")
+    monkeypatch.setenv("OPENALPHA_LIVE_DATA", "1")
+    monkeypatch.setenv("OPENALPHA_TOP_K", "3")
     selector.selection_size = 3
-    monkeypatch.setattr("src.ai_selector.config_writer.write_top_configs", lambda top_items: None)
+    monkeypatch.setattr("src.openalpha.config_writer.write_top_configs", lambda top_items: None)
 
     selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
     selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}
@@ -85,7 +85,7 @@ def test_selector_can_defer_config_writes_until_positions_are_verified(monkeypat
     ]
     writes = []
     monkeypatch.setattr(
-        "src.ai_selector.config_writer.write_top_configs",
+        "src.openalpha.config_writer.write_top_configs",
         lambda top_items: writes.append(top_items),
     )
 

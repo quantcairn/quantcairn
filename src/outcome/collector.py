@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from src.broker.paper_portfolio_state import read_paper_portfolio_state
-from src.ai_selector.selection_bundle import load_committed_selection_bundle
-from src.ai_selector.selection_state import load_selection_state
+from src.openalpha.selection_bundle import load_committed_selection_bundle
+from src.openalpha.selection_state import load_selection_state
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LEARNING_DIR = PROJECT_DIR / "artifacts" / "learning"

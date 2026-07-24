@@ -4,8 +4,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from src.ai_selector.config import AISelectorRuntimeConfig
-from src.ai_selector.integration import AISelector
+from src.openalpha.config import AISelectorRuntimeConfig
+from src.openalpha.integration import AISelector
 
 
 class NeutralProvider:

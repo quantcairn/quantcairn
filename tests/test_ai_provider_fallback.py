@@ -10,9 +10,9 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from src.ai_selector.config import AISelectorRuntimeConfig
-from src.ai_selector.providers.finrobot_provider import FinRobotProvider
-from src.ai_selector.providers.tradingagents_provider import TradingAgentsProvider
+from src.openalpha.config import AISelectorRuntimeConfig
+from src.openalpha.providers.finrobot_provider import FinRobotProvider
+from src.openalpha.providers.tradingagents_provider import TradingAgentsProvider
 
 
 class SimpleMonkeyPatch:

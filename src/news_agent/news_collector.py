@@ -9,9 +9,9 @@ import os
 class NewsCollector:
     def __init__(self):
         self.session = requests.Session()
-        self.session.trust_env = os.environ.get("AI_SELECTOR_ALLOW_PROXY_NEWS", "0") == "1"
+        self.session.trust_env = os.environ.get("OPENALPHA_ALLOW_PROXY_NEWS", "0") == "1"
         self.logger = logging.getLogger('news_collector')
-        self.timeout = float(os.environ.get("AI_SELECTOR_NEWS_TIMEOUT_SECONDS", "3") or 3)
+        self.timeout = float(os.environ.get("OPENALPHA_NEWS_TIMEOUT_SECONDS", "3") or 3)
 
     def fetch_news_snippets(self, ticker: str) -> List[str]:
         snippets = []
@@ -40,9 +40,9 @@ class NewsCollector:
 
     def collect_for_symbols(self, symbols: List[str]) -> Dict[str, List[str]]:
         out = {}
-        if os.environ.get("AI_SELECTOR_FETCH_NEWS", "0") != "1":
+        if os.environ.get("OPENALPHA_FETCH_NEWS", "0") != "1":
             return {s: [] for s in symbols}
-        delay = float(os.environ.get("AI_SELECTOR_NEWS_SLEEP_SECONDS", "0.1") or 0.1)
+        delay = float(os.environ.get("OPENALPHA_NEWS_SLEEP_SECONDS", "0.1") or 0.1)
         for s in symbols:
             out[s] = self.fetch_news_snippets(s)
             if delay > 0:

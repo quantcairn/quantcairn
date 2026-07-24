@@ -12,7 +12,7 @@ import yaml
 
 from ..broker.base import Position
 from ..config.loader import AppConfig, PositionConfig
-from ..ai_selector.selection_report import load_latest_ai_selection_state
+from ..openalpha.selection_report import load_latest_ai_selection_state
 from .trading_engine import (
     TradingEngine,
     append_runtime_audit,

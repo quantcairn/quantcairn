@@ -186,12 +186,12 @@ def test_notifications_split_trade_and_ai_selector_channels():
 
     original_trade_token = os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
     original_trade_chat = os.environ.get("SOXS_TELEGRAM_CHAT_ID")
-    original_ai_token = os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN")
-    original_ai_chat = os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID")
+    original_ai_token = os.environ.get("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN")
+    original_ai_chat = os.environ.get("SOXS_OPENALPHA_TELEGRAM_CHAT_ID")
     os.environ.pop("SOXS_TELEGRAM_BOT_TOKEN", None)
     os.environ.pop("SOXS_TELEGRAM_CHAT_ID", None)
-    os.environ.pop("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN", None)
-    os.environ.pop("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID", None)
+    os.environ.pop("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN", None)
+    os.environ.pop("SOXS_OPENALPHA_TELEGRAM_CHAT_ID", None)
     try:
         config = _parse_config(
             {
@@ -225,13 +225,13 @@ def test_notifications_split_trade_and_ai_selector_channels():
         else:
             os.environ["SOXS_TELEGRAM_CHAT_ID"] = original_trade_chat
         if original_ai_token is None:
-            os.environ.pop("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN", None)
+            os.environ.pop("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN", None)
         else:
-            os.environ["SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN"] = original_ai_token
+            os.environ["SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN"] = original_ai_token
         if original_ai_chat is None:
-            os.environ.pop("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID", None)
+            os.environ.pop("SOXS_OPENALPHA_TELEGRAM_CHAT_ID", None)
         else:
-            os.environ["SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID"] = original_ai_chat
+            os.environ["SOXS_OPENALPHA_TELEGRAM_CHAT_ID"] = original_ai_chat
 
 
 def run_test_direct():

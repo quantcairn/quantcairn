@@ -13,9 +13,9 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from src.ai_selector import selection_state
-from src.ai_selector.config import AISelectorRuntimeConfig
-from src.ai_selector.integration import AISelector
+from src.openalpha import selection_state
+from src.openalpha.config import AISelectorRuntimeConfig
+from src.openalpha.integration import AISelector
 from src.config.loader import AppConfig
 from src.engine import trading_engine as engine_module
 from src.engine.trading_engine import TradingEngine

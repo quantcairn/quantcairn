@@ -28,7 +28,7 @@ from .models import (
     default_candidate_for_symbol,
 )
 from .store import CandidateValidationStore
-from ..ai_selector.selection_bundle import load_committed_selection_bundle
+from ..openalpha.selection_bundle import load_committed_selection_bundle
 
 
 PROJECT_DIR = Path(

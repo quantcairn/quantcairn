@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.ai_selector.preflight import (
+from src.openalpha.preflight import (
     PreflightReport,
     _scan_data_availability,
     run_preflight,
@@ -22,14 +22,14 @@ from src.ai_selector.preflight import (
 
 class TestMarketState:
     def test_market_open_detected(self):
-        with patch("src.ai_selector.preflight._et_now", return_value=__import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))):
+        with patch("src.openalpha.preflight._et_now", return_value=__import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))):
             # Mock market_session_context to return regular session
             class FakeSession:
                 is_market_holiday = False; is_premarket=False; is_regular_session=True
                 is_after_hours=False; session_label="MARKET_OPEN"
                 current_session_reason=""; current_session=__import__("datetime").date(2026,7,24)
                 previous_completed_session=__import__("datetime").date(2026,7,23)
-            with patch("src.ai_selector.preflight.market_session_context", return_value=FakeSession()):
+            with patch("src.openalpha.preflight.market_session_context", return_value=FakeSession()):
                 report = run_preflight(symbols=["AAPL"], max_scan_symbols=1, dry_run=True)
                 assert report.market_state == "MARKET_OPEN"
                 assert report.run_mode in {"FULL", "DEGRADED"}
@@ -40,7 +40,7 @@ class TestMarketState:
             is_after_hours=True; session_label="AFTER_HOURS"
             current_session_reason=""; current_session=__import__("datetime").date(2026,7,24)
             previous_completed_session=__import__("datetime").date(2026,7,24)
-        with patch("src.ai_selector.preflight.market_session_context", return_value=FakeSession()):
+        with patch("src.openalpha.preflight.market_session_context", return_value=FakeSession()):
             report = run_preflight(symbols=["AAPL"], max_scan_symbols=1, dry_run=True)
             assert report.market_state == "AFTER_HOURS"
             assert report.run_mode == "AFTER_MARKET"
@@ -52,7 +52,7 @@ class TestMarketState:
             is_after_hours=False; session_label="CLOSED"
             current_session_reason="weekend"; current_session=None
             previous_completed_session=__import__("datetime").date(2026,7,23)
-        with patch("src.ai_selector.preflight.market_session_context", return_value=FakeSession()):
+        with patch("src.openalpha.preflight.market_session_context", return_value=FakeSession()):
             report = run_preflight(symbols=["AAPL"], max_scan_symbols=1, dry_run=True)
             assert report.market_state == "CLOSED"
             assert report.run_mode == "AFTER_MARKET"
@@ -112,7 +112,7 @@ class TestSerialization:
 
 class TestSafety:
     def test_no_broker_references(self):
-        src = Path(__import__("src.ai_selector.preflight").__file__).read_text()
+        src = Path(__import__("src.openalpha.preflight").__file__).read_text()
         assert "LongBridgeBroker" not in src
         assert "PaperBroker" not in src
         assert "TradeContext" not in src

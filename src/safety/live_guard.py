@@ -21,7 +21,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from src.ai_selector.selection_report import load_latest_ai_selection_state
+from src.openalpha.selection_report import load_latest_ai_selection_state
 from src.utils.market_calendar import required_selection_date
 
 logger = logging.getLogger(__name__)

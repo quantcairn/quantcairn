@@ -370,17 +370,17 @@ def _parse_config(raw: dict) -> AppConfig:
             or n.get("telegram_chat_id", "")
         ),
         ai_selector_webhook_url=(
-            os.environ.get("SOXS_AI_SELECTOR_WEBHOOK")
+            os.environ.get("SOXS_OPENALPHA_WEBHOOK")
             or ai_n.get("webhook_url")
             or n.get("ai_selector_webhook_url")
         ),
         ai_selector_telegram_bot_token=(
-            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN")
+            os.environ.get("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN")
             or ai_n.get("telegram_bot_token", "")
             or n.get("ai_selector_telegram_bot_token", "")
         ),
         ai_selector_telegram_chat_id=(
-            os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID")
+            os.environ.get("SOXS_OPENALPHA_TELEGRAM_CHAT_ID")
             or ai_n.get("telegram_chat_id", "")
             or n.get("ai_selector_telegram_chat_id", "")
         ),
@@ -495,24 +495,24 @@ def _parse_config(raw: dict) -> AppConfig:
     ai_selector_raw = raw.get("ai_selector", {}) or {}
     config.ai_selector = AiSelectorConfig(
         allow_fallback_paper_entries=_bool_env(
-            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_PAPER_ENTRIES",
+            "SOXS_OPENALPHA_ALLOW_FALLBACK_PAPER_ENTRIES",
             _coerce_bool(ai_selector_raw.get("allow_fallback_paper_entries", False)),
         ),
         allow_fallback_live_entries=_bool_env(
-            "SOXS_AI_SELECTOR_ALLOW_FALLBACK_LIVE_ENTRIES",
+            "SOXS_OPENALPHA_ALLOW_FALLBACK_LIVE_ENTRIES",
             _coerce_bool(ai_selector_raw.get("allow_fallback_live_entries", False)),
         ),
         fallback_paper_position_multiplier=_float_env(
-            "SOXS_AI_SELECTOR_FALLBACK_PAPER_POSITION_MULTIPLIER",
+            "SOXS_OPENALPHA_FALLBACK_PAPER_POSITION_MULTIPLIER",
             ai_selector_raw.get("fallback_paper_position_multiplier", 0.25),
         )
         or 0.25,
         entry_proximity_enabled=_bool_env(
-            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_ENABLED",
+            "SOXS_OPENALPHA_ENTRY_PROXIMITY_ENABLED",
             _coerce_bool(ai_selector_raw.get("entry_proximity_enabled", True)),
         ),
         entry_proximity_weight=_float_env(
-            "SOXS_AI_SELECTOR_ENTRY_PROXIMITY_WEIGHT",
+            "SOXS_OPENALPHA_ENTRY_PROXIMITY_WEIGHT",
             ai_selector_raw.get("entry_proximity_weight", 0.0),
         )
         or 0.0,

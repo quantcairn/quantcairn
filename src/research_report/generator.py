@@ -14,9 +14,9 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from src.ai_selector.selection_state import load_selection_state
-from src.ai_selector.selection_report import load_latest_ai_selection_state
-from src.ai_selector.settings import DEFAULT_MAX_PRICE, DEFAULT_MIN_PRICE, resolve_price_band
+from src.openalpha.selection_state import load_selection_state
+from src.openalpha.selection_report import load_latest_ai_selection_state
+from src.openalpha.settings import DEFAULT_MAX_PRICE, DEFAULT_MIN_PRICE, resolve_price_band
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 
 logger = logging.getLogger(__name__)

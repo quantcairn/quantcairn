@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.ai_selector.funnel_tracker import FunnelTracker
+from src.openalpha.funnel_tracker import FunnelTracker
 
 
 # ═══════════════════════════════════════════════════════════════════════

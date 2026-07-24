@@ -44,7 +44,7 @@ LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
 
 
 def _verbose(message: str) -> None:
-    if str(os.environ.get("AI_SELECTOR_WRAPPER_VERBOSE") or "").strip().lower() in {"1", "true", "yes", "on"}:
+    if str(os.environ.get("OPENALPHA_WRAPPER_VERBOSE") or "").strip().lower() in {"1", "true", "yes", "on"}:
         print(message)
 
 
@@ -101,9 +101,9 @@ def _run_selection_if_due():
     py = VENV_PY if os.path.exists(VENV_PY) else sys.executable
     cmd = [py, SELECTOR]
     env = os.environ.copy()
-    env.setdefault("AI_SELECTOR_LIVE_DATA", "1")
-    env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
-    env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
+    env.setdefault("OPENALPHA_LIVE_DATA", "1")
+    env.setdefault("OPENALPHA_FETCH_NEWS", "0")
+    env.setdefault("OPENALPHA_MAX_SYMBOLS", "50")
     os.makedirs(os.path.dirname(OUT_LOG), exist_ok=True)
     with open(OUT_LOG, 'a') as out, open(ERR_LOG, 'a') as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err, cwd=PROJECT_DIR, env=env)

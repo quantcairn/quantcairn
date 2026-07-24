@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from src.ai_selector.data_sufficiency import evaluate_data_sufficiency
-from src.ai_selector.universe_filter import evaluate_universe_candidate, infer_asset_type
-from src.ai_selector.selection_report import normalize_provider_audit
+from src.openalpha.data_sufficiency import evaluate_data_sufficiency
+from src.openalpha.universe_filter import evaluate_universe_candidate, infer_asset_type
+from src.openalpha.selection_report import normalize_provider_audit
 
 
 UTC = timezone.utc

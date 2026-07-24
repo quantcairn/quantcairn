@@ -18,7 +18,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from src.ai_selector.selection_state import (
+from src.openalpha.selection_state import (
     current_top_config_symbols,
     load_selection_state,
     verify_selection_state,

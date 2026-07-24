@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from zoneinfo import ZoneInfo
 
-from src.ai_selector import market_context
+from src.openalpha import market_context
 from src.utils.market_calendar import market_session_context
 
 

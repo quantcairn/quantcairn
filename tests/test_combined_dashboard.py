@@ -652,7 +652,7 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
     monkeypatch.setattr(combined, "get_runtime_env", lambda name, default="": {
-        "SOXS_AI_SELECTOR_ENABLED": "1",
+        "SOXS_OPENALPHA_ENABLED": "1",
         "SOXS_TRADINGAGENTS_PATH": "/tmp/TradingAgents",
         "SOXS_FINROBOT_PATH": "/tmp/FinRobot",
         "OPENAI_API_KEY": "",

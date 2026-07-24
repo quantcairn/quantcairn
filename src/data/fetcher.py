@@ -274,7 +274,7 @@ class PriceFetcher:
                         url,
                         params={"range": "1d", "interval": "1m", "includePrePost": "true"},
                         headers={"User-Agent": "Mozilla/5.0"},
-                        timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
+                        timeout=float(os.environ.get("OPENALPHA_HTTP_TIMEOUT_SECONDS", "3") or 3),
                     )
                     if getattr(resp, "status_code", None) == 401:
                         last_exc = RuntimeError("Yahoo 401 Invalid Crumb")
@@ -390,7 +390,7 @@ class PriceFetcher:
                         f"https://query1.finance.yahoo.com/v8/finance/chart/{self._provider_ticker}",
                         params={"range": yahoo_range, "interval": interval, "includePrePost": "true"},
                         headers={"User-Agent": "Mozilla/5.0"},
-                        timeout=float(os.environ.get("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3") or 3),
+                        timeout=float(os.environ.get("OPENALPHA_HTTP_TIMEOUT_SECONDS", "3") or 3),
                     )
                     if getattr(resp, "status_code", None) == 401:
                         if not unauthorized_retry_used:
@@ -681,8 +681,8 @@ class PriceFetcher:
             period: yfinance period string (1d, 5d, 1mo, etc.)
             interval: yfinance interval string (1m, 5m, 15m, 1h, etc.)
         """
-        direct_first = os.environ.get("AI_SELECTOR_DIRECT_HISTORY", "1") == "1"
-        skip_slow_fallbacks = os.environ.get("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "0") == "1"
+        direct_first = os.environ.get("OPENALPHA_DIRECT_HISTORY", "1") == "1"
+        skip_slow_fallbacks = os.environ.get("OPENALPHA_SKIP_YFINANCE_HISTORY", "0") == "1"
         if direct_first:
             candles = self._fetch_chart_history(period=period, interval=interval)
             if candles:

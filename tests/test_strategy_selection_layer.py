@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.ai_selector.market_regime import analyze_market_regime
-from src.ai_selector.strategy_selection import build_strategy_research
+from src.openalpha.market_regime import analyze_market_regime
+from src.openalpha.strategy_selection import build_strategy_research
 from src.candidate_validation.outcome_dataset import CandidateOutcomeSample
 
 

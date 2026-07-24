@@ -12,12 +12,12 @@ import yaml
 import re
 from zoneinfo import ZoneInfo
 
-from src.ai_selector.config import load_runtime_config
-from src.ai_selector.selection_bundle import load_committed_selection_bundle
-from src.ai_selector.selection_report import load_latest_ai_selection_state, normalize_provider_audit
-from src.ai_selector.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
-from src.ai_selector.universe_filter import load_universe_rules
-from src.ai_selector.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
+from src.openalpha.config import load_runtime_config
+from src.openalpha.selection_bundle import load_committed_selection_bundle
+from src.openalpha.selection_report import load_latest_ai_selection_state, normalize_provider_audit
+from src.openalpha.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
+from src.openalpha.universe_filter import load_universe_rules
+from src.openalpha.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.broker.paper_portfolio_state import default_paper_portfolio_state_path, read_paper_portfolio_state
@@ -3188,7 +3188,7 @@ def _current_et_date() -> str:
 
 
 def _ai_runtime_status() -> dict:
-    enabled = str(_env("SOXS_AI_SELECTOR_ENABLED", "0")).strip().lower() in {
+    enabled = str(_env("SOXS_OPENALPHA_ENABLED", "0")).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -8336,9 +8336,9 @@ def _run_ai_selector_now() -> None:
     project_dir = str(PROJECT_DIR)
     env = os.environ.copy()
     settings = load_runtime_settings()
-    env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
-    env.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
-    env.setdefault("AI_SELECTOR_AUTO_REFRESH_MINUTES", str(settings.get("auto_refresh_minutes", 5)))
+    env.setdefault("OPENALPHA_FETCH_NEWS", "0")
+    env.setdefault("OPENALPHA_MAX_SYMBOLS", "50")
+    env.setdefault("OPENALPHA_AUTO_REFRESH_MINUTES", str(settings.get("auto_refresh_minutes", 5)))
     python_bin = PROJECT_DIR / ".venv" / "bin" / "python"
     if not python_bin.exists():
         python_bin = Path(os.environ.get("PYTHON", "")) if os.environ.get("PYTHON") else Path("python3")

@@ -11,7 +11,7 @@ from typing import Any
 from .performance_tracker import CandidatePerformanceTracker
 from .outcome_dataset import CandidateOutcomeDatasetBuilder
 from .model_evaluation import load_candidate_model_evaluation_snapshot
-from src.ai_selector.selection_report import load_latest_ai_selection_state
+from src.openalpha.selection_report import load_latest_ai_selection_state
 from .store import CandidateValidationStore
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))

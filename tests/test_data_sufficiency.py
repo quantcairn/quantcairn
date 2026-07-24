@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.ai_selector.data_sufficiency import evaluate_data_sufficiency
+from src.openalpha.data_sufficiency import evaluate_data_sufficiency
 
 
 def test_evaluate_data_sufficiency_accepts_complete_market_snapshot():

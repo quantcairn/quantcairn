@@ -5,8 +5,8 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.ai_selector import selector as selector_module
-from src.ai_selector.selector import AIStrategySelector, apply_quality_filters
+from src.openalpha import selector as selector_module
+from src.openalpha.selector import AIStrategySelector, apply_quality_filters
 
 
 class SimpleMonkeyPatch:

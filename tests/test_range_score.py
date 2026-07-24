@@ -4,9 +4,9 @@ import json
 import tempfile
 from pathlib import Path
 
-from src.ai_selector.config import AISelectorRuntimeConfig
-from src.ai_selector.integration import AISelector
-from src.ai_selector.range_score import RangeFitnessScorer
+from src.openalpha.config import AISelectorRuntimeConfig
+from src.openalpha.integration import AISelector
+from src.openalpha.range_score import RangeFitnessScorer
 
 
 class StubProvider:

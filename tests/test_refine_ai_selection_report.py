@@ -161,7 +161,7 @@ def test_main_refines_even_if_latest_report_is_finalized():
         }
         module.os.environ.clear()
         module.os.environ.update(original_env)
-        module.os.environ["AI_SELECTOR_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
+        module.os.environ["OPENALPHA_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
         module.main()
     finally:
         module.os.environ.clear()
@@ -255,7 +255,7 @@ def test_main_truncates_refined_candidates_to_requested_top_n():
         }
         module.os.environ.clear()
         module.os.environ.update(original_env)
-        module.os.environ["AI_SELECTOR_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
+        module.os.environ["OPENALPHA_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
         module.main()
     finally:
         module.os.environ.clear()
@@ -331,7 +331,7 @@ def test_main_skips_refine_when_current_manifest_changes_mid_run():
         module.selector_runner.write_selection_bundle_atomic = lambda **payload: written_bundles.append(dict(payload)) or {}
         module.os.environ.clear()
         module.os.environ.update(original_env)
-        module.os.environ["AI_SELECTOR_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
+        module.os.environ["OPENALPHA_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
         module.main()
     finally:
         module.os.environ.clear()
@@ -391,7 +391,7 @@ def test_main_skips_refine_when_refined_output_is_empty():
         module.selector_runner.write_selection_bundle_atomic = lambda **payload: written_bundles.append(dict(payload)) or {}
         module.os.environ.clear()
         module.os.environ.update(original_env)
-        module.os.environ["AI_SELECTOR_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
+        module.os.environ["OPENALPHA_EXPECTED_TIMESTAMP"] = "2026-07-05T09:00:00"
         module.main()
     finally:
         module.os.environ.clear()

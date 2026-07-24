@@ -27,11 +27,11 @@ def _price_band(ctx: dict[str, Any]) -> tuple[float, float]:
         return float(rule.price_min), float(rule.price_max)
     min_price = _safe_float(
         ctx.get("min_price"),
-        _safe_float(os.environ.get("AI_SELECTOR_MIN_PRICE"), DEFAULT_MIN_PRICE) or DEFAULT_MIN_PRICE,
+        _safe_float(os.environ.get("OPENALPHA_MIN_PRICE"), DEFAULT_MIN_PRICE) or DEFAULT_MIN_PRICE,
     )
     max_price = _safe_float(
         ctx.get("max_price"),
-        _safe_float(os.environ.get("AI_SELECTOR_MAX_PRICE"), DEFAULT_MAX_PRICE) or DEFAULT_MAX_PRICE,
+        _safe_float(os.environ.get("OPENALPHA_MAX_PRICE"), DEFAULT_MAX_PRICE) or DEFAULT_MAX_PRICE,
     )
     if min_price is None:
         min_price = DEFAULT_MIN_PRICE

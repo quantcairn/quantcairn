@@ -12,8 +12,8 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from scripts import run_ai_selector as selector_runner
-from src.ai_selector.selector import AIStrategySelector
-from src.ai_selector.settings import load_runtime_settings, resolve_price_band
+from src.openalpha.selector import AIStrategySelector
+from src.openalpha.settings import load_runtime_settings, resolve_price_band
 
 
 def _latest_report_path() -> Path:
@@ -199,7 +199,7 @@ def _persist_refined_bundle(summary: dict, top_items: list[dict], *, selection_d
 
 
 def main() -> None:
-    expected_timestamp = str(os.environ.get("AI_SELECTOR_EXPECTED_TIMESTAMP") or "").strip()
+    expected_timestamp = str(os.environ.get("OPENALPHA_EXPECTED_TIMESTAMP") or "").strip()
     latest = _load_latest_report()
     if not latest:
         return
@@ -212,23 +212,23 @@ def main() -> None:
 
     runtime_settings = load_runtime_settings()
     min_price, max_price = resolve_price_band(runtime_settings)
-    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
-    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
+    os.environ.setdefault("OPENALPHA_MIN_PRICE", str(min_price))
+    os.environ.setdefault("OPENALPHA_MAX_PRICE", str(max_price))
     os.environ.setdefault(
-        "AI_SELECTOR_AUTO_REFRESH_MINUTES",
+        "OPENALPHA_AUTO_REFRESH_MINUTES",
         str(runtime_settings.get("auto_refresh_minutes", 5)),
     )
     configured_max_symbols = int(runtime_settings.get("max_symbols", 20) or 20)
-    os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
-    os.environ.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
-    os.environ.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
-    os.environ.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
-    os.environ.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "1")
-    os.environ.setdefault("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "2")
-    os.environ.setdefault("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "20")
-    os.environ.setdefault("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "30")
-    os.environ.setdefault("AI_SELECTOR_QUALITY_BUDGET_SECONDS", "20")
-    os.environ.pop("AI_SELECTOR_FAST_START_ONLY", None)
+    os.environ.setdefault("OPENALPHA_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
+    os.environ.setdefault("OPENALPHA_FETCH_NEWS", "0")
+    os.environ.setdefault("OPENALPHA_ALLOW_PROXY_MARKET", "0")
+    os.environ.setdefault("OPENALPHA_DIRECT_HISTORY", "1")
+    os.environ.setdefault("OPENALPHA_SKIP_YFINANCE_HISTORY", "1")
+    os.environ.setdefault("OPENALPHA_HTTP_TIMEOUT_SECONDS", "2")
+    os.environ.setdefault("OPENALPHA_FILTER_CANDIDATE_LIMIT", "20")
+    os.environ.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "30")
+    os.environ.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "20")
+    os.environ.pop("OPENALPHA_FAST_START_ONLY", None)
 
     selector = AIStrategySelector()
     requested_top_n = int(

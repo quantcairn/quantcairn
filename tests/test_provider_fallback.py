@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from src.ai_selector.providers.finrobot_provider import FinRobotProvider
-from src.ai_selector.providers.openbb_provider import OpenBBProvider
-from src.ai_selector.providers.tradingagents_provider import TradingAgentsProvider
+from src.openalpha.providers.finrobot_provider import FinRobotProvider
+from src.openalpha.providers.openbb_provider import OpenBBProvider
+from src.openalpha.providers.tradingagents_provider import TradingAgentsProvider
 
 
 def test_tradingagents_mock_result_is_neutral():

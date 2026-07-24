@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.ai_selector.range_score import RangeFitnessScorer
+from src.openalpha.range_score import RangeFitnessScorer
 
 
 @pytest.mark.parametrize(

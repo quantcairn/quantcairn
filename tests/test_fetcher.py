@@ -452,7 +452,7 @@ def test_fetch_chart_quote_prefers_day_high_low_from_meta():
 def test_get_ohlcv_prefers_direct_chart_history():
     original_session = fetcher_mod.requests.Session
     original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
-    original_env = os.environ.get("AI_SELECTOR_DIRECT_HISTORY")
+    original_env = os.environ.get("OPENALPHA_DIRECT_HISTORY")
 
     class DummyResponse:
         def raise_for_status(self):
@@ -484,7 +484,7 @@ def test_get_ohlcv_prefers_direct_chart_history():
             return DummyResponse()
 
     try:
-        os.environ["AI_SELECTOR_DIRECT_HISTORY"] = "1"
+        os.environ["OPENALPHA_DIRECT_HISTORY"] = "1"
         fetcher_mod.requests.Session = DummySession
         fetcher_mod.PriceFetcher._fetch_history = lambda self, period, interval, prepost=True: (_ for _ in ()).throw(
             AssertionError("yfinance history should not be used when direct chart history succeeds")
@@ -496,9 +496,9 @@ def test_get_ohlcv_prefers_direct_chart_history():
         fetcher_mod.requests.Session = original_session
         fetcher_mod.PriceFetcher._fetch_history = original_fetch_history
         if original_env is None:
-            os.environ.pop("AI_SELECTOR_DIRECT_HISTORY", None)
+            os.environ.pop("OPENALPHA_DIRECT_HISTORY", None)
         else:
-            os.environ["AI_SELECTOR_DIRECT_HISTORY"] = original_env
+            os.environ["OPENALPHA_DIRECT_HISTORY"] = original_env
 
     assert len(candles) == 2
     assert candles[-1].close == 10.6
@@ -649,8 +649,8 @@ def test_scorer_load_history_does_not_use_yfinance_fallback_by_default(monkeypat
     import src.scoring.scorer as scorer_mod
     from src.scoring.scorer import Scorer
 
-    monkeypatch.delenv("AI_SELECTOR_ALLOW_YFINANCE_FALLBACK", raising=False)
-    monkeypatch.delenv("AI_SELECTOR_USE_YFINANCE", raising=False)
+    monkeypatch.delenv("OPENALPHA_ALLOW_YFINANCE_FALLBACK", raising=False)
+    monkeypatch.delenv("OPENALPHA_USE_YFINANCE", raising=False)
     monkeypatch.setattr(
         scorer_mod.yf,
         "download",

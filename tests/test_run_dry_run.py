@@ -61,7 +61,7 @@ def test_ai_selector_wrapper_is_quiet_when_not_due(monkeypatch, capsys):
 
     monkeypatch.setattr(ai_selector_wrapper, "datetime", FakeDateTime)
     monkeypatch.delenv("FORCE_AI_RUN", raising=False)
-    monkeypatch.delenv("AI_SELECTOR_WRAPPER_VERBOSE", raising=False)
+    monkeypatch.delenv("OPENALPHA_WRAPPER_VERBOSE", raising=False)
 
     ai_selector_wrapper._run_selection_if_due()
 

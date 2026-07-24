@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.ai_selector.selection_bundle import load_committed_selection_bundle
+from src.openalpha.selection_bundle import load_committed_selection_bundle
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 SHADOW_REGIME_ROOT = PROJECT_DIR / "artifacts" / "research" / "regime_shadow"

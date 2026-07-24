@@ -15,7 +15,7 @@ VENV_SITE_PACKAGES = next(
 if VENV_SITE_PACKAGES is not None and str(VENV_SITE_PACKAGES) not in sys.path:
     sys.path.insert(0, str(VENV_SITE_PACKAGES))
 
-from src.ai_selector import selection_state
+from src.openalpha import selection_state
 from src.dashboard import combined as dashboard
 
 

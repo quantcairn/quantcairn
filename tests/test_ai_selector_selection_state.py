@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import yaml
 
-from src.ai_selector import selection_state
+from src.openalpha import selection_state
 
 
 def test_selection_state_verifies_same_day_top_configs(tmp_path, monkeypatch):

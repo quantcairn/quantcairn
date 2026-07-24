@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.ai_selector.candidate_ranking import score_candidate
+from src.openalpha.candidate_ranking import score_candidate
 
 
 def test_high_liquidity_strong_trend_common_stock_scores_and_recommends_trend_following():

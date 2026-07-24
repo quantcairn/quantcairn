@@ -16,14 +16,14 @@ from src.utils.market_calendar import required_selection_date
 
 
 def _project_dir() -> Path:
-    from src.ai_selector.selection_state import PROJECT_DIR
+    from src.openalpha.selection_state import PROJECT_DIR
 
     configured = str(os.environ.get("SOXS_PROJECT_DIR") or "").strip()
     return Path(configured).expanduser().resolve() if configured else Path(PROJECT_DIR).resolve()
 
 
 def _state_dir() -> Path:
-    from src.ai_selector.selection_state import _state_dir
+    from src.openalpha.selection_state import _state_dir
 
     return _state_dir()
 
@@ -128,7 +128,7 @@ def _slot_disabled_reason(result_quality: str | None, research_admission: str | 
 
 
 def _slot_count(top_items: list[dict[str, Any]], requested_top_n: int | None = None) -> int:
-    from src.ai_selector.selection_state import configured_top_count
+    from src.openalpha.selection_state import configured_top_count
 
     if requested_top_n is not None:
         try:
@@ -239,7 +239,7 @@ class SelectionBundle:
 
     @property
     def state_path(self) -> Path:
-        from src.ai_selector.selection_state import selection_state_path
+        from src.openalpha.selection_state import selection_state_path
 
         return selection_state_path()
 
@@ -608,7 +608,7 @@ def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str
 
 
 def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
-    from src.ai_selector.data_quality import formal_selection_ineligibility_reasons, is_formal_selection_eligible
+    from src.openalpha.data_quality import formal_selection_ineligibility_reasons, is_formal_selection_eligible
 
     errors: list[str] = []
     provider_audit = bundle.summary.get("provider_audit") if isinstance(bundle.summary, dict) else {}
@@ -699,8 +699,8 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
     restored so consumers never observe a partially upgraded selector state.
     """
 
-    config_writer = importlib.import_module("src.ai_selector.config_writer")
-    selection_state = importlib.import_module("src.ai_selector.selection_state")
+    config_writer = importlib.import_module("src.openalpha.config_writer")
+    selection_state = importlib.import_module("src.openalpha.selection_state")
 
     bundle = bundle if isinstance(bundle, SelectionBundle) else build_selection_bundle(
         summary=getattr(bundle, "summary", {}) or {},

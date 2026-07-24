@@ -34,7 +34,7 @@ from src.broker.paper_broker import PaperBroker
 from src.engine.trading_engine import TradingEngine
 from src.engine.position_sizing import determine_buy_quantity
 from src.dashboard.server import start_dashboard
-from src.ai_selector.selection_state import verify_live_startup_selection
+from src.openalpha.selection_state import verify_live_startup_selection
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
 from src.utils.market_calendar import required_selection_date
 

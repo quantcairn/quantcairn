@@ -12,8 +12,8 @@ from ta.trend import MACD
 from ta.volatility import AverageTrueRange
 
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
-from src.ai_selector.settings import get_float_setting
-from src.ai_selector.universe_filter import evaluate_universe_candidate, infer_asset_type
+from src.openalpha.settings import get_float_setting
+from src.openalpha.universe_filter import evaluate_universe_candidate, infer_asset_type
 from src.data.fetcher import PriceFetcher, _configure_yfinance_cache, _provider_ticker
 
 
@@ -177,12 +177,12 @@ class Scorer:
 
     def __init__(self):
         self._cache_status, self._cache_error_message = _configure_yfinance_cache()
-        self.min_price = self._env_float("AI_SELECTOR_MIN_PRICE", get_float_setting("min_price", self.MIN_PRICE))
-        self.max_price = self._env_float("AI_SELECTOR_MAX_PRICE", get_float_setting("max_price", self.MAX_PRICE))
-        self.market_timeout = self._env_float("AI_SELECTOR_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
-        self.score_workers = max(1, self._env_int("AI_SELECTOR_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
-        self.min_spread_pct = self._env_float("AI_SELECTOR_MIN_SPREAD_PCT", self.DEFAULT_MIN_SPREAD_PCT)
-        self.allow_proxy_market = os.environ.get("AI_SELECTOR_ALLOW_PROXY_MARKET", "0") == "1"
+        self.min_price = self._env_float("OPENALPHA_MIN_PRICE", get_float_setting("min_price", self.MIN_PRICE))
+        self.max_price = self._env_float("OPENALPHA_MAX_PRICE", get_float_setting("max_price", self.MAX_PRICE))
+        self.market_timeout = self._env_float("OPENALPHA_MARKET_TIMEOUT", self.DEFAULT_MARKET_TIMEOUT)
+        self.score_workers = max(1, self._env_int("OPENALPHA_SCORE_WORKERS", self.DEFAULT_SCORE_WORKERS))
+        self.min_spread_pct = self._env_float("OPENALPHA_MIN_SPREAD_PCT", self.DEFAULT_MIN_SPREAD_PCT)
+        self.allow_proxy_market = os.environ.get("OPENALPHA_ALLOW_PROXY_MARKET", "0") == "1"
         self._market_cap_cache: dict[str, float | None] = {}
 
     def _env_float(self, name: str, default: float) -> float:
@@ -332,11 +332,11 @@ class Scorer:
         return self._standardize_history(df)
 
     def _load_history(self, symbol: str) -> pd.DataFrame:
-        if os.environ.get("AI_SELECTOR_LIVE_DATA", "1") == "0":
+        if os.environ.get("OPENALPHA_LIVE_DATA", "1") == "0":
             return pd.DataFrame()
 
-        prefer_yfinance = os.environ.get("AI_SELECTOR_USE_YFINANCE", "0") == "1"
-        allow_yfinance_fallback = os.environ.get("AI_SELECTOR_ALLOW_YFINANCE_FALLBACK", "0") == "1"
+        prefer_yfinance = os.environ.get("OPENALPHA_USE_YFINANCE", "0") == "1"
+        allow_yfinance_fallback = os.environ.get("OPENALPHA_ALLOW_YFINANCE_FALLBACK", "0") == "1"
         if prefer_yfinance and allow_yfinance_fallback:
             try:
                 df = yf.download(self._provider_symbol(symbol), period="260d", interval="1d", progress=False)
@@ -493,7 +493,7 @@ class Scorer:
             return None
 
         dynamic = dict(profile)
-        if os.environ.get("AI_SELECTOR_LIVE_DATA", "1") == "0":
+        if os.environ.get("OPENALPHA_LIVE_DATA", "1") == "0":
             return dynamic
         try:
             snapshot = self._fetch_live_snapshot(symbol)

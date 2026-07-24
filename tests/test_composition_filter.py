@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.ai_selector.composition_filter import CompositionFilter
+from src.openalpha.composition_filter import CompositionFilter
 from src.portfolio.risk_allocator import RiskAllocator
 
 

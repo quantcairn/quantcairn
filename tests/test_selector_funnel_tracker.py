@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from src.ai_selector.funnel_tracker import FunnelTracker, dropped_record
+from src.openalpha.funnel_tracker import FunnelTracker, dropped_record
 
 
 def test_funnel_tracker_records_stage_invariants_and_reason_counts(tmp_path, monkeypatch):

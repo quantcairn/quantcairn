@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.ai_selector.universe_filter import evaluate_universe_candidate, filter_universe_candidates, load_universe_rules
+from src.openalpha.universe_filter import evaluate_universe_candidate, filter_universe_candidates, load_universe_rules
 from src.candidate_validation.models import CandidateRecord, ValidationStatus
 
 

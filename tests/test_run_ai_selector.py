@@ -434,8 +434,8 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         }
 
         os.environ["SOXS_OPENBB_ENABLED"] = "1"
-        os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "1"
+        os.environ["OPENALPHA_RESTART_TOP"] = "0"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
 
         module.main()
     finally:
@@ -703,8 +703,8 @@ def test_run_ai_selector_filters_ineligible_candidates_before_bundle_publish():
         }
 
         os.environ["SOXS_OPENBB_ENABLED"] = "1"
-        os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+        os.environ["OPENALPHA_RESTART_TOP"] = "0"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
 
         module.main()
     finally:
@@ -823,8 +823,8 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
             "fallback_used": False,
         }
 
-        os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+        os.environ["OPENALPHA_RESTART_TOP"] = "0"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
 
         module.main()
     finally:
@@ -858,16 +858,16 @@ def test_selector_run_mode_helpers_toggle_environment():
     original_env = dict(os.environ)
     try:
         module._apply_selector_run_mode("fast_preliminary")
-        assert os.environ["AI_SELECTOR_FAST_START_ONLY"] == "1"
-        assert os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] == "1"
+        assert os.environ["OPENALPHA_FAST_START_ONLY"] == "1"
+        assert os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] == "1"
 
         module._apply_selector_run_mode("quality_refined")
-        assert os.environ["AI_SELECTOR_FAST_START_ONLY"] == "0"
-        assert os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] == "0"
+        assert os.environ["OPENALPHA_FAST_START_ONLY"] == "0"
+        assert os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] == "0"
 
         module._apply_selector_run_mode("full")
-        assert os.environ["AI_SELECTOR_FAST_START_ONLY"] == "0"
-        assert os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] == "1"
+        assert os.environ["OPENALPHA_FAST_START_ONLY"] == "0"
+        assert os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] == "1"
     finally:
         os.environ.clear()
         os.environ.update(original_env)

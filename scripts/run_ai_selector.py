@@ -23,15 +23,15 @@ if (
 print(f"Using Python: {sys.executable}")
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.ai_selector.integration import AISelector
-from src.ai_selector.composition_filter import (
+from src.openalpha.integration import AISelector
+from src.openalpha.composition_filter import (
     CompositionFilter,
     is_inverse_etf,
     is_leveraged_or_inverse_etf,
 )
-from src.ai_selector.selector import AIStrategySelector
-from src.ai_selector.range_score import RangeFitnessScorer
-from src.ai_selector.trade_filter import TradeEligibilityFilter
+from src.openalpha.selector import AIStrategySelector
+from src.openalpha.range_score import RangeFitnessScorer
+from src.openalpha.trade_filter import TradeEligibilityFilter
 from src.utils.market_calendar import market_session_context, required_selection_date
 from datetime import datetime
 import os
@@ -43,29 +43,29 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from src.config.local_env import load_local_ai_env
-from src.ai_selector.settings import load_runtime_settings
-from src.ai_selector import selector as _selector_module
-from src.ai_selector.config import load_runtime_config
-from src.ai_selector.settings import resolve_price_band
-from src.ai_selector.data_quality import (
+from src.openalpha.settings import load_runtime_settings
+from src.openalpha import selector as _selector_module
+from src.openalpha.config import load_runtime_config
+from src.openalpha.settings import resolve_price_band
+from src.openalpha.data_quality import (
     enrich_candidate_quality,
     evaluate_candidate_data_quality,
     formal_selection_ineligibility_reasons,
     is_formal_selection_eligible,
 )
-from src.ai_selector.funnel_tracker import FunnelTracker, dropped_record, reason_from_candidate
-from src.ai_selector.universe_filter import filter_universe_candidates, load_universe_rules
+from src.openalpha.funnel_tracker import FunnelTracker, dropped_record, reason_from_candidate
+from src.openalpha.universe_filter import filter_universe_candidates, load_universe_rules
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
-from src.ai_selector.selection_bundle import write_selection_bundle_atomic
+from src.openalpha.selection_bundle import write_selection_bundle_atomic
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_DIR / "logs"
 REPORTS_DIR = PROJECT_DIR / "reports"
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
-AI_SELECTOR_RUNTIME = load_runtime_config()
-TOP_COUNT = max(1, int(AI_SELECTOR_RUNTIME.top_n))
+OPENALPHA_RUNTIME = load_runtime_config()
+TOP_COUNT = max(1, int(OPENALPHA_RUNTIME.top_n))
 
 
 def write_selection_filter_log(report: dict[str, object], now: datetime | None = None) -> Path:
@@ -112,9 +112,9 @@ def _load_ai_selector_file_config() -> dict:
     return merged
 
 
-_AI_SELECTOR_FILE_CONFIG = _load_ai_selector_file_config()
-ENTRY_PROXIMITY_ENABLED = bool(_AI_SELECTOR_FILE_CONFIG.get("entry_proximity_enabled", True))
-ENTRY_PROXIMITY_WEIGHT = max(0.0, min(1.0, float(_AI_SELECTOR_FILE_CONFIG.get("entry_proximity_weight", 0.0) or 0.0)))
+_OPENALPHA_FILE_CONFIG = _load_ai_selector_file_config()
+ENTRY_PROXIMITY_ENABLED = bool(_OPENALPHA_FILE_CONFIG.get("entry_proximity_enabled", True))
+ENTRY_PROXIMITY_WEIGHT = max(0.0, min(1.0, float(_OPENALPHA_FILE_CONFIG.get("entry_proximity_weight", 0.0) or 0.0)))
 RANGE_SCORER = RangeFitnessScorer()
 TRADE_FILTER = TradeEligibilityFilter()
 COMPOSITION_FILTER = CompositionFilter()
@@ -392,7 +392,7 @@ def _provider_metadata(
         if ai_meta.get("fallback_used"):
             fallback_used = True
 
-    if os.environ.get("AI_SELECTOR_DIRECT_HISTORY", "1") != "0":
+    if os.environ.get("OPENALPHA_DIRECT_HISTORY", "1") != "0":
         providers_used.append("yahoo_chart")
     if data_mode in {"live", "mixed"}:
         providers_used.append("market_data_live")
@@ -1070,7 +1070,7 @@ def _merge_rejected_rows(rows: list[dict]) -> list[dict]:
 
 
 def _selector_run_mode(value: str | None = None) -> str:
-    mode = str(value or os.environ.get("AI_SELECTOR_RUN_MODE") or "full").strip().lower()
+    mode = str(value or os.environ.get("OPENALPHA_RUN_MODE") or "full").strip().lower()
     if mode not in {"fast_preliminary", "quality_refined", "full"}:
         return "full"
     return mode
@@ -1079,14 +1079,14 @@ def _selector_run_mode(value: str | None = None) -> str:
 def _apply_selector_run_mode(mode: str) -> None:
     normalized = _selector_run_mode(mode)
     if normalized == "fast_preliminary":
-        os.environ["AI_SELECTOR_FAST_START_ONLY"] = "1"
-        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "1"
+        os.environ["OPENALPHA_FAST_START_ONLY"] = "1"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
     elif normalized == "quality_refined":
-        os.environ["AI_SELECTOR_FAST_START_ONLY"] = "0"
-        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+        os.environ["OPENALPHA_FAST_START_ONLY"] = "0"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
     else:
-        os.environ["AI_SELECTOR_FAST_START_ONLY"] = "0"
-        os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "1"
+        os.environ["OPENALPHA_FAST_START_ONLY"] = "0"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
 
 
 def _rejection_reason_code(item: dict) -> str:
@@ -1859,8 +1859,8 @@ def _merge_live_position_flags(items: list[dict], positions: list[dict]) -> list
 
 
 def _restart_top_engines() -> int:
-    if os.environ.get("AI_SELECTOR_RESTART_TOP", "1") == "0":
-        print("AI_SELECTOR_RESTART_TOP=0; skipping TOP engine restart.")
+    if os.environ.get("OPENALPHA_RESTART_TOP", "1") == "0":
+        print("OPENALPHA_RESTART_TOP=0; skipping TOP engine restart.")
         return 0
     multi_launch = PROJECT_DIR / "multi_launch.sh"
     if not multi_launch.exists():
@@ -1874,22 +1874,22 @@ def _restart_top_engines() -> int:
 
 
 def _spawn_background_refinement(expected_timestamp: str) -> None:
-    if os.environ.get("AI_SELECTOR_BACKGROUND_REFINEMENT", "1") != "1":
+    if os.environ.get("OPENALPHA_BACKGROUND_REFINEMENT", "1") != "1":
         return
     refine_script = PROJECT_DIR / "scripts" / "refine_ai_selection_report.py"
     if not refine_script.exists():
         return
     env = os.environ.copy()
-    env.setdefault("AI_SELECTOR_FETCH_NEWS", "0")
-    env.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
-    env.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
-    env.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "0")
-    env.setdefault("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "2")
-    env.setdefault("AI_SELECTOR_FILTER_CANDIDATE_LIMIT", "20")
-    env.setdefault("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "30")
-    env.setdefault("AI_SELECTOR_QUALITY_BUDGET_SECONDS", "20")
-    env["AI_SELECTOR_EXPECTED_TIMESTAMP"] = expected_timestamp
-    env["AI_SELECTOR_REFINEMENT_ONLY"] = "1"
+    env.setdefault("OPENALPHA_FETCH_NEWS", "0")
+    env.setdefault("OPENALPHA_ALLOW_PROXY_MARKET", "0")
+    env.setdefault("OPENALPHA_DIRECT_HISTORY", "1")
+    env.setdefault("OPENALPHA_SKIP_YFINANCE_HISTORY", "0")
+    env.setdefault("OPENALPHA_HTTP_TIMEOUT_SECONDS", "2")
+    env.setdefault("OPENALPHA_FILTER_CANDIDATE_LIMIT", "20")
+    env.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "30")
+    env.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "20")
+    env["OPENALPHA_EXPECTED_TIMESTAMP"] = expected_timestamp
+    env["OPENALPHA_REFINEMENT_ONLY"] = "1"
     with open(PROJECT_DIR / "logs" / "ai_selector_refine.out.log", "a", encoding="utf-8") as out, open(
         PROJECT_DIR / "logs" / "ai_selector_refine.err.log",
         "a",
@@ -2051,30 +2051,30 @@ def main(mode: str | None = None):
     universe_price_min = min(rule.price_min for rule in UNIVERSE_RULES.values())
     universe_price_max = max(rule.price_max for rule in UNIVERSE_RULES.values())
     market_context = market_session_context(_et_now())
-    os.environ.setdefault("AI_SELECTOR_MIN_PRICE", str(min_price))
-    os.environ.setdefault("AI_SELECTOR_MAX_PRICE", str(max_price))
+    os.environ.setdefault("OPENALPHA_MIN_PRICE", str(min_price))
+    os.environ.setdefault("OPENALPHA_MAX_PRICE", str(max_price))
     os.environ.setdefault(
-        "AI_SELECTOR_AUTO_REFRESH_MINUTES",
+        "OPENALPHA_AUTO_REFRESH_MINUTES",
         str(runtime_settings.get("auto_refresh_minutes", 5)),
     )
     configured_max_symbols = int(runtime_settings.get("max_symbols", 20) or 20)
     # Managed universe has 35+ symbols — don't cap it to the legacy 9-symbol limit.
-    universe_source = os.environ.get("AI_SELECTOR_UNIVERSE", "managed")
+    universe_source = os.environ.get("OPENALPHA_UNIVERSE", "managed")
     if universe_source == "managed":
-        os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", "50")
+        os.environ.setdefault("OPENALPHA_MAX_SYMBOLS", "50")
     else:
-        os.environ.setdefault("AI_SELECTOR_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
-    os.environ.setdefault("AI_SELECTOR_ALLOW_PROXY_MARKET", "0")
-    os.environ.setdefault("AI_SELECTOR_DIRECT_HISTORY", "1")
-    os.environ.setdefault("AI_SELECTOR_SKIP_YFINANCE_HISTORY", "0")
-    os.environ.setdefault("AI_SELECTOR_HTTP_TIMEOUT_SECONDS", "3")
+        os.environ.setdefault("OPENALPHA_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
+    os.environ.setdefault("OPENALPHA_ALLOW_PROXY_MARKET", "0")
+    os.environ.setdefault("OPENALPHA_DIRECT_HISTORY", "1")
+    os.environ.setdefault("OPENALPHA_SKIP_YFINANCE_HISTORY", "0")
+    os.environ.setdefault("OPENALPHA_HTTP_TIMEOUT_SECONDS", "3")
     live_positions = _live_equity_positions()
     if live_positions is None and _has_live_top_configs():
         print("Live position verification failed; refusing to run selection or replace TOP configs.")
         sys.exit(1)
 
     # ── Preflight: market state + data availability ────────────────────
-    from src.ai_selector.preflight import run_preflight as _run_preflight, print_preflight
+    from src.openalpha.preflight import run_preflight as _run_preflight, print_preflight
     _pf = _run_preflight(symbols=None, max_scan_symbols=5)
     print_preflight(_pf)
 
@@ -2334,7 +2334,7 @@ def main(mode: str | None = None):
         "final_selected": int(len(selected)),
         "provider_timeouts": int((provider_audit_summary.get("provider_timeouts", 0) if isinstance(provider_audit_summary, dict) else 0) or 0),
         "provider_failures": int(provider_audit_summary.get("provider_failures", 0) or 0),
-        "total_budget_seconds": int(os.environ.get("AI_SELECTOR_TOTAL_BUDGET_SECONDS", "0") or 0),
+        "total_budget_seconds": int(os.environ.get("OPENALPHA_TOTAL_BUDGET_SECONDS", "0") or 0),
         "budget_exhausted": bool((out.get("quality_filter_report") or {}).get("timed_out", False)),
         "run_mode": run_mode,
     }
@@ -2572,7 +2572,7 @@ def main(mode: str | None = None):
 
 
 def _has_live_top_configs() -> bool:
-    from src.ai_selector.selection_state import has_live_top_configs as _selection_has_live_top_configs
+    from src.openalpha.selection_state import has_live_top_configs as _selection_has_live_top_configs
 
     return bool(_selection_has_live_top_configs(limit=max(TOP_COUNT, 3)))
 
@@ -2625,9 +2625,9 @@ if __name__ == '__main__':
         "--universe-source",
         choices=("managed", "sample", "sp500"),
         default=None,
-        help="Universe source (default: managed).  Overrides AI_SELECTOR_UNIVERSE env var.",
+        help="Universe source (default: managed).  Overrides OPENALPHA_UNIVERSE env var.",
     )
     args = parser.parse_args()
     if args.universe_source:
-        os.environ["AI_SELECTOR_UNIVERSE"] = args.universe_source
+        os.environ["OPENALPHA_UNIVERSE"] = args.universe_source
     main(mode=args.mode)

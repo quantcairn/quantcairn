@@ -3,9 +3,9 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from src.ai_selector.config import AISelectorRuntimeConfig
-from src.ai_selector.integration import AISelector
-from src.ai_selector.trade_filter import TradeEligibilityFilter
+from src.openalpha.config import AISelectorRuntimeConfig
+from src.openalpha.integration import AISelector
+from src.openalpha.trade_filter import TradeEligibilityFilter
 
 
 def _candidate(ticker: str, score: float = 80.0, range_score: float = 80.0) -> dict:

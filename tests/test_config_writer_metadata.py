@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from src.ai_selector import config_writer
+from src.openalpha import config_writer
 
 
 def test_top_yaml_contains_selection_metadata(tmp_path, monkeypatch):

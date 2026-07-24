@@ -5,9 +5,9 @@ from pathlib import Path
 
 import yaml
 
-from src.ai_selector import config_writer, selection_state
-from src.ai_selector.selection_bundle import build_selection_bundle, persist_selection_bundle
-from src.ai_selector.selection_report import load_latest_ai_selection_state
+from src.openalpha import config_writer, selection_state
+from src.openalpha.selection_bundle import build_selection_bundle, persist_selection_bundle
+from src.openalpha.selection_report import load_latest_ai_selection_state
 
 
 def _patch_bundle_roots(tmp_path, monkeypatch):

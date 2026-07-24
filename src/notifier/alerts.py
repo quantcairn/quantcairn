@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo
 import requests
 import yaml
 
-from src.ai_selector.selection_bundle import load_committed_selection_bundle
-from src.ai_selector.selection_report import provider_audit_sections
+from src.openalpha.selection_bundle import load_committed_selection_bundle
+from src.openalpha.selection_report import provider_audit_sections
 from src.broker.paper_portfolio_state import read_paper_portfolio_state
 
 logger = logging.getLogger(__name__)
@@ -1433,8 +1433,8 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
 
     notification_cfg = _load_ai_selector_notification_config()
     webhook_url = (
-        os.environ.get("SOXS_AI_SELECTOR_WEBHOOK")
-        or os.environ.get("AI_SELECTOR_WEBHOOK")
+        os.environ.get("SOXS_OPENALPHA_WEBHOOK")
+        or os.environ.get("OPENALPHA_WEBHOOK")
         or notification_cfg.get("ai_selector_webhook_url")
         or notification_cfg.get("webhook_url")
     )
@@ -1445,13 +1445,13 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
         trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
         telegram_bot_token=(
             notification_cfg.get("ai_selector_telegram_bot_token", "")
-            or os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_BOT_TOKEN")
+            or os.environ.get("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN")
             or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
             or notification_cfg.get("telegram_bot_token", "")
         ),
         telegram_chat_id=(
             notification_cfg.get("ai_selector_telegram_chat_id", "")
-            or os.environ.get("SOXS_AI_SELECTOR_TELEGRAM_CHAT_ID")
+            or os.environ.get("SOXS_OPENALPHA_TELEGRAM_CHAT_ID")
             or os.environ.get("SOXS_TELEGRAM_CHAT_ID")
             or notification_cfg.get("telegram_chat_id", "")
         ),

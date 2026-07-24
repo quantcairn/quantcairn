@@ -17,28 +17,28 @@ def test_load_local_ai_env_populates_missing_values_only():
         env_path = Path(tmpdir) / ".env.ai_selector.local"
         env_path.write_text(
             "SOXS_TRADINGAGENTS_PATH=/tmp/tradingagents\n"
-            "SOXS_AI_SELECTOR_ENABLED=1\n",
+            "SOXS_OPENALPHA_ENABLED=1\n",
             encoding="utf-8",
         )
 
         previous_path = os.environ.get("SOXS_TRADINGAGENTS_PATH")
-        previous_enabled = os.environ.get("SOXS_AI_SELECTOR_ENABLED")
-        os.environ["SOXS_AI_SELECTOR_ENABLED"] = "0"
+        previous_enabled = os.environ.get("SOXS_OPENALPHA_ENABLED")
+        os.environ["SOXS_OPENALPHA_ENABLED"] = "0"
         os.environ.pop("SOXS_TRADINGAGENTS_PATH", None)
         try:
             loaded = load_local_ai_env(env_path)
             assert loaded is True
             assert os.environ["SOXS_TRADINGAGENTS_PATH"] == "/tmp/tradingagents"
-            assert os.environ["SOXS_AI_SELECTOR_ENABLED"] == "0"
+            assert os.environ["SOXS_OPENALPHA_ENABLED"] == "0"
         finally:
             if previous_path is None:
                 os.environ.pop("SOXS_TRADINGAGENTS_PATH", None)
             else:
                 os.environ["SOXS_TRADINGAGENTS_PATH"] = previous_path
             if previous_enabled is None:
-                os.environ.pop("SOXS_AI_SELECTOR_ENABLED", None)
+                os.environ.pop("SOXS_OPENALPHA_ENABLED", None)
             else:
-                os.environ["SOXS_AI_SELECTOR_ENABLED"] = previous_enabled
+                os.environ["SOXS_OPENALPHA_ENABLED"] = previous_enabled
 
 
 def run_test_direct():

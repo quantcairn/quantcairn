@@ -1,5 +1,5 @@
 """Tests for src.ai_selector.tradable_filter."""
-from src.ai_selector.tradable_filter import filter_candidates
+from src.openalpha.tradable_filter import filter_candidates
 
 
 def _cand(ticker, **kw):

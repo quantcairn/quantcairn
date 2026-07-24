@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _auto_refresh_minutes() -> int:
-    raw = os.environ.get("AI_SELECTOR_AUTO_REFRESH_MINUTES", "5")
+    raw = os.environ.get("OPENALPHA_AUTO_REFRESH_MINUTES", "5")
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -25,7 +25,7 @@ def _auto_refresh_minutes() -> int:
 
 
 def _default_top_mode() -> str:
-    mode = str(os.environ.get("AI_SELECTOR_TOP_MODE", "")).strip().lower()
+    mode = str(os.environ.get("OPENALPHA_TOP_MODE", "")).strip().lower()
     if mode in {"live", "paper"}:
         return mode
 
@@ -183,7 +183,7 @@ def _top_slot_count(top_items: list[dict], limit: int | None = None) -> int:
 
 def _load_configured_top_count() -> int:
     try:
-        from src.ai_selector.selection_state import configured_top_count
+        from src.openalpha.selection_state import configured_top_count
 
         return max(1, int(configured_top_count()))
     except Exception:

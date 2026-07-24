@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from src.ai_selector.config_writer import write_top_configs, _existing_mode_is_live, _load_existing_mode
+from src.openalpha.config_writer import write_top_configs, _existing_mode_is_live, _load_existing_mode
 
 
 class SimpleMonkeyPatch:
@@ -30,7 +30,7 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
 
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     existing = {
         "ticker": "OLD",
@@ -112,8 +112,8 @@ def test_config_writer_uses_auto_refresh_env_override(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
-    monkeypatch.setenv("AI_SELECTOR_AUTO_REFRESH_MINUTES", "12")
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
+    monkeypatch.setenv("OPENALPHA_AUTO_REFRESH_MINUTES", "12")
 
     write_top_configs([
         {
@@ -133,7 +133,7 @@ def test_config_writer_persists_reduce_only_for_preserved_positions(tmp_path, mo
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     write_top_configs([
         {
@@ -154,7 +154,7 @@ def test_config_writer_scales_min_profit_for_lower_priced_stocks(tmp_path, monke
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     write_top_configs([
         {
@@ -186,7 +186,7 @@ def test_config_writer_honors_global_reduce_only_flag(tmp_path, monkeypatch):
     configs_dir.mkdir()
     state_dir.mkdir()
     (state_dir / "trading_flags.json").write_text('{"reduce_only_all": true}', encoding="utf-8")
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
     monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
 
     write_top_configs([
@@ -207,7 +207,7 @@ def test_config_writer_includes_portfolio_from_local_over_config(tmp_path, monke
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     (repo_root / "config.yaml").write_text(
         yaml.safe_dump(
@@ -265,7 +265,7 @@ def test_config_writer_includes_ai_selector_fallback_policy(tmp_path, monkeypatc
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     (repo_root / "config.yaml").write_text(
         yaml.safe_dump(
@@ -318,7 +318,7 @@ def test_config_writer_includes_entry_diagnostics(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     write_top_configs([
         {
@@ -361,7 +361,7 @@ def test_config_writer_includes_composition_metadata(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     write_top_configs([
         {
@@ -396,7 +396,7 @@ def test_config_writer_defaults_portfolio_when_missing(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     write_top_configs([
         {
@@ -422,7 +422,7 @@ def test_live_top_preserved_when_no_candidates(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     # Pre-create a live TOP1 with allow_live_order=false, reduce_only=true
     existing = {
@@ -458,7 +458,7 @@ def test_paper_top_normal_disabled_write_when_no_candidates(tmp_path, monkeypatc
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     existing = {
         "ticker": "SOFI",
@@ -479,7 +479,7 @@ def test_sandbox_top_normal_disabled_write_when_no_candidates(tmp_path, monkeypa
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     existing = {
         "ticker": "LABD",
@@ -507,7 +507,7 @@ def test_existing_mode_is_live_returns_true_for_live():
         existing = {"ticker": "SOXS", "mode": "live"}
         (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
 
-        with patch("src.ai_selector.config_writer.BASE", td):
+        with patch("src.openalpha.config_writer.BASE", td):
             assert _existing_mode_is_live(1) is True
     finally:
         import shutil
@@ -526,7 +526,7 @@ def test_existing_mode_is_live_returns_false_for_paper():
         existing = {"ticker": "SOFI", "mode": "paper"}
         (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
 
-        with patch("src.ai_selector.config_writer.BASE", td):
+        with patch("src.openalpha.config_writer.BASE", td):
             assert _existing_mode_is_live(1) is False
     finally:
         import shutil
@@ -538,7 +538,7 @@ def test_live_top_allows_candidate_write(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
-    monkeypatch.setattr("src.ai_selector.config_writer.BASE", str(repo_root))
+    monkeypatch.setattr("src.openalpha.config_writer.BASE", str(repo_root))
 
     existing = {
         "ticker": "OLD_SYMBOL",

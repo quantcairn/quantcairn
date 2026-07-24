@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from src.ai_selector.config_writer import write_top_configs
+from src.openalpha.config_writer import write_top_configs
 from src.portfolio.risk_allocator import RiskAllocator
 
 
@@ -138,7 +138,7 @@ def test_risk_allocator_is_written_into_top_yaml():
         configs_dir = repo_root / "configs"
         configs_dir.mkdir()
         (configs_dir / "TOP1.yaml").write_text("ticker: OLD\nmode: paper\n", encoding="utf-8")
-        from src.ai_selector import config_writer
+        from src.openalpha import config_writer
 
         original_base = config_writer.BASE
         try:

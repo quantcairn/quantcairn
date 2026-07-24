@@ -230,8 +230,8 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs(monkeypatch):
             (tmpdir / folder).mkdir()
         (tmpdir / "configs" / "TOP3.yaml").write_text("ticker: OLD\nmode: paper\n", encoding="utf-8")
 
-        from src.ai_selector import config_writer
-        from src.ai_selector import selection_state
+        from src.openalpha import config_writer
+        from src.openalpha import selection_state
 
         original_base = config_writer.BASE
         captured_bundles: list[dict] = []
@@ -248,13 +248,13 @@ def test_main_drops_out_of_band_tickers_before_writing_top_configs(monkeypatch):
                     return original_bundle_writer(**payload)
 
                 module.write_selection_bundle_atomic = _capture_bundle
-                os.environ["AI_SELECTOR_RESTART_TOP"] = "0"
-                os.environ["AI_SELECTOR_BACKGROUND_REFINEMENT"] = "0"
+                os.environ["OPENALPHA_RESTART_TOP"] = "0"
+                os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
                 try:
                     module.main()
                 finally:
-                    os.environ.pop("AI_SELECTOR_RESTART_TOP", None)
-                    os.environ.pop("AI_SELECTOR_BACKGROUND_REFINEMENT", None)
+                    os.environ.pop("OPENALPHA_RESTART_TOP", None)
+                    os.environ.pop("OPENALPHA_BACKGROUND_REFINEMENT", None)
             finally:
                 config_writer.BASE = original_base
                 module.write_selection_bundle_atomic = original_bundle_writer
