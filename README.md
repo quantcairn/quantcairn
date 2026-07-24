@@ -1,262 +1,228 @@
-# 🎯 SOXS Range Arbitrage — 区间套利交易系统
+# OpenAlpha
 
-SOXS（三倍做空半导体ETF）的区间震荡套利系统。在震荡行情中，自动化捕捉支撑位买入、阻力位卖出的波段机会。
+**AI-driven US stock selection pipeline for range-bound swing trading.**
 
-## 快速开始
+OpenAlpha runs a 9-stage analytical pipeline that screens a managed universe of 35 US equities and ETFs, scores them with a multi-factor model, applies mode-aware quality filtering, and produces daily candidate selections. Designed for research, paper trading, and transparency — not autonomous execution.
+
+---
+
+## Architecture
+
+```
+Market Data (Yahoo / LongBridge)
+    │
+    ▼
+Preflight ──→ Run Mode (FULL / AFTER_MARKET / EOD_ONLY / DEGRADED)
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  9-Stage Selection Pipeline                         │
+│                                                      │
+│  UNIVERSE ──→ UNIVERSE_FILTER ──→ MARKET_DATA        │
+│      35 symbols      cap at 50       OHLCV check      │
+│                                                      │
+│  SCORING_ELIGIBLE ──→ BASE_RANKING ──→               │
+│      multi-factor         polish                      │
+│                                                      │
+│  FORMAL_ELIGIBILITY ──→ DATA_QUALITY ──→             │
+│      formal gate       mode-aware checks              │
+│                                                      │
+│  COMPOSITION_FILTER ──→ FORMAL_TOP                   │
+│      diversification       final candidates           │
+└──────────────────────┬──────────────────────────────┘
+                       │
+              ┌────────▼────────┐
+              │  FunnelTracker   │  ← audit & diagnostics
+              │  Notifier        │  ← Telegram / webhook
+              │  Config Writer   │  ← TOP{1,2,3}.yaml
+              └──────────────────┘
+```
+
+## Pipeline Stages
+
+| Stage | Input | Output | Description |
+|---|---|---|---|
+| **UNIVERSE** | — | 35 symbols | Load enabled symbols from managed universe |
+| **UNIVERSE_FILTER** | 35 | ≤50 | Cap at configurable max |
+| **MARKET_DATA** | ≤50 | data-available | Validate OHLCV independently of scoring |
+| **SCORING_ELIGIBLE** | data-available | scored pool | Multi-factor scoring with fallback profiles |
+| **BASE_RANKING** | scored pool | scored pool | Score polishing via `score_candidate()` |
+| **FORMAL_ELIGIBILITY** | scored pool | formal pool | Filter by `formal_scoring_eligibility` |
+| **DATA_QUALITY** | formal pool | quality-passed | Mode-aware spread/volume checks |
+| **COMPOSITION_FILTER** | quality-passed | diversified | Sector/correlation diversity selection |
+| **FORMAL_TOP** | diversified | TOP K | Final tradable candidates |
+
+**Key invariant**: Every stage enforces `output_count <= input_count`.
+
+## Core Features
+
+- **9-stage selection pipeline** — deterministic, auditable, independently testable
+- **Multi-factor scoring** — volatility, volume, trend, repeatability, drawdown
+- **Mode-aware quality filtering** — strict during market hours, relaxed otherwise
+- **Fallback profiles** — all 35 symbols have recovery paths when Yahoo is unavailable
+- **Preflight market check** — detects market state before pipeline execution
+- **Market regime detection** — BULL / SIDEWAYS / BEAR / RISK_OFF classification
+- **Funnel diagnostics** — per-symbol elimination tracing with exact reasons
+- **Paper trading support** — LongBridge sandbox integration
+- **Telegram notifications** — auto-chunked reports to `@QuantCairnPicks`
+- **Read-only dashboard** — Jinja2 HTML monitoring without trade capability
+- **Outcome collection** — Parquet-based trade outcome tracking
+- **Learning governance** — human-approval gate for weight proposals
+
+## Safety Architecture
+
+OpenAlpha is designed with defense-in-depth safety:
+
+### Trading Isolation
+
+- **Selector and Trading Engine are completely decoupled.** The selector writes YAML configs; the engine reads them. No runtime coupling.
+- **Config Writer refuses to overwrite** live configs when existing positions are present.
+
+### Paper-First
+
+- All trading defaults to paper/sandbox mode.
+- Live trading requires three independent gates: `config.local.yaml` approval, `trading_environment_guard.py` validation, and `live_guard.py` pre-flight checks.
+
+### Read-Only Dashboard
+
+- The dashboard reads artifacts and state files only. No POST endpoints, no action buttons, no broker API calls.
+
+### Human-Approval Governance
+
+- All machine learning weight proposals default to `PENDING_HUMAN_APPROVAL`.
+- Auto-activation is architecturally impossible: `ACTIVE` state requires explicit `approved_by_human=True`.
+
+### Risk Controls
+
+- `allow_live_order` is forced to `false` regardless of config.
+- `reduce_only` is forced to `true` — no new positions can be opened.
+- SOXS is permanently `reduce_only`.
+
+See [`.ai/safety.md`](.ai/safety.md) for the complete safety constraint specification.
+
+## Quick Start
+
+### Requirements
+
+- Python 3.14+
+- macOS (scheduling via launchd; Linux works for execution)
+- LongBridge account (for broker integration; paper mode doesn't require one)
+
+### Setup
 
 ```bash
-# 1. 安装依赖
-pip install -r requirements.txt
+# Clone
+git clone https://github.com/example/openalpha.git
+cd openalpha
 
-# 2. 复制配置样例并编辑
-cp config.sample.yaml config.local.yaml
-# 或将 config.sample.yaml 复制为 config.yaml
+# Create venv and install
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 
-# 3. 编辑 config.local.yaml 或 config.yaml，设置你的 range 参数
-#    support_price: 28.50   (你观察到的买入区间)
-#    resistance_price: 30.50 (你观察到的卖出区间)
+# Copy and edit config
+cp config.sample.yaml config.yaml
+# Edit config.yaml with your settings
 
-# 4. 运行测试
-python run_tests.py
-
-# 5. 可选安装开发依赖
-pip install -r dev-requirements.txt
-
-# 3. 验证配置
-python run.py --dry-run
-
-# 4. 启动模拟交易（不涉及真实资金）
-python run.py --paper
-
-# 5. 模拟交易 + Web面板
-python run.py --paper --dashboard
-# 浏览器打开 http://localhost:8080
-
-# 6. 回测历史数据
-python run.py --backtest
+# Run tests
+.venv/bin/python -m pytest tests/ -q
 ```
 
-实盘凭证建议只放在本机私有的 `config.local.yaml` 里。该文件已被 Git 忽略，不要再把 `LONGBRIDGE_*` 凭证长期挂在用户级 `launchd` 全局环境中。
-
-## 两种区间模式
-
-### 手动模式（推荐）
-根据你的盘前观察，在 `config.yaml` 中手动设定：
-```yaml
-range:
-  mode: manual
-  support_price: 28.50    # 你的观察：支撑位/买入触发价
-  resistance_price: 30.50 # 你的观察：阻力位/卖出触发价
-  tolerance_pct: 0.3      # 价格在±0.3%范围内触发
-```
-
-### 自动模式
-系统自动根据最近N根K线识别震荡区间：
-```yaml
-range:
-  mode: auto
-  auto_lookback: 50       # 回顾50根5分钟K线
-  auto_refresh_minutes: 15 # 每15分钟重新计算区间
-```
-
-## 风控规则（不可绕过）
-
-| 规则 | 说明 | 默认值 |
-|------|------|--------|
-| 止损 | 跌破支撑位的2%立即平仓 | 2.0% |
-| 日亏损上限 | 当日亏损超$500停止交易 | $500 |
-| 连续亏损熔断 | 连续3笔亏损暂停30分钟 | 3笔 |
-| 仓位上限 | 最多持仓300股 | 300股 |
-| 冷却时间 | 成交后30秒内不重复交易 | 30秒 |
-| 交易时间 | 仅美东9:30-16:00 | — |
-
-## TradingView 集成
-
-1. 打开 TradingView，加载 SOXS 图表
-2. 将 `tradingview/soxs_range_strategy.pine` 复制到 Pine Editor
-3. 添加到图表，设置支撑/阻力参数
-4. 配置告警（可选webhook推送到Python后端）
-
-## 环境变量覆盖
+### Run AI Selection
 
 ```bash
-# 临时覆盖价格参数
-SOXS_SUPPORT=28.00 SOXS_RESISTANCE=29.50 python run.py --paper
+# Full managed universe selection
+.venv/bin/python scripts/run_ai_selector.py --universe-source managed
 
-# 临时调大仓位
-SOXS_SIZE=200 python run.py --paper
+# With Surge proxy (disable curl_cffi TLS impersonation)
+YF_DISABLE_CURL_CFFI=1 .venv/bin/python scripts/run_ai_selector.py --universe-source managed
+
+# Market data diagnostics
+.venv/bin/python scripts/diag_market_data.py
+
+# Force a selection run regardless of time
+FORCE_AI_RUN=1 .venv/bin/python scripts/ai_selector_wrapper.py
 ```
 
-## 测试与验证
-
-推荐使用项目自带的 `run_tests.py`，避免依赖 `pytest` 环境。示例：
+### Scheduling
 
 ```bash
-.venv/bin/python run_tests.py
+# macOS launchd (auto-runs at 09:00 ET on trading days)
+mkdir -p ~/Library/LaunchAgents
+cp launchd/com.soxs.ai_selector.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.soxs.ai_selector.plist
 ```
 
-如果需要验证配置文件合法性：
-
-```bash
-.venv/bin/python run.py --dry-run
-```
-
-## 配置文件加载顺序
-
-`run.py` 会按以下优先级加载配置文件：
-
-1. `config.local.yaml`
-2. `config.yaml`
-3. `config.sample.yaml`
-
-如果希望指定特定配置文件，请使用：
-
-```bash
-python run.py --config path/to/config.yaml
-```
-
-## 监控与健康检查
-
-- `health_check.sh`：检查 `launchd` 服务、API 端口、文件描述符和日志中的错误痕迹
-- `monitor.sh`：每 15 分钟记录系统快照到 `snapshots.log`
-
-运行方式：
+### Health Check
 
 ```bash
 bash health_check.sh
 bash monitor.sh
 ```
 
-如果要持续监控，可以通过 macOS `launchd` 或 cron 调度 `monitor.sh` 定期执行，并将 `snapshots.log` 归档或发送告警。
-## 实盘交易（谨慎！）
-
-```bash
-# 1. 先在模拟盘跑3天以上，确认策略有效
-python run.py --paper --dashboard
-
-# 2. 配置长桥API
-# 编辑 config.yaml:
-#   broker.longbridge.enabled: true
-#   broker.longbridge.app_key: "your_key"
-#   broker.longbridge.app_secret: "your_secret"
-#   broker.longbridge.access_token: "your_token"
-#   broker.longbridge.environment: "sandbox"   # 或 "prod"
-#   broker.longbridge.http_url / quote_ws_url / trade_ws_url
-
-# 也可以直接用环境变量：
-#   LONGBRIDGE_API_KEY / LONGBRIDGE_API_SECRET
-#   LONGBRIDGE_ACCESS_TOKEN
-#   LONGBRIDGE_ENV=sandbox
-#   LONGBRIDGE_HTTP_URL / LONGBRIDGE_QUOTE_WS_URL / LONGBRIDGE_TRADE_WS_URL
-#   LONGBRIDGE_LOG_PATH=logs
-#   LONGBRIDGE_AUDIT_DIR=logs
-
-# 3. 安装长桥SDK
-pip install longbridge
-
-# 4. 启动实盘
-python run.py --live --dashboard
-```
-
-实盘主路径会把每一次交易请求和响应追加到 `logs/trades-YYYYMMDD.jsonl`，方便回查和审计。
-如果当前运行目录不可写，可以用 `LONGBRIDGE_AUDIT_DIR` 指到一个可写目录。
-
-## 项目结构
+## Project Structure
 
 ```
-soxs-range-arbitrage/
-├── config.yaml           # 主配置（改动这里）
-├── run.py                # 入口脚本
-├── requirements.txt
+openalpha/
 ├── src/
-│   ├── config/loader.py  # 配置加载
-│   ├── data/fetcher.py   # yfinance价格获取
-│   ├── strategy/range_detector.py  # 策略核心
-│   ├── engine/trading_engine.py    # 主循环引擎
-│   ├── broker/
-│   │   ├── base.py        # 券商抽象接口
-│   │   ├── paper_broker.py         # 模拟交易
-│   │   └── longbridge_broker.py    # 长桥实盘
-│   ├── risk/manager.py    # 风控管理
-│   ├── notifier/alerts.py # 通知系统
-│   └── dashboard/server.py # Web监控面板
-└── tradingview/
-    └── soxs_range_strategy.pine  # Pine Script
+│   ├── openalpha/            # Core: selection pipeline, diagnostics, preflight
+│   ├── scoring/              # Multi-factor scoring model
+│   ├── universe/             # Symbol universe management (35 symbols)
+│   ├── engine/               # Trading engine (read-only runtime)
+│   ├── broker/               # LongBridge & paper brokers
+│   ├── risk/                 # Risk management
+│   ├── safety/               # LiveGuard, environment guard
+│   ├── notifier/             # Telegram, webhook, macOS notifications
+│   ├── dashboard/            # Read-only combined dashboard (Jinja2 HTML)
+│   ├── backtest/             # Backtesting framework
+│   ├── outcome/              # Trade outcome collection & governance
+│   ├── regime/               # Market regime detection
+│   ├── data/                 # PriceFetcher (yfinance wrapper)
+│   ├── strategy/             # Strategy definitions
+│   ├── shadow/               # Shadow trading observation
+│   └── utils/                # Market calendar, helpers
+├── scripts/                  # CLI tools, wrappers, diagnostics
+├── tests/                    # pytest: 59+ core integration tests, ~1075 total
+├── .ai/                      # AI assistant context layer
+│   ├── CLAUDE.md             # Primary AI context
+│   ├── safety.md             # Immutable safety constraints
+│   ├── architecture.md       # Module map, data flow, pipeline details
+│   └── DECISION_LOG.md       # 15 engineering decisions with reasons
+├── config/                   # Configuration templates
+├── configs/                  # Generated TOP{1,2,3}.yaml configs
+├── launchd/                  # macOS launchd plist files
+└── state/                    # Runtime state directory
 ```
 
-## 自动启动（可选）
+## Roadmap
 
-推荐将 `launchd/com.soxs.arbitrage.plist`、`launchd/com.soxs.arbitrage.stop.plist` 与 `launchd/com.soxs.ai_selector.plist` 复制到 `~/Library/LaunchAgents/` 并使用 `launchctl load` 加载。`launchd` 每分钟唤醒一次，实际是否启动/停止由 `auto_trade.sh scheduled-start|scheduled-stop` 使用美股交易日历和美东时间判断。其中 AI 选股由 `scripts/ai_selector_wrapper.py` 在美东时间 `09:00` 自动执行一次，再由交易启动任务接管。
+### Completed
 
-当前默认窗口与美股常规时段对齐如下：
+- [x] 9-stage selection pipeline with invariant enforcement
+- [x] Mode-aware quality filtering (FULL / AFTER_MARKET / EOD_ONLY / DEGRADED)
+- [x] Preflight market state detection
+- [x] Universal fallback profile coverage (35 symbols)
+- [x] Pipeline diagnostic reports with per-symbol elimination tracing
+- [x] Funnel consistency validation
+- [x] Telegram message chunking for long reports
+- [x] Paper trading foundation
+- [x] AI engineering context layer (`.ai/`)
 
-- 上海时间 `21:00` = 美东时间 `09:00`：执行 AI 选股
-- 美东时间 `09:25` 后的启动窗口：启动交易任务
-- 美东时间 `16:05` 后的停止窗口：停止交易任务并进入收盘后状态
-- 夏令时、冬令时、周末和美股休市日均由脚本判断，不依赖固定北京时间偏移
+### Next
 
-调度注意事项：
+- [ ] Demo mode with sample data (no API keys required)
+- [ ] Public documentation site
+- [ ] Dashboard usability improvements
+- [ ] Multi-provider data fallback (Alpha Vantage, Polygon)
+- [ ] Backtest validation harness for pipeline changes
 
-- `launchd` 与 `cron` 的启动/停止任务二选一，不要同时启用
-- 如果同时启用，会造成重复启动，日志里会反复出现 `AI Top3 trading started`
-- 使用 `launchd` 时应调用 `auto_trade.sh scheduled-start|scheduled-stop`
-- 手动启动/停止仍使用 `auto_trade.sh start|stop`
-- 不要再直接用 `multi_launch.sh start|stop` 做定时启停；虽然现在也会校验“当天选股状态”，但标准入口仍应保持为 `auto_trade.sh` / `tradectl.sh`
-- `launchd/com.soxs.arbitrage*.plist` 现在默认使用稳定的后台常驻路径，不再强制 TOP1-5 走 `launchd` 子服务
-- `auto_trade.sh start`、`tradectl.sh up`、`multi_launch.sh start`、`multi_launch.sh restart-all` 现在都会先检查是否为美股交易日；像 `2026-07-03` 这类休市日会直接跳过启动
-- 以上 live TOP 启动入口现在都会检查 `required_selection_date` 对应的 `selection_state`；状态缺失、日期过期或 `TOP1~TOP5` 与状态不一致时会直接拒绝启动
-- 即使直接运行 `run.py --config configs/TOP1.yaml --live`，现在也会触发同样的当天选股校验
+## Disclaimer
 
-示例如下：
+**This project is for research and educational purposes only.**
 
-```bash
-# 使用 launchd（示例）
-mkdir -p ~/Library/LaunchAgents
-cp launchd/com.soxs.arbitrage.plist ~/Library/LaunchAgents/
-cp launchd/com.soxs.arbitrage.stop.plist ~/Library/LaunchAgents/
-cp launchd/com.soxs.ai_selector.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.plist
-launchctl load ~/Library/LaunchAgents/com.soxs.arbitrage.stop.plist
-launchctl load ~/Library/LaunchAgents/com.soxs.ai_selector.plist
+OpenAlpha is not financial advice, investment advice, or a trading recommendation. It does not guarantee any trading outcome. The system is designed to run in paper/sandbox mode by default. Live trading requires explicit multi-layer configuration changes that are architecturally prevented from being enabled by accident.
 
-# 或使用 crontab（示例，只在不使用 launchd 时启用）
-# 每分钟唤醒，脚本自行判断美股交易日和美东 09:25 启动窗口
-* * * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh scheduled-start
-# 每分钟唤醒，脚本自行判断美股交易日和美东 16:05 停止窗口
-* * * * * /Users/chenwei/soxs-range-arbitrage/auto_trade.sh scheduled-stop
-```
+Past performance of the selection pipeline does not guarantee future results. All trading involves risk. Use at your own discretion.
 
-日常手动控制建议直接使用：
+---
 
-```bash
-cd /Users/chenwei/soxs-range-arbitrage
-./tradectl.sh up
-./tradectl.sh status
-./tradectl.sh restart
-./tradectl.sh reload-launchd
-./tradectl.sh down
-```
-
-代码层安全说明：
-
-- 如果代码里直接实例化 `TradingEngine(..., mode=\"live\")`，且对应标的是当前 `TOP1~TOP5` live 配置之一，系统也会在引擎内部再次校验当天美东选股状态
-- `orphan_monitor` 使用独立 `startup_role`，不会被这道校验误伤，从而继续负责真实孤儿持仓的只减仓保护
-
-## AI 选股日报
-
-- 每日 AI 选股报告保存在 `reports/`，文件名格式 `ai_selection_YYYYMMDD.md`。
-- Top5 自动生成的配置文件位于 `configs/TOP1.yaml` 到 `configs/TOP5.yaml`。
-- 本项目包含一个 AI 选股演示脚本 `scripts/run_ai_selector.py`（在线）和 `scripts/generate_offline_demo.py`（离线合成示例），可以用于验证从选股到配置写入的完整流程。
-
-示例：
-```bash
-# 运行离线演示并生成报告与 TOP 配置
-.venv/bin/python scripts/generate_offline_demo.py
-
-# 运行 AI 选股（在线模式，可能需要网络）
-.venv/bin/python scripts/run_ai_selector.py
-```
-
-## 免责声明
-
-本系统仅供学习和研究用途。使用本系统进行实盘交易的风险由用户自行承担。请确保在实盘前充分测试，并设置合理的风控参数。
+*Questions? Found a bug? Open an issue or reach out via Telegram [@QuantCairnPicks](https://t.me/QuantCairnPicks).*
