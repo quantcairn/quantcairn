@@ -1,0 +1,38 @@
+name: test
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: pip install -e ".[demo,test]"
+
+      - name: Verify package import
+        run: python -c "import quantcairn; print('quantcairn', quantcairn.__version__)"
+
+      - name: Run tests
+        run: pytest tests/ -q --tb=short
+
+      - name: Run demo pipeline
+        run: python scripts/run_demo_selector.py
+
+      - name: Run basic API example
+        run: python examples/basic_demo.py
