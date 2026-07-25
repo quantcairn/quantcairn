@@ -1161,29 +1161,30 @@ def _mode_label(mode: str | None) -> str:
     return {
         "paper": "PAPER",
         "sandbox": "SANDBOX",
-        "live": "PROD",
+        "live": "SANDBOX",
         "backtest": "BACKTEST",
-    }.get(value, "UNKNOWN")
+    }.get(value, "RESEARCH")
 
 
 def _execution_mode_code(mode: str | None) -> str:
     value = str(mode or "").strip().lower()
     if value == "live":
-        return "live"
+        return "sandbox"
     if value in {"paper", "sandbox"}:
         return "paper"
     if value == "backtest":
         return "backtest"
-    return "unknown"
+    return "research"
 
 
 def _execution_mode_label(mode: str | None) -> str:
     value = _execution_mode_code(mode)
     return {
-        "paper": "虚拟盘",
-        "live": "实盘",
-        "backtest": "回测",
-    }.get(value, "未知")
+        "paper": "PAPER",
+        "sandbox": "SANDBOX",
+        "live": "SANDBOX",
+        "backtest": "BACKTEST",
+    }.get(value, "RESEARCH")
 
 
 def _broker_environment_code(
@@ -1211,7 +1212,7 @@ def _broker_environment_label(code: str | None) -> str:
     return {
         "local_paper": "本地模拟账户",
         "longbridge_sandbox": "LongBridge 沙盒",
-        "longbridge_live": "LongBridge 实盘",
+        "longbridge_live": "LongBridge SANDBOX",
         "unavailable": "不可用",
     }.get(value, "未知")
 
@@ -1241,7 +1242,7 @@ def _account_type_label(code: str | None) -> str:
     return {
         "simulated": "模拟账户",
         "sandbox": "沙盒账户",
-        "live": "实盘账户",
+        "live": "SANDBOX 账户",
         "unknown": "未知",
     }.get(value, "未知")
 
@@ -4369,8 +4370,8 @@ HTML = """<!DOCTYPE html>
 <div class="page">
     <div class="topbar">
         <div class="brand">
-            <h1>SOXS 区间套利交易系统</h1>
-            <p>自动交易 · 风险控制 · LongBridge 执行 · 只读监控大屏，展示虚拟盘、沙盒和实盘的实时状态、区间位置、成交与风控。</p>
+            <h1>QuantCairn Research Dashboard</h1>
+            <p>AI-powered quantitative research platform. Research signals, paper trading validation and portfolio monitoring.</p>
             <div class="headline-stats">
                 <div class="headline-stat">
                     <span class="label">账户总资产</span>
@@ -4410,24 +4411,24 @@ HTML = """<!DOCTYPE html>
                 <div class="headline-stat">
                     <span class="label">系统状态</span>
                     <span class="value {{ runtime_state_class }}" id="headline-system-state">{{ runtime_state_value }}</span>
-                    <span class="sub" id="headline-system-state-sub">仅减仓 {{ '开启' if system_status.global_reduce_only else '关闭' }} · 实盘下单 {{ '开启' if system_status.live_order_enabled else '关闭' }}</span>
+                    <span class="sub" id="headline-system-state-sub">Reduce-only {{ 'ON' if system_status.global_reduce_only else 'OFF' }} · Live Trading {{ 'DISABLED' }}</span>
                 </div>
             </div>
         </div>
         <div class="status-row">
             <span class="pill {{ mode_class }}" id="mode-pill">
-                <strong>{{ mode_display }}</strong>
+                <strong>Environment: {{ mode_display }}</strong>
             </span>
-            <span class="pill {{ market_pill_class }}" id="market-pill">市场：{{ format_optional(system_status.market_open_label) }}</span>
-            <span class="pill {{ system_status.broker_connected and 'status-live' or 'status-offline' }}" id="broker-pill">券商连接：{{ format_optional(system_status.broker_connection) }}</span>
-            <a class="pill research" href="{{ research_url }}" target="_blank" rel="noopener">只读研究简报</a>
+            <span class="pill {{ market_pill_class }}" id="market-pill">Market: {{ format_optional(system_status.market_open_label) }}</span>
+            <span class="pill {{ system_status.broker_connected and 'status-live' or 'status-offline' }}" id="broker-pill">Broker: {{ format_optional(system_status.broker_connection) }}</span>
+            <span class="pill blocked" id="live-trading-pill">Live Trading: DISABLED</span>
             <span class="pill {{ startup_guard.level }}">
                 {{ startup_guard.label }}
             </span>
             <span class="pill">最后更新时间 <span id="last-updated-pill">{{ update_time }}</span></span>
             {% if live_account and live_account.data_stale %}
                 {% if live_account.account_error %}
-            <span class="pill warn">实盘账户异常 · 账户拉取失败 · {{ live_account.stale_reason }}</span>
+            <span class="pill warn">券商账户异常 · 账户拉取失败 · {{ live_account.stale_reason }}</span>
                 {% else %}
             <span class="pill warn">账户数据已过期 · {{ live_account.fetched_at or '未知时间' }}</span>
                 {% endif %}
@@ -4440,8 +4441,8 @@ HTML = """<!DOCTYPE html>
             {% endif %}
         </div>
     </div>
-    <div class="guard-banner {% if startup_guard.level == 'live' %}live{% elif startup_guard.level == 'warn' %}warn{% else %}blocked{% endif %}">
-        {{ startup_guard.detail }}
+    <div class="guard-banner {{ 'live' if startup_guard.level == 'live' else 'warn' if startup_guard.level == 'warn' else 'blocked' }}">
+        Research Mode Only · Live trading is disabled by default · This dashboard is for research, paper trading and simulation
         · 要求美东日期 {{ startup_guard.required_date }}
         {% if startup_guard.state_date %} · 当前状态日期 {{ startup_guard.state_date }}{% endif %}
     </div>
@@ -4576,7 +4577,7 @@ HTML = """<!DOCTYPE html>
                 <div class="hint" style="margin-top:4px">只读展示 · 不触发下单 · 不修改环境变量或状态</div>
             </div>
             <span class="pill {{ 'mode-live' if system_status.mode_key == 'live' else 'mode-sandbox' if system_status.mode_key == 'sandbox' else 'mode-paper' }}" id="system-pill">
-                {{ system_status.mode }}{% if system_status.mode_key == 'paper' %} · 虚拟盘{% elif system_status.mode_key == 'sandbox' %} · 沙盒{% elif system_status.mode_key == 'live' %} · 实盘账户{% endif %}
+                {{ system_status.mode }}{% if system_status.mode_key == 'paper' %} · PAPER{% elif system_status.mode_key == 'sandbox' %} · SANDBOX{% elif system_status.mode_key == 'live' %} · SANDBOX{% endif %}
             </span>
         </div>
         <div class="system-status-grid">
@@ -4611,7 +4612,7 @@ HTML = """<!DOCTYPE html>
                 <span class="system-status-detail">全局只减仓开关</span>
             </div>
             <div class="system-status-card">
-                <span class="system-status-label">实盘下单</span>
+                <span class="system-status-label">Live Trading</span>
                 <span class="system-status-value" id="system-live-order">{{ translate_status('ENABLED' if system_status.live_order_enabled else 'DISABLED') }}</span>
                 <span class="system-status-detail">沙盒和虚拟盘默认应为已关闭</span>
             </div>
@@ -4666,9 +4667,9 @@ HTML = """<!DOCTYPE html>
                 </div>
             </div>
             <div class="system-status-card full shadow-observer-card {{ shadow_status_class }}" id="shadow-observer-card">
-                <span class="system-status-label" id="shadow-title">{{ (shadow_status.title or '模拟').replace(' Shadow Observer', '') }} 只读模拟观察</span>
+                <span class="system-status-label" id="shadow-title">{{ (shadow_status.title or 'Signal Observation').replace(' Shadow Observer', '') }} Signal Observation</span>
                 <span class="system-status-value" id="shadow-state">{{ translate_status(shadow_status.state_label or 'STALE') }}</span>
-                <span class="system-status-detail" id="shadow-detail">只读模拟，不会发送真实订单 · {{ format_optional(shadow_status.detail) }}</span>
+                <span class="system-status-detail" id="shadow-detail">仅用于研究信号展示，不发送真实订单 · {{ format_optional(shadow_status.detail) }}</span>
                 <div class="shadow-metrics-grid">
                     <div class="shadow-metric">
                         <span>运行模式</span>
@@ -5336,8 +5337,8 @@ HTML = """<!DOCTYPE html>
             <div class="viz-card">
                 <div class="viz-head">
                     <div>
-                        <div class="viz-title">SOXS 价格与交易点</div>
-                        <div class="viz-subtitle">价格折线 + BUY / SELL 标记 + 最近成交</div>
+                        <div class="viz-title">模拟观察信号</div>
+                        <div class="viz-subtitle">Signal Observation · 只读模拟，不发送真实订单</div>
                     </div>
                     <div class="viz-subtitle">{{ main_chart_card.ticker if main_chart_card else 'N/A' }}</div>
                 </div>
@@ -5450,7 +5451,7 @@ HTML = """<!DOCTYPE html>
                 <div class="viz-head">
                     <div>
                         <div class="viz-title">交易与审计事件</div>
-                        <div class="viz-subtitle">按时间倒序的关键事件摘要</div>
+                        <div class="viz-subtitle">事件记录用于研究和模拟验证，不代表真实订单执行</div>
                     </div>
                     <div class="viz-subtitle">{{ translate_status(trade_audit.execution_mode or 'UNKNOWN') }}</div>
                 </div>
@@ -6327,13 +6328,13 @@ HTML = """<!DOCTYPE html>
             setText('headline-active-orders', summary.active_orders_pending != null ? String(summary.active_orders_pending) : '0');
             setText('headline-active-orders-sub', `等待中 ${summary.active_orders_pending ?? 0} · 部分成交 ${summary.active_orders_partial_filled ?? 0}`);
             setText('headline-system-state', displayStatus(system.broker_connected ? 'ACTIVE' : 'DEGRADED'));
-            setText('headline-system-state-sub', `仅减仓 ${displayBool(!!system.global_reduce_only)} · 实盘下单 ${displayBool(!!system.live_order_enabled)}`);
+            setText('headline-system-state-sub', `Reduce-only ${displayBool(!!system.global_reduce_only)} · Live Trading DISABLED`);
 
             const shadow = payload.shadow || {};
-            const shadowSymbol = String(shadow.title || '模拟').replace(' Shadow Observer', '');
-            setText('shadow-title', `${shadowSymbol} 只读模拟观察`);
+            const shadowSymbol = String(shadow.title || 'Signal Observation').replace(' Shadow Observer', '');
+            setText('shadow-title', `${shadowSymbol} Signal Observation`);
             setText('shadow-state', displayStatus(shadow.status_label || shadow.state || 'STALE'));
-            setText('shadow-detail', `只读模拟，不会发送真实订单 · ${displayOptional(shadow.detail)}`);
+            setText('shadow-detail', `仅用于研究信号展示，不发送真实订单 · ${displayOptional(shadow.detail)}`);
             setText('shadow-mode', shadow.mode || 'READ-ONLY SHADOW');
             setText('shadow-safety-gate', displayStatus(shadow.safety_gate || 'STALE'));
             setText('shadow-quote-only', displayBool(shadow.quote_api_only));
@@ -6566,7 +6567,7 @@ HTML = """<!DOCTYPE html>
             const modeLabel = String(payload.mode || 'paper').toLowerCase();
             const modeChip = document.getElementById('mode-pill');
             if (modeChip) {
-                const modeText = modeLabel === 'sandbox' ? 'SANDBOX · 沙盒' : modeLabel === 'live' ? 'PROD · 实盘账户' : 'PAPER · 虚拟盘';
+                const modeText = modeLabel === 'sandbox' ? 'SANDBOX' : modeLabel === 'live' ? 'SANDBOX' : 'PAPER';
                 modeChip.className = `pill ${modeLabel === 'sandbox' ? 'mode-sandbox' : modeLabel === 'live' ? 'mode-live' : 'mode-paper'}`;
                 modeChip.innerHTML = `<strong>${modeText}</strong>`;
             }
@@ -7966,7 +7967,7 @@ def index():
             selected_positions_count = 0
         elif effective_mode == "live":
             display_positions_title = "LongBridge 真实持仓"
-            display_positions_hint = "实盘账户未连接，暂无持仓数据"
+            display_positions_hint = "券商账户未连接，暂无持仓数据"
             account_summary = None
             display_positions = []
             selected_positions_count = 0

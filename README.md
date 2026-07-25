@@ -1,279 +1,165 @@
 # QuantCairn
 
-**AI-driven US stock selection pipeline for range-bound swing trading.**
+**AI-driven quantitative research platform for US equity selection.**
 
-QuantCairn runs a 9-stage analytical pipeline that screens a managed universe of 35 US equities and ETFs, scores them with a multi-factor model, applies mode-aware quality filtering, and produces daily candidate selections. Designed for research, paper trading, and transparency — not autonomous execution.
+QuantCairn runs a 9-stage analytical pipeline that screens a managed universe of 35 stocks and ETFs, scores them with a multi-factor model, and produces daily candidate selections. Designed for research, paper trading, and transparency.
 
 > *Formerly developed under the internal project name OpenAlpha.*
+
+---
+
+## Quick Start (30 seconds, no API keys)
+
+```bash
+git clone git@github.com:quantcairn/quantcairn.git && cd quantcairn
+python3 -m venv .venv && .venv/bin/pip install -e .
+.venv/bin/python scripts/run_demo_selector.py
+```
+
+The demo uses **deterministic synthetic data** — 5 symbols, 252 trading days each, no network required. You'll see the full 9-stage pipeline run and produce research candidates.
+
+---
+
+## Features
+
+| Category | Capabilities |
+|---|---|
+| **Selection Pipeline** | 9-stage pipeline: Universe → Scoring → Quality → Diversity → TOP K. Funnel invariant enforced per stage. |
+| **Scoring Model** | Multi-factor (30/20/20/15/10): volatility, volume, trend, repeatability, drawdown. 37 fallback profiles. |
+| **Quality Filtering** | Mode-aware: strict spread checks during market hours, relaxed with EOD data otherwise. |
+| **Paper Trading** | End-to-end verified: selector → config → simulated fills → portfolio persistence → dashboard. |
+| **Diagnostics** | Per-symbol elimination tracing. Funnel audit trail. Preflight market state detection. |
+| **Notifications** | Telegram (`@QuantCairnPicks`), console, macOS, webhook. Long messages auto-chunked. |
+| **Dashboard** | Read-only HTML (port 8090). No trade buttons, no broker calls. |
+| **Demo Mode** | Zero-dependency evaluation with seeded random walk data. |
+| **Execution Modes** | LIVE (strict, safety-disabled) / PAPER (relaxed, simulated) / RESEARCH (candidates only). |
 
 ---
 
 ## Architecture
 
 ```
-Market Data (Yahoo / LongBridge)
-    │
-    ▼
-Preflight ──→ Run Mode (FULL / AFTER_MARKET / EOD_ONLY / DEGRADED)
-    │
-    ▼
-┌─────────────────────────────────────────────────────┐
-│  9-Stage Selection Pipeline                         │
-│                                                      │
-│  UNIVERSE ──→ UNIVERSE_FILTER ──→ MARKET_DATA        │
-│      35 symbols      cap at 50       OHLCV check      │
-│                                                      │
-│  SCORING_ELIGIBLE ──→ BASE_RANKING ──→               │
-│      multi-factor         polish                      │
-│                                                      │
-│  FORMAL_ELIGIBILITY ──→ DATA_QUALITY ──→             │
-│      formal gate       mode-aware checks              │
-│                                                      │
-│  COMPOSITION_FILTER ──→ FORMAL_TOP                   │
-│      diversification       final candidates           │
-└──────────────────────┬──────────────────────────────┘
-                       │
-              ┌────────▼────────┐
-              │  FunnelTracker   │  ← audit & diagnostics
-              │  Notifier        │  ← Telegram / webhook
-              │  Config Writer   │  ← TOP{1,2,3}.yaml
-              └──────────────────┘
+Market Data ──→ Preflight ──→ 9-Stage Pipeline ──→ FunnelTracker (audit)
+  (Yahoo/                                 │
+  LongBridge)              ┌───────────────┼───────────────┐
+                           ▼               ▼               ▼
+                      Notifier        Config Writer     Dashboard
+                     (Telegram)      (TOP{1,2,3}.yaml)   (port 8090)
+                                           │
+                                     Trading Engine
+                                    (paper / sandbox)
 ```
 
-## Pipeline Stages
+**Key invariant**: Every pipeline stage enforces `output_count <= input_count`.
 
-| Stage | Input | Output | Description |
-|---|---|---|---|
-| **UNIVERSE** | — | 35 symbols | Load enabled symbols from managed universe |
-| **UNIVERSE_FILTER** | 35 | ≤50 | Cap at configurable max |
-| **MARKET_DATA** | ≤50 | data-available | Validate OHLCV independently of scoring |
-| **SCORING_ELIGIBLE** | data-available | scored pool | Multi-factor scoring with fallback profiles |
-| **BASE_RANKING** | scored pool | scored pool | Score polishing via `score_candidate()` |
-| **FORMAL_ELIGIBILITY** | scored pool | formal pool | Filter by `formal_scoring_eligibility` |
-| **DATA_QUALITY** | formal pool | quality-passed | Mode-aware spread/volume checks |
-| **COMPOSITION_FILTER** | quality-passed | diversified | Sector/correlation diversity selection |
-| **FORMAL_TOP** | diversified | TOP K | Final tradable candidates |
+---
 
-**Key invariant**: Every stage enforces `output_count <= input_count`.
+## Paper Trading
 
-## Core Features
-
-- **9-stage selection pipeline** — deterministic, auditable, independently testable
-- **Multi-factor scoring** — volatility, volume, trend, repeatability, drawdown
-- **Mode-aware quality filtering** — strict during market hours, relaxed otherwise
-- **Fallback profiles** — all 35 symbols have recovery paths when Yahoo is unavailable
-- **Preflight market check** — detects market state before pipeline execution
-- **Market regime detection** — BULL / SIDEWAYS / BEAR / RISK_OFF classification
-- **Funnel diagnostics** — per-symbol elimination tracing with exact reasons
-- **Paper trading support** — LongBridge sandbox integration
-- **Telegram notifications** — auto-chunked reports to `@QuantCairnPicks`
-- **Read-only dashboard** — Jinja2 HTML monitoring without trade capability
-- **Outcome collection** — Parquet-based trade outcome tracking
-- **Learning governance** — human-approval gate for weight proposals
-
-## Safety Architecture
-
-QuantCairn is designed with defense-in-depth safety:
-
-### Trading Isolation
-
-- **Selector and Trading Engine are completely decoupled.** The selector writes YAML configs; the engine reads them. No runtime coupling.
-- **Config Writer refuses to overwrite** live configs when existing positions are present.
-
-### Paper-First
-
-- All trading defaults to paper/sandbox mode.
-- Live trading requires three independent gates: `config.local.yaml` approval, `trading_environment_guard.py` validation, and `live_guard.py` pre-flight checks.
-
-### Read-Only Dashboard
-
-- The dashboard reads artifacts and state files only. No POST endpoints, no action buttons, no broker API calls.
-
-### Human-Approval Governance
-
-- All machine learning weight proposals default to `PENDING_HUMAN_APPROVAL`.
-- Auto-activation is architecturally impossible: `ACTIVE` state requires explicit `approved_by_human=True`.
-
-### Risk Controls
-
-- `allow_live_order` is forced to `false` regardless of config.
-- `reduce_only` is forced to `true` — no new positions can be opened.
-- SOXS is permanently `reduce_only`.
-
-See [`.ai/safety.md`](.ai/safety.md) for the complete safety constraint specification.
-
-## Quick Start
-
-### Requirements
-
-- Python 3.14+
-- macOS (scheduling via launchd; Linux works for execution)
-- LongBridge account (for broker integration; paper mode doesn't require one)
-
-### Setup
+QuantCairn includes a complete paper trading simulation environment. Run the selector in PAPER mode to produce trade-eligible candidates with confidence scores:
 
 ```bash
-# Clone
-git clone https://github.com/quantcairn/quantcairn.git
-cd quantcairn
+QUANTCAIRN_EXECUTION_MODE=PAPER .venv/bin/python scripts/run_ai_selector.py --universe-source managed
+```
 
-# Create venv and install
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+The paper broker simulates fills with realistic slippage and commissions. Positions are persisted to `state/paper/{account}/portfolio_state.json`. The dashboard displays open positions, unrealized P&L, and account equity.
 
-# Copy and edit config
-cp config.sample.yaml config.yaml
-# Edit config.yaml with your settings
+**Live trading is architecturally disabled** — `allow_live_order` is forced to `false` at three independent layers regardless of configuration.
+
+---
+
+## Safety
+
+QuantCairn is a **research tool, not a trading bot**. Key safety invariants:
+
+- `allow_live_order` is **forced to `false`** — cannot be overridden
+- Trading engine defaults to **reduce-only** mode — no new positions opened
+- **Selector and Engine are decoupled** — the selector writes YAML configs; the engine reads them
+- **Paper trading is the default** — live trading requires explicit multi-layer approval
+- **Learning governance** requires explicit human approval before any model weight change
+
+See [`.ai/safety.md`](.ai/safety.md) for the full safety specification.
+
+---
+
+## Commands
+
+```bash
+# Daily research selection
+.venv/bin/python scripts/run_ai_selector.py --universe-source managed
+
+# Paper trading simulation
+QUANTCAIRN_EXECUTION_MODE=PAPER .venv/bin/python scripts/run_ai_selector.py --universe-source managed
+
+# System health check (read-only)
+.venv/bin/python scripts/status.py
+
+# Developer environment check
+.venv/bin/python scripts/check_dev_environment.py
 
 # Run tests
 .venv/bin/python -m pytest tests/ -q
 ```
 
-### Development Setup
-
-**For first-time contributors** — get up and running in under 60 seconds:
-
-```bash
-# 1. Clone and enter the project
-git clone https://github.com/quantcairn/quantcairn.git
-cd quantcairn
-
-# 2. Create a virtual environment and install in editable mode
-python3 -m venv .venv
-.venv/bin/pip install -e .
-
-# 3. Verify everything works
-.venv/bin/python scripts/check_dev_environment.py
-
-# 4. Run the demo pipeline (no API keys required)
-.venv/bin/python scripts/run_demo_selector.py
-
-# 5. Run the basic API example
-.venv/bin/python examples/basic_demo.py
-```
-
-Editable install (`-e`) means changes to source code take effect immediately — no need to reinstall.
-
-### Try QuantCairn Demo
-
-**No API keys or broker connection required.** The demo runs the full 9-stage AI research pipeline using deterministic synthetic market data.
-
-```bash
-# Run the demo — works immediately after pip install
-.venv/bin/python scripts/run_demo_selector.py
-```
-
-What the demo does:
-- Generates 252 trading days of synthetic OHLCV data for 5 well-known symbols (AAPL, MSFT, NVDA, SPY, TSLA)
-- Runs the complete selection pipeline — scoring, quality filtering, diversification, TOP selection
-- Produces a formatted terminal report with pipeline status and research candidates
-- Writes demo artifacts to `artifacts/demo/` (JSON + Markdown)
-
-Sample output:
-```
-Pipeline Status:    8 stages ✅ PASS, 1 ⚠️ WARN
-Candidates:         2 (AAPL 68.0, NVDA 68.0) — RESEARCH_ONLY
-Safety:             Execution DISABLED | Trading NOT AVAILABLE
-```
-
-The demo uses a seeded random walk — results are fully reproducible. No network access, no broker calls, no trading capability.
-
-### Run AI Selection
-
-```bash
-# Full managed universe selection
-.venv/bin/python scripts/run_ai_selector.py --universe-source managed
-
-# With Surge proxy (disable curl_cffi TLS impersonation)
-YF_DISABLE_CURL_CFFI=1 .venv/bin/python scripts/run_ai_selector.py --universe-source managed
-
-# Market data diagnostics
-.venv/bin/python scripts/diag_market_data.py
-
-# Force a selection run regardless of time
-FORCE_AI_RUN=1 .venv/bin/python scripts/ai_selector_wrapper.py
-```
-
-### Scheduling
-
-```bash
-# macOS launchd (auto-runs at 09:00 ET on trading days)
-mkdir -p ~/Library/LaunchAgents
-cp launchd/com.soxs.ai_selector.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.soxs.ai_selector.plist
-```
-
-### Health Check
-
-```bash
-bash health_check.sh
-bash monitor.sh
-```
+---
 
 ## Project Structure
 
 ```
 quantcairn/
 ├── src/
-│   ├── openalpha/            # Core: selection pipeline, diagnostics, preflight
-│   ├── scoring/              # Multi-factor scoring model
-│   ├── universe/             # Symbol universe management (35 symbols)
-│   ├── engine/               # Trading engine (read-only runtime)
-│   ├── broker/               # LongBridge & paper brokers
-│   ├── risk/                 # Risk management
-│   ├── safety/               # LiveGuard, environment guard
-│   ├── notifier/             # Telegram, webhook, macOS notifications
-│   ├── dashboard/            # Read-only combined dashboard (Jinja2 HTML)
-│   ├── backtest/             # Backtesting framework
-│   ├── outcome/              # Trade outcome collection & governance
-│   ├── regime/               # Market regime detection
-│   ├── data/                 # PriceFetcher (yfinance wrapper)
-│   ├── strategy/             # Strategy definitions
-│   ├── shadow/               # Shadow trading observation
-│   └── utils/                # Market calendar, helpers
-├── scripts/                  # CLI tools, wrappers, diagnostics
-├── tests/                    # pytest: 59+ core integration tests, ~1075 total
-├── .ai/                      # AI assistant context layer
-│   ├── CLAUDE.md             # Primary AI context
-│   ├── safety.md             # Immutable safety constraints
-│   ├── architecture.md       # Module map, data flow, pipeline details
-│   └── DECISION_LOG.md       # 15 engineering decisions with reasons
-├── config/                   # Configuration templates
-├── configs/                  # Generated TOP{1,2,3}.yaml configs
-├── launchd/                  # macOS launchd plist files
-└── state/                    # Runtime state directory
+│   ├── openalpha/          Core: selection pipeline, diagnostics, preflight
+│   ├── scoring/            Multi-factor scoring model
+│   ├── universe/           Managed symbol universe (35 symbols)
+│   ├── broker/             Paper broker, portfolio state, LongBridge integration
+│   ├── engine/             Trading engine (selector-independent)
+│   ├── risk/, safety/      Risk management, LiveGuard, environment guard
+│   ├── notifier/           Telegram, webhook, macOS notifications
+│   ├── dashboard/          Read-only combined dashboard (Jinja2 HTML)
+│   ├── outcome/            Trade outcome collection, governance, weight advisor
+│   ├── backtest/, regime/  Backtesting framework, market regime detection
+│   └── strategy/, shadow/  Strategy definitions, shadow trading observation
+├── scripts/                CLI tools, wrappers, diagnostics
+├── tests/                  pytest: 1075+ tests, 59+ core integration tests
+├── .ai/                    AI assistant context layer (CLAUDE.md, safety, architecture, decisions)
+├── quantcairn/             Public Python API namespace
+├── examples/               Minimal API usage examples
+├── docs/                   Product overview, API reference, migration plans
+├── configs/                Generated TOP{1,2,3}.yaml configs
+└── state/                  Runtime state (portfolios, notifications, selection markers)
 ```
-
-## Roadmap
-
-### Completed
-
-- [x] 9-stage selection pipeline with invariant enforcement
-- [x] Mode-aware quality filtering (FULL / AFTER_MARKET / EOD_ONLY / DEGRADED)
-- [x] Preflight market state detection
-- [x] Universal fallback profile coverage (35 symbols)
-- [x] Pipeline diagnostic reports with per-symbol elimination tracing
-- [x] Funnel consistency validation
-- [x] Telegram message chunking for long reports
-- [x] Paper trading foundation
-- [x] Demo mode with sample data (no API keys required) — `scripts/run_demo_selector.py`
-- [x] AI engineering context layer (`.ai/`)
-
-### Next
-
-- [ ] Public documentation site
-- [ ] Dashboard usability improvements
-- [ ] Multi-provider data fallback (Alpha Vantage, Polygon)
-- [ ] Backtest validation harness for pipeline changes
-
-## Disclaimer
-
-**This project is for research and educational purposes only.**
-
-QuantCairn is not financial advice, investment advice, or a trading recommendation. It does not guarantee any trading outcome. The system is designed to run in paper/sandbox mode by default. Live trading requires explicit multi-layer configuration changes that are architecturally prevented from being enabled by accident.
-
-Past performance of the selection pipeline does not guarantee future results. All trading involves risk. Use at your own discretion.
 
 ---
 
-*Questions? Found a bug? Open an issue or reach out via Telegram [@QuantCairnPicks](https://t.me/QuantCairnPicks).*
+## Documentation
+
+| Document | For |
+|---|---|
+| [Product Overview](docs/PRODUCT_OVERVIEW.md) | What QuantCairn is, what it can do, what it won't |
+| [Decision Log](.ai/DECISION_LOG.md) | Why 15 major engineering decisions were made |
+| [Architecture Reference](.ai/architecture.md) | Module map, data flow, pipeline stage details |
+| [Safety Constraints](.ai/safety.md) | Immutable rules — what must never change |
+| [API Reference](docs/API.md) | Public Python API surface |
+| [Contributing](CONTRIBUTING.md) | Development workflow and PR guidelines |
+| [Roadmap](ROADMAP.md) | Completed and planned work |
+| [Changelog](CHANGELOG.md) | Release history |
+
+---
+
+## Roadmap
+
+**Completed (v0.12.0)**:
+- [x] 9-stage pipeline, mode-aware quality filtering, paper trading, demo mode, diagnostics, Telegram, dashboard, CI, packaging, AI context layer, open-source foundation
+
+**Next (v0.13.0)**:
+- [ ] Scoring rejection reason propagation, outcome collector auto-trigger, dashboard mode consistency, multi-provider data fallback
+
+See [ROADMAP.md](ROADMAP.md) for the full plan.
+
+---
+
+## Disclaimer
+
+**This project is for research and educational purposes only.** QuantCairn is not financial advice, investment advice, or a trading recommendation. The system runs in paper/sandbox mode by default. Live trading is architecturally prevented. Past pipeline performance does not guarantee future results.
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
