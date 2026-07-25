@@ -1504,6 +1504,138 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
     return "【AI 选股完成】", "\n".join(lines).strip()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Public channel template — clean output for @QuantCairnPicks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _build_public_channel_message(
+    selection_report: dict, top_configs: list | None = None
+) -> tuple[str, str]:
+    """Build a concise public message (≤1500 chars).
+
+    For formal selection: shows trading_date, TOP1/TOP3 with scores, risk level.
+    For no selection: shows the reason, nearest rejected, research hints.
+    Never shows pipeline internals, provider audit, or fallback debug info.
+    """
+    report, top_items, _ = _resolve_manifest_first_selection_payload(selection_report, top_configs)
+    formal_items = [dict(item) for item in top_items if _is_formal_trade_selection(dict(item))]
+    selection_date = str(report.get("selection_date") or report.get("date") or "").strip()
+    if not selection_date:
+        selection_date = "未知"
+    execution_mode = str(report.get("execution_mode") or "").strip().upper()
+    candidate_type = str(report.get("candidate_type") or "").strip().upper()
+    pipeline_status = str(report.get("pipeline_status") or report.get("execution_status") or "COMPLETED").strip().upper()
+    selected_count = len(formal_items)
+    selection_outcome = "SUCCESS" if selected_count > 0 else "NO_SELECTION"
+    if pipeline_status == "FAILED":
+        selection_outcome = "FAILED"
+
+    # ── Mode label ───────────────────────────────────────────────────────
+    mode_emoji = {"LIVE": "🔴", "PAPER": "🟡", "RESEARCH": "🔵"}.get(execution_mode, "⚪")
+    mode_text = {"LIVE": "Live", "PAPER": "Paper", "RESEARCH": "Research"}.get(execution_mode, execution_mode)
+    ct_label = {"LIVE_TRADABLE": "Tradable", "PAPER_ELIGIBLE": "Paper Eligible", "RESEARCH_ONLY": "Research Only"}.get(candidate_type, candidate_type)
+
+    # ── Market state ─────────────────────────────────────────────────────
+    preflight = dict(report.get("preflight") or report.get("preflight_report") or {})
+    market_state = str(preflight.get("market_state") or "").strip() or "UNKNOWN"
+    market_icon = {"MARKET_OPEN": "🟢", "PRE_MARKET": "🌅", "AFTER_HOURS": "🌙", "CLOSED": "⚫"}.get(market_state, "⚪")
+
+    # ── Header ───────────────────────────────────────────────────────────
+    header = f"📊 QuantCairn {selection_date}"
+    if selection_outcome == "NO_SELECTION":
+        header += " — No Selections"
+    elif selection_outcome == "FAILED":
+        header += " — Pipeline Failed"
+    title = header
+    body_lines = [
+        f"{market_icon} Market: {market_state}  ·  {mode_emoji} {mode_text}  ·  {ct_label}",
+    ]
+
+    # ── Candidates or no-selection reason ────────────────────────────────
+    if selection_outcome == "SUCCESS" and formal_items:
+        body_lines.append("")
+        for i, item in enumerate(formal_items[:5], 1):
+            ticker = str(item.get("ticker") or "?").upper()
+            score_val = _safe_fmt(item.get("score") or item.get("base_score") or item.get("final_score"))
+            sector_val = str(item.get("sector") or "")
+            data_src = str(item.get("data_source") or "")
+            ds_label = {"live": "", "eod_validated": " [EOD]", "eod_fallback": " [Est]", "fallback": " [Est]"}.get(data_src, "")
+            rec_strat = str(item.get("recommended_strategy") or "")
+            body_lines.append(f"{'🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f'{i}.'}  "
+                              f"${ticker}  {score_val}{ds_label}  {sector_val}")
+            if rec_strat and i <= 3:
+                body_lines.append(f"    Strategy: {rec_strat}")
+
+        # ── Risk / confidence ───────────────────────────────────────────
+        if formal_items:
+            first_item = formal_items[0]
+            risk_pct = first_item.get("risk", {}).get("stop_loss_pct") if isinstance(first_item.get("risk"), dict) else None
+            confidence = first_item.get("confidence")
+            if risk_pct or confidence:
+                risk_parts = []
+                if risk_pct:
+                    risk_parts.append(f"Stop Loss: {_safe_fmt(risk_pct)}%")
+                if confidence:
+                    risk_parts.append(f"Confidence: {_safe_fmt(float(confidence) * 100)}%")
+                body_lines.append("")
+                body_lines.append(" · ".join(risk_parts))
+
+    elif selection_outcome == "FAILED":
+        body_lines.append("")
+        body_lines.append("Pipeline execution failed. Check admin debug message for details.")
+    else:
+        body_lines.append("")
+        body_lines.append("No trade-eligible candidates were produced today.")
+        shortfall = _selection_shortfall_reasons(report)
+        if shortfall:
+            body_lines.append(f"Reason: {shortfall[0]}")
+        nearest = _format_nearest_rejected_candidates(report)
+        if nearest:
+            body_lines.append(f"Nearest: {nearest[0]}")
+        research_tip = ""
+        if candidate_type == "RESEARCH_ONLY":
+            research_tip = "Research candidates available — see dashboard"
+        elif candidate_type == "PAPER_ELIGIBLE":
+            research_tip = "Paper candidates ready — run with PAPER mode"
+        if research_tip:
+            body_lines.append(research_tip)
+
+    # ── Footer ───────────────────────────────────────────────────────────
+    body_lines.extend([
+        "",
+        "── QuantCairn Research Platform ──",
+        "For research purposes only. Not financial advice.",
+    ])
+
+    body = "\n".join(body_lines)
+    # ── Enforce ≤1500 chars ──────────────────────────────────────────────
+    if len(body) > 1480:
+        # Truncate at last complete line
+        cutoff = body.rfind("\n", 0, 1480)
+        if cutoff > 0:
+            body = body[:cutoff] + "\n..."
+        else:
+            body = body[:1470] + "..."
+
+    return title, body.strip()
+
+
+def _build_admin_debug_message(
+    selection_report: dict, top_configs: list | None = None
+) -> tuple[str, str]:
+    """Full diagnostic message for admin — reuses the existing detailed builder."""
+    return _build_ai_selection_message(selection_report, top_configs)
+
+
+def _safe_fmt(value, default: str = "—") -> str:
+    """Format a numeric value cleanly, returning *default* if invalid."""
+    try:
+        v = float(value)
+        return f"{v:.1f}" if v == int(v) else f"{v:.2f}"
+    except (TypeError, ValueError):
+        return default
+
+
 def _stage_explanation(selection_stage: str, result_quality: str, research_admission: str) -> str:
     stage = str(selection_stage or "").strip().upper() or "UNKNOWN"
     quality = str(result_quality or "").strip().upper() or "UNKNOWN"
@@ -1528,6 +1660,15 @@ def _stage_explanation(selection_stage: str, result_quality: str, research_admis
 
 
 def notify_ai_selection_result(selection_report: dict, top_configs: list | None = None) -> None:
+    """Send AI selection results via the public channel template.
+
+    Flow:
+      FORMAL_TOP / PARTIAL  → public channel gets clean candidate summary
+      NO_TRADABLE_SELECTION → public channel gets no-selection report
+      FAILED                → admin only (if configured), public skipped
+
+    Admin debug template is always sent to admin_chat_id if configured.
+    """
     report, resolved_top_items, source = _resolve_manifest_first_selection_payload(selection_report, top_configs)
     allowed, skip_reason = _is_formal_ai_selection_notification_payload(report, source)
     if not allowed:
@@ -1553,30 +1694,74 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
         or notification_cfg.get("ai_selector_webhook_url")
         or notification_cfg.get("webhook_url")
     )
-    notifier = Notifier(
-        console=False,
-        macos_notification=False,
-        webhook_url=webhook_url,
-        trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
-        telegram_bot_token=(
-            notification_cfg.get("ai_selector_telegram_bot_token", "")
-            or os.environ.get("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN")
-            or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
-            or notification_cfg.get("telegram_bot_token", "")
-        ),
-        telegram_chat_id=(
-            notification_cfg.get("ai_selector_telegram_chat_id", "")
-            or os.environ.get("SOXS_OPENALPHA_TELEGRAM_CHAT_ID")
-            or os.environ.get("SOXS_TELEGRAM_CHAT_ID")
-            or notification_cfg.get("telegram_chat_id", "")
-        ),
+    bot_token = (
+        notification_cfg.get("ai_selector_telegram_bot_token", "")
+        or os.environ.get("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN")
+        or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
+        or notification_cfg.get("telegram_bot_token", "")
     )
-    title, body = _build_ai_selection_message(report, resolved_top_items)
-    if not notifier._telegram_enabled and not notifier.webhook_url:
-        logger.info("AI selection notification skipped: Telegram/Webhook not configured")
-        return
-    try:
-        notifier._send(title, body, "summary", macos=False, remote=True)
+    channel_chat_id = (
+        notification_cfg.get("ai_selector_telegram_chat_id", "")
+        or os.environ.get("SOXS_OPENALPHA_TELEGRAM_CHAT_ID")
+        or os.environ.get("SOXS_TELEGRAM_CHAT_ID")
+        or notification_cfg.get("telegram_chat_id", "")
+    )
+
+    # ── Admin chat (full debug) — separate from public channel ──────────
+    admin_chat_id = (
+        os.environ.get("QUANTCAIRN_ADMIN_CHAT_ID", "")
+        or os.environ.get("SOXS_OPENALPHA_ADMIN_CHAT_ID", "")
+        or notification_cfg.get("ai_selector_admin_chat_id", "")
+    )
+
+    # ── Determine which templates to send ────────────────────────────────
+    pipeline_status = str(report.get("pipeline_status") or report.get("execution_status") or "COMPLETED").strip().upper()
+    selected_top_n = len([item for item in resolved_top_items if _is_formal_trade_selection(dict(item))])
+
+    send_public = pipeline_status != "FAILED"
+    send_admin = bool(admin_chat_id)
+
+    # ── 1. Public channel message ────────────────────────────────────────
+    if send_public and channel_chat_id:
+        public_notifier = Notifier(
+            console=False,
+            macos_notification=False,
+            webhook_url=webhook_url,
+            trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
+            telegram_bot_token=bot_token,
+            telegram_chat_id=channel_chat_id,
+        )
+        pub_title, pub_body = _build_public_channel_message(report, resolved_top_items)
+        if public_notifier._telegram_enabled:
+            try:
+                public_notifier._send(pub_title, pub_body, "summary", macos=False, remote=True)
+                logger.info("Public channel notification sent: %s — %d chars",
+                            pub_title, len(pub_body))
+            except Exception as exc:
+                logger.warning("Public channel notification failed: %s", exc)
+
+    # ── 2. Admin debug message ───────────────────────────────────────────
+    if send_admin:
+        admin_notifier = Notifier(
+            console=False,
+            macos_notification=False,
+            webhook_url=webhook_url,
+            trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
+            telegram_bot_token=bot_token,
+            telegram_chat_id=admin_chat_id,
+        )
+        admin_title, admin_body = _build_admin_debug_message(report, resolved_top_items)
+        if admin_notifier._telegram_enabled:
+            try:
+                admin_notifier._send(admin_title, admin_body, "summary", macos=False, remote=True)
+                logger.info("Admin debug notification sent: %s — %d chars",
+                            admin_title, len(admin_body))
+            except Exception as exc:
+                logger.warning("Admin debug notification failed: %s", exc)
+
+    # ── 3. Record notification attempt ───────────────────────────────────
+    # Record if at least one channel succeeded (public takes priority for SENT status)
+    if (send_public and channel_chat_id) or send_admin:
         _record_ai_selection_notification_attempt(
             ledger_path,
             report=report,
@@ -1585,13 +1770,5 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
             attempt_count=attempt_count + 1,
             error=None,
         )
-    except Exception as exc:
-        _record_ai_selection_notification_attempt(
-            ledger_path,
-            report=report,
-            notification_key=notification_key,
-            status="FAILED",
-            attempt_count=attempt_count + 1,
-            error=str(exc),
-        )
-        logger.warning("AI selection notification failed: %s", exc)
+    else:
+        logger.info("AI selection notification skipped: no Telegram channel configured")
