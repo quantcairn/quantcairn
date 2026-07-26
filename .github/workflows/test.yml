@@ -7,11 +7,11 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.14"]
+        python-version: ["3.11", "3.12", "3.13"]
       fail-fast: false
 
     steps:
@@ -31,8 +31,26 @@ jobs:
       - name: Run tests
         run: pytest tests/ -q --tb=short
 
-      - name: Run demo pipeline
+  demo:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: pip install -e ".[demo,test]"
+
+      - name: Run demo pipeline (deterministic, no network)
         run: python scripts/run_demo_selector.py
 
-      - name: Run basic API example
+      - name: Run basic API example (no network)
         run: python examples/basic_demo.py
