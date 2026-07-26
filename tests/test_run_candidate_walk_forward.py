@@ -14,7 +14,7 @@ from src.candidate_validation import CandidateRecord, CandidateTransitionError, 
 from src.candidate_validation import walk_forward_execution_runner as runner
 
 
-REPO_ROOT = Path("/Users/chenwei/soxs-range-arbitrage")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _configure_runner(monkeypatch, tmp_path: Path) -> dict[str, Path]:

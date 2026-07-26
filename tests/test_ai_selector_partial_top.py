@@ -12,7 +12,7 @@ import yaml
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_DIR / "scripts" / "run_ai_selector.py"
-MULTI_LAUNCH = PROJECT_DIR / "multi_launch.sh"
+MULTI_LAUNCH = PROJECT_DIR / "private_ops/multi_launch.sh"
 HEALTH_CHECK = PROJECT_DIR / "health_check.sh"
 
 

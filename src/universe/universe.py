@@ -62,8 +62,6 @@ class Universe:
             candidates.append(os.path.abspath(os.path.join(here, '..', '..', '..', 'data', 'sp500_sample.txt')))
             # repository root as cwd
             candidates.append(os.path.abspath(os.path.join(os.getcwd(), 'data', 'sp500_sample.txt')))
-            # absolute path common location
-            candidates.append('/Users/chenwei/soxs-range-arbitrage/data/sp500_sample.txt')
 
             for path in candidates:
                 tried.append(path)

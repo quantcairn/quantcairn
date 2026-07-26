@@ -121,7 +121,7 @@ Selector (PAPER_ELIGIBLE candidates + confidence)
 
 | 渠道 | 说明 |
 |---|---|
-| **Telegram Bot** | `@chenweiderambot` → 频道 `@QuantCairnPicks`；长消息自动分段 |
+| **Telegram Bot** | `@QuantCairnPicks` → 频道 `@QuantCairnPicks`；长消息自动分段 |
 | **Dashboard** | 端口 8090，Jinja2 HTML，只读，纸交/实盘双模式显示 |
 
 ### 2.7 开发者体验

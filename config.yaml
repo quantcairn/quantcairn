@@ -1,6 +1,6 @@
 # ============================================================
-# SOXS Range Arbitrage — 利益最大化配置
-# 目标: $3,000 → $10,000 (区间套利 + 复利)
+# QuantCairn — Research Configuration (example)
+# Paper trading only. Not financial advice.
 # ============================================================
 
 ticker: "SOXS"
@@ -24,7 +24,7 @@ position:
   size_per_trade: 0         # 0=自动计算 (使用80%现金)
   max_position: 9999        # 自动仓位，不设限
   cool_down_seconds: 30     # 冷却30秒
-  initial_capital: 3000.0   # $3,000 起始资金
+  initial_capital: 10000.0   # paper example only
 
 # ---------- 风控规则 ----------
 risk:

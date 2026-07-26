@@ -35,3 +35,5 @@ config.local.yaml
 *.egg-info/
 dist/
 build/
+configs/TOP*.yaml
+configs/SOXS.yaml

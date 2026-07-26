@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
 if [ -z "$PYTHON_BIN" ]; then

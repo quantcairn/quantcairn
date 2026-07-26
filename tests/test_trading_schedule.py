@@ -74,7 +74,7 @@ def _run_stop_top(project: Path) -> subprocess.CompletedProcess:
         }
     )
     return subprocess.run(
-        ["bash", str(PROJECT_DIR / "multi_launch.sh"), "stop-top"],
+        ["bash", str(PROJECT_DIR / "private_ops/multi_launch.sh"), "stop-top"],
         cwd=str(PROJECT_DIR),
         env=env,
         text=True,
@@ -160,8 +160,8 @@ def test_scheduled_actions_are_idempotent_per_session_marker():
 
 
 def test_launchd_templates_use_market_calendar_scheduled_entrypoints():
-    start_plist = plistlib.loads((PROJECT_DIR / "launchd/com.soxs.arbitrage.plist").read_bytes())
-    stop_plist = plistlib.loads((PROJECT_DIR / "launchd/com.soxs.arbitrage.stop.plist").read_bytes())
+    start_plist = plistlib.loads((PROJECT_DIR / "private_ops/launchd/com.soxs.arbitrage.plist").read_bytes())
+    stop_plist = plistlib.loads((PROJECT_DIR / "private_ops/launchd/com.soxs.arbitrage.stop.plist").read_bytes())
 
     assert start_plist["ProgramArguments"][-1] == "scheduled-start"
     assert stop_plist["ProgramArguments"][-1] == "scheduled-stop"
@@ -172,7 +172,7 @@ def test_launchd_templates_use_market_calendar_scheduled_entrypoints():
 
 
 def test_auto_trade_scheduled_stop_uses_top_only_shutdown():
-    text = (PROJECT_DIR / "auto_trade.sh").read_text(encoding="utf-8")
+    text = (PROJECT_DIR / "private_ops/auto_trade.sh").read_text(encoding="utf-8")
 
     scheduled_stop = text.split("    scheduled-stop)", 1)[1].split(";;", 1)[0]
     assert '"$MULTI_LAUNCH" stop-top' in scheduled_stop
@@ -180,7 +180,7 @@ def test_auto_trade_scheduled_stop_uses_top_only_shutdown():
 
 
 def test_multi_launch_keeps_manual_full_stop_separate_from_stop_top():
-    text = (PROJECT_DIR / "multi_launch.sh").read_text(encoding="utf-8")
+    text = (PROJECT_DIR / "private_ops/multi_launch.sh").read_text(encoding="utf-8")
 
     assert "stop-top)" in text
     assert "stop_top_scheduled_only" in text

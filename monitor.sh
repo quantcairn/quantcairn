@@ -1,6 +1,6 @@
 #!/bin/bash
 # 交易时段状态快照，每15分钟记录一次
-PROJECT_DIR="/Users/chenwei/soxs-range-arbitrage"
+PROJECT_DIR="${SOXS_PROJECT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 SNAPSHOT_FILE="$PROJECT_DIR/snapshots.log"
 
 cd "$PROJECT_DIR" || exit 1
