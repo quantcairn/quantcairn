@@ -6,7 +6,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.12.0-demo] — 2026-07-25
+## [0.12.0] — 2026-07-25
 
 First runnable QuantCairn demo release.
 
@@ -43,6 +43,38 @@ First runnable QuantCairn demo release.
 - 27 demo data tests covering format, reproducibility, zero-network guarantee
 - 36 public API + namespace tests verifying compatibility
 - CI workflow running on Python 3.11 and 3.14
+
+---
+
+## [0.12.1] — 2026-07-25
+
+Public beta developer experience release.
+
+### Added
+
+- **CI status badge** in README (GitHub Actions `test.yml` workflow)
+- **API smoke tests** (`tests/test_public_api_smoke.py`): 18 tests covering package import, `__all__` validation, demo provider, deterministic output, sub-module imports, zero-network guarantee, and zero-broker-import guarantee
+- **Release workflow** (`.github/workflows/release.yml`): triggers on `v*` tags, builds wheel + sdist, validates package metadata, smoke-tests the installed wheel, uploads artifacts
+- **Public channel Telegram template** (`_build_public_channel_message`): clean ≤1500-char format for `@QuantCairnPicks` — shows trading date, market status, TOP candidates with AI scores, risk level. Hides pipeline internals, provider audit, and fallback debug info.
+- **Admin debug Telegram template** (`_build_admin_debug_message`): full diagnostic message sent to admin chat via `QUANTCAIRN_ADMIN_CHAT_ID` env var — reuses existing detailed builder.
+
+### Changed
+
+- **CI Python matrix**: `["3.11", "3.14"]` → `["3.11", "3.12", "3.13"]` — Python 3.14 unavailable in `setup-python@v5`
+- **CI job split**: `unit` job (pytest) and `demo` job (pipeline + example) run independently
+- **Telegram dispatch**: auto-selects public vs admin template based on `execution_status` and admin chat configuration
+
+### Safety
+
+- All new tests are deterministic — zero network, API key, or broker dependency
+- Release workflow does not auto-publish — artifacts only, 7-day retention
+- No trading logic, broker, engine, risk, or safety modules modified
+
+### Tests
+
+- 18 new API smoke tests — all pass
+- 9 existing Telegram notification tests — all pass
+- Demo pipeline + basic API example — both deterministic and verified
 
 ---
 
