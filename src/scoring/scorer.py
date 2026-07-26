@@ -5,11 +5,29 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-import requests
-import yfinance as yf
-from ta.momentum import rsi
-from ta.trend import MACD
-from ta.volatility import AverageTrueRange
+# Module-level optional imports: these are try/except'd so the module
+# loads even in core-only mode. They also capture the real module
+# objects at import time, making them immune to sys.modules monkeypatching
+# by other tests.
+try:
+    import yfinance as yf
+    _YF_AVAILABLE = True
+except ImportError:
+    _YF_AVAILABLE = False
+
+try:
+    import requests
+    _REQUESTS_AVAILABLE = True
+except ImportError:
+    _REQUESTS_AVAILABLE = False
+
+try:
+    from ta.momentum import rsi  # noqa: F811
+    from ta.trend import MACD
+    from ta.volatility import AverageTrueRange
+    _TA_AVAILABLE = True
+except ImportError:
+    _TA_AVAILABLE = False
 
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.openalpha.settings import get_float_setting

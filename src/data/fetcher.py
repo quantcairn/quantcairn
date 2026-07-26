@@ -11,8 +11,20 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
-import requests
-import yfinance as yf
+# Module-level optional imports: these are try/except'd so the module
+# loads even in core-only mode. They also capture the real module
+# objects at import time, making them immune to sys.modules monkeypatching.
+try:
+    import yfinance as yf
+    _YF_AVAILABLE = True
+except ImportError:
+    _YF_AVAILABLE = False
+
+try:
+    import requests
+    _REQUESTS_AVAILABLE = True
+except ImportError:
+    _REQUESTS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]

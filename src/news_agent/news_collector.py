@@ -1,9 +1,21 @@
-import requests
-from bs4 import BeautifulSoup
 from typing import List, Dict
 import time
 import logging
 import os
+# Module-level optional imports: try/except'd so the module loads even
+# in core-only mode, and captures real module objects at import time
+# to be immune to sys.modules monkeypatching from other tests.
+try:
+    import requests
+    _REQUESTS_AVAILABLE = True
+except ImportError:
+    _REQUESTS_AVAILABLE = False
+
+try:
+    from bs4 import BeautifulSoup
+    _BS4_AVAILABLE = True
+except ImportError:
+    _BS4_AVAILABLE = False
 
 
 class NewsCollector:

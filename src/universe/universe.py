@@ -1,13 +1,29 @@
 import os
-import requests
-from bs4 import BeautifulSoup
-import yfinance as yf
 import pandas as pd
 import time
 from io import StringIO
-import requests
 from typing import List
 from concurrent.futures import ThreadPoolExecutor, as_completed
+# Module-level optional imports: try/except'd so the module loads even
+# in core-only mode, and captures real module objects at import time
+# to be immune to sys.modules monkeypatching from other tests.
+try:
+    import requests
+    _REQUESTS_AVAILABLE = True
+except ImportError:
+    _REQUESTS_AVAILABLE = False
+
+try:
+    import yfinance as yf
+    _YF_AVAILABLE = True
+except ImportError:
+    _YF_AVAILABLE = False
+
+try:
+    from bs4 import BeautifulSoup
+    _BS4_AVAILABLE = True
+except ImportError:
+    _BS4_AVAILABLE = False
 
 
 class Universe:

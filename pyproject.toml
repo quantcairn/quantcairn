@@ -34,42 +34,56 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# ── Runtime dependencies (mirrors requirements.txt) ──────────────────────
+# ── Runtime dependencies (core; demo pipeline works with just these) ──────
+# Everything not in [core] goes into an optional dependency group below.
 dependencies = [
-    "yfinance>=0.2.40",
-    "pyyaml>=6.0",
-    "pydantic>=2.0",
-    "rich>=13.0",
-    "flask>=3.0",
-    "flask-socketio>=5.3",
-    "requests>=2.31",
-    "longbridge>=4.0",
-    "pandas>=2.0",
-    "numpy>=1.25",
-    "ta>=0.11.0",
-    "beautifulsoup4>=4.12.2",
-    "lxml>=4.9.3",
+    "pyyaml>=6.0",          # Config file reading (15+ modules)
+    "numpy>=1.25",          # Seeded math, random walks, scoring
+    "pandas>=2.0",          # OHLCV DataFrame, selection pipeline
 ]
 
 [project.optional-dependencies]
-# Dependencies needed to run the demo (minimal set)
-demo = [
-    "pandas>=2.0",
-    "numpy>=1.25",
-    "pyyaml>=6.0",
-    "pydantic>=2.0",
+# Demo mode works with core deps alone — this extra exists for semantic clarity.
+demo = []
+
+# Full research pipeline: add market data + technical scoring.
+#   pip install quantcairn[research]
+research = [
+    "yfinance>=0.2.40",         # Yahoo Finance OHLCV + fundamentals
+    "requests>=2.31",           # HTTP client (chart API, news, alerts)
+    "ta>=0.11.0",               # RSI, MACD, ATR indicators
+    "beautifulsoup4>=4.12.2",   # HTML parsing (S&P 500 list, news)
+    "lxml>=4.9.3",              # Fast HTML backend for BeautifulSoup
 ]
-# Dependencies for testing
+
+# Broker connectivity (paper + sandbox trading).
+#   pip install quantcairn[broker]
+broker = [
+    "quantcairn[research]",
+    "longbridge>=4.0",          # LongBridge OpenAPI SDK
+]
+
+# Web dashboard.
+#   pip install quantcairn[dashboard]
+dashboard = [
+    "quantcairn[research]",
+    "flask>=3.0",               # HTTP server + Jinja2 templates
+    "werkzeug>=3.0",            # WSGI server (bundled with flask)
+]
+
+# Full development install.
+#   pip install quantcairn[dev]
+dev = [
+    "quantcairn[research,broker,dashboard]",
+]
+
+# Minimum for running tests.
+#   pip install quantcairn[test]
+# NOTE: test pulls in broker + dashboard because some test modules transitively
+# import longbridge/flask — these are safety-protected modules we cannot refactor.
 test = [
     "pytest>=7.0",
-]
-# Dependencies for development (all extras)
-dev = [
-    "quantcairn[demo,test]",
-    "yfinance>=0.2.40",
-    "requests>=2.31",
-    "rich>=13.0",
-    "ta>=0.11.0",
+    "quantcairn[dev]",          # Full stack: research + broker + dashboard
 ]
 
 [project.urls]

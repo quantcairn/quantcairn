@@ -7,6 +7,35 @@ on:
     branches: [main]
 
 jobs:
+  # ── Verify demo works with core deps only (no yfinance, longbridge, etc.) ──
+  core-only:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package (core only — no extras)
+        run: pip install -e .
+
+      - name: Verify core import (no network)
+        run: python -c "import quantcairn; print('quantcairn', quantcairn.__version__)"
+
+      - name: Run demo pipeline (deterministic, no network)
+        run: python scripts/run_demo_selector.py
+
+      - name: Run basic API example (no network)
+        run: python examples/basic_demo.py
+
+  # ── Full test suite with research + broker + dashboard deps ────────────
   unit:
     runs-on: ubuntu-latest
     strategy:
@@ -22,8 +51,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package
-        run: pip install -e ".[demo,test]"
+      - name: Install package (full test stack)
+        run: pip install -e ".[test]"
 
       - name: Verify package import
         run: python -c "import quantcairn; print('quantcairn', quantcairn.__version__)"
@@ -31,7 +60,8 @@ jobs:
       - name: Run tests
         run: pytest tests/ -q --tb=short
 
-  demo:
+  # ── Smoke test with full dev dependencies ──────────────────────────────
+  smoke:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -46,8 +76,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package
-        run: pip install -e ".[demo,test]"
+      - name: Install package (full test stack)
+        run: pip install -e ".[test]"
 
       - name: Run demo pipeline (deterministic, no network)
         run: python scripts/run_demo_selector.py

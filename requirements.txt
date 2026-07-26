@@ -1,13 +1,31 @@
-yfinance>=0.2.40
+# QuantCairn — runtime dependencies
+#
+# Install levels:
+#   pip install quantcairn                  → core (demo works)
+#   pip install quantcairn[research]        → core + yfinance, requests, ta, bs4, lxml
+#   pip install quantcairn[broker]          → research + longbridge
+#   pip install quantcairn[dashboard]       → research + flask, werkzeug
+#   pip install quantcairn[dev]             → everything
+#   pip install quantcairn[test]            → research + pytest
+
+# ── Core (installed by default) ──────────────────────────────────────────
 pyyaml>=6.0
-pydantic>=2.0
-rich>=13.0
-flask>=3.0
-flask-socketio>=5.3
-requests>=2.31
-longbridge>=4.0
-pandas>=2.0
 numpy>=1.25
-ta>=0.11.0
-beautifulsoup4>=4.12.2
-lxml>=4.9.3
+pandas>=2.0
+
+# ── Research extras ──────────────────────────────────────────────────────
+# yfinance>=0.2.40
+# requests>=2.31
+# ta>=0.11.0
+# beautifulsoup4>=4.12.2
+# lxml>=4.9.3
+
+# ── Broker extras ────────────────────────────────────────────────────────
+# longbridge>=4.0
+
+# ── Dashboard extras ─────────────────────────────────────────────────────
+# flask>=3.0
+# werkzeug>=3.0
+
+# ── Dev / test extras ────────────────────────────────────────────────────
+# pytest>=7.0

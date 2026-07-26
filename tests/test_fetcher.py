@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import requests
 
 from src.data.fetcher import PriceFetcher
 import os
@@ -121,7 +122,7 @@ def test_get_quote_handles_none_chart_payload_without_attribute_error(monkeypatc
 
 
 def test_fetch_chart_quote_marks_empty_response_for_none_json():
-    original_session = fetcher_mod.requests.Session
+    original_session = requests.Session
 
     class DummyResponse:
         def raise_for_status(self):
@@ -138,11 +139,11 @@ def test_fetch_chart_quote_marks_empty_response_for_none_json():
             return DummyResponse()
 
     try:
-        fetcher_mod.requests.Session = DummySession
+        requests.Session = DummySession
         pf = PriceFetcher("MSFT")
         quote = pf._fetch_chart_quote()
     finally:
-        fetcher_mod.requests.Session = original_session
+        requests.Session = original_session
 
     assert quote == {}
     assert pf._last_quote_fetch_status == "EMPTY_RESPONSE"
@@ -150,7 +151,7 @@ def test_fetch_chart_quote_marks_empty_response_for_none_json():
 
 
 def test_fetch_chart_quote_marks_empty_response_for_empty_dict():
-    original_session = fetcher_mod.requests.Session
+    original_session = requests.Session
 
     class DummyResponse:
         def raise_for_status(self):
@@ -167,11 +168,11 @@ def test_fetch_chart_quote_marks_empty_response_for_empty_dict():
             return DummyResponse()
 
     try:
-        fetcher_mod.requests.Session = DummySession
+        requests.Session = DummySession
         pf = PriceFetcher("MSFT")
         quote = pf._fetch_chart_quote()
     finally:
-        fetcher_mod.requests.Session = original_session
+        requests.Session = original_session
 
     assert quote == {}
     assert pf._last_quote_fetch_status == "EMPTY_RESPONSE"
@@ -179,7 +180,7 @@ def test_fetch_chart_quote_marks_empty_response_for_empty_dict():
 
 
 def test_fetch_chart_history_marks_empty_response_for_none_json():
-    original_session = fetcher_mod.requests.Session
+    original_session = requests.Session
 
     class DummyResponse:
         def raise_for_status(self):
@@ -196,11 +197,11 @@ def test_fetch_chart_history_marks_empty_response_for_none_json():
             return DummyResponse()
 
     try:
-        fetcher_mod.requests.Session = DummySession
+        requests.Session = DummySession
         pf = PriceFetcher("MSFT")
         candles = pf._fetch_chart_history("1mo", "1d")
     finally:
-        fetcher_mod.requests.Session = original_session
+        requests.Session = original_session
 
     assert candles == []
     assert pf._last_history_fetch_status == "EMPTY_RESPONSE"
@@ -240,7 +241,7 @@ def test_direct_yahoo_sessions_are_closed_on_success_and_error(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(fetcher_mod.requests, "Session", TrackingSession)
+    monkeypatch.setattr(requests, "Session", TrackingSession)
     fetcher = PriceFetcher("SOFI.US")
 
     assert fetcher._fetch_chart_quote()["status"] == "COMPLETE"
@@ -264,7 +265,7 @@ def test_direct_yahoo_session_is_closed_after_request_failure(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(fetcher_mod.requests, "Session", FailingSession)
+    monkeypatch.setattr(requests, "Session", FailingSession)
     monkeypatch.setattr(fetcher_mod.time, "sleep", lambda _seconds: None)
     fetcher = PriceFetcher("SOFI.US")
 
@@ -401,7 +402,7 @@ def test_synthetic_market_fallback(monkeypatch=None):
 
 
 def test_fetch_chart_quote_prefers_day_high_low_from_meta():
-    original_session = fetcher_mod.requests.Session
+    original_session = requests.Session
 
     class DummyResponse:
         def raise_for_status(self):
@@ -438,11 +439,11 @@ def test_fetch_chart_quote_prefers_day_high_low_from_meta():
             return DummyResponse()
 
     try:
-        fetcher_mod.requests.Session = DummySession
+        requests.Session = DummySession
         pf = PriceFetcher("MSFT")
         quote = pf._fetch_chart_quote()
     finally:
-        fetcher_mod.requests.Session = original_session
+        requests.Session = original_session
 
     assert quote["price"] == 101.5
     assert quote["high"] == 105.25
@@ -450,7 +451,7 @@ def test_fetch_chart_quote_prefers_day_high_low_from_meta():
 
 
 def test_get_ohlcv_prefers_direct_chart_history():
-    original_session = fetcher_mod.requests.Session
+    original_session = requests.Session
     original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
     original_env = os.environ.get("OPENALPHA_DIRECT_HISTORY")
 
@@ -485,7 +486,7 @@ def test_get_ohlcv_prefers_direct_chart_history():
 
     try:
         os.environ["OPENALPHA_DIRECT_HISTORY"] = "1"
-        fetcher_mod.requests.Session = DummySession
+        requests.Session = DummySession
         fetcher_mod.PriceFetcher._fetch_history = lambda self, period, interval, prepost=True: (_ for _ in ()).throw(
             AssertionError("yfinance history should not be used when direct chart history succeeds")
         )
@@ -493,7 +494,7 @@ def test_get_ohlcv_prefers_direct_chart_history():
         pf = PriceFetcher("MSFT")
         candles = pf.get_ohlcv(period="1mo", interval="1d")
     finally:
-        fetcher_mod.requests.Session = original_session
+        requests.Session = original_session
         fetcher_mod.PriceFetcher._fetch_history = original_fetch_history
         if original_env is None:
             os.environ.pop("OPENALPHA_DIRECT_HISTORY", None)
@@ -543,7 +544,7 @@ def test_fetch_chart_history_supports_one_year_direct_history(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(fetcher_mod.requests, "Session", DummySession)
+    monkeypatch.setattr(requests, "Session", DummySession)
     fetcher = PriceFetcher("SOFI.US")
 
     candles = fetcher.get_ohlcv(period="1y", interval="1d")
@@ -582,7 +583,7 @@ def test_yahoo_401_retries_once_and_records_unauthorized(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(fetcher_mod.requests, "Session", DummySession)
+    monkeypatch.setattr(requests, "Session", DummySession)
     monkeypatch.setattr(fetcher_mod.time, "sleep", lambda _seconds: None)
 
     fetcher = PriceFetcher("SOFI.US")
@@ -633,7 +634,7 @@ def test_scorer_direct_sessions_are_closed_and_symbol_normalized(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr("src.scoring.scorer.requests.Session", TrackingSession)
+    monkeypatch.setattr(requests, "Session", TrackingSession)
     scorer = Scorer()
 
     df = scorer._fetch_chart_daily("SOFI.US")
@@ -646,13 +647,14 @@ def test_scorer_direct_sessions_are_closed_and_symbol_normalized(monkeypatch):
 
 
 def test_scorer_load_history_does_not_use_yfinance_fallback_by_default(monkeypatch):
+    import yfinance as yf
     import src.scoring.scorer as scorer_mod
     from src.scoring.scorer import Scorer
 
     monkeypatch.delenv("OPENALPHA_ALLOW_YFINANCE_FALLBACK", raising=False)
     monkeypatch.delenv("OPENALPHA_USE_YFINANCE", raising=False)
     monkeypatch.setattr(
-        scorer_mod.yf,
+        yf,
         "download",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("yfinance fallback should be disabled")),
     )
