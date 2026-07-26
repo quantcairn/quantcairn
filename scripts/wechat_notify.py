@@ -1,4 +1,11 @@
-"""Send WeChat message via AppleScript (macOS WeChat Desktop must be running)"""
+"""Send WeChat message via AppleScript (macOS WeChat Desktop must be running).
+
+PLATFORM-SPECIFIC: macOS only. This is an optional helper script that drives
+the macOS WeChat Desktop application via AppleScript. It is NOT part of the
+core QuantCairn selection pipeline or notification system. Not portable to
+Linux or Windows. Use the Telegram notifier (src/notifier/alerts.py) for
+cross-platform notifications.
+"""
 import subprocess, json, sys
 
 def send_wechat(contact: str, message: str) -> bool:

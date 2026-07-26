@@ -320,7 +320,48 @@
 
 ---
 
+## 18. Repository Boundary Formalization — v0.12.3
+
+**Decision**: Formalize the public/private repository boundary with an explicit AI agent reference document (`.ai/REPOSITORY_BOUNDARY.md`), fix configuration boundary inconsistencies, sanitize operational scripts of personal paths, and add historical/context banners to legacy documentation.
+
+**Date**: 2026-07-26
+
+**Background**: The repository boundary audit (same date) identified several issues: (a) `config.yaml` was both tracked in git AND listed in `.gitignore` — a latent contradiction. (b) `health_check.sh` hardcoded `$HOME/soxs-range-arbitrage` as a fallback path, exposing the maintainer's personal directory structure. (c) Legacy documentation (`BRAND_MIGRATION.md`, `GITHUB_MIGRATION.md`, `CURRENT_SYSTEM_STATE.md`) lacked status banners, so readers could not distinguish historical plans from current state. (d) WeChat scripts lacked any context that they are macOS-specific optional helpers. (e) AI coding assistants had no structured, machine-readable document defining what must never be committed.
+
+**Reason**: (a) A tracked file in `.gitignore` is harmless (git ignores the gitignore for tracked files) but confusing — it signals uncertainty about whether the file should be public. `config.yaml` contains only public-safe defaults (empty broker credentials, paper mode, example capital) so the correct fix is removing it from `.gitignore`. (b) Personal paths in public scripts are a privacy concern and a portability problem. Using script-relative detection (`$SCRIPT_DIR`) preserves functionality while removing the personal reference. (c) Historical docs are valuable for project archaeology but need clear status markers so they aren't mistaken for current-state documents. (d) AI agents need explicit, structured guidance about the public/private boundary — `.gitignore` patterns alone don't convey intent or rationale.
+
+**Alternatives considered**:
+- Remove `config.yaml` from tracking instead of from `.gitignore` — rejected because the file is genuinely public-safe and serves as the base configuration for new users
+- Delete historical docs — rejected because project history has value; markers are sufficient
+- Delete WeChat scripts — rejected; they are functional utilities that may be useful to macOS users
+- Skip boundary documentation — rejected because the audit demonstrated AI agents benefit from explicit rules
+
+**Impact**: `.ai/REPOSITORY_BOUNDARY.md` created (+1 file, ~200 lines). `.gitignore`: removed `config.yaml` line. `health_check.sh`: `$HOME/soxs-range-arbitrage` → `$SCRIPT_DIR` fallback. `monitor.sh`, `scripts/run_top_engine.sh`: added operational context banners. `docs/BRAND_MIGRATION.md`, `docs/GITHUB_MIGRATION.md`, `docs/CURRENT_SYSTEM_STATE.md`: added historical/snapshot status banners. `scripts/wechat_notify.py`, `scripts/wechat_webhook.py`: added platform-specific context banners. `.ai/DECISION_LOG.md`: entry #18 added. Zero production code changes. Zero test impact.
+
+---
+
 ## Decision Index
+
+| # | Decision | Date | Key File |
+|---|---|---|---|
+| 1 | 9-stage pipeline with invariant | 2026-07 | `funnel_tracker.py` |
+| 2 | Selector/Engine separation | Original | `selector.py`, `trading_engine.py` |
+| 3 | Dashboard read-only | 2026-07 | `dashboard/combined.py` |
+| 4 | Telegram isolation + chunking | 2026-07 | `notifier/alerts.py` |
+| 5 | Quality fallback mechanism | 2026-07-24 | `selector.py` |
+| 6 | Paper-first trading | Original | `safety/` |
+| 7 | SOXS reduce-only + special ETFs | Original | `selector.py` |
+| 8 | Managed universe (35 symbols) | 2026-07 | `universe/manager.py` |
+| 9 | Preflight market check | 2026-07-24 | `preflight.py` |
+| 10 | Human-approval governance | 2026-07 | `outcome/governance.py` |
+| 11 | MARKET_DATA / SCORING separation | 2026-07-24 | `data_diagnostics.py` |
+| 12 | Universal fallback profile coverage | 2026-07-24 | `scorer.py` |
+| 13 | Funnel invariant enforcement | 2026-07-24 | `funnel_tracker.py` |
+| 14 | Curl_CFFI disable for proxy | 2026-07-24 | `ai_selector_wrapper.py` |
+| 15 | Config layering (3 levels) | Original | `config.yaml`, `config.local.yaml` |
+| 16 | Public Beta Feature Release v0.12.1 | 2026-07-25 | `alerts.py`, `release.yml` |
+| 17 | Public Hardening Release v0.12.2 | 2026-07-26 | `.ai/CLAUDE.md`, `.gitignore` |
+| 18 | Repository Boundary Formalization v0.12.3 | 2026-07-26 | `.ai/REPOSITORY_BOUNDARY.md` |
 
 | # | Decision | Date | Key File |
 |---|---|---|---|

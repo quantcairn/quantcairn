@@ -2,7 +2,7 @@
 # Quick operational health check for the Top3 trading system.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="${SOXS_PROJECT_DIR:-$HOME/soxs-range-arbitrage}"
+PROJECT_DIR="${SOXS_PROJECT_DIR:-$SCRIPT_DIR}"
 export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
 if [ -z "$PYTHON_BIN" ]; then

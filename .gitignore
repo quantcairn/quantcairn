@@ -40,3 +40,4 @@ configs/SOXS.yaml
 HANDOVER.md
 artifacts/
 config/candidate_models/
+private_ops/

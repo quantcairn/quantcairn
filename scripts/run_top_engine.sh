@@ -1,4 +1,8 @@
 #!/bin/bash
+# Operational: launch a TOP{N} trading engine instance (paper or live).
+# This is a personal operational script from the QuantCairn maintainer's
+# macOS environment. Not part of the core library. Adapt paths, ports,
+# and environment variables before using on your own machine.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

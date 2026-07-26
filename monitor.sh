@@ -1,4 +1,9 @@
 #!/bin/bash
+# Operational: trade-session status snapshot (every 15 min).
+# This is a personal operational script from the QuantCairn maintainer's
+# macOS environment. Not part of the core library. Adapt paths and port
+# numbers before using on your own machine.
+#
 # 交易时段状态快照，每15分钟记录一次
 PROJECT_DIR="${SOXS_PROJECT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 SNAPSHOT_FILE="$PROJECT_DIR/snapshots.log"

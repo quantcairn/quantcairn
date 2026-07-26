@@ -1,7 +1,9 @@
 # QuantCairn Brand Migration Plan
 
-> **Status**: Planning  
-> **Last updated**: 2026-07-25  
+> **Status**: ✅ Complete — Historical Document
+> **Last updated**: 2026-07-25
+> **Note**: This document describes the historical migration from the internal project identity "OpenAlpha" to the public brand "QuantCairn". The migration documented here has been executed. Phases 1–4 are complete as of v0.12.x. Preserved for project history.
+>
 > **Context**: This document defines the controlled migration from the internal project identity "OpenAlpha" to the public brand "QuantCairn".  
 
 ---

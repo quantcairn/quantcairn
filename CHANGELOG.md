@@ -78,6 +78,54 @@ Public beta developer experience release.
 
 ---
 
+## [0.12.3] — 2026-07-26
+
+Public Boundary Hardening & Repository Architecture Alignment.
+
+### Added
+
+- **AI Repository Boundary Documentation** (`.ai/REPOSITORY_BOUNDARY.md`): explicit public/private boundary rules for AI coding assistants — public tracked files, private gitignored runtime, forbidden exports, emergency secret-exposure procedure, pre-commit checklist, future Pro architecture planning
+- **Decision log entry #18**: Repository Boundary Formalization — rationale, alternatives considered, impact
+
+### Fixed
+
+- **`.gitignore`**: removed `config.yaml` line (file is public-safe defaults and already tracked — redundant entry caused boundary confusion)
+- **`health_check.sh`**: replaced `$HOME/soxs-range-arbitrage` fallback with `$SCRIPT_DIR` (removed maintainer's personal home directory path from public repository)
+
+### Changed
+
+- **Historical docs** (`docs/BRAND_MIGRATION.md`, `docs/GITHUB_MIGRATION.md`, `docs/CURRENT_SYSTEM_STATE.md`): added status banners ("Historical Document", "Point-in-Time Snapshot") so readers can distinguish completed migrations from current state
+- **Operational scripts** (`monitor.sh`, `scripts/run_top_engine.sh`): added context banners clarifying these are personal maintainer tools, not core library functionality
+- **WeChat scripts** (`scripts/wechat_notify.py`, `scripts/wechat_webhook.py`): added "PLATFORM-SPECIFIC: macOS only. Optional helper." banners — clarifies they are not core QuantCairn notification features
+
+### Safety
+
+- Zero production code changes — documentation, shell scripts, and `.gitignore` only
+- No broker, engine, risk, portfolio, order, or safety modules modified
+- Full test suite: 12 pre-existing failures, zero new failures
+
+---
+
+## [0.12.2] — 2026-07-26
+
+Documentation alignment and repository hygiene release.
+
+### Fixed
+
+- **AI context branding**: `.ai/CLAUDE.md` title and project identity line updated from "OpenAlpha" to "QuantCairn"
+- **`.gitignore` hardened**: added `HANDOVER.md`, `artifacts/`, `config/candidate_models/` patterns (prevent accidental commit of runtime artifacts and personal documents)
+
+### Changed
+
+- **Decision log**: entries #16 (v0.12.1) and #17 (v0.12.2) added
+
+### Safety
+
+- Zero code changes, zero test impact
+- All changes are documentation and `.gitignore` only
+
+---
+
 ## [Unreleased]
 
 - Multi-provider data adapters (Alpha Vantage, Polygon)

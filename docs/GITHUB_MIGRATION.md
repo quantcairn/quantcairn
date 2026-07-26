@@ -1,7 +1,9 @@
 # QuantCairn GitHub Migration Plan
 
-> **Status**: Planning  
-> **Last updated**: 2026-07-25  
+> **Status**: ✅ Complete — Historical Document
+> **Last updated**: 2026-07-25
+> **Note**: This document describes the historical GitHub migration from a private developer identity (`cdskjh/-`) to the public QuantCairn organization (`quantcairn/quantcairn`). The migration documented here has been executed. Preserved for project history. References to the old remote `cdskjh/-` are historical.
+>
 > **Context**: Prepares the repository for migration from a private developer identity to the public QuantCairn GitHub organization.  
 
 ---

@@ -1,8 +1,10 @@
 # QuantCairn Current System State
 
-> **审计日期**: 2026-07-25  
-> **审计范围**: 完整系统 — 模块、链路、功能完成度  
-> **目标读者**: 项目维护者、新加入的开发者  
+> **审计日期**: 2026-07-25
+> **Note**: This is a point-in-time system audit snapshot. Some operational details may have changed since the audit date. Cross-reference with `.ai/CLAUDE.md` and `.ai/architecture.md` for current module maps.
+>
+> **审计范围**: 完整系统 — 模块、链路、功能完成度
+> **目标读者**: 项目维护者、新加入的开发者
 > **原则**: 只记录当前真实状态，不假设、不计划、不营销
 
 ---

@@ -1,4 +1,11 @@
-"""Webhook HTTP server that forwards trading notifications to WeChat"""
+"""Webhook HTTP server that forwards trading notifications to WeChat.
+
+PLATFORM-SPECIFIC: macOS only. This is an optional helper that runs a local
+HTTP server and drives the macOS WeChat Desktop application via AppleScript.
+It is NOT part of the core QuantCairn selection pipeline or notification
+system. Not portable to Linux or Windows. Use the Telegram notifier
+(src/notifier/alerts.py) for cross-platform notifications.
+"""
 import subprocess, json, sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
