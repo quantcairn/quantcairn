@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Verify package metadata
+        run: |
+          python -c "
+          import zipfile, email.parser
+          with zipfile.ZipFile('dist/quantcairn-*.whl') as z:
+              names = [n for n in z.namelist() if n.endswith('METADATA')]
+              assert names, 'No METADATA found in wheel'
+              with z.open(names[0]) as f:
+                  meta = email.parser.BytesParser().parse(f)
+              assert meta['Name'] == 'quantcairn', f\"Name mismatch: {meta['Name']}\"
+              assert meta['Version'].startswith('0.'), f\"Version mismatch: {meta['Version']}\"
+              print(f'Package: {meta[\"Name\"]} {meta[\"Version\"]}')
+              print(f'License: {meta[\"License\"]}')
+              print('Metadata OK')
+          "
+
+      - name: Install wheel and smoke test
+        run: |
+          pip install dist/quantcairn-*.whl
+          python -c "import quantcairn; print('quantcairn', quantcairn.__version__)"
+          python -c "from quantcairn import DemoDataProvider; p=DemoDataProvider(); assert len(p.symbols)==5; print('demo OK')"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7

@@ -1,5 +1,7 @@
 # QuantCairn
 
+[![test](https://github.com/quantcairn/quantcairn/actions/workflows/test.yml/badge.svg)](https://github.com/quantcairn/quantcairn/actions/workflows/test.yml)
+
 **AI-driven quantitative research platform for US equity selection.**
 
 QuantCairn runs a 9-stage analytical pipeline that screens a managed universe of 35 stocks and ETFs, scores them with a multi-factor model, and produces daily candidate selections. Designed for research, paper trading, and transparency.
