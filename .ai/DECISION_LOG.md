@@ -1,4 +1,4 @@
-# Decision Log — OpenAlpha Engineering Decisions
+# Decision Log — QuantCairn Engineering Decisions
 
 > **Format**: Each entry = Decision, Date, Background, Reason, Alternatives, Impact.
 > **Convention**: Mark uncertain items with `⚠️ Reason requires confirmation`.
@@ -284,6 +284,42 @@
 
 ---
 
+## 16. Public Beta Feature Release — v0.12.1
+
+**Decision**: Ship v0.12.1 as a Public Beta Feature Release with Telegram dual-channel notification templates, public API smoke tests, and an automated release CI workflow.
+
+**Date**: 2026-07-25
+
+**Background**: v0.12.0 established the public beta foundation with packaging, CI, and demo mode. v0.12.1 adds user-visible features that a public beta audience needs: structured Telegram notifications for the `@QuantCairnPicks` channel and a release pipeline that builds and validates wheels automatically.
+
+**Reason**: (a) Telegram dual-channel templates (PUBLIC_CHANNEL_TEMPLATE ≤1500 chars, ADMIN_DEBUG_TEMPLATE full diagnostics) separate end-user communication from operator debugging. (b) Public API smoke tests verify that the `quantcairn` namespace imports work end-to-end without triggering broker or network calls. (c) The release CI workflow (`release.yml`) builds sdist + wheel, validates metadata, and smoke-tests the package — essential for PyPI publication.
+
+**Alternatives considered**:
+- Ship notification and tests in separate releases — rejected because they form a single public beta feature surface
+- Wait for CLI work before releasing — rejected because Telegram + CI are independently valuable
+
+**Impact**: `src/notifier/alerts.py` +243 lines (chunked delivery, dual-channel templates). `tests/test_public_api_smoke.py` +118 lines. `.github/workflows/release.yml` +52 lines. CI test matrix stabilized (3.11/3.12/3.13) and demo validation added.
+
+---
+
+## 17. Public Hardening Release — v0.12.2
+
+**Decision**: Ship v0.12.2 as a documentation alignment and repository hygiene release. Zero code changes. Scope limited to AI context file branding updates, `.gitignore` hardening, and public/private boundary documentation.
+
+**Date**: 2026-07-26
+
+**Background**: A pre-release audit of v0.12.1 revealed that AI context files (`.ai/CLAUDE.md`, `.ai/DECISION_LOG.md`) still identified the project as "OpenAlpha" rather than "QuantCairn." Additionally, untracked runtime artifacts (`HANDOVER.md`, `artifacts/`, `config/candidate_models/`) appeared in `git status`, creating risk of accidental commit.
+
+**Reason**: (a) AI context files are the primary onboarding documents for AI coding assistants — branding mismatch creates confusion about project identity. (b) Runtime artifacts that appear in `git status` increase the risk of private data entering public git history. (c) Both fixes are pure hygiene with zero blast radius — no code paths are affected.
+
+**Alternatives considered**:
+- Include in v0.12.1 scope — rejected because v0.12.1 was already tagged and rewriting history would break it
+- Defer to v0.13.0 — rejected because these fixes are trivial and improve the repo state for every subsequent release
+
+**Impact**: `.ai/CLAUDE.md` title and project identity line updated. `.ai/DECISION_LOG.md` title updated, entries #16 and #17 added. `.gitignore` +3 patterns (`HANDOVER.md`, `artifacts/`, `config/candidate_models/`). Zero code changes. Zero test impact.
+
+---
+
 ## Decision Index
 
 | # | Decision | Date | Key File |
@@ -303,3 +339,5 @@
 | 13 | Funnel invariant enforcement | 2026-07-24 | `funnel_tracker.py` |
 | 14 | Curl_CFFI disable for proxy | 2026-07-24 | `ai_selector_wrapper.py` |
 | 15 | Config layering (3 levels) | Original | `config.yaml`, `config.local.yaml` |
+| 16 | Public Beta Feature Release v0.12.1 | 2026-07-25 | `alerts.py`, `release.yml` |
+| 17 | Public Hardening Release v0.12.2 | 2026-07-26 | `.ai/CLAUDE.md`, `.gitignore` |

@@ -37,3 +37,6 @@ dist/
 build/
 configs/TOP*.yaml
 configs/SOXS.yaml
+HANDOVER.md
+artifacts/
+config/candidate_models/

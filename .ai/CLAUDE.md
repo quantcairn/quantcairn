@@ -1,11 +1,11 @@
-# OpenAlpha — AI Context for Assistant Agents
+# QuantCairn — AI Context for Assistant Agents
 
 > **For**: Claude Code, Codex, Aider, Cursor, Windsurf, and other AI coding assistants.
 > **Goal**: Understand this repo with minimal context tokens. ~120 lines.  Link deeper docs for details.
 
 ## Project Identity
 
-**OpenAlpha** (formerly "AI Selector") — a quantitative trading system that runs a 9-stage AI-driven stock selection pipeline for range-bound swing trading on US equities. The system selects TOP K candidates daily, writes config files consumed by a trading engine, and notifies results via Telegram.
+**QuantCairn** (formerly "OpenAlpha", originally "AI Selector") — an AI-powered quantitative research platform that runs a 9-stage stock selection pipeline for range-bound swing trading on US equities. The system selects TOP K candidates daily, writes config files consumed by a trading engine, and notifies results via Telegram.
 
 - **Language**: Python 3.14 (venv: `.venv/bin/python`)
 - **Market**: US equities (NYSE/NASDAQ), LongBridge broker API
