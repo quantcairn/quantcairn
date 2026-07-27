@@ -1,5 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 import requests
 
 from src.data.fetcher import PriceFetcher
@@ -47,6 +49,17 @@ class DummyTicker:
         return {}
 
 
+# Inject a working yf namespace so existing tests can create PriceFetcher
+# in environments where yfinance is not installed.  The guard in
+# PriceFetcher.__init__ checks _YF_AVAILABLE and _YF_AVAILABLE is False
+# after a failed import — we set both the flag and the yf reference so
+# the guard passes and yf.Ticker resolves to DummyTicker.
+if not fetcher_mod._YF_AVAILABLE:
+    _yf_stub = SimpleNamespace(Ticker=DummyTicker)
+    fetcher_mod.yf = _yf_stub
+    fetcher_mod._YF_AVAILABLE = True
+
+
 def test_price_fetcher_normalizes_us_suffix_for_provider_calls(monkeypatch=None):
     captured: list[str] = []
 
@@ -57,14 +70,19 @@ def test_price_fetcher_normalizes_us_suffix_for_provider_calls(monkeypatch=None)
 
     if monkeypatch is None:
         class SimpleMonkeyPatch:
-            def setattr(self, target, value):
+            def setattr(self, target, name_or_value, value=None):
+                # 2-arg form: "module.attr", value
+                # 3-arg form: object, "attr_name", new_value
+                if value is not None:
+                    setattr(target, name_or_value, value)
+                    return
                 module_name, attr_name = target.rsplit('.', 1)
                 module = __import__(module_name, fromlist=[attr_name])
-                setattr(module, attr_name, value)
+                setattr(module, attr_name, name_or_value)
 
         monkeypatch = SimpleMonkeyPatch()
 
-    monkeypatch.setattr('yfinance.Ticker', RecordingTicker)
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", RecordingTicker)
     pf = PriceFetcher('SOFI.US')
     assert captured[0] == 'SOFI'
     assert pf._provider_ticker == 'SOFI'
@@ -73,14 +91,19 @@ def test_price_fetcher_normalizes_us_suffix_for_provider_calls(monkeypatch=None)
 def test_get_quote_from_history(monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
-            def setattr(self, target, value):
+            def setattr(self, target, name_or_value, value=None):
+                # 2-arg form: "module.attr", value
+                # 3-arg form: object, "attr_name", new_value
+                if value is not None:
+                    setattr(target, name_or_value, value)
+                    return
                 module_name, attr_name = target.rsplit('.', 1)
                 module = __import__(module_name, fromlist=[attr_name])
-                setattr(module, attr_name, value)
+                setattr(module, attr_name, name_or_value)
 
         monkeypatch = SimpleMonkeyPatch()
 
-    monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
     original_fetch_chart_quote = fetcher_mod.PriceFetcher._fetch_chart_quote
     fetcher_mod.PriceFetcher._fetch_chart_quote = lambda self: {}
     pf = PriceFetcher('FOO')
@@ -96,14 +119,19 @@ def test_get_quote_from_history(monkeypatch=None):
 def test_get_quote_handles_none_chart_payload_without_attribute_error(monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
-            def setattr(self, target, value):
+            def setattr(self, target, name_or_value, value=None):
+                # 2-arg form: "module.attr", value
+                # 3-arg form: object, "attr_name", new_value
+                if value is not None:
+                    setattr(target, name_or_value, value)
+                    return
                 module_name, attr_name = target.rsplit('.', 1)
                 module = __import__(module_name, fromlist=[attr_name])
-                setattr(module, attr_name, value)
+                setattr(module, attr_name, name_or_value)
 
         monkeypatch = SimpleMonkeyPatch()
 
-    monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
     original_fetch_chart_quote = fetcher_mod.PriceFetcher._fetch_chart_quote
     original_get_safe_fast_info = fetcher_mod.PriceFetcher._get_safe_fast_info
     original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
@@ -274,17 +302,20 @@ def test_direct_yahoo_session_is_closed_after_request_failure(monkeypatch):
 
 
 def test_price_fetcher_uses_absolute_yfinance_cache_dir(monkeypatch, tmp_path: Path):
+    try:
+        import yfinance.cache as yf_cache
+    except ImportError:
+        pytest.skip("yfinance not installed")
     cache_dir = tmp_path / "state" / "yfinance_cache"
     recorded: dict[str, str] = {}
 
     def _record_cache_location(location):
         recorded["location"] = location
 
-    monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
     monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_INITIALIZED", False)
     monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_ERROR", None)
     monkeypatch.setattr(fetcher_mod, "DEFAULT_YFINANCE_CACHE_DIR", cache_dir)
-    import yfinance.cache as yf_cache
 
     original_set_cache_location = yf_cache.set_cache_location
     yf_cache.set_cache_location = _record_cache_location
@@ -311,7 +342,7 @@ def test_price_fetcher_close_releases_yfinance_session(monkeypatch):
             self.session = DummySession()
             self._session = self.session
 
-    monkeypatch.setattr("yfinance.Ticker", TickerWithSession)
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", TickerWithSession)
 
     pf = PriceFetcher("SOFI.US")
     pf.close()
@@ -322,17 +353,22 @@ def test_price_fetcher_close_releases_yfinance_session(monkeypatch):
 def test_get_ohlcv_handles_empty_dataframe_without_attribute_error(monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
-            def setattr(self, target, value):
+            def setattr(self, target, name_or_value, value=None):
+                # 2-arg form: "module.attr", value
+                # 3-arg form: object, "attr_name", new_value
+                if value is not None:
+                    setattr(target, name_or_value, value)
+                    return
                 module_name, attr_name = target.rsplit('.', 1)
                 module = __import__(module_name, fromlist=[attr_name])
-                setattr(module, attr_name, value)
+                setattr(module, attr_name, name_or_value)
 
         monkeypatch = SimpleMonkeyPatch()
 
     class EmptyHist:
         empty = True
 
-    monkeypatch.setattr('yfinance.Ticker', DummyTicker)
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
     original_fetch_chart_history = fetcher_mod.PriceFetcher._fetch_chart_history
     original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
     fetcher_mod.PriceFetcher._fetch_chart_history = lambda self, period, interval: []
@@ -647,7 +683,10 @@ def test_scorer_direct_sessions_are_closed_and_symbol_normalized(monkeypatch):
 
 
 def test_scorer_load_history_does_not_use_yfinance_fallback_by_default(monkeypatch):
-    import yfinance as yf
+    try:
+        import yfinance as yf
+    except ImportError:
+        pytest.skip("yfinance not installed")
     import src.scoring.scorer as scorer_mod
     from src.scoring.scorer import Scorer
 
@@ -712,6 +751,104 @@ def test_scorer_market_cap_fetcher_is_closed(monkeypatch):
 
     assert scorer._market_cap_for_symbol("SOFI.US") == 3_000_000_000.0
     assert closed == ["SOFI"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# YFinance availability guard (core-only mode safety)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPriceFetcherWithoutYFinance:
+    """When yfinance is unavailable, PriceFetcher() must raise ImportError."""
+
+    @staticmethod
+    def _simulate_missing_yfinance(monkeypatch):
+        monkeypatch.setattr(fetcher_mod, "_YF_AVAILABLE", False)
+
+    def test_instantiation_raises_import_error(self, monkeypatch):
+        """PriceFetcher() should raise ImportError, not NameError."""
+        self._simulate_missing_yfinance(monkeypatch)
+        with pytest.raises(ImportError, match="PriceFetcher requires"):
+            PriceFetcher("AAPL")
+
+    def test_instantiation_message_mentions_install_hint(self, monkeypatch):
+        """Error message should point to quantcairn[research]."""
+        self._simulate_missing_yfinance(monkeypatch)
+        with pytest.raises(ImportError, match="pip install quantcairn"):
+            PriceFetcher("AAPL")
+
+    def test_instantiation_never_reaches_name_error(self, monkeypatch):
+        """Must raise ImportError before hitting yf.Ticker()."""
+        self._simulate_missing_yfinance(monkeypatch)
+        try:
+            PriceFetcher("AAPL")
+        except Exception as exc:
+            assert not isinstance(exc, NameError), (
+                f"Got NameError instead of ImportError: {exc}"
+            )
+            assert isinstance(exc, ImportError)
+
+    def test_importerror_is_subclass_of_exception(self, monkeypatch):
+        """Callers that catch Exception should handle this gracefully."""
+        self._simulate_missing_yfinance(monkeypatch)
+        caught = False
+        try:
+            PriceFetcher("AAPL")
+        except Exception:
+            caught = True
+        assert caught, "ImportError should be caught by bare `except Exception`"
+
+    def test_normal_instantiation_still_works(self):
+        """When yfinance IS available, PriceFetcher works normally."""
+        assert fetcher_mod._YF_AVAILABLE, (
+            "yfinance should be available (we inject it at module level)"
+        )
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
+        pf = PriceFetcher("AAPL")
+        assert pf is not None
+        assert pf.ticker == "AAPL"
+
+
+class TestSelectorHandlesMissingPriceFetcher:
+    """Verify that selector components degrade safely when yfinance is absent."""
+
+    def test_scorer_market_cap_returns_none_on_import_error(self, monkeypatch):
+        """When PriceFetcher raises ImportError, market cap should be None."""
+        import src.scoring.scorer as scorer_mod
+        from src.scoring.scorer import Scorer
+
+        monkeypatch.setattr(fetcher_mod, "_YF_AVAILABLE", False)
+
+        scorer = Scorer()
+        # Force NOT in fallback cache
+        scorer.FALLBACK_MARKET_CAP = {}
+        scorer._market_cap_cache.clear()
+
+        result = scorer._market_cap_for_symbol("UNIQTEST")
+        assert result is None
+
+    def test_scorer_load_history_returns_empty_on_import_error(self, monkeypatch):
+        """When PriceFetcher raises ImportError, _load_history returns empty."""
+        import src.scoring.scorer as scorer_mod
+        from src.scoring.scorer import Scorer
+
+        monkeypatch.setattr(fetcher_mod, "_YF_AVAILABLE", False)
+        monkeypatch.setenv("OPENALPHA_ALLOW_YFINANCE_FALLBACK", "0")
+        monkeypatch.delenv("OPENALPHA_USE_YFINANCE", raising=False)
+
+        df = Scorer()._load_history("AAPL")
+        assert df.empty
+
+    def test_scorer_chart_fallback_handles_import_error(self, monkeypatch):
+        """_fetch_chart_daily raises ImportError when requests is missing."""
+        import src.scoring.scorer as scorer_mod
+        from src.scoring.scorer import Scorer
+
+        monkeypatch.setattr(scorer_mod, "_REQUESTS_AVAILABLE", False)
+
+        with pytest.raises(ImportError, match="requests"):
+            Scorer()._fetch_chart_daily("AAPL")
 
 
 def run_test_direct():

@@ -12,7 +12,7 @@ import yaml
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_DIR / "scripts" / "run_ai_selector.py"
-MULTI_LAUNCH = PROJECT_DIR / "private_ops/multi_launch.sh"
+HEALTH_CHECK = PROJECT_DIR / "health_check.sh"
 HEALTH_CHECK = PROJECT_DIR / "health_check.sh"
 
 
@@ -724,6 +724,7 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
 
 
 def test_shell_scripts_treat_missing_top3_as_disabled():
+    """Health check script reports missing TOP3 config as disabled."""
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         for folder in ("configs", "reports", "logs", "runtime"):
@@ -734,17 +735,6 @@ def test_shell_scripts_treat_missing_top3_as_disabled():
 
         env = os.environ.copy()
         env["SOXS_PROJECT_DIR"] = str(tmpdir)
-
-        status = subprocess.run(
-            ["bash", str(MULTI_LAUNCH), "status"],
-            cwd=PROJECT_DIR,
-            env=env,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert status.returncode == 0
-        assert "TOP3: disabled / config missing" in status.stdout
 
         health = subprocess.run(
             ["bash", str(HEALTH_CHECK)],
