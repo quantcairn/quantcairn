@@ -1,4 +1,6 @@
 """Combined dashboard aggregating the selected TOP3 trading engines."""
+from __future__ import annotations
+
 import atexit
 import csv
 import inspect
