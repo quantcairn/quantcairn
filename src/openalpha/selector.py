@@ -529,7 +529,14 @@ def write_selection_filter_log(report: dict[str, Any], now: datetime | None = No
 class AIStrategySelector:
     def __init__(self, config=None):
         self.universe = Universe()
-        self.news = NewsCollector()
+        try:
+            self.news = NewsCollector()
+        except ImportError:
+            self.news = None
+            print(
+                "[quantcairn] NewsCollector unavailable (missing optional deps). "
+                "News fetching disabled. Install quantcairn[research] for news support."
+            )
         self.scorer = Scorer()
         self.selection_size = self._selection_size_from_env()
         self.max_symbols = self._max_symbols_from_env()
@@ -651,7 +658,7 @@ class AIStrategySelector:
         #    MARKET_DATA output = symbols with >= 60 rows of OHLCV data,
         #    regardless of whether scoring succeeds.
         #    SCORING_ELIGIBLE then tracks which of those symbols produce a score.
-        if os.environ.get("OPENALPHA_FETCH_NEWS", "0") == "1":
+        if self.news and os.environ.get("OPENALPHA_FETCH_NEWS", "0") == "1":
             news_map = self.news.collect_for_symbols(symbols)
         else:
             news_map = {symbol: [] for symbol in symbols}

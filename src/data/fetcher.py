@@ -139,6 +139,11 @@ class PriceFetcher:
     """Fetches real-time and historical price data for a ticker via yfinance."""
 
     def __init__(self, ticker: str, poll_interval: int = 15, max_data_age_seconds: int = 120):
+        if not _YF_AVAILABLE:
+            raise ImportError(
+                "PriceFetcher requires the 'yfinance' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         self.ticker = ticker
         self._provider_ticker = _provider_ticker(ticker)
         self.poll_interval = poll_interval
@@ -274,6 +279,11 @@ class PriceFetcher:
 
     def _fetch_chart_quote(self) -> dict:
         """Fetch a lightweight Yahoo chart quote without inherited proxy settings."""
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError(
+                "chart quote requires the 'requests' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{self._provider_ticker}"
         session = requests.Session()
         session.trust_env = False
@@ -379,6 +389,11 @@ class PriceFetcher:
             return {}
 
     def _fetch_chart_history(self, period: str, interval: str) -> list[OHLCV]:
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError(
+                "chart history requires the 'requests' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         range_map = {
             ("1mo", "1d"): "1mo",
             ("6mo", "1d"): "6mo",

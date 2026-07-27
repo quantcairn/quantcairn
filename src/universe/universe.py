@@ -41,6 +41,16 @@ class Universe:
         self.min_market_cap = 1_000_000_000
 
     def _fetch_sp500_tickers(self) -> List[str]:
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError(
+                "S&P 500 fetch requires the 'requests' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
+        if not _BS4_AVAILABLE:
+            raise ImportError(
+                "S&P 500 fetch requires the 'beautifulsoup4' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         try:
             r = requests.get(url, timeout=10)
@@ -93,6 +103,11 @@ class Universe:
         return []
 
     def _fetch_chart_daily(self, symbol: str, days: int = 7):
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError(
+                "chart data requires the 'requests' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         params = {
             "range": f"{max(days, 1)}d",
@@ -124,6 +139,11 @@ class Universe:
         return df if not df.empty else None
 
     def _check_symbol(self, symbol: str) -> bool:
+        if not _REQUESTS_AVAILABLE or not _YF_AVAILABLE:
+            raise ImportError(
+                "symbol check requires 'requests' and 'yfinance' packages. "
+                "Install them with: pip install quantcairn[research]"
+            )
         try:
             # 1) Try yfinance download
             df = None

@@ -358,6 +358,11 @@ class Scorer:
                     break
 
     def _fetch_chart_daily(self, symbol: str, days: int = 320) -> pd.DataFrame:
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError(
+                "chart data requires the 'requests' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         symbol = self._provider_symbol(symbol)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         params = {
@@ -436,8 +441,8 @@ class Scorer:
             except Exception:
                 pass
         try:
-            fetcher = PriceFetcher(self._provider_symbol(symbol), poll_interval=0)
             try:
+                fetcher = PriceFetcher(self._provider_symbol(symbol), poll_interval=0)
                 candles = fetcher.get_ohlcv(period="1y", interval="1d")
             finally:
                 fetcher.close()
@@ -500,6 +505,11 @@ class Scorer:
         return out
 
     def _fetch_live_snapshot(self, symbol: str) -> dict:
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError(
+                "live snapshot requires the 'requests' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         symbol = self._provider_symbol(symbol)
         last_error = None
         trust_env_options = (False, True) if self.allow_proxy_market else (False,)
@@ -566,14 +576,15 @@ class Scorer:
         if infer_asset_type(normalized) != "common_stock":
             self._market_cap_cache[normalized] = None
             return None
-        fetcher = PriceFetcher(normalized, poll_interval=0)
         try:
-            parsed = fetcher.get_market_cap()
-            self._market_cap_cache[normalized] = parsed if parsed and parsed > 0 else None
+            fetcher = PriceFetcher(normalized, poll_interval=0)
+            try:
+                parsed = fetcher.get_market_cap()
+                self._market_cap_cache[normalized] = parsed if parsed and parsed > 0 else None
+            finally:
+                fetcher.close()
         except Exception:
             self._market_cap_cache[normalized] = None
-        finally:
-            fetcher.close()
         return self._market_cap_cache[normalized]
 
     def _fallback_profile_for_symbol(self, symbol: str) -> dict | None:

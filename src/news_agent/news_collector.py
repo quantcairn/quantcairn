@@ -20,12 +20,23 @@ except ImportError:
 
 class NewsCollector:
     def __init__(self):
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError(
+                "NewsCollector requires the 'requests' package. "
+                "Install it with: pip install quantcairn[research]"
+            )
         self.session = requests.Session()
         self.session.trust_env = os.environ.get("OPENALPHA_ALLOW_PROXY_NEWS", "0") == "1"
         self.logger = logging.getLogger('news_collector')
         self.timeout = float(os.environ.get("OPENALPHA_NEWS_TIMEOUT_SECONDS", "3") or 3)
 
     def fetch_news_snippets(self, ticker: str) -> List[str]:
+        if not _BS4_AVAILABLE:
+            self.logger.warning(
+                "BeautifulSoup not installed — news snippets unavailable. "
+                "Install it with: pip install quantcairn[research]"
+            )
+            return []
         snippets = []
         # simple Yahoo finance news scrape
         try:
