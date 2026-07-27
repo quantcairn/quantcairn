@@ -1182,7 +1182,7 @@ def _execution_mode_code(mode: str | None) -> str:
 def _execution_mode_label(mode: str | None) -> str:
     value = _execution_mode_code(mode)
     return {
-        "paper": "PAPER",
+        "paper": "虚拟盘",
         "sandbox": "SANDBOX",
         "live": "SANDBOX",
         "backtest": "BACKTEST",
@@ -1244,7 +1244,7 @@ def _account_type_label(code: str | None) -> str:
     return {
         "simulated": "模拟账户",
         "sandbox": "沙盒账户",
-        "live": "SANDBOX 账户",
+        "live": "实盘账户",
         "unknown": "未知",
     }.get(value, "未知")
 
@@ -4669,7 +4669,7 @@ HTML = """<!DOCTYPE html>
                 </div>
             </div>
             <div class="system-status-card full shadow-observer-card {{ shadow_status_class }}" id="shadow-observer-card">
-                <span class="system-status-label" id="shadow-title">{{ (shadow_status.title or 'Signal Observation').replace(' Shadow Observer', '') }} Signal Observation</span>
+                <span class="system-status-label" id="shadow-title">{{ (shadow_status.title or 'Signal Observation').replace(' Shadow Observer', ' 只读模拟观察').replace(' Signal Observation', ' 只读模拟观察') }}</span>
                 <span class="system-status-value" id="shadow-state">{{ translate_status(shadow_status.state_label or 'STALE') }}</span>
                 <span class="system-status-detail" id="shadow-detail">仅用于研究信号展示，不发送真实订单 · {{ format_optional(shadow_status.detail) }}</span>
                 <div class="shadow-metrics-grid">
@@ -5663,7 +5663,7 @@ HTML = """<!DOCTYPE html>
                         {% if research_digest and research_digest.available %}
                         <div class="research-brief">
                             <div class="research-brief-head">
-                                <span class="research-tag">研究简报</span>
+                                <span class="research-tag">只读研究简报</span>
                                 <span class="research-meta">最新 {{ research_digest.date or '暂无' }}{% if research_digest.generated_at %} · {{ research_digest.generated_at }}{% endif %}</span>
                             </div>
                             <div class="research-brief-body">
@@ -6333,8 +6333,8 @@ HTML = """<!DOCTYPE html>
             setText('headline-system-state-sub', `Reduce-only ${displayBool(!!system.global_reduce_only)} · Live Trading DISABLED`);
 
             const shadow = payload.shadow || {};
-            const shadowSymbol = String(shadow.title || 'Signal Observation').replace(' Shadow Observer', '');
-            setText('shadow-title', `${shadowSymbol} Signal Observation`);
+            const shadowSymbol = String(shadow.title || 'Signal Observation').replace(' Shadow Observer', ' 只读模拟观察').replace(' Signal Observation', ' 只读模拟观察');
+            setText('shadow-title', shadowSymbol);
             setText('shadow-state', displayStatus(shadow.status_label || shadow.state || 'STALE'));
             setText('shadow-detail', `仅用于研究信号展示，不发送真实订单 · ${displayOptional(shadow.detail)}`);
             setText('shadow-mode', shadow.mode || 'READ-ONLY SHADOW');
