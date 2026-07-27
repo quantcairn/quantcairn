@@ -74,7 +74,6 @@ broker:
         monkeypatch.setenv("LONGBRIDGE_SANDBOX_QUOTE_WS_URL", "wss://openapi-quote.longbridge.com/v2")
         monkeypatch.setenv("LONGBRIDGE_SANDBOX_TRADE_WS_URL", "wss://openapi-trade.longbridge.com/v2")
         monkeypatch.setenv("SOXS_CONFIG", str(config_path))
-        monkeypatch.setattr("src.config.runtime_values.get_runtime_env", lambda key, default="": default)
 
         config = load_config(str(config_path))
         assert config.broker.longbridge.app_key == "alias-key"
@@ -191,7 +190,12 @@ broker:
 
 
 def test_runtime_environment_overrides_private_longbridge_config(monkeypatch, tmp_path):
-    from src.config import runtime_values
+    import importlib
+
+    from src.config import runtime_values as runtime_values_module
+
+    runtime_values = importlib.reload(runtime_values_module)
+    runtime_values.clear_private_config_cache()
 
     monkeypatch.setattr(runtime_values, "load_private_longbridge_config", lambda: {
         "environment": "prod",

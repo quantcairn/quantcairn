@@ -44,6 +44,11 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _recent_trade_date(days_ago: int = 1) -> tuple[str, str]:
+    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return dt.strftime("%Y%m%d"), dt.strftime("%Y-%m-%d")
+
+
 def _fill(symbol="AAPL", side="BUY", price=100.0, qty=10, ts=None,
           mode="paper", fill_id=None, pnl=None, reason="", **kw):
     kw.pop("price", None); kw.pop("quantity", None)  # Remove potential dupes from helpers
@@ -173,15 +178,16 @@ class TestFillValidation:
 
     def test_duplicate_fill_id_skipped_in_parse(self):
         log_dir = Path(tempfile.mkdtemp())
-        log_file = log_dir / "trades-20260723.jsonl"
+        file_date, iso_date = _recent_trade_date(1)
+        log_file = log_dir / f"trades-{file_date}.jsonl"
         log_file.write_text("\n".join([
             json.dumps({"execution_mode": "paper", "ticker": "AAPL",
                         "order": {"side": "BUY", "qty": 10, "price": 100.0},
-                        "fill_id": "DUP-1", "timestamp": "2026-07-23T10:00:00Z",
+                        "fill_id": "DUP-1", "timestamp": f"{iso_date}T10:00:00Z",
                         "response": {"status": "filled"}}),
             json.dumps({"execution_mode": "paper", "ticker": "AAPL",
                         "order": {"side": "BUY", "qty": 10, "price": 100.0},
-                        "fill_id": "DUP-1", "timestamp": "2026-07-23T10:00:01Z",
+                        "fill_id": "DUP-1", "timestamp": f"{iso_date}T10:00:01Z",
                         "response": {"status": "filled"}}),
         ]) + "\n", encoding="utf-8")
         fills = _parse_audit_fills(log_dir, known_fill_ids=set())
@@ -491,10 +497,11 @@ class TestIntegration:
     def test_dry_run_does_not_write(self, tmp_path: Path):
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        (log_dir / "trades-20260723.jsonl").write_text(
+        file_date, iso_date = _recent_trade_date(1)
+        (log_dir / f"trades-{file_date}.jsonl").write_text(
             json.dumps({"execution_mode": "paper", "ticker": "AAPL",
                         "order": {"side": "BUY", "qty": 10, "price": 100.0},
-                        "fill_id": "F-BUY", "timestamp": "2026-07-23T10:00:00Z",
+                        "fill_id": "F-BUY", "timestamp": f"{iso_date}T10:00:00Z",
                         "response": {"status": "filled"}}) + "\n",
             encoding="utf-8")
         csv_path = tmp_path / "oc.csv"
@@ -510,9 +517,10 @@ class TestIntegration:
     def test_audit_jsonl_parse_skips_non_trade(self, tmp_path: Path):
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        (log_dir / "trades-20260723.jsonl").write_text(
+        file_date, iso_date = _recent_trade_date(1)
+        (log_dir / f"trades-{file_date}.jsonl").write_text(
             json.dumps({"phase": "heartbeat", "ticker": "AAPL", "execution_mode": "paper",
-                        "timestamp": "2026-07-23T10:00:00Z"}) + "\n",
+                        "timestamp": f"{iso_date}T10:00:00Z"}) + "\n",
             encoding="utf-8")
         fills = _parse_audit_fills(log_dir)
         assert fills == []
@@ -520,10 +528,11 @@ class TestIntegration:
     def test_live_event_excluded_from_fills(self, tmp_path: Path):
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        (log_dir / "trades-20260723.jsonl").write_text(
+        file_date, iso_date = _recent_trade_date(1)
+        (log_dir / f"trades-{file_date}.jsonl").write_text(
             json.dumps({"execution_mode": "live", "ticker": "SOXS",
                         "order": {"side": "BUY", "qty": 10, "price": 100.0},
-                        "fill_id": "LB-REAL", "timestamp": "2026-07-23T10:00:00Z",
+                        "fill_id": "LB-REAL", "timestamp": f"{iso_date}T10:00:00Z",
                         "response": {"status": "filled"}}) + "\n",
             encoding="utf-8")
         fills = _parse_audit_fills(log_dir)
@@ -533,20 +542,22 @@ class TestIntegration:
         """BUY in one file, SELL in another — must match across files."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
+        buy_file_date, buy_iso_date = _recent_trade_date(2)
+        sell_file_date, sell_iso_date = _recent_trade_date(1)
         # BUY with filled status
-        (log_dir / "trades-20260723.jsonl").write_text(
+        (log_dir / f"trades-{buy_file_date}.jsonl").write_text(
             json.dumps({"execution_mode": "paper", "ticker": "AAPL",
                         "fill_id": "paper:AAPL:BUY:abc:10",
                         "order": {"side": "BUY", "qty": 10, "price": 100.0},
-                        "timestamp": "2026-07-23T10:00:00Z",
+                        "timestamp": f"{buy_iso_date}T10:00:00Z",
                         "response": {"status": "filled"}}) + "\n",
             encoding="utf-8")
         # SELL in separate file, with filled status
-        (log_dir / "trades-20260724.jsonl").write_text(
+        (log_dir / f"trades-{sell_file_date}.jsonl").write_text(
             json.dumps({"execution_mode": "paper", "ticker": "AAPL",
                         "fill_id": "paper:AAPL:SELL:abc:10",
                         "order": {"side": "SELL", "qty": 10, "price": 110.0},
-                        "timestamp": "2026-07-24T14:00:00Z", "pnl": 100.0,
+                        "timestamp": f"{sell_iso_date}T14:00:00Z", "pnl": 100.0,
                         "reason": "take_profit",
                         "response": {"status": "filled"}}) + "\n",
             encoding="utf-8")
@@ -559,12 +570,13 @@ class TestIntegration:
         """Even with a since_timestamp, fill_id-based dedup catches late events."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
+        file_date, iso_date = _recent_trade_date(1)
         # Write one fill with an older timestamp
-        (log_dir / "trades-20260723.jsonl").write_text(
+        (log_dir / f"trades-{file_date}.jsonl").write_text(
             json.dumps({"execution_mode": "paper", "ticker": "AAPL",
                         "fill_id": "LATE-FILL",
                         "order": {"side": "BUY", "qty": 10, "price": 100.0},
-                        "timestamp": "2026-07-23T09:00:00Z",
+                        "timestamp": f"{iso_date}T09:00:00Z",
                         "response": {"status": "filled"}}) + "\n",
             encoding="utf-8")
         # A since_timestamp that would exclude this fill...
