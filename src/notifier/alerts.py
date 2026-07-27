@@ -1781,15 +1781,18 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
             telegram_chat_id=channel_chat_id,
         )
         pub_title, pub_body = _build_public_channel_message(report, resolved_top_items)
+        public_sent = False
         if public_notifier._telegram_enabled:
             try:
                 public_notifier._send(pub_title, pub_body, "summary", macos=False, remote=True)
+                public_sent = True
                 logger.info("Public channel notification sent: %s — %d chars",
                             pub_title, len(pub_body))
             except Exception as exc:
                 logger.warning("Public channel notification failed: %s", exc)
 
     # ── 2. Admin debug message ───────────────────────────────────────────
+    admin_sent = False
     if send_admin:
         admin_notifier = Notifier(
             console=False,
@@ -1803,6 +1806,7 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
         if admin_notifier._telegram_enabled:
             try:
                 admin_notifier._send(admin_title, admin_body, "summary", macos=False, remote=True)
+                admin_sent = True
                 logger.info("Admin debug notification sent: %s — %d chars",
                             admin_title, len(admin_body))
             except Exception as exc:
@@ -1815,9 +1819,9 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
             ledger_path,
             report=report,
             notification_key=notification_key,
-            status="SENT",
+            status="SENT" if (public_sent or admin_sent) else "FAILED",
             attempt_count=attempt_count + 1,
-            error=None,
+            error=None if (public_sent or admin_sent) else "notification_send_failed",
         )
     else:
         logger.info("AI selection notification skipped: no Telegram channel configured")
