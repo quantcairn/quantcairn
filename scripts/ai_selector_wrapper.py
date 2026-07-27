@@ -44,6 +44,8 @@ LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
 
 
 def _verbose(message: str) -> None:
+    # Always emit scheduler decisions to stderr so launchd logs capture them.
+    print(message, file=sys.stderr, flush=True)
     if str(os.environ.get("OPENALPHA_WRAPPER_VERBOSE") or "").strip().lower() in {"1", "true", "yes", "on"}:
         print(message)
 
@@ -84,18 +86,51 @@ def _run_selection_if_due():
     else:
         now_et = datetime.now(ZoneInfo('America/New_York'))
 
-    if not is_trading_day(now_et):
-        _verbose(f'Not a US trading day (ET now={now_et}). Exiting.')
+    trading_day = is_trading_day(now_et)
+
+    if not trading_day:
+        reason = "weekend" if now_et.weekday() >= 5 else "market_holiday"
+        _verbose(
+            f'[SCHEDULER] ai_selector decision=skipped'
+            f' reason=non_trading_day({reason})'
+            f' et_date={now_et.date().isoformat()}'
+            f' et_time={now_et.strftime("%H:%M")}'
+            f' force={force}'
+            f' pid={os.getpid()}'
+        )
         if force and os.environ.get("FORCE_AI_RUN_ON_NON_TRADING_DAY") != "1":
             sys.exit(2)
         if not force:
             return
+
     if not force and not is_market_time(now_et):
-        _verbose(f'Not market time (ET now={now_et}). Exiting.')
+        _verbose(
+            f'[SCHEDULER] ai_selector decision=skipped'
+            f' reason=outside_market_time_window'
+            f' et_date={now_et.date().isoformat()}'
+            f' et_time={now_et.strftime("%H:%M")}'
+            f' trading_day={trading_day}'
+            f' pid={os.getpid()}'
+        )
         return
+
     if not force and already_ran_today(now_et):
-        _verbose(f'AI selector already ran for ET date {now_et.date().isoformat()}. Exiting.')
+        _verbose(
+            f'[SCHEDULER] ai_selector decision=skipped'
+            f' reason=already_ran_today'
+            f' et_date={now_et.date().isoformat()}'
+            f' pid={os.getpid()}'
+        )
         return
+
+    _verbose(
+        f'[SCHEDULER] ai_selector decision=run'
+        f' et_date={now_et.date().isoformat()}'
+        f' et_time={now_et.strftime("%H:%M")}'
+        f' trading_day={trading_day}'
+        f' force={force}'
+        f' pid={os.getpid()}'
+    )
 
     # execute selector
     py = VENV_PY if os.path.exists(VENV_PY) else sys.executable

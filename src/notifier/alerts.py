@@ -44,6 +44,28 @@ def _telegram_rate_limit():
     _telegram_last_send = time.time()
 
 
+def _build_fallback_trade_notification_key(
+    *,
+    mode: str,
+    ticker: str,
+    side: str,
+    quantity: int,
+    price: float,
+) -> str:
+    """Generate a deterministic dedup key when no explicit identity is available.
+
+    Uses a 60-second timestamp bucket so identical trades within the same
+    minute window produce the same key, while legitimately different trades
+    (different quantity, price, or time bucket) produce distinct keys.
+    """
+    import hashlib
+
+    bucket_ts = int(time.time() // 60)
+    raw = f"{mode}:{ticker}:{side}:qty={quantity}:px={price:.2f}:bucket={bucket_ts}"
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
+    return f"{mode}:{ticker}:{side}:auto:{digest}"
+
+
 def default_trade_notification_state_path() -> Path:
     """Runtime state used to suppress replayed filled-trade notifications."""
     override = os.environ.get("SOXS_TRADE_NOTIFICATION_STATE_PATH")
@@ -314,24 +336,25 @@ class Notifier:
             notification_key=notification_key,
             fill_id=fill_id,
             event_id=event_id,
+            quantity=quantity_int,
+            price=price_float,
         )
-        if dedupe_key:
-            first_seen = _record_trade_notification_key(
-                self._trade_notification_state_path,
-                dedupe_key,
-                {
-                    "ticker": str(ticker or ""),
-                    "side": side_upper,
-                    "quantity": quantity_int,
-                    "price": price_float,
-                    "mode": str(mode or ""),
-                    "fill_id": fill_id,
-                    "event_id": event_id,
-                    "created_at": datetime.now(US_EASTERN).isoformat(),
-                },
-            )
-            if not first_seen:
-                return
+        first_seen = _record_trade_notification_key(
+            self._trade_notification_state_path,
+            dedupe_key,
+            {
+                "ticker": str(ticker or ""),
+                "side": side_upper,
+                "quantity": quantity_int,
+                "price": price_float,
+                "mode": str(mode or ""),
+                "fill_id": fill_id,
+                "event_id": event_id,
+                "created_at": datetime.now(US_EASTERN).isoformat(),
+            },
+        )
+        if not first_seen:
+            return
 
         prefix = "实盘" if mode == "live" else "模拟"
         side_cn = "买入" if side_upper == "BUY" else "卖出"
@@ -349,6 +372,19 @@ class Notifier:
                     f" | 现金 ${float(portfolio_state.get('cash') or 0.0):,.2f}"
                     f" | 权益 ${float(portfolio_state.get('equity') or 0.0):,.2f}"
                 )
+
+        # Diagnostic log — emitted before every external trade notification so
+        # duplicate-send investigations have a complete paper trail.
+        logger.info(
+            "[TG_NOTIFY] time=%s mode=%s symbol=%s side=%s dedup_key=%s event_id=%s pid=%s",
+            datetime.now().isoformat(),
+            str(mode or "").strip().lower(),
+            str(ticker or "").strip().upper(),
+            side_upper,
+            dedupe_key,
+            event_id or "",
+            os.getpid(),
+        )
 
         # External notifications are intentionally limited to filled trades
         # so the desktop / Telegram channels stay quiet during scans, signals,
@@ -368,7 +404,14 @@ class Notifier:
         notification_key: str | None = None,
         fill_id: str | None = None,
         event_id: str | None = None,
-    ) -> str | None:
+        quantity: int = 0,
+        price: float = 0.0,
+    ) -> str:
+        """Build a dedup key with mandatory fallback.
+
+        Priority: notification_key > fill_id > event_id > auto-generated hash.
+        This method always returns a non-empty key so dedup is never skipped.
+        """
         explicit_key = str(notification_key or "").strip()
         if explicit_key:
             return explicit_key
@@ -381,7 +424,13 @@ class Notifier:
         event_part = str(event_id or "").strip()
         if event_part:
             return f"{mode_part}:{ticker_part}:{side_part}:event:{event_part}"
-        return None
+        return _build_fallback_trade_notification_key(
+            mode=mode_part,
+            ticker=ticker_part,
+            side=side_part,
+            quantity=quantity,
+            price=price,
+        )
 
     def alert(self, message: str, level: str = "info") -> None:
         """General alert (errors, warnings, halts)."""

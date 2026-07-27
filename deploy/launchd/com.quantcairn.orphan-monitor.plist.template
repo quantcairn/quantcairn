@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  QuantCairn — Orphan Position Monitor
+
+  Standalone process that monitors broker positions not assigned to any
+  active TOP trading engine. Runs the orphan monitor in a long-lived
+  loop, evaluating risk exits on trading days during market hours.
+
+  This job should only be loaded when LongBridge live/sandbox broker
+  credentials are configured.
+
+  Installation:
+      cp deploy/launchd/com.quantcairn.orphan-monitor.plist.template \
+         ~/Library/LaunchAgents/com.quantcairn.orphan-monitor.plist
+
+  Edit the copied file and replace all REPLACE_WITH_* values.
+  See deploy/launchd/README.md for full instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quantcairn.orphan-monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
+        <string>REPLACE_WITH_PROJECT_ROOT/scripts/start_orphan_monitor.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_PROJECT_ROOT</string>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/orphan-monitor.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/orphan-monitor.err.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>YF_DISABLE_CURL_CFFI</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

@@ -6,19 +6,24 @@ import re
 import time
 import json
 import urllib.request
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 
 from ..broker.base import Position
 from ..config.loader import AppConfig, PositionConfig
 from ..openalpha.selection_report import load_latest_ai_selection_state
+from ..utils.market_calendar import is_us_market_trading_day
 from .trading_engine import (
     TradingEngine,
     append_runtime_audit,
     check_exit_conditions,
     is_inverse_etf_symbol,
 )
+
+US_EASTERN = ZoneInfo("America/New_York")
 
 logger = logging.getLogger(__name__)
 
@@ -349,13 +354,45 @@ class OrphanPositionMonitor:
 
         while self._running:
             try:
+                now_et = datetime.now(US_EASTERN)
+                trading_day = is_us_market_trading_day(now_et.date())
+
+                if not trading_day:
+                    # Non-trading day (weekend or market holiday) — deep sleep.
+                    # No exits are evaluated; only broker positions are synced.
+                    logger.info(
+                        "[SCHEDULER] orphan_monitor cycle non_trading_day=%s "
+                        "pid=%s sleep_s=3600",
+                        now_et.date().isoformat(),
+                        os.getpid(),
+                    )
+                    time.sleep(3600)
+                    positions = self.verify_broker_positions()
+                    orphans = self.scan_orphans(positions)
+                    self._log_orphan_change(orphans)
+                    continue
+
                 engines = [self._engine_for_symbol(symbol) for symbol in orphans.keys()]
                 if engines and not engines[0]._is_trading_hours():
+                    logger.info(
+                        "[SCHEDULER] orphan_monitor cycle trading_day=%s "
+                        "outside_trading_hours pid=%s sleep_s=30",
+                        now_et.date().isoformat(),
+                        os.getpid(),
+                    )
                     time.sleep(30)
                     positions = self.verify_broker_positions()
                     orphans = self.scan_orphans(positions)
                     self._log_orphan_change(orphans)
                     continue
+
+                logger.info(
+                    "[SCHEDULER] orphan_monitor cycle trading_day=%s "
+                    "in_trading_hours pid=%s poll_s=%s",
+                    now_et.date().isoformat(),
+                    os.getpid(),
+                    self.poll_interval_seconds,
+                )
 
                 positions = self.verify_broker_positions()
                 if positions is None:

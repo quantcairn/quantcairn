@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  QuantCairn — Combined Dashboard
+
+  Provides the unified research dashboard on port 8090, including:
+  - Selection status
+  - Paper portfolio view
+  - Live broker position monitoring
+  - Orphan position monitor (embeds LongBridge broker when configured)
+
+  Installation:
+      cp deploy/launchd/com.quantcairn.combined.plist.template \
+         ~/Library/LaunchAgents/com.quantcairn.combined.plist
+
+  Edit the copied file and replace all REPLACE_WITH_* values with your
+  local paths. See deploy/launchd/README.md for full instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quantcairn.combined</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
+        <string>REPLACE_WITH_PROJECT_ROOT/scripts/start_combined.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_PROJECT_ROOT</string>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/combined.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/combined.err.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>YF_DISABLE_CURL_CFFI</key>
+        <string>1</string>
+        <!-- Set execution mode: PAPER | RESEARCH | LIVE -->
+        <key>QUANTCAIRN_EXECUTION_MODE</key>
+        <string>PAPER</string>
+    </dict>
+</dict>
+</plist>

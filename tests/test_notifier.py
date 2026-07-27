@@ -16,8 +16,9 @@ def test_trade_notification_rejects_invalid_fill(monkeypatch):
     assert notifier._last_trades == []
 
 
-def test_trade_notification_uses_explicit_mode_label(monkeypatch):
-    notifier = Notifier(console=False, macos_notification=True, webhook_url=None)
+def test_trade_notification_uses_explicit_mode_label(tmp_path, monkeypatch):
+    notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
+                        trade_notification_state_path=tmp_path / "trade_notifications.json")
     calls = []
     monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
 
@@ -27,8 +28,11 @@ def test_trade_notification_uses_explicit_mode_label(monkeypatch):
     assert "实盘卖出" in calls[0][0][0]
 
 
-def test_only_trade_notifications_reach_macos():
-    notifier = Notifier(console=False, macos_notification=True, webhook_url=None)
+def test_only_trade_notifications_reach_macos(tmp_path):
+    notifier = Notifier(
+        console=False, macos_notification=True, webhook_url=None,
+        trade_notification_state_path=tmp_path / "trade_notifications.json",
+    )
     calls = []
     notifier._macos_notify = lambda title, body: calls.append((title, body))
 
@@ -120,15 +124,98 @@ def test_trade_event_id_prevents_duplicate_send_without_fill_id(tmp_path, monkey
     assert len(calls) == 1
 
 
-def test_trade_without_event_identity_is_not_deduplicated(monkeypatch):
-    notifier = Notifier(console=False, macos_notification=True, webhook_url=None)
+def test_trade_without_event_identity_is_not_deduplicated(tmp_path, monkeypatch):
+    """Legacy: without any explicit identity, fallback key deduplicates within the same minute bucket."""
+    notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
+                        trade_notification_state_path=tmp_path / "trade_notifications.json")
     calls = []
     monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
 
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
 
+    # Fallback key now deduplicates identical trades in the same minute bucket
+    assert len(calls) == 1
+
+
+def test_fallback_key_differs_for_different_trades(tmp_path, monkeypatch):
+    """Different quantity/price produce distinct fallback keys, so both send."""
+    notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
+                        trade_notification_state_path=tmp_path / "trade_notifications.json")
+    calls = []
+    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
+    notifier.trade("NVDA", "BUY", 5, 105.0, mode="paper")
+
     assert len(calls) == 2
+
+
+def test_fallback_key_differs_for_different_tickers(tmp_path, monkeypatch):
+    """Different tickers produce distinct fallback keys, so both send."""
+    notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
+                        trade_notification_state_path=tmp_path / "trade_notifications.json")
+    calls = []
+    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    notifier.trade("AAPL", "BUY", 1, 100.0, mode="paper")
+    notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
+
+    assert len(calls) == 2
+
+
+def test_fallback_key_differs_for_buy_vs_sell(tmp_path, monkeypatch):
+    """BUY vs SELL produce distinct fallback keys, so both send."""
+    notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
+                        trade_notification_state_path=tmp_path / "trade_notifications.json")
+    calls = []
+    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
+    notifier.trade("NVDA", "SELL", 1, 100.0, mode="paper")
+
+    assert len(calls) == 2
+
+
+def test_explicit_notification_key_takes_priority_over_fallback(tmp_path, monkeypatch):
+    """notification_key is always used verbatim — no fallback hash involved."""
+    state_path = tmp_path / "trade_notifications.json"
+    notifier = Notifier(
+        console=False, macos_notification=True, webhook_url=None,
+        trade_notification_state_path=state_path,
+    )
+    calls = []
+    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper",
+                   notification_key="my-custom-key-001")
+    notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper",
+                   notification_key="my-custom-key-001")
+
+    assert len(calls) == 1
+
+
+def test_fallback_key_persists_across_instances(tmp_path, monkeypatch):
+    """Two Notifier instances sharing the same state file dedup via fallback keys."""
+    state_path = tmp_path / "trade_notifications.json"
+    first = Notifier(
+        console=False, macos_notification=True, webhook_url=None,
+        trade_notification_state_path=state_path,
+    )
+    second = Notifier(
+        console=False, macos_notification=True, webhook_url=None,
+        trade_notification_state_path=state_path,
+    )
+    first_calls = []
+    second_calls = []
+    monkeypatch.setattr(first, "_send", lambda *args, **kwargs: first_calls.append((args, kwargs)))
+    monkeypatch.setattr(second, "_send", lambda *args, **kwargs: second_calls.append((args, kwargs)))
+
+    first.trade("NVDA", "BUY", 1, 100.0, mode="paper")
+    second.trade("NVDA", "BUY", 1, 100.0, mode="paper")
+
+    assert len(first_calls) == 1
+    assert second_calls == []
 
 
 def run_test_direct():

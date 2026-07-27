@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  QuantCairn — AI Selector Scheduler
+
+  Runs the AI selector wrapper every 60 seconds. The wrapper itself
+  gates on US market trading days and the 09:00 ET ±90s window, so
+  most invocations are no-ops.
+
+  Installation:
+      cp deploy/launchd/com.quantcairn.ai-selector.plist.template \
+         ~/Library/LaunchAgents/com.quantcairn.ai-selector.plist
+
+  Edit the copied file and replace all REPLACE_WITH_* values.
+  See deploy/launchd/README.md for full instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quantcairn.ai-selector</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
+        <string>REPLACE_WITH_PROJECT_ROOT/scripts/ai_selector_wrapper.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_PROJECT_ROOT</string>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/ai_selector.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/ai_selector.err.log</string>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>YF_DISABLE_CURL_CFFI</key>
+        <string>1</string>
+        <!-- Enable verbose scheduler decision logging to stderr -->
+        <key>OPENALPHA_WRAPPER_VERBOSE</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
