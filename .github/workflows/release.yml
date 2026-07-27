@@ -25,8 +25,12 @@ jobs:
       - name: Verify package metadata
         run: |
           python -c "
-          import zipfile, email.parser
-          with zipfile.ZipFile('dist/quantcairn-*.whl') as z:
+          import glob, zipfile, email.parser
+          wheels = sorted(glob.glob('dist/quantcairn-*.whl'))
+          assert wheels, 'No wheel found in dist/ (expected dist/quantcairn-*.whl)'
+          assert len(wheels) == 1, f'Expected exactly 1 wheel, found {len(wheels)}: {wheels}'
+          wheel = wheels[0]
+          with zipfile.ZipFile(wheel) as z:
               names = [n for n in z.namelist() if n.endswith('METADATA')]
               assert names, 'No METADATA found in wheel'
               with z.open(names[0]) as f:
@@ -40,7 +44,16 @@ jobs:
 
       - name: Install wheel and smoke test
         run: |
-          pip install dist/quantcairn-*.whl
+          WHEELS=(dist/quantcairn-*.whl)
+          if [ ${#WHEELS[@]} -eq 0 ] || [ ! -f "${WHEELS[0]}" ]; then
+            echo "ERROR: No wheel found in dist/"
+            exit 1
+          fi
+          if [ ${#WHEELS[@]} -gt 1 ]; then
+            echo "ERROR: Expected exactly 1 wheel, found ${#WHEELS[@]}: ${WHEELS[*]}"
+            exit 1
+          fi
+          pip install "${WHEELS[0]}"
           python -c "import quantcairn; print('quantcairn', quantcairn.__version__)"
           python -c "from quantcairn import DemoDataProvider; p=DemoDataProvider(); assert len(p.symbols)==5; print('demo OK')"
 
