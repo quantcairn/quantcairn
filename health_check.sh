@@ -3,6 +3,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="${SOXS_PROJECT_DIR:-$SCRIPT_DIR}"
+export HEALTH_CHECK_REPO_ROOT="$SCRIPT_DIR"
 export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
 if [ -z "$PYTHON_BIN" ]; then
@@ -19,8 +20,13 @@ echo "Using Python: $PYTHON_BIN"
 
 market_is_open() {
     "$PYTHON_BIN" - <<'PY'
+import os
+import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+sys.path.insert(0, os.environ["HEALTH_CHECK_REPO_ROOT"])
+
 from src.config.loader import AppConfig
 from src.engine.trading_engine import TradingEngine
 
@@ -40,9 +46,14 @@ check_launchd() {
 
 check_selection_sync() {
     "$PYTHON_BIN" - <<'PY'
+import os
+import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from src.ai_selector.selection_state import verify_selection_state
+
+sys.path.insert(0, os.environ["HEALTH_CHECK_REPO_ROOT"])
+
+from src.openalpha.selection_state import verify_selection_state
 
 required = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
 ok, reason, state = verify_selection_state(required_et_date=required)
@@ -171,9 +182,9 @@ check_log_risks() {
 }
 
 echo "== launchd =="
-check_launchd "com.soxs.arbitrage"
-check_launchd "com.soxs.ai_selector"
-check_launchd "com.soxs.arbitrage.stop"
+check_launchd "com.quantcairn.combined"
+check_launchd "com.quantcairn.ai-selector"
+check_launchd "com.quantcairn.orphan-monitor"
 
 echo
 check_selection_sync

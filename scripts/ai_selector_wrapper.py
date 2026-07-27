@@ -3,7 +3,8 @@
 
 Behavior:
 - Checks current time in America/New_York.
-- If it's a weekday (Mon-Fri) and time is near 09:00 ET, runs the selector once per ET day.
+- If it's a weekday (Mon-Fri) and time matches the season-specific pre-open
+  ET window, runs the selector once per ET day.
 - After a successful selection, restarts the TOP engines so they use the new configs.
 - Respects env var `FORCE_AI_RUN=1` to force execution regardless of time.
 """
@@ -18,7 +19,15 @@ except Exception:
     ZoneInfo = None
 
 
-PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+def _resolve_project_dir() -> str:
+    for key in ("QUANTCAIRN_HOME", "SOXS_PROJECT_DIR"):
+        value = os.environ.get(key)
+        if value:
+            return os.path.abspath(value)
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
+PROJECT_DIR = _resolve_project_dir()
 VENV_PY = os.path.join(PROJECT_DIR, '.venv', 'bin', 'python')
 VENV_PREFIX = os.path.join(PROJECT_DIR, '.venv')
 if (
@@ -57,8 +66,15 @@ def is_trading_day(now_et: datetime) -> bool:
 def is_market_time(now_et: datetime) -> bool:
     if not is_trading_day(now_et):
         return False
-    # Run 30 minutes before the regular US session open.
-    target = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
+    # Launchd fires at 21:00/22:30 Beijing time. In EDT the desired ET
+    # pre-open window is 09:00, while in EST it is 09:30.
+    if now_et.dst() and now_et.dst().total_seconds() != 0:
+        target_hour = 9
+        target_minute = 0
+    else:
+        target_hour = 9
+        target_minute = 30
+    target = now_et.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
     delta = abs((now_et - target).total_seconds())
     return delta <= 90
 

@@ -4,9 +4,10 @@
 <!--
   QuantCairn — AI Selector Scheduler
 
-  Runs the AI selector wrapper every 60 seconds. The wrapper itself
-  gates on US market trading days and the 09:00 ET ±90s window, so
-  most invocations are no-ops.
+  Runs the AI selector wrapper at two local Beijing times so launchd
+  covers both US daylight-saving and standard-time market windows.
+  The wrapper itself gates on US trading days and the matching ET
+  pre-open window, so the secondary trigger is usually a no-op.
 
   Installation:
       cp deploy/launchd/com.quantcairn.ai-selector.plist.template \
@@ -35,14 +36,31 @@
     <key>StandardErrorPath</key>
     <string>REPLACE_WITH_PROJECT_ROOT/logs/ai_selector.err.log</string>
 
-    <key>StartInterval</key>
-    <integer>60</integer>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>21</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>22</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
 
     <key>RunAtLoad</key>
     <false/>
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>QUANTCAIRN_HOME</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_PROJECT_DIR</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
         <!-- Enable verbose scheduler decision logging to stderr -->

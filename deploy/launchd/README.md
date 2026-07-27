@@ -7,7 +7,7 @@ Templates for running QuantCairn services under macOS `launchd` (LaunchAgent).
 | Label | Script | Purpose | Frequency |
 |-------|--------|---------|-----------|
 | `com.quantcairn.combined` | `scripts/start_combined.py` | Unified research dashboard (port 8090) | Long-lived (KeepAlive) |
-| `com.quantcairn.ai-selector` | `scripts/ai_selector_wrapper.py` | AI selection pipeline scheduler | Every 60 s (gates internally) |
+| `com.quantcairn.ai-selector` | `scripts/ai_selector_wrapper.py` | AI selection pipeline scheduler | 21:00 / 22:30 Beijing time |
 | `com.quantcairn.orphan-monitor` | `scripts/start_orphan_monitor.py` | Broker position safety net | Long-lived (KeepAlive) |
 
 ## Quick Start
@@ -135,6 +135,7 @@ Set in the plist `EnvironmentVariables` dict:
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `QUANTCAIRN_EXECUTION_MODE` | `PAPER` / `RESEARCH` / `LIVE` | `PAPER` |
+| `QUANTCAIRN_HOME` | Absolute project root used by launchd/wrapper | `<PROJECT_ROOT>` |
 | `YF_DISABLE_CURL_CFFI` | Use `requests` instead of `curl_cffi` (proxy compat) | `1` |
 | `SOXS_TELEGRAM_BOT_TOKEN` | Telegram bot token for notifications | (none) |
 | `SOXS_TELEGRAM_CHAT_ID` | Telegram chat/channel ID | (none) |

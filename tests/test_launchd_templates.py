@@ -62,3 +62,14 @@ def test_templates_have_no_hardcoded_user_paths():
         content = tmpl.read_text()
         matches = pattern.findall(content)
         assert not matches, f"{tmpl.name}: hardcoded paths found: {matches}"
+
+
+def test_ai_selector_template_uses_calendar_schedule():
+    """AI selector must use fixed calendar triggers instead of minute polling."""
+    tmpl = DEPLOY_LAUNCHD / "com.quantcairn.ai-selector.plist.template"
+    content = tmpl.read_text()
+    assert "<key>StartCalendarInterval</key>" in content
+    assert "<key>StartInterval</key>" not in content
+    assert "<integer>21</integer>" in content
+    assert "<integer>22</integer>" in content
+    assert "<integer>30</integer>" in content

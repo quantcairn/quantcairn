@@ -6,6 +6,11 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python 3.8 fallback
+    ZoneInfo = None
+
 from scripts import ai_selector_wrapper
 from scripts.ai_selector_wrapper import is_market_time, is_trading_day
 
@@ -46,18 +51,29 @@ range:
 
 
 def test_ai_selector_does_not_run_on_market_holiday():
-    assert is_trading_day(datetime(2026, 7, 3, 9, 0)) is False
-    assert is_trading_day(datetime(2026, 7, 2, 9, 0)) is True
-    assert is_market_time(datetime(2026, 7, 3, 9, 0)) is False
-    assert is_market_time(datetime(2026, 7, 2, 9, 0)) is True
-    assert is_market_time(datetime(2026, 7, 2, 9, 25)) is False
+    ny = ZoneInfo("America/New_York") if ZoneInfo is not None else None
+
+    def et(year, month, day, hour, minute):
+        if ny is None:
+            return datetime(year, month, day, hour, minute)
+        return datetime(year, month, day, hour, minute, tzinfo=ny)
+
+    assert is_trading_day(et(2026, 7, 3, 9, 0)) is False
+    assert is_trading_day(et(2026, 7, 2, 9, 0)) is True
+    assert is_market_time(et(2026, 7, 3, 9, 0)) is False
+    assert is_market_time(et(2026, 7, 2, 9, 0)) is True
+    assert is_market_time(et(2026, 7, 2, 9, 25)) is False
+    assert is_market_time(et(2026, 11, 2, 9, 30)) is True
+    assert is_market_time(et(2026, 11, 2, 9, 0)) is False
 
 
 def test_ai_selector_wrapper_is_quiet_when_not_due(monkeypatch, capsys):
     class FakeDateTime:
         @classmethod
         def now(cls, tz=None):
-            return datetime(2026, 7, 18, 9, 0)
+            if tz is None:
+                return datetime(2026, 7, 18, 9, 0)
+            return datetime(2026, 7, 18, 9, 0, tzinfo=tz)
 
     monkeypatch.setattr(ai_selector_wrapper, "datetime", FakeDateTime)
     monkeypatch.delenv("FORCE_AI_RUN", raising=False)
