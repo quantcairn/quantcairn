@@ -34,7 +34,7 @@ The demo uses **deterministic synthetic data** — 5 symbols, 252 trading days e
 | **Notifications** | Telegram (`@QuantCairnPicks`), console, macOS, webhook. Long messages auto-chunked. |
 | **Dashboard** | Read-only HTML (port 8090). No trade buttons, no broker calls. |
 | **Demo Mode** | Zero-dependency evaluation with seeded random walk data. |
-| **Execution Modes** | LIVE (strict, safety-disabled) / PAPER (relaxed, simulated) / RESEARCH (candidates only). |
+| **Execution Modes** | RESEARCH (candidates only) / PAPER (relaxed, simulated). Live execution is architecturally disabled in the public release. |
 
 ---
 
