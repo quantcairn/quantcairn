@@ -6,6 +6,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.12.5] — 2026-07-27
+
+Scheduler and production hardening release.
+
+### Changed
+
+- AI selector launchd schedule migrated from 60-second polling to fixed Beijing-time calendar triggers
+- Wrapper hardened with trading-day, time-window, and success-marker protection
+- LongBridge and Outcome Collector tests stabilized for isolation
+- Dashboard read-only status labels improved
+- Notification ledger now records send success or failure accurately
+
+### Safety
+
+- No trading strategy changes
+- No broker production logic changes
+- Live trading remains disabled and gated
+
+---
+
 ## [0.12.0] — 2026-07-25
 
 First runnable QuantCairn demo release.
