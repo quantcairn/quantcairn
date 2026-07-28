@@ -8,7 +8,6 @@ from src.broker.paper_broker import PaperBroker
 from src.broker.paper_portfolio_state import (
     PaperPortfolioState,
     PaperPortfolioStateCorruptError,
-    PaperPortfolioStateError,
     PaperPortfolioStateStore,
     default_paper_portfolio_state_path,
     read_paper_portfolio_state,
@@ -283,7 +282,7 @@ def test_closed_position_is_removed_from_state(tmp_path):
     assert state["positions_count"] == 0
 
 
-def test_persist_failure_returns_rejected_order(tmp_path):
+def test_paper_broker_persists_successful_order(tmp_path):
     state_path = tmp_path / "paper_state.json"
     broker = PaperBroker(
         initial_cash=1_000.0,
@@ -292,13 +291,109 @@ def test_persist_failure_returns_rejected_order(tmp_path):
         portfolio_state_path=state_path,
         persist_portfolio_state=True,
     )
-    monkeypatch_store = broker._state_store
-    assert monkeypatch_store is not None
-    monkeypatch_store._atomic_write = lambda _state: (_ for _ in ()).throw(
-        PaperPortfolioStateError("forced_persist_failure")
+    broker._compute_slippage = lambda: 0.0
+
+    order = broker.place_order("SOFI", OrderSide.BUY, 1, OrderType.MARKET, current_bid=10.0, current_ask=10.0)
+
+    assert order.status == OrderStatus.FILLED
+    assert broker.get_account().cash == 990.0
+    assert broker.get_position_for_ticker("SOFI").quantity == 1
+    state = read_paper_portfolio_state(state_path)
+    assert state is not None
+    assert state["cash"] == 990.0
+    assert state["positions_count"] == 1
+    assert state["positions"][0]["ticker"] == "SOFI"
+    assert state["positions"][0]["quantity"] == 1
+    assert state["last_fill_id"] == order.order_id
+
+
+def test_paper_broker_rolls_back_on_persistence_failure(tmp_path, monkeypatch):
+    state_path = tmp_path / "paper_state.json"
+    broker = PaperBroker(
+        initial_cash=1_000.0,
+        commission_per_share=0.0,
+        slippage_pct=0.0,
+        portfolio_state_path=state_path,
+        persist_portfolio_state=True,
     )
+    broker._compute_slippage = lambda: 0.0
+    before_account = broker.get_account()
+    before_positions = broker.get_positions()
+    before_history = broker.get_trade_history()
+    monkeypatch.setattr(broker, "_persist_portfolio_state", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("forced_persist_failure")
+    ))
 
     order = broker.place_order("SOFI", OrderSide.BUY, 1, OrderType.MARKET, current_bid=10.0, current_ask=10.0)
 
     assert order.status == OrderStatus.REJECTED
     assert "PERSIST_FAILED" in order.notes
+    assert "ROLLBACK_COMPLETED" in order.notes
+    assert broker.get_account() == before_account
+    assert broker.get_positions() == before_positions
+    assert broker.get_trade_history() == before_history
+    assert broker.get_order(order.order_id).status == OrderStatus.REJECTED
+    state = read_paper_portfolio_state(state_path)
+    assert state is not None
+    assert state["cash"] == before_account.cash
+    assert state["positions"] == []
+
+
+def test_paper_broker_keeps_earlier_successful_orders_after_later_persistence_failure(tmp_path, monkeypatch):
+    state_path = tmp_path / "paper_state.json"
+    broker = PaperBroker(
+        initial_cash=1_000.0,
+        commission_per_share=0.0,
+        slippage_pct=0.0,
+        portfolio_state_path=state_path,
+        persist_portfolio_state=True,
+    )
+    broker._compute_slippage = lambda: 0.0
+
+    first = broker.place_order("SOFI", OrderSide.BUY, 1, OrderType.MARKET, current_bid=10.0, current_ask=10.0)
+    assert first.status == OrderStatus.FILLED
+    after_first_account = broker.get_account()
+    after_first_history = broker.get_trade_history()
+
+    monkeypatch.setattr(broker, "_persist_portfolio_state", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("forced_persist_failure")
+    ))
+
+    second = broker.place_order("SOFI", OrderSide.BUY, 1, OrderType.MARKET, current_bid=10.0, current_ask=10.0)
+
+    assert second.status == OrderStatus.REJECTED
+    assert broker.get_account() == after_first_account
+    assert broker.get_trade_history() == after_first_history
+    assert broker.get_order(first.order_id).status == OrderStatus.FILLED
+    assert broker.get_order(second.order_id).status == OrderStatus.REJECTED
+
+
+def test_paper_broker_restores_state_after_failed_sell(tmp_path, monkeypatch):
+    state_path = tmp_path / "paper_state.json"
+    broker = PaperBroker(
+        initial_cash=1_000.0,
+        commission_per_share=0.0,
+        slippage_pct=0.0,
+        portfolio_state_path=state_path,
+        persist_portfolio_state=True,
+    )
+    broker._compute_slippage = lambda: 0.0
+
+    buy = broker.place_order("SOFI", OrderSide.BUY, 2, OrderType.MARKET, current_bid=10.0, current_ask=10.0)
+    assert buy.status == OrderStatus.FILLED
+    before_sell_account = broker.get_account()
+    before_sell_positions = broker.get_positions()
+    before_sell_history = broker.get_trade_history()
+
+    monkeypatch.setattr(broker, "_persist_portfolio_state", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("forced_persist_failure")
+    ))
+
+    sell = broker.place_order("SOFI", OrderSide.SELL, 1, OrderType.MARKET, current_bid=10.0, current_ask=10.0)
+
+    assert sell.status == OrderStatus.REJECTED
+    assert broker.get_account() == before_sell_account
+    assert broker.get_positions() == before_sell_positions
+    assert broker.get_trade_history() == before_sell_history
+    assert broker.get_position_for_ticker("SOFI").quantity == 2
+    assert broker.get_order(sell.order_id).status == OrderStatus.REJECTED

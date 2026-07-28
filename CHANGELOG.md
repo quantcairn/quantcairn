@@ -148,6 +148,7 @@ Documentation alignment and repository hygiene release.
 
 ## [Unreleased]
 
+- PaperBroker now rolls back in-memory state when portfolio-state persistence fails, so rejected orders no longer leave cash, positions, or trade history partially mutated.
 - Multi-provider data adapters (Alpha Vantage, Polygon)
 - Backtest validation harness
 - Expanded universe profiles

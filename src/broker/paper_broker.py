@@ -9,6 +9,7 @@ Features:
 - Full P&L calculation
 - Trade history
 """
+import copy
 import logging
 import os
 import random
@@ -159,6 +160,38 @@ class PaperBroker(BrokerBase):
             notes=notes,
         )
         self._trade_history.append(record)
+
+    def _snapshot_runtime_state(self) -> dict[str, object]:
+        return {
+            "cash": self._cash,
+            "orders": copy.deepcopy(self._orders),
+            "positions": copy.deepcopy(self._positions),
+            "current_prices": copy.deepcopy(self._current_prices),
+            "processed_fill_ids": copy.deepcopy(self._processed_fill_ids),
+            "trade_history": copy.deepcopy(self._trade_history),
+            "realized_pnl": self._realized_pnl,
+            "total_commission": self._total_commission,
+            "wins": self._wins,
+            "losses": self._losses,
+            "total_win_amount": self._total_win_amount,
+            "total_loss_amount": self._total_loss_amount,
+            "connected": self._connected,
+        }
+
+    def _restore_runtime_state(self, snapshot: dict[str, object]) -> None:
+        self._cash = float(snapshot["cash"])
+        self._orders = copy.deepcopy(snapshot["orders"])
+        self._positions = copy.deepcopy(snapshot["positions"])
+        self._current_prices = copy.deepcopy(snapshot["current_prices"])
+        self._processed_fill_ids = copy.deepcopy(snapshot["processed_fill_ids"])
+        self._trade_history = copy.deepcopy(snapshot["trade_history"])
+        self._realized_pnl = float(snapshot["realized_pnl"])
+        self._total_commission = float(snapshot["total_commission"])
+        self._wins = int(snapshot["wins"])
+        self._losses = int(snapshot["losses"])
+        self._total_win_amount = float(snapshot["total_win_amount"])
+        self._total_loss_amount = float(snapshot["total_loss_amount"])
+        self._connected = bool(snapshot["connected"])
 
     def _load_or_create_portfolio_state(self) -> None:
         if self._state_store is None:
@@ -331,6 +364,7 @@ class PaperBroker(BrokerBase):
         commission = self._compute_commission(trade_value, quantity)
 
         realized_pnl = 0.0
+        pre_trade_state = self._snapshot_runtime_state()
 
         if side == OrderSide.BUY:
             total_cost = trade_value + commission
@@ -427,10 +461,18 @@ class PaperBroker(BrokerBase):
                 last_order_id=order_id,
                 last_event_id=f"paper:{order_id}",
             )
-        except PaperPortfolioStateError as exc:
-            logger.error("[PAPER] Filled order persistence failed: %s", exc)
+        except Exception as exc:
+            self._restore_runtime_state(pre_trade_state)
             order.status = OrderStatus.REJECTED
-            order.notes = f"PERSIST_FAILED:{exc}"
+            order.filled_quantity = 0
+            order.avg_fill_price = 0.0
+            order.filled_at = None
+            order.commission = 0.0
+            order.notes = f"PERSIST_FAILED:{exc};ROLLBACK_COMPLETED"
+            self._orders[order_id] = order
+            logger.warning(
+                "PaperBroker persistence failed. Rolling back in-memory state. Order rejected."
+            )
             return order
 
         logger.info(
