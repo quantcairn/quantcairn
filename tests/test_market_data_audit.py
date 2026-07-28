@@ -77,6 +77,17 @@ def _base_quality(**overrides):
             },
         ),
         (
+            "research_evidence_not_run",
+            _base_snapshot(),
+            _base_quality(scoring_eligible=False, formal_scoring_eligibility=False),
+            {
+                "provider_used": "YAHOO_CHART",
+                "first_failure_node": "validation",
+                "normalized_failure_reason": "research_evidence_not_run",
+                "formal_data_ready": False,
+            },
+        ),
+        (
             "sentinel_provider_falls_back",
             _base_snapshot(
                 quote_provider_used="UNAVAILABLE",
