@@ -143,6 +143,8 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "FORMAL_ELIGIBILITY": "正式入选资格",
         "COMPOSITION_FILTER": "组合分散过滤",
         "FORMAL_TOP": "正式 TOP 入选",
+        "POST_FILTER": "最终后处理过滤",
+        "FINAL_SELECTED": "最终可执行入选",
     }
     funnel_rows = []
     for stage in funnel_stages:
@@ -1370,17 +1372,15 @@ def _mode_label(mode: str | None) -> str:
     return {
         "paper": "PAPER",
         "sandbox": "SANDBOX",
-        "live": "SANDBOX",
+        "live": "LIVE",
         "backtest": "BACKTEST",
     }.get(value, "RESEARCH")
 
 
 def _execution_mode_code(mode: str | None) -> str:
     value = str(mode or "").strip().lower()
-    if value == "live":
-        return "sandbox"
-    if value in {"paper", "sandbox"}:
-        return "paper"
+    if value in {"paper", "sandbox", "live"}:
+        return value
     if value == "backtest":
         return "backtest"
     return "research"
@@ -1389,9 +1389,9 @@ def _execution_mode_code(mode: str | None) -> str:
 def _execution_mode_label(mode: str | None) -> str:
     value = _execution_mode_code(mode)
     return {
-        "paper": "虚拟盘",
+        "paper": "PAPER",
         "sandbox": "SANDBOX",
-        "live": "SANDBOX",
+        "live": "LIVE",
         "backtest": "BACKTEST",
     }.get(value, "RESEARCH")
 
@@ -1421,7 +1421,7 @@ def _broker_environment_label(code: str | None) -> str:
     return {
         "local_paper": "本地模拟账户",
         "longbridge_sandbox": "LongBridge 沙盒",
-        "longbridge_live": "LongBridge SANDBOX",
+        "longbridge_live": "LongBridge Live",
         "unavailable": "不可用",
     }.get(value, "未知")
 
@@ -4796,7 +4796,7 @@ HTML = """<!DOCTYPE html>
                 <div class="hint" style="margin-top:4px">只读展示 · 不触发下单 · 不修改环境变量或状态</div>
             </div>
             <span class="pill {{ 'mode-live' if system_status.mode_key == 'live' else 'mode-sandbox' if system_status.mode_key == 'sandbox' else 'mode-paper' }}" id="system-pill">
-                {{ system_status.mode }}{% if system_status.mode_key == 'paper' %} · PAPER{% elif system_status.mode_key == 'sandbox' %} · SANDBOX{% elif system_status.mode_key == 'live' %} · SANDBOX{% endif %}
+                {{ system_status.mode }}{% if system_status.mode_key == 'paper' %} · PAPER{% elif system_status.mode_key == 'sandbox' %} · SANDBOX{% elif system_status.mode_key == 'live' %} · LIVE{% endif %}
             </span>
         </div>
         <div class="system-status-grid">
@@ -4808,7 +4808,7 @@ HTML = """<!DOCTYPE html>
             <div class="system-status-card">
                 <span class="system-status-label">券商类型</span>
                 <span class="system-status-value" id="system-broker-type">{{ format_optional(system_status.broker_type) }}</span>
-                <span class="system-status-detail" id="system-broker-connection">连接状态：{{ system_status.broker_connection or 'not connected' }}</span>
+                <span class="system-status-detail" id="system-broker-connection">连接状态：{{ system_status.broker_connection or 'not connected' }} · {{ system_status.dashboard_account_type_label }}</span>
             </div>
             <div class="system-status-card {{ 'status-warn' if mode_consistency.mixed else '' }}">
                 <span class="system-status-label">执行模式对齐</span>

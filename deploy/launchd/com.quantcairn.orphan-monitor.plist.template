@@ -49,6 +49,14 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>QUANTCAIRN_HOME</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_PROJECT_DIR</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_STATE_DIR</key>
+        <string>REPLACE_WITH_PROJECT_ROOT/state</string>
+        <key>QUANTCAIRN_EXECUTION_MODE</key>
+        <string>LIVE</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
     </dict>

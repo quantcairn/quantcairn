@@ -532,11 +532,4 @@ class OrphanPositionMonitor:
 def should_run_orphan_monitor() -> bool:
     if os.getenv("SOXS_DISABLE_ORPHAN_MONITOR", "0").strip() == "1":
         return False
-    for path in TOP_CONFIGS:
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
-        if str(data.get("mode") or "").strip().lower() == "live":
-            return True
-    return False
+    return True

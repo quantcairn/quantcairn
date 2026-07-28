@@ -19,6 +19,16 @@ if VENV_SITE_PACKAGES is not None and str(VENV_SITE_PACKAGES) not in sys.path:
 from src.dashboard import combined as dashboard
 
 
+def test_execution_mode_mapping_preserves_paper_sandbox_live():
+    assert dashboard._execution_mode_code("paper") == "paper"
+    assert dashboard._execution_mode_code("sandbox") == "sandbox"
+    assert dashboard._execution_mode_code("live") == "live"
+    assert dashboard._mode_label("paper") == "PAPER"
+    assert dashboard._mode_label("sandbox") == "SANDBOX"
+    assert dashboard._mode_label("live") == "LIVE"
+    assert dashboard._broker_environment_label("longbridge_live") == "LongBridge Live"
+
+
 def _patch_status_basics(
     monkeypatch,
     *,
@@ -662,13 +672,13 @@ def test_api_status_shows_sandbox_snapshot_without_paper_fallback(monkeypatch):
     assert payload["system"]["live_order_enabled"] is False
     assert payload["mode_consistency"]["dashboard_mode"] == "sandbox"
     assert payload["mode_consistency"]["dashboard_display_mode"] == "sandbox"
-    assert payload["mode_consistency"]["dashboard_execution_mode"] == "paper"
+    assert payload["mode_consistency"]["dashboard_execution_mode"] == "sandbox"
     assert payload["mode_consistency"]["top_modes"] == ["sandbox", "sandbox", "sandbox"]
-    assert payload["mode_consistency"]["top_execution_modes"] == ["paper", "paper", "paper"]
+    assert payload["mode_consistency"]["top_execution_modes"] == ["sandbox", "sandbox", "sandbox"]
     assert payload["mode_consistency"]["mixed"] is False
     assert payload["mode_consistency"]["display_mismatch"] is False
     assert payload["system"]["dashboard_display_mode"] == "sandbox"
-    assert payload["system"]["dashboard_execution_mode"] == "paper"
+    assert payload["system"]["dashboard_execution_mode"] == "sandbox"
     assert payload["system"]["dashboard_broker_environment"] == "longbridge_sandbox"
     assert payload["system"]["lifecycle"]["weekend_paper"]["status_label"] == "unavailable"
     assert payload["system"]["lifecycle"]["longbridge_sandbox"]["status_label"] == "unavailable"
@@ -718,14 +728,14 @@ def test_api_status_distinguishes_display_mode_from_execution_mode(monkeypatch):
 
     assert payload["mode_consistency"]["dashboard_mode"] == "sandbox"
     assert payload["mode_consistency"]["dashboard_display_mode"] == "sandbox"
-    assert payload["mode_consistency"]["dashboard_execution_mode"] == "paper"
+    assert payload["mode_consistency"]["dashboard_execution_mode"] == "sandbox"
     assert payload["mode_consistency"]["top_modes"] == ["paper", "paper", "paper"]
     assert payload["mode_consistency"]["top_execution_modes"] == ["paper", "paper", "paper"]
-    assert payload["mode_consistency"]["mixed"] is False
-    assert payload["mode_consistency"]["display_mismatch"] is True
-    assert payload["mode_consistency"]["severity"] == "INFO"
+    assert payload["mode_consistency"]["mixed"] is True
+    assert payload["mode_consistency"]["display_mismatch"] is False
+    assert payload["mode_consistency"]["severity"] == "BLOCKED"
     assert payload["system"]["dashboard_display_mode"] == "sandbox"
-    assert payload["system"]["dashboard_execution_mode"] == "paper"
+    assert payload["system"]["dashboard_execution_mode"] == "sandbox"
     assert payload["system"]["dashboard_broker_environment"] == "longbridge_sandbox"
 
 

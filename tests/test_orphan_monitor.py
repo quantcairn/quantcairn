@@ -6,7 +6,7 @@ import math
 import pytest
 
 from src.broker.base import AccountInfo, Order, OrderSide, OrderStatus, OrderType, Position
-from src.engine.orphan_monitor import OrphanPositionMonitor
+from src.engine.orphan_monitor import OrphanPositionMonitor, should_run_orphan_monitor
 from src.engine.trading_engine import TradingEngine, check_exit_conditions
 
 
@@ -218,6 +218,34 @@ def test_orphan_monitor_never_submits_buy():
 
     assert len(broker.orders) == 1
     assert broker.orders[0]["side"] == OrderSide.SELL
+
+
+def test_orphan_monitor_startup_does_not_depend_on_live_top_configs(monkeypatch, tmp_path):
+    import src.engine.orphan_monitor as module
+
+    monkeypatch.delenv("SOXS_DISABLE_ORPHAN_MONITOR", raising=False)
+    monkeypatch.setattr(module, "TOP_CONFIGS", [tmp_path / "TOP1.yaml", tmp_path / "TOP2.yaml"])
+    for path in module.TOP_CONFIGS:
+        path.write_text("enabled: false\nticker:\nmode: paper\n", encoding="utf-8")
+
+    assert should_run_orphan_monitor() is True
+
+
+def test_orphan_monitor_startup_respects_explicit_disable(monkeypatch, tmp_path):
+    import src.engine.orphan_monitor as module
+
+    monkeypatch.setenv("SOXS_DISABLE_ORPHAN_MONITOR", "1")
+    monkeypatch.setattr(module, "TOP_CONFIGS", [tmp_path / "TOP1.yaml"])
+    module.TOP_CONFIGS[0].write_text("ticker: SOXS\nmode: live\n", encoding="utf-8")
+
+    assert should_run_orphan_monitor() is False
+
+
+def test_orphan_monitor_internal_engine_is_reduce_only():
+    monitor = OrphanPositionMonitor(broker=FakeBroker())
+    engine = monitor._engine_for_symbol("PLTR")
+
+    assert engine.config.position.reduce_only is True
 
 
 @pytest.mark.parametrize(

@@ -83,6 +83,17 @@ class SimpleMonkeyPatch:
 
 
 def test_combined_dashboard_renders_live_account_summary(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="live",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=True,
+                environment="prod",
+                account_type="live",
+                allow_live_order=False,
+            )
+        ),
+    ))
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
         "cash": 850.0,
         "equity": 1200.0,
@@ -354,7 +365,7 @@ def test_combined_dashboard_uses_sandbox_account_snapshot_without_paper_fallback
     assert "PaperBroker / TOP engine runtime" not in html
 
 
-def test_combined_dashboard_separates_display_mode_from_execution_mode(monkeypatch):
+def test_combined_dashboard_flags_sandbox_vs_paper_execution_conflict(monkeypatch):
     monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
         mode="sandbox",
         broker=SimpleNamespace(
@@ -419,10 +430,10 @@ def test_combined_dashboard_separates_display_mode_from_execution_mode(monkeypat
     with combined.app.test_request_context("/"):
         html = combined.index()
 
-    assert "执行模式一致（页面显示不同）" in html
+    assert "执行模式不一致" in html
     assert "页面显示：SANDBOX（sandbox）" in html
-    assert "执行模式：虚拟盘（paper）" in html
-    assert "虚拟盘" in html
+    assert "执行模式：SANDBOX（sandbox）" in html
+    assert "TOP 执行模式：PAPER（paper）" in html
     assert "TOP 引擎模式不一致" not in html
 
 
