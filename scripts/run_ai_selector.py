@@ -8,6 +8,7 @@ import sys
 import subprocess
 import argparse
 from collections import Counter
+from functools import lru_cache
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
@@ -55,6 +56,7 @@ from src.openalpha.data_quality import (
     is_formal_selection_eligible,
 )
 from src.openalpha.funnel_tracker import FunnelTracker, dropped_record, reason_from_candidate
+from src.openalpha.market_context import build_candidate_market_snapshot
 from src.openalpha.universe_filter import filter_universe_candidates, load_universe_rules
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
@@ -768,6 +770,59 @@ def _apply_formal_score_semantics(item: dict) -> dict:
     return payload
 
 
+@lru_cache(maxsize=1024)
+def _market_snapshot_for_ticker(ticker: str) -> dict:
+    ticker = _normalize_ticker(ticker)
+    if not ticker:
+        return {}
+    try:
+        snapshot = build_candidate_market_snapshot(ticker)
+    except Exception:
+        return {}
+    return dict(snapshot or {})
+
+
+def _backfill_market_snapshot(item: dict) -> dict:
+    payload = dict(item or {})
+    ticker = _normalize_ticker(payload.get("ticker"))
+    if not ticker:
+        return payload
+    snapshot = {}
+    for nested_key in ("market_data", "trade_market_data"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict) and nested:
+            snapshot = dict(nested)
+            break
+    if not snapshot:
+        has_market_state = any(
+            str(payload.get(key) or "").strip()
+            for key in (
+                "quote_status",
+                "ohlcv_status",
+                "history_status",
+                "benchmark_status",
+                "benchmark_alignment_status",
+                "data_status",
+                "market_data_sufficiency",
+                "quote_timestamp",
+                "daily_data_status",
+                "freshness_status",
+            )
+        )
+        if has_market_state:
+            return payload
+        snapshot = _market_snapshot_for_ticker(ticker)
+    if not snapshot:
+        return payload
+    payload.update(snapshot)
+    for nested_key in ("market_data", "trade_market_data"):
+        existing = payload.get(nested_key)
+        merged = dict(existing or {})
+        merged.update(snapshot)
+        payload[nested_key] = merged
+    return payload
+
+
 def _enrich_candidate_quality_rows(
     rows: list[dict],
     *,
@@ -777,7 +832,7 @@ def _enrich_candidate_quality_rows(
 ) -> list[dict]:
     enriched: list[dict] = []
     for raw in rows or []:
-        payload = dict(raw)
+        payload = _backfill_market_snapshot(raw)
         for nested_key in ("market_data", "trade_market_data", "metrics"):
             nested = payload.get(nested_key)
             if not isinstance(nested, dict):
@@ -1923,7 +1978,7 @@ def _enrich_selection_rows(
     enriched: list[dict] = []
     provider_outputs = dict(provider_outputs or {})
     for raw in rows or []:
-        item = dict(raw or {})
+        item = _backfill_market_snapshot(raw)
         for nested_key in ("market_data", "trade_market_data", "metrics"):
             nested = item.get(nested_key)
             if not isinstance(nested, dict):
@@ -2745,6 +2800,7 @@ def main(mode: str | None = None):
     summary["top10"] = _enrich_selection_rows(list(summary.get("top10") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
     summary["top5"] = _enrich_selection_rows(list(summary.get("top5") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
     summary["top3"] = _enrich_selection_rows(list(summary.get("top3") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
+    summary["report"] = _enrich_selection_rows(list(summary.get("report") or []), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
     selected = _enrich_selection_rows(list(selected), provider_outputs=summary["provider_outputs"], score_generated_at=timestamp)
     validation_records = _candidate_validation_records_by_symbol()
     tradable_top_candidates = [_apply_validation_snapshot(dict(item or {}), validation_records) for item in selected]

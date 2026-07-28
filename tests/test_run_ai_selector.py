@@ -283,6 +283,60 @@ def test_enrich_candidate_quality_rows_uses_nested_market_quality_before_formal_
     assert module.is_formal_selection_eligible(enriched) is True
 
 
+def test_report_rows_backfill_market_snapshot_when_selector_rows_lack_market_fields(monkeypatch):
+    module = _load_module()
+    snapshot = _formal_candidate_row("AGNC", 82.3, 9.99)
+    snapshot.update(
+        {
+            "quote_fetch_status": "COMPLETE",
+            "ohlcv_fetch_status": "COMPLETE",
+            "quote_status": "COMPLETE",
+            "ohlcv_status": "COMPLETE",
+            "history_status": "COMPLETE",
+            "history_rows": 250,
+            "history_available_bars": 250,
+            "history_required_bars": 200,
+            "history_missing_windows": [],
+            "quote_timestamp": "2026-07-28T13:00:00Z",
+            "quote_age_seconds": 60,
+            "current_price": 9.99,
+            "daily_data_as_of": "2026-07-27",
+            "daily_data_status": "LATEST_COMPLETED_SESSION",
+            "freshness_status": "SAFE",
+            "benchmark_data_as_of": "2026-07-27",
+            "benchmark_status": "VALID",
+            "benchmark_alignment_status": "VALID",
+            "market_data_sufficiency": "COMPLETE",
+            "close_history": [9.99] * 250,
+        }
+    )
+    monkeypatch.setattr(module, "build_candidate_market_snapshot", lambda ticker: dict(snapshot) if ticker == "AGNC" else {})
+
+    row = {
+        "ticker": "AGNC",
+        "score": 82.3,
+        "candidate_score": 82.3,
+        "final_score": 82.3,
+        "score_is_formal": True,
+        "score_type": "FORMAL",
+        "score_source": "current_run_candidate_ranking",
+        "score_is_current_run": True,
+    }
+
+    candidate_enriched = module._enrich_candidate_quality_rows([row])[0]
+    report_enriched = module._enrich_selection_rows([row])[0]
+
+    for enriched in (candidate_enriched, report_enriched):
+        assert enriched["quote_status"] == "COMPLETE"
+        assert enriched["ohlcv_status"] == "COMPLETE"
+        assert enriched["history_status"] == "COMPLETE"
+        assert enriched["benchmark_status"] == "VALID"
+        assert enriched["data_status"] == "COMPLETE"
+        assert enriched["market_data_sufficiency"] == "COMPLETE"
+        assert enriched["quote_timestamp"] == "2026-07-28T13:00:00Z"
+        assert enriched["current_price"] == 9.99
+
+
 def test_write_selection_filter_log_is_repeatable_without_fd_growth(tmp_path, monkeypatch):
     module = _load_module()
     monkeypatch.setattr(module, "LOG_DIR", tmp_path)
