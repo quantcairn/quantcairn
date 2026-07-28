@@ -39,4 +39,7 @@ def test_selection_dashboard_view_separates_research_and_tradable_candidates():
     assert view["research_symbols"] == ["SOFI"]
     assert view["tradable_selected_count"] == 0
     assert view["next_validation_stage"] == "候选分类（CLASSIFICATION）"
-    assert view["paper_live_status"] == "阻断"
+    assert view["selection_state"]["code"] == "NO_TRADABLE_SELECTION"
+    assert view["live_config_state"]["code"] in {"PRESERVED_MANUAL_OVERRIDE", "EMPTY"}
+    assert view["system_state"]["code"] == "SAFE_HOLD"
+    assert view["paper_live_status"] == "SAFE_HOLD"

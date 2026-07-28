@@ -19,7 +19,7 @@ from src.openalpha.selection_bundle import load_committed_selection_bundle
 from src.openalpha.selection_report import load_latest_ai_selection_state, normalize_provider_audit
 from src.openalpha.settings import load_runtime_settings, save_runtime_settings, resolve_price_band
 from src.openalpha.universe_filter import load_universe_rules
-from src.openalpha.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
+from src.openalpha.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
 from src.broker.paper_portfolio_state import default_paper_portfolio_state_path, read_paper_portfolio_state
@@ -174,11 +174,10 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         {"code": str(code), "label": translate_reason(code), "count": count}
         for code, count in sorted(reason_counts.items(), key=reason_sort_key)
     ]
-    mismatch_reason = str(selection_sync.get("mismatch_reason") or selection_sync.get("reason") or "").split(":", 1)[0]
-    sync_ok = bool(selection_sync.get("ok"))
-    sync_summary = "已同步" if sync_ok else f"未同步：{translate_reason(mismatch_reason)}"
     formal_candidates = [item for item in (ai_selection.get("top3") or []) if isinstance(item, dict)]
     first_candidate = formal_candidates[0] if formal_candidates else {}
+    selection_states = _selection_dashboard_states(ai_selection, selection_sync)
+    mismatch_reason = str(selection_states.get("raw_reason") or "").split(":", 1)[0]
 
     return {
         "selection_date": format_optional(ai_selection.get("selection_date") or ai_selection.get("date") or selection_sync.get("state_date")),
@@ -193,13 +192,19 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "tradable_requested_count": tradable_requested_count,
         "research_symbols": research_symbols,
         "next_validation_stage": next_validation_stage_text,
-        "paper_live_status": "阻断" if tradable_selected_count <= 0 else "按交易 Gate 继续校验",
+        "paper_live_status": selection_states["system_state"]["label"],
+        "paper_live_detail": selection_states["system_state"]["detail"],
         "selected_symbols": selected_symbols,
         "missing_count": missing_count,
         "missing_label": "数量完整" if missing_count == 0 else f"缺失 {missing_count} 个",
-        "sync_ok": sync_ok,
-        "sync_summary": sync_summary,
-        "sync_detail": format_optional(selection_sync.get("detail")),
+        "sync_ok": selection_states["system_state"]["code"] == "OK",
+        "sync_summary": selection_states["system_state"]["label"],
+        "sync_detail": selection_states["system_state"]["detail"],
+        "selection_state": selection_states["ai_selection_state"],
+        "live_config_state": selection_states["live_config_state"],
+        "system_state": selection_states["system_state"],
+        "raw_reason": selection_states["raw_reason"],
+        "raw_detail": format_optional(selection_sync.get("detail")),
         "data_status": translate_status(ai_selection.get("data_status") or first_candidate.get("data_status") or "UNAVAILABLE"),
         "universe_filter": "通过" if first_candidate.get("trade_filter_passed") else "暂无合格结果" if not formal_candidates else "未通过",
         "scoring_eligible_count": _funnel_stage_output(funnel, "SCORING_ELIGIBLE"),
@@ -216,6 +221,208 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "provider_sections": dict(ai_selection.get("provider_audit_sections") or {}),
         "warnings": list(ai_selection.get("warnings_structured") or ai_selection.get("warnings") or []),
         "mismatch_reason": format_optional(mismatch_reason),
+    }
+
+
+def _selection_dashboard_states(ai_selection: dict | None, selection_sync: dict | None) -> dict[str, dict[str, str] | str]:
+    ai_selection = ai_selection or {}
+    selection_sync = selection_sync or {}
+    raw_reason = str(selection_sync.get("mismatch_reason") or selection_sync.get("reason") or "").strip()
+    reason_base = raw_reason.split(":", 1)[0]
+
+    selected_top_n = int(
+        ai_selection.get("selected_top_n")
+        if ai_selection.get("selected_top_n") is not None
+        else len(ai_selection.get("selected_symbols") or ai_selection.get("top3") or [])
+    )
+    research_admission = str(ai_selection.get("research_admission") or "").strip().upper()
+    selection_ok = bool(selection_sync.get("ok"))
+
+    slot_limit = max(
+        configured_top_count(),
+        selected_top_n,
+        int(ai_selection.get("requested_top_n") or 0),
+        len(selection_sync.get("selection_state_symbols") or []),
+        len(selection_sync.get("current_top_config_symbols") or []),
+        1,
+    )
+    top_slots = current_top_config_slots(limit=slot_limit)
+    slot_details: list[dict[str, object]] = []
+    for slot in top_slots:
+        path_value = slot.get("path")
+        config: dict[str, object] = {}
+        if isinstance(path_value, Path):
+            try:
+                config = yaml.safe_load(path_value.read_text(encoding="utf-8")) or {}
+            except Exception:
+                config = {}
+        selection_cfg = config.get("selection") if isinstance(config.get("selection"), dict) else {}
+        slot_details.append(
+            {
+                "slot": int(slot.get("slot") or 0),
+                "enabled": bool(slot.get("enabled")),
+                "ticker": str(slot.get("ticker") or "").strip().upper(),
+                "mode": str(config.get("mode") or "").strip().lower(),
+                "source": str(selection_cfg.get("source") or "").strip().lower(),
+            }
+        )
+
+    enabled_slots = [item for item in slot_details if item["enabled"]]
+    manual_override_slots = [
+        item["slot"]
+        for item in enabled_slots
+        if item["mode"] == "live" and item["source"] == "manual_override"
+    ]
+    has_manual_override = bool(manual_override_slots)
+    has_enabled_slots = bool(enabled_slots)
+
+    structural_reasons = {
+        "selection_state_missing",
+        "bundle_incomplete",
+        "run_id_mismatch",
+        "missing_top_slot",
+        "top_config_symbols_mismatch",
+        "disabled_slot_mismatch",
+    }
+
+    if reason_base == "selection_state_missing":
+        ai_state = {
+            "code": "MISSING",
+            "label": "MISSING",
+            "level": "warn",
+            "detail": "AI 选股状态缺失，无法判断当前结果。",
+        }
+    elif reason_base in structural_reasons:
+        ai_state = {
+            "code": "BLOCKED",
+            "label": "BLOCKED",
+            "level": "offline",
+            "detail": "AI 选股状态存在结构性冲突，不能继续作为正式结果。",
+        }
+    elif reason_base == "selection_state_date_mismatch":
+        if selected_top_n <= 0 and research_admission == "RESEARCH_ONLY" and has_manual_override:
+            ai_state = {
+                "code": "NO_TRADABLE_SELECTION",
+                "label": "NO_TRADABLE_SELECTION",
+                "level": "warn",
+                "detail": "AI 没有生成可交易候选，但当前 live 配置被安全保留。",
+            }
+        else:
+            ai_state = {
+                "code": "STALE",
+                "label": "STALE",
+                "level": "warn",
+                "detail": "AI 结果日期不是当前要求日期，需等待新的正式结果。",
+            }
+    elif selected_top_n > 0:
+        ai_state = {
+            "code": "ACTIVE",
+            "label": "ACTIVE",
+            "level": "live",
+            "detail": "AI 已生成正式可交易候选。",
+        }
+    else:
+        ai_state = {
+            "code": "NO_TRADABLE_SELECTION",
+            "label": "NO_TRADABLE_SELECTION",
+            "level": "warn",
+            "detail": "AI 没有生成可交易候选。",
+        }
+
+    if not has_enabled_slots:
+        live_state = {
+            "code": "EMPTY",
+            "label": "EMPTY",
+            "level": "warn",
+            "detail": "当前 TOP 配置为空。",
+        }
+    elif has_manual_override and selected_top_n <= 0 and research_admission == "RESEARCH_ONLY":
+        live_state = {
+            "code": "PRESERVED_MANUAL_OVERRIDE",
+            "label": "PRESERVED_MANUAL_OVERRIDE",
+            "level": "warn",
+            "detail": "当前 live TOP 为手工覆盖保留配置。",
+        }
+    elif selection_ok and selected_top_n > 0:
+        live_state = {
+            "code": "AI_SYNCED",
+            "label": "AI_SYNCED",
+            "level": "live",
+            "detail": "当前 live TOP 已与 AI 选股结果对齐。",
+        }
+    elif reason_base in structural_reasons:
+        live_state = {
+            "code": "CONFLICT",
+            "label": "CONFLICT",
+            "level": "offline",
+            "detail": "当前 live TOP 与 AI 状态存在真实冲突。",
+        }
+    else:
+        live_state = {
+            "code": "CONFLICT",
+            "label": "CONFLICT",
+            "level": "offline",
+            "detail": "当前 live TOP 无法与 AI 状态确认一致。",
+        }
+
+    if reason_base == "selection_state_missing":
+        system_state = {
+            "code": "BROKEN",
+            "label": "BROKEN",
+            "level": "offline",
+            "detail": "AI 状态缺失，系统无法安全判断。",
+        }
+    elif reason_base in structural_reasons:
+        system_state = {
+            "code": "BROKEN",
+            "label": "BROKEN",
+            "level": "offline",
+            "detail": "AI 状态或 live TOP 存在结构性损坏。",
+        }
+    elif ai_state["code"] == "NO_TRADABLE_SELECTION" and live_state["code"] == "PRESERVED_MANUAL_OVERRIDE":
+        system_state = {
+            "code": "SAFE_HOLD",
+            "label": "SAFE_HOLD",
+            "level": "warn",
+            "detail": "AI 没有可交易候选，live 配置按手工覆盖安全保留。",
+        }
+    elif ai_state["code"] == "NO_TRADABLE_SELECTION" and live_state["code"] == "EMPTY":
+        system_state = {
+            "code": "SAFE_HOLD",
+            "label": "SAFE_HOLD",
+            "level": "warn",
+            "detail": "AI 没有可交易候选，当前 live 配置为空。",
+        }
+    elif ai_state["code"] == "STALE":
+        system_state = {
+            "code": "SAFE_HOLD",
+            "label": "SAFE_HOLD",
+            "level": "warn",
+            "detail": "AI 结果尚未更新到当前要求日期，系统保持安全等待。",
+        }
+    elif ai_state["code"] == "ACTIVE" and live_state["code"] == "AI_SYNCED":
+        system_state = {
+            "code": "OK",
+            "label": "OK",
+            "level": "live",
+            "detail": "AI 与 live 配置一致，系统状态正常。",
+        }
+    else:
+        system_state = {
+            "code": "SAFE_HOLD",
+            "label": "SAFE_HOLD",
+            "level": "warn",
+            "detail": "系统处于安全保持状态，未发现结构性损坏。",
+        }
+
+    return {
+        "ai_selection_state": ai_state,
+        "live_config_state": live_state,
+        "system_state": system_state,
+        "raw_reason": raw_reason,
+        "current_top_config_modes": [str(item.get("mode") or "").strip().lower() for item in slot_details],
+        "current_top_config_sources": [str(item.get("source") or "").strip().lower() for item in slot_details],
+        "manual_override_slots": manual_override_slots,
     }
 
 
@@ -4454,7 +4661,7 @@ HTML = """<!DOCTYPE html>
                 <h2>AI 选股结果总览</h2>
                 <p>先看正式结果和准入结论；运行编号、数据源审计等排障信息收在技术详情中。</p>
             </div>
-            <span class="pill {{ 'status-live' if selection_dashboard.sync_ok else 'status-warn' }}" id="selection-overview-sync-pill">{{ selection_dashboard.sync_summary }}</span>
+            <span class="pill {{ 'status-live' if selection_dashboard.system_state.level == 'live' else 'status-warn' if selection_dashboard.system_state.level == 'warn' else 'status-offline' }}" id="selection-overview-sync-pill">{{ selection_dashboard.system_state.label }}</span>
         </div>
         <div class="selection-overview-grid">
             <div class="selection-overview-item">
@@ -4498,7 +4705,14 @@ HTML = """<!DOCTYPE html>
             </div>
             <div class="selection-overview-item">
                 <span>TOP 同步状态</span>
-                <strong id="selection-overview-sync">{{ selection_dashboard.sync_summary }}</strong>
+                <strong id="selection-overview-sync">{{ selection_dashboard.system_state.label }}</strong>
+                <div class="selection-status">{{ selection_dashboard.system_state.detail }}</div>
+            </div>
+            <div class="selection-overview-item" style="grid-column:1 / -1" id="selection-semantic-layer">
+                <strong style="margin-top:0">状态语义分层</strong>
+                <div>AI Selection：<span class="status-{{ selection_dashboard.selection_state.level }}">{{ selection_dashboard.selection_state.label }}</span> · {{ selection_dashboard.selection_state.detail }}</div>
+                <div>Live Config：<span class="status-{{ selection_dashboard.live_config_state.level }}">{{ selection_dashboard.live_config_state.label }}</span> · {{ selection_dashboard.live_config_state.detail }}</div>
+                <div>System State：<span class="status-{{ selection_dashboard.system_state.level }}">{{ selection_dashboard.system_state.label }}</span> · {{ selection_dashboard.system_state.detail }}</div>
             </div>
         </div>
         <div class="selection-process-grid">
@@ -4511,7 +4725,7 @@ HTML = """<!DOCTYPE html>
                         <tr><th>可评分候选</th><td id="selection-process-scoring-count">{{ selection_dashboard.scoring_eligible_count }}</td></tr>
                         <tr><th>正式候选</th><td>{{ selection_dashboard.formal_candidate_count }}</td></tr>
                         <tr><th>下一验证阶段</th><td id="selection-process-next-validation">{{ selection_dashboard.next_validation_stage }}</td></tr>
-                        <tr><th>Paper / Live 新开仓</th><td id="selection-process-paper-live">{{ selection_dashboard.paper_live_status }}</td></tr>
+                        <tr><th>Paper / Live 新开仓</th><td id="selection-process-paper-live">{{ selection_dashboard.paper_live_status }}{% if selection_dashboard.paper_live_detail %} · {{ selection_dashboard.paper_live_detail }}{% endif %}</td></tr>
                         <tr><th>达到目标数量</th><td id="selection-process-target-complete">{{ format_bool(selection_dashboard.target_complete) }}</td></tr>
                         <tr><th>交易准入</th><td id="selection-process-trade-admission">{{ selection_dashboard.trade_admission }}</td></tr>
                     </tbody>
@@ -4556,8 +4770,11 @@ HTML = """<!DOCTYPE html>
                 <div>结果包版本：{{ selection_dashboard.bundle_version }}</div>
                 <div>结果包校验值：<span title="{{ selection_dashboard.bundle_hash }}">{{ truncate_identifier(selection_dashboard.bundle_hash) }}</span></div>
                 <div>结果生成时间（北京时间）：{{ selection_dashboard.generated_at }}</div>
-                <div>同步原始原因：{{ selection_dashboard.mismatch_reason }}</div>
-                <div>同步详情：{{ selection_dashboard.sync_detail }}</div>
+                <div>同步原始原因：{{ selection_dashboard.raw_reason }}</div>
+                <div>同步详情：{{ selection_dashboard.raw_detail }}</div>
+                <div>AI Selection（调试）：{{ selection_dashboard.selection_state.label }} / {{ selection_dashboard.selection_state.detail }}</div>
+                <div>Live Config（调试）：{{ selection_dashboard.live_config_state.label }} / {{ selection_dashboard.live_config_state.detail }}</div>
+                <div>System State（调试）：{{ selection_dashboard.system_state.label }} / {{ selection_dashboard.system_state.detail }}</div>
                 <div id="ai-selection-provider-attempted">已尝试数据源：{{ selection_dashboard.provider_sections.attempted or '无' }}</div>
                 <div id="ai-selection-provider-success">成功数据源：{{ selection_dashboard.provider_sections.success or '无' }}</div>
                 <div id="ai-selection-provider-failure">失败数据源：{{ selection_dashboard.provider_sections.failure or '无' }}</div>
@@ -6605,6 +6822,7 @@ HTML = """<!DOCTYPE html>
             setText('ai-selection-provider-contributor', `实际贡献数据源：${providerSections.contributor || '无'}`);
 
             const selection = payload.selection || {};
+            const selectionPresentation = selection.presentation || {};
             const formalTop = Array.isArray(aiSelection.top3) ? aiSelection.top3 : [];
             const selectedSymbols = formalTop.map((item) => item.ticker || item.symbol).filter(Boolean);
             const missingCount = Number(aiSelection.top_n_missing_count || 0);
@@ -6626,9 +6844,29 @@ HTML = """<!DOCTYPE html>
             setText('selection-overview-tradable-count', `${tradableSelectedCount} / ${tradableRequestedCount}`);
             setText('selection-overview-missing', missingCount ? `缺失 ${missingCount} 个` : '数量完整');
             const syncReason = displayReason(selection.reason);
-            const syncSummary = selection.synced ? '已同步' : `未同步：${syncReason}`;
-            setText('selection-overview-sync', syncSummary);
-            setText('selection-overview-sync-pill', syncSummary);
+            const systemState = selectionPresentation.system_state || {};
+            const aiSelectionState = selectionPresentation.ai_selection_state || {};
+            const liveConfigState = selectionPresentation.live_config_state || {};
+            const selectionStatusLabel = String(systemState.label || (selection.synced ? 'OK' : 'SAFE_HOLD'));
+            const selectionStatusDetail = String(systemState.detail || (selection.synced ? '当前状态正常。' : `原始原因：${syncReason}`));
+            setText('selection-overview-sync', selectionStatusLabel);
+            setText('selection-overview-sync-pill', selectionStatusLabel);
+            const overviewSyncNode = document.getElementById('selection-overview-sync');
+            if (overviewSyncNode) {
+                const detailNode = overviewSyncNode.nextElementSibling;
+                if (detailNode && detailNode.classList && detailNode.classList.contains('selection-status')) {
+                    detailNode.textContent = selectionStatusDetail;
+                }
+            }
+            const semanticGrid = document.getElementById('selection-semantic-layer');
+            if (semanticGrid) {
+                semanticGrid.innerHTML = `
+                    <strong style="margin-top:0">状态语义分层</strong>
+                    <div>AI Selection：<span class="status-${aiSelectionState.level || 'warn'}">${aiSelectionState.label || 'UNKNOWN'}</span> · ${aiSelectionState.detail || '暂无'}</div>
+                    <div>Live Config：<span class="status-${liveConfigState.level || 'warn'}">${liveConfigState.label || 'UNKNOWN'}</span> · ${liveConfigState.detail || '暂无'}</div>
+                    <div>System State：<span class="status-${systemState.level || 'warn'}">${systemState.label || 'UNKNOWN'}</span> · ${systemState.detail || '暂无'}</div>
+                `;
+            }
             const symbolsNode = document.getElementById('selection-overview-symbols');
             if (symbolsNode) {
                 symbolsNode.replaceChildren();
@@ -6655,7 +6893,7 @@ HTML = """<!DOCTYPE html>
                 return '0';
             })());
             setText('selection-process-next-validation', nextValidationStage ? `${nextValidationLabel || nextValidationStage}（${nextValidationStage}）` : '暂无');
-            setText('selection-process-paper-live', tradableSelectedCount > 0 ? '按交易 Gate 继续校验' : '阻断');
+            setText('selection-process-paper-live', `${systemState.label || (tradableSelectedCount > 0 ? 'OK' : 'SAFE_HOLD')}${systemState.detail ? ` · ${systemState.detail}` : ''}`);
             setText('selection-process-target-complete', displayBool(requestedCount > 0 && selectedSymbols.length >= requestedCount));
             setText('selection-process-trade-admission', displayStatus(formalTop.length ? (formalTop[0].trade_admission_status || 'NOT_TRADABLE') : 'NOT_TRADABLE'));
         } catch (error) {
@@ -6834,6 +7072,7 @@ def _api_status_payload() -> dict[str, object]:
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
     selection_sync = _selection_sync_status()
+    selection_presentation = _selection_dashboard_states(ai_selection, selection_sync)
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=None, mode=_desired_audit_mode())
     top_modes = _load_top_modes()
     top_tickers = list((selection_sync or {}).get("current_top_config_symbols") or current_top_config_symbols(limit=len(TICKERS)))
@@ -6926,6 +7165,7 @@ def _api_status_payload() -> dict[str, object]:
             "top_config_tickers": list((selection_sync or {}).get("current_top_config_symbols") or top_tickers),
             "fallback_used": fallback_used,
             "reason": str((selection_sync or {}).get("mismatch_reason") or ""),
+            "presentation": selection_presentation,
         },
         "dashboard_display_mode": mode_consistency.get("dashboard_display_mode"),
         "dashboard_execution_mode": mode_consistency.get("dashboard_execution_mode"),
