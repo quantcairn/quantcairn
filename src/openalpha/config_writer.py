@@ -245,10 +245,56 @@ def _write_yaml_atomic(path: str, payload: dict) -> None:
     os.replace(tmp_path, path)
 
 
+def _runtime_top_dir() -> str:
+    return os.path.join(BASE, "configs")
+
+
 def _top_config_dir(output_dir: str | os.PathLike[str] | None = None) -> str:
     if output_dir is None:
-        return os.path.join(BASE, "configs")
+        return _runtime_top_dir()
     return os.fspath(output_dir)
+
+
+def _is_runtime_top_dir(path: str | os.PathLike[str]) -> bool:
+    try:
+        return os.path.abspath(os.fspath(path)) == os.path.abspath(_runtime_top_dir())
+    except Exception:
+        return False
+
+
+def _top_disable_backup_dir() -> str:
+    state_dir = os.environ.get("SOXS_STATE_DIR") or os.path.join(BASE, "state")
+    return os.path.join(state_dir, "top_config_disable_backups")
+
+
+def _backup_live_top_before_disable(
+    *,
+    path: str,
+    slot: int,
+    config: dict,
+    generated_at: str,
+    selection_run_id: str,
+) -> None:
+    backup_dir = _top_disable_backup_dir()
+    os.makedirs(backup_dir, exist_ok=True)
+    timestamp = datetime.now().isoformat()
+    selection_metadata = config.get("selection") if isinstance(config.get("selection"), dict) else {}
+    backup = {
+        "timestamp": timestamp,
+        "slot": int(slot),
+        "slot_name": f"TOP{slot}.yaml",
+        "original_path": path,
+        "original_symbol": str(config.get("ticker") or ""),
+        "original_mode": str(config.get("mode") or ""),
+        "original_selection_metadata": dict(selection_metadata),
+        "disable_generated_at": str(generated_at or ""),
+        "disable_selection_run_id": str(selection_run_id or ""),
+        "runtime_loadable": False,
+        "original_config": dict(config),
+    }
+    safe_timestamp = "".join(ch if ch.isalnum() else "-" for ch in timestamp)
+    backup_path = os.path.join(backup_dir, f"{safe_timestamp}_TOP{slot}_{uuid.uuid4().hex[:8]}.yaml")
+    _write_yaml_atomic(backup_path, backup)
 
 
 def write_top_configs(
@@ -291,10 +337,24 @@ def write_top_configs(
     writes: list[tuple[str, dict]] = []
 
     top_dir = _top_config_dir(output_dir)
+    runtime_top_dir = _is_runtime_top_dir(top_dir)
+    formally_empty_selection = len(items) == 0
     for i in range(1, slot_count + 1):
         path = os.path.join(top_dir, f"TOP{i}.yaml")
+        existing_config = _load_yaml_file(path)
+        existing_mode = str(existing_config.get("mode") or "").strip().lower()
+        existing_ticker = str(existing_config.get("ticker") or "").strip().upper()
         if i <= len(items):
             item = items[i - 1]
+            new_ticker = str(item.get("ticker") or "").strip().upper()
+            if runtime_top_dir and existing_mode == "live" and existing_ticker:
+                logger.warning(
+                    "Skipping TOP%d selector write: existing live config %s preserved over selector symbol %s",
+                    i,
+                    existing_ticker,
+                    new_ticker or "UNKNOWN",
+                )
+                continue
             support = float(item.get("range_low") or 0.0)
             resistance = float(item.get("range_high") or 0.0)
             if support <= 0 or resistance <= support:
@@ -479,14 +539,20 @@ def write_top_configs(
                     },
                 }
         else:
-            # Preserve existing live TOP configs — never overwrite them with
-            # disabled slots when the AI selector has zero tradable candidates.
-            if _existing_mode_is_live(i):
+            if runtime_top_dir and existing_mode == "live" and existing_ticker and not formally_empty_selection:
                 logger.warning(
                     "Skipping TOP%d disabled write: existing live config preserved",
                     i,
                 )
                 continue
+            if runtime_top_dir and existing_mode == "live" and existing_ticker and formally_empty_selection:
+                _backup_live_top_before_disable(
+                    path=path,
+                    slot=i,
+                    config=existing_config,
+                    generated_at=generated_at,
+                    selection_run_id=selection_run_id,
+                )
             payload = _slot_disabled_payload(
                 slot=i,
                 requested_top_n=slot_count,

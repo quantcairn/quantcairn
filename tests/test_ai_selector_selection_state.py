@@ -11,7 +11,7 @@ def test_selection_state_verifies_same_day_top_configs(tmp_path, monkeypatch):
     configs_dir = tmp_path / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
     for idx in range(1, 4):
-        payload = {"enabled": False, "slot": idx, "reason": "top_n_not_filled", "selection_run_id": "run-1", "selection_date": "2026-07-02", "generated_at": "2026-07-02T08:30:00-04:00"}
+        payload = {"enabled": False, "slot": idx, "reason": "top_n_not_filled", "selection_run_id": "run-1", "selection_date": "2026-07-02", "generated_at": "2026-07-02T08:30:00-04:00", "mode": "paper"}
         if idx == 1:
             payload.update({"enabled": True, "ticker": "SOFI", "mode": "live", "reason": "selected"})
         (configs_dir / f"TOP{idx}.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
@@ -52,7 +52,7 @@ def test_selection_state_detects_top_config_mismatch(tmp_path, monkeypatch):
     configs_dir = tmp_path / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
     for idx in range(1, 4):
-        payload = {"enabled": False, "slot": idx, "reason": "top_n_not_filled", "selection_run_id": "run-1", "selection_date": "2026-07-02", "generated_at": "2026-07-02T08:30:00-04:00"}
+        payload = {"enabled": False, "slot": idx, "reason": "top_n_not_filled", "selection_run_id": "run-1", "selection_date": "2026-07-02", "generated_at": "2026-07-02T08:30:00-04:00", "mode": "paper"}
         if idx == 1:
             payload.update({"enabled": True, "ticker": "NVDA", "mode": "live", "reason": "selected"})
         (configs_dir / f"TOP{idx}.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

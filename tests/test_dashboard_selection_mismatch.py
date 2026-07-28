@@ -106,9 +106,9 @@ def test_selection_match_does_not_show_mismatch(monkeypatch):
         project_dir = Path(tmp)
         for folder in ("configs", "reports", "logs", "state", "runtime"):
             (project_dir / folder).mkdir()
-        (project_dir / "configs" / "TOP1.yaml").write_text("ticker: AAPL\nmode: paper\n", encoding="utf-8")
-        (project_dir / "configs" / "TOP2.yaml").write_text("ticker: SOFI\nmode: paper\n", encoding="utf-8")
-        (project_dir / "configs" / "TOP3.yaml").write_text("ticker: DRIP\nmode: paper\n", encoding="utf-8")
+        (project_dir / "configs" / "TOP1.yaml").write_text("enabled: true\nticker: AAPL\nmode: paper\nselection_date: '2026-07-09'\n", encoding="utf-8")
+        (project_dir / "configs" / "TOP2.yaml").write_text("enabled: true\nticker: SOFI\nmode: paper\nselection_date: '2026-07-09'\n", encoding="utf-8")
+        (project_dir / "configs" / "TOP3.yaml").write_text("enabled: true\nticker: DRIP\nmode: paper\nselection_date: '2026-07-09'\n", encoding="utf-8")
 
         monkeypatch.setattr(selection_state, "PROJECT_DIR", project_dir)
         monkeypatch.setenv("SOXS_STATE_DIR", str(project_dir / "state"))

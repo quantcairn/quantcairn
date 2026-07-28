@@ -691,6 +691,18 @@ def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
     return errors
 
 
+def _top_sync_audit_summary(sync_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "top_sync_status": str(sync_result.get("top_sync_status") or ""),
+        "top_sync_error": str(sync_result.get("top_sync_error") or ""),
+        "mismatches": list(sync_result.get("mismatches") or []),
+        "expected_symbols": list(sync_result.get("expected_symbols") or []),
+        "actual_symbols": list(sync_result.get("actual_symbols") or []),
+        "selection_date": str(sync_result.get("selection_date") or ""),
+        "selection_run_id": str(sync_result.get("selection_run_id") or ""),
+    }
+
+
 def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
     """Atomically persist the selector bundle.
 
@@ -834,6 +846,61 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
             selection_bundle_hash=bundle.selection_bundle_hash,
             selection_bundle_version=bundle.bundle_version,
         )
+        sync_result = selection_state.validate_top_config_sync(
+            selected_symbols=list(bundle.selected_symbols),
+            selection_date=bundle.selection_date,
+            selection_run_id=bundle.selection_run_id,
+            top_items=list(bundle.top_items or []),
+            limit=bundle.slot_count,
+        )
+        if str(sync_result.get("top_sync_status") or "OK").upper() != "OK":
+            bundle.top_sync_status = "NOT_OK"
+            bundle.top_sync_error = str(sync_result.get("top_sync_error") or "top_config_sync_mismatch")
+            report_payload = bundle.report_payload()
+            state_payload = bundle.state_payload()
+            audit_payload = bundle.audit_payload()
+            audit_payload["top_sync_validation"] = _top_sync_audit_summary(sync_result)
+            manifest_payload = bundle.manifest_payload(bundle_root=bundle_root)
+            _write_json_atomic(bundle_root / "ai_selection_report.json", report_payload)
+            _write_json_atomic(bundle_root / "ai_selection_state.json", state_payload)
+            _write_json_atomic(bundle_root / "selection_sync_audit.json", audit_payload)
+            _write_json_atomic(bundle_root / "bundle_metadata.json", manifest_payload)
+            _write_json_atomic(manifest_path, manifest_payload)
+            _write_json_atomic(latest_report_path, report_payload)
+            _write_json_atomic(dated_report_path, report_payload)
+            selection_state.write_selection_state(
+                et_date=str(state_payload.get("et_date") or bundle.selection_date),
+                generated_at=str(state_payload.get("generated_at") or bundle.generated_at),
+                selected_symbols=list(state_payload.get("selected_symbols") or []),
+                report_path=_relative_path(latest_report_path),
+                selection_stage=str(state_payload.get("selection_stage") or bundle.selection_stage),
+                processing_phase=str(state_payload.get("processing_phase") or bundle.processing_phase),
+                selection_run_id=bundle.selection_run_id,
+                top_sync_run_id=bundle.selection_run_id,
+                top_sync_status=bundle.top_sync_status,
+                top_sync_error=bundle.top_sync_error,
+                selection_symbols=list(state_payload.get("selection_symbols") or []),
+                configured_top_symbols=list(state_payload.get("configured_top_symbols") or []),
+                disabled_slots=list(state_payload.get("disabled_slots") or []),
+                synced_at=str(state_payload.get("synced_at") or bundle.generated_at),
+                result_quality=str(state_payload.get("result_quality") or bundle.result_quality),
+                research_admission=str(state_payload.get("research_admission") or bundle.research_admission),
+                selection_bundle_manifest_path=manifest_reference,
+                selection_bundle_hash=bundle.selection_bundle_hash,
+                selection_bundle_version=bundle.bundle_version,
+                selection_bundle_root_path=_relative_path(bundle_root),
+                selection_bundle_report_path=_relative_path(bundle_root / "ai_selection_report.json"),
+                selection_bundle_state_path=_relative_path(bundle_root / "ai_selection_state.json"),
+                selection_bundle_audit_path=_relative_path(bundle_root / "selection_sync_audit.json"),
+                requested_top_n=int(state_payload.get("requested_top_n") or bundle.slot_count),
+                selected_top_n=int(state_payload.get("selected_top_n") or bundle.selected_top_n),
+                top_slot_count=int(state_payload.get("top_slot_count") or bundle.slot_count),
+                enabled_slots=list(state_payload.get("enabled_slots") or bundle.enabled_slots),
+                research_requested_top_n=int(state_payload.get("research_requested_top_n") or bundle.requested_top_n or bundle.slot_count),
+                research_selected_top_n=int(state_payload.get("research_selected_top_n") or 0),
+                tradable_requested_top_n=int(state_payload.get("tradable_requested_top_n") or bundle.requested_top_n or bundle.slot_count),
+                tradable_selected_top_n=int(state_payload.get("tradable_selected_top_n") or state_payload.get("selected_top_n") or bundle.selected_top_n),
+            )
         _write_json_atomic(audit_path, audit_payload)
     except Exception:
         _restore_backups(backups)

@@ -363,6 +363,26 @@
 | 17 | Public Hardening Release v0.12.2 | 2026-07-26 | `.ai/CLAUDE.md`, `.gitignore` |
 | 18 | Repository Boundary Formalization v0.12.3 | 2026-07-26 | `.ai/REPOSITORY_BOUNDARY.md` |
 
+## 2026-07-28 — TOP Config Empty-Selection Sync Safety
+
+- Existing live TOP runtime configs are not overwritten by selector output.
+- Approved exception: when the formal selector result is empty (`selected_symbols == []`), stale live TOP runtime configs may be overwritten only into the existing disabled schema.
+- Before that disable transition, the previous live TOP config is preserved under `state/top_config_disable_backups/` for audit/history only.
+- `top_sync_status` is `OK` only when the selection bundle state matches the consumed runtime TOP config files; mismatches are published as `NOT_OK`.
+
+## 2026-07-28 — Final Selection Funnel Reporting
+
+- `FORMAL_TOP` remains the selector-stage research/formal candidate output and is no longer treated as the implicit terminal reporting stage.
+- `POST_FILTER` records existing final post-processing removals, using current rejection and formal eligibility reason helpers without changing eligibility decisions.
+- `FINAL_SELECTED` records the exact executable selected-symbol list consumed by selection bundle/TOP config publication and mirrored by `final_selected_symbols`.
+- The stages are additive; existing fields such as `formal_candidates`, `research_top_candidates`, `tradable_top_candidates`, `final_selected_symbols`, and `selection_funnel.stages` remain present.
+
+## 2026-07-28 — PaperBroker Persistence Rollback Exception
+
+- Temporary one-time safety exception approved for this task only to modify `src/broker/paper_broker.py`.
+- PaperBroker order execution now snapshots in-memory broker state and restores it if portfolio-state persistence fails, preventing partial cash/position/trade-history mutation.
+- The scope is limited to transactional rollback on persistence failure; fill logic, pricing, commissions, slippage, strategy behavior, and risk management remain unchanged.
+
 | # | Decision | Date | Key File |
 |---|---|---|---|
 | 1 | 9-stage pipeline with invariant | 2026-07 | `funnel_tracker.py` |

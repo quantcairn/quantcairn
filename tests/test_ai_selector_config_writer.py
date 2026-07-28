@@ -25,7 +25,7 @@ class SimpleMonkeyPatch:
             setattr(module, attr_name, original)
 
 
-def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypatch):
+def test_config_writer_preserves_existing_live_top_without_selector_overwrite(tmp_path, monkeypatch):
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
@@ -90,20 +90,10 @@ def test_config_writer_preserves_live_mode_and_enabled_broker(tmp_path, monkeypa
     updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
     assert updated["mode"] == "live"
     assert updated["broker"]["longbridge"]["enabled"] is True
-    assert updated["ticker"] == "NVDA"
-    assert updated["range"]["mode"] == "auto"
-    assert updated["range"]["support_price"] is None
-    assert updated["range"]["resistance_price"] is None
-    assert updated["position"]["initial_capital"] == 700.0
-    assert updated["selection"]["score"] == 90.1
-    assert updated["selection"]["ai_score"] == 91.5
-    assert updated["selection"]["range_score"] == 88.0
-    assert updated["selection"]["final_score"] == 90.1
-    assert updated["selection"]["confidence"] == 0.77
-    assert updated["selection"]["trade_filter_passed"] is True
-    assert updated["selection"]["reject_reason"] == ""
-    assert updated["selection"]["fallback_used"] is False
-    assert updated["selection"]["reason"] == "protected live position"
+    assert updated["ticker"] == "OLD"
+    assert updated["range"]["support_price"] == 10
+    assert updated["range"]["resistance_price"] == 12
+    assert updated["position"]["initial_capital"] == 1000
     updated5 = yaml.safe_load((configs_dir / "TOP5.yaml").read_text(encoding="utf-8"))
     assert updated5["ticker"] == "AMZN"
 
@@ -417,8 +407,8 @@ def test_config_writer_defaults_portfolio_when_missing(tmp_path, monkeypatch):
     assert updated["portfolio"]["leveraged_etf_max_group_exposure"] == 0.50
 
 
-def test_live_top_preserved_when_no_candidates(tmp_path, monkeypatch):
-    """Live TOP config must NOT be overwritten by disabled slot when 0 candidates."""
+def test_live_top_disabled_with_backup_when_no_candidates(tmp_path, monkeypatch):
+    """Empty selector output disables stale live TOP config and preserves an audit snapshot."""
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
@@ -441,16 +431,29 @@ def test_live_top_preserved_when_no_candidates(tmp_path, monkeypatch):
     }
     (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
 
-    # Zero candidates → disabled-slot path
-    write_top_configs([])
+    write_top_configs(
+        [],
+        selection_run_id="run-empty",
+        selection_date="2026-07-22",
+        generated_at="2026-07-22T09:00:00-04:00",
+    )
 
     updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
-    assert updated["mode"] == "live"
-    assert updated["ticker"] == "SOXS"
+    assert updated["enabled"] is False
+    assert updated["ticker"] is None
+    assert updated["mode"] == "paper"
+    assert updated["selection_date"] == "2026-07-22"
+    assert updated["broker"]["longbridge"]["enabled"] is False
     assert updated["broker"]["longbridge"]["allow_live_order"] is False
-    assert updated["broker"]["longbridge"]["reduce_only"] is True
-    assert updated["broker"]["longbridge"]["environment"] == "prod"
-    assert updated["broker"]["longbridge"]["account_type"] == "live"
+
+    backups = list((repo_root / "state" / "top_config_disable_backups").glob("*.yaml"))
+    assert len(backups) == 1
+    backup = yaml.safe_load(backups[0].read_text(encoding="utf-8"))
+    assert backup["slot_name"] == "TOP1.yaml"
+    assert backup["original_symbol"] == "SOXS"
+    assert backup["original_mode"] == "live"
+    assert backup["original_selection_metadata"] == existing["selection"]
+    assert backup["original_config"]["ticker"] == "SOXS"
 
 
 def test_paper_top_normal_disabled_write_when_no_candidates(tmp_path, monkeypatch):
@@ -534,7 +537,7 @@ def test_existing_mode_is_live_returns_false_for_paper():
 
 
 def test_live_top_allows_candidate_write(tmp_path, monkeypatch):
-    """Live TOP with candidates present: normal write still works."""
+    """Live TOP with candidates present is not replaced by selector output."""
     repo_root = tmp_path
     configs_dir = repo_root / "configs"
     configs_dir.mkdir()
@@ -547,7 +550,6 @@ def test_live_top_allows_candidate_write(tmp_path, monkeypatch):
     }
     (configs_dir / "TOP1.yaml").write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
 
-    # Has candidates → normal write path
     write_top_configs([{
         "ticker": "SOXS",
         "range_low": 20.0,
@@ -557,9 +559,8 @@ def test_live_top_allows_candidate_write(tmp_path, monkeypatch):
     }])
 
     updated = yaml.safe_load((configs_dir / "TOP1.yaml").read_text(encoding="utf-8"))
-    # Normal write: preserves mode but updates ticker
     assert updated["mode"] == "live"
-    assert updated["ticker"] == "SOXS"
+    assert updated["ticker"] == "OLD_SYMBOL"
 
 
 def run_test_direct():

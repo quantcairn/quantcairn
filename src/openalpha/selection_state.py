@@ -46,6 +46,15 @@ def _read_top_config(path: Path) -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
 
+def _normalized_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _nested_selection(config: dict[str, Any]) -> dict[str, Any]:
+    selection = config.get("selection")
+    return selection if isinstance(selection, dict) else {}
+
+
 def _normalize_path_value(value: str | None) -> str:
     if not value:
         return ""
@@ -73,10 +82,23 @@ def current_top_config_slots(limit: int | None = None) -> list[dict[str, Any]]:
         path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
         exists = path.exists()
         config = _read_top_config(path) if exists else {}
+        selection = _nested_selection(config)
         enabled_raw = config.get("enabled")
         enabled = bool(True if enabled_raw is None else enabled_raw)
-        ticker = str(config.get("ticker") or "").strip().upper()
+        ticker = _normalized_symbol(config.get("ticker"))
         reason = str(config.get("reason") or "").strip()
+        mode = str(config.get("mode") or "").strip().lower()
+        selection_date = str(config.get("selection_date") or "").strip()
+        nested_selection_date = str(selection.get("selection_date") or "").strip()
+        nested_symbol = _normalized_symbol(selection.get("symbol") or selection.get("ticker"))
+        nested_mode = str(selection.get("mode") or "").strip().lower()
+        metadata_mismatches: list[str] = []
+        if selection_date and nested_selection_date and selection_date != nested_selection_date:
+            metadata_mismatches.append("nested_selection_date_mismatch")
+        if ticker and nested_symbol and ticker != nested_symbol:
+            metadata_mismatches.append("nested_symbol_mismatch")
+        if mode and nested_mode and mode != nested_mode:
+            metadata_mismatches.append("nested_mode_mismatch")
         slots.append(
             {
                 "slot": index,
@@ -84,10 +106,15 @@ def current_top_config_slots(limit: int | None = None) -> list[dict[str, Any]]:
                 "exists": exists,
                 "enabled": enabled and bool(ticker),
                 "ticker": ticker,
+                "mode": mode,
                 "reason": reason,
                 "selection_run_id": str(config.get("selection_run_id") or ""),
                 "top_sync_run_id": str(config.get("top_sync_run_id") or config.get("selection_run_id") or ""),
-                "selection_date": str(config.get("selection_date") or ""),
+                "selection_date": selection_date,
+                "nested_selection_date": nested_selection_date,
+                "nested_symbol": nested_symbol,
+                "nested_mode": nested_mode,
+                "selection_metadata_mismatches": metadata_mismatches,
                 "generated_at": str(config.get("generated_at") or ""),
                 "result_quality": str(config.get("result_quality") or ""),
                 "research_admission": str(config.get("research_admission") or ""),
@@ -152,6 +179,97 @@ def current_top_config_symbols(limit: int | None = None) -> list[str]:
         if slot.get("enabled") and slot.get("ticker"):
             symbols.append(str(slot.get("ticker") or "").strip().upper())
     return symbols
+
+
+def validate_top_config_sync(
+    *,
+    selected_symbols: list[str] | None = None,
+    selection_date: str | None = None,
+    selection_run_id: str | None = None,
+    top_items: list[dict[str, Any]] | None = None,
+    state: dict[str, Any] | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    state_payload = dict(state or {}) if isinstance(state, dict) else {}
+    expected_symbols = [
+        _normalized_symbol(item)
+        for item in (
+            selected_symbols
+            if selected_symbols is not None
+            else state_payload.get("selected_symbols") or state_payload.get("selection_symbols") or []
+        )
+        if _normalized_symbol(item)
+    ]
+    expected_date = str(selection_date or state_payload.get("et_date") or state_payload.get("selection_date") or "").strip()
+    expected_run_id = str(selection_run_id or state_payload.get("selection_run_id") or "").strip()
+    items = [dict(item or {}) for item in list(top_items or [])]
+    expected_modes: list[str] = []
+    for item in items:
+        expected_modes.append(str(item.get("mode") or "").strip().lower())
+    slot_limit = _top_slot_limit(limit or max(configured_top_count(), len(expected_symbols), len(items)))
+    slots = current_top_config_slots(limit=slot_limit)
+    mismatches: list[str] = []
+
+    for slot in slots:
+        index = int(slot.get("slot") or 0)
+        label = f"TOP{index}"
+        expected_enabled = index <= len(expected_symbols)
+        expected_symbol = expected_symbols[index - 1] if expected_enabled else ""
+        actual_enabled = bool(slot.get("enabled"))
+        actual_symbol = _normalized_symbol(slot.get("ticker"))
+        actual_mode = str(slot.get("mode") or "").strip().lower()
+        actual_date = str(slot.get("selection_date") or "").strip()
+        nested_date = str(slot.get("nested_selection_date") or "").strip()
+        nested_symbol = _normalized_symbol(slot.get("nested_symbol"))
+        nested_mode = str(slot.get("nested_mode") or "").strip().lower()
+
+        if not slot.get("exists"):
+            mismatches.append(f"{label}:missing")
+            continue
+        if actual_enabled != expected_enabled:
+            mismatches.append(f"{label}:enabled_state_mismatch:expected={expected_enabled}:actual={actual_enabled}")
+        if expected_enabled and actual_symbol != expected_symbol:
+            mismatches.append(f"{label}:symbol_mismatch:expected={expected_symbol}:actual={actual_symbol or 'NONE'}")
+        if not expected_enabled and actual_symbol:
+            mismatches.append(f"{label}:stale_symbol:{actual_symbol}")
+        if expected_date and actual_date != expected_date:
+            mismatches.append(f"{label}:selection_date_mismatch:expected={expected_date}:actual={actual_date or 'missing'}")
+        if expected_date and nested_date and nested_date != expected_date:
+            mismatches.append(f"{label}:nested_selection_date_mismatch:expected={expected_date}:actual={nested_date}")
+        if expected_enabled and nested_symbol and nested_symbol != expected_symbol:
+            mismatches.append(f"{label}:nested_symbol_mismatch:expected={expected_symbol}:actual={nested_symbol}")
+        if not expected_enabled and nested_symbol:
+            mismatches.append(f"{label}:nested_stale_symbol:{nested_symbol}")
+        expected_mode = expected_modes[index - 1] if expected_enabled and index <= len(expected_modes) else ""
+        if expected_enabled and expected_mode and actual_mode != expected_mode:
+            mismatches.append(f"{label}:mode_mismatch:expected={expected_mode}:actual={actual_mode or 'missing'}")
+        if not expected_enabled and actual_mode != "paper":
+            mismatches.append(f"{label}:disabled_mode_mismatch:expected=paper:actual={actual_mode or 'missing'}")
+        if nested_mode and actual_mode and nested_mode != actual_mode:
+            mismatches.append(f"{label}:nested_mode_mismatch:expected={actual_mode}:actual={nested_mode}")
+        if expected_run_id:
+            actual_run_id = str(slot.get("selection_run_id") or "").strip()
+            if actual_run_id != expected_run_id:
+                mismatches.append(f"{label}:selection_run_id_mismatch:expected={expected_run_id}:actual={actual_run_id or 'missing'}")
+        for metadata_mismatch in slot.get("selection_metadata_mismatches") or []:
+            mismatches.append(f"{label}:{metadata_mismatch}")
+
+    deduped_mismatches = list(dict.fromkeys(mismatches))
+    return {
+        "ok": not deduped_mismatches,
+        "top_sync_status": "OK" if not deduped_mismatches else "NOT_OK",
+        "top_sync_error": "" if not deduped_mismatches else ",".join(deduped_mismatches),
+        "mismatches": deduped_mismatches,
+        "expected_symbols": expected_symbols,
+        "actual_symbols": [
+            _normalized_symbol(slot.get("ticker"))
+            for slot in slots
+            if slot.get("enabled") and _normalized_symbol(slot.get("ticker"))
+        ],
+        "selection_date": expected_date,
+        "selection_run_id": expected_run_id,
+        "slots": slots,
+    }
 
 
 def has_live_top_configs(limit: int | None = None) -> bool:
@@ -350,6 +468,24 @@ def verify_selection_state(
         return False, "top_config_symbols_mismatch", state
     if state_disabled_slots and state_disabled_slots != disabled_slots:
         return False, "disabled_slot_mismatch", state
+    sync_result = validate_top_config_sync(
+        selected_symbols=expected_selected,
+        selection_date=state_date,
+        selection_run_id=str(state.get("selection_run_id") or ""),
+        state=state,
+        limit=len(slots),
+    )
+    state["top_sync_validation"] = {
+        "top_sync_status": str(sync_result.get("top_sync_status") or ""),
+        "top_sync_error": str(sync_result.get("top_sync_error") or ""),
+        "mismatches": list(sync_result.get("mismatches") or []),
+        "expected_symbols": list(sync_result.get("expected_symbols") or []),
+        "actual_symbols": list(sync_result.get("actual_symbols") or []),
+    }
+    if str(sync_result.get("top_sync_status") or "OK").upper() != "OK":
+        state["top_sync_status"] = "NOT_OK"
+        state["top_sync_error"] = str(sync_result.get("top_sync_error") or "top_config_sync_mismatch")
+        return False, "top_config_sync_mismatch", state
     state_result_quality = str(state.get("result_quality") or "").strip().upper()
     actual_result_quality = str(state.get("current_top_config_result_quality") or "").strip().upper()
     if state_result_quality and actual_result_quality and state_result_quality != actual_result_quality:
