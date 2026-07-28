@@ -70,9 +70,15 @@ def _neutral_candidate_snapshot(symbol: str, session) -> dict[str, Any]:
         "quote_fetch_status": "UNAVAILABLE",
         "quote_fetch_error_code": None,
         "quote_fetch_error_message": None,
+        "quote_provider_used": "UNAVAILABLE",
+        "quote_retry_count": 0,
         "ohlcv_fetch_status": "UNAVAILABLE",
         "ohlcv_fetch_error_code": None,
         "ohlcv_fetch_error_message": None,
+        "ohlcv_provider_used": "UNAVAILABLE",
+        "ohlcv_retry_count": 0,
+        "history_provider_used": "UNAVAILABLE",
+        "history_retry_count": 0,
         "cache_status": "COMPLETE",
         "cache_error_message": None,
         "current_price": None,
@@ -93,9 +99,13 @@ def _neutral_candidate_snapshot(symbol: str, session) -> dict[str, Any]:
         "benchmark_quote_fetch_status": {},
         "benchmark_quote_error_code": {},
         "benchmark_quote_error_message": {},
+        "benchmark_quote_provider_used": {},
+        "benchmark_quote_retry_count": {},
         "benchmark_ohlcv_fetch_status": {},
         "benchmark_ohlcv_error_code": {},
         "benchmark_ohlcv_error_message": {},
+        "benchmark_ohlcv_provider_used": {},
+        "benchmark_ohlcv_retry_count": {},
         "benchmark_alignment_status": "VALID",
         "benchmark_status": "VALID",
         "quote_status": "MISSING",
@@ -376,10 +386,14 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
     daily = _completed_daily_candles(daily, previous_completed_session)
     quote_fetch_status = str(getattr(fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
     quote_fetch_error_code = getattr(fetcher, "_last_quote_error_code", None)
-    quote_fetch_error_message = getattr(fetcher, "_last_quote_fetch_error_message", None)
+    quote_fetch_error_message = getattr(fetcher, "_last_quote_error_message", None)
+    quote_provider_used = str(getattr(fetcher, "_last_quote_provider", "UNAVAILABLE") or "UNAVAILABLE").upper()
+    quote_retry_count = int(getattr(fetcher, "_last_quote_retry_count", 0) or 0)
     ohlcv_fetch_status = str(getattr(fetcher, "_last_history_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
     ohlcv_fetch_error_code = getattr(fetcher, "_last_history_error_code", None)
     ohlcv_fetch_error_message = getattr(fetcher, "_last_history_error_message", None)
+    ohlcv_provider_used = str(getattr(fetcher, "_last_history_provider", "UNAVAILABLE") or "UNAVAILABLE").upper()
+    ohlcv_retry_count = int(getattr(fetcher, "_last_history_retry_count", 0) or 0)
     cache_status = str(getattr(fetcher, "_cache_status", "COMPLETE") or "COMPLETE").upper()
     cache_error_message = getattr(fetcher, "_cache_error_message", None)
     market_cap = _market_cap_from_fetcher(fetcher)
@@ -438,9 +452,13 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
     benchmark_quote_fetch_status: dict[str, str] = {}
     benchmark_quote_error_code: dict[str, str | None] = {}
     benchmark_quote_error_message: dict[str, str | None] = {}
+    benchmark_quote_provider_used: dict[str, str] = {}
+    benchmark_quote_retry_count: dict[str, int] = {}
     benchmark_ohlcv_fetch_status: dict[str, str] = {}
     benchmark_ohlcv_error_code: dict[str, str | None] = {}
     benchmark_ohlcv_error_message: dict[str, str | None] = {}
+    benchmark_ohlcv_provider_used: dict[str, str] = {}
+    benchmark_ohlcv_retry_count: dict[str, int] = {}
     benchmark_alignment_ok = bool(benchmark_symbols)
     for benchmark_symbol in benchmark_symbols:
         bench_fetcher = PriceFetcher(benchmark_symbol, poll_interval=0)
@@ -458,9 +476,13 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         benchmark_quote_fetch_status[benchmark_symbol] = str(getattr(bench_fetcher, "_last_quote_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
         benchmark_quote_error_code[benchmark_symbol] = getattr(bench_fetcher, "_last_quote_error_code", None)
         benchmark_quote_error_message[benchmark_symbol] = getattr(bench_fetcher, "_last_quote_error_message", None)
+        benchmark_quote_provider_used[benchmark_symbol] = str(getattr(bench_fetcher, "_last_quote_provider", "UNAVAILABLE") or "UNAVAILABLE").upper()
+        benchmark_quote_retry_count[benchmark_symbol] = int(getattr(bench_fetcher, "_last_quote_retry_count", 0) or 0)
         benchmark_ohlcv_fetch_status[benchmark_symbol] = str(getattr(bench_fetcher, "_last_history_fetch_status", "UNAVAILABLE") or "UNAVAILABLE").upper()
         benchmark_ohlcv_error_code[benchmark_symbol] = getattr(bench_fetcher, "_last_history_error_code", None)
         benchmark_ohlcv_error_message[benchmark_symbol] = getattr(bench_fetcher, "_last_history_error_message", None)
+        benchmark_ohlcv_provider_used[benchmark_symbol] = str(getattr(bench_fetcher, "_last_history_provider", "UNAVAILABLE") or "UNAVAILABLE").upper()
+        benchmark_ohlcv_retry_count[benchmark_symbol] = int(getattr(bench_fetcher, "_last_history_retry_count", 0) or 0)
         _close_fetcher(bench_fetcher)
         bench_as_of = _last_daily_as_of(bench_daily)
         benchmark_data_as_of[benchmark_symbol] = bench_as_of
@@ -628,9 +650,15 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         "quote_fetch_status": quote_fetch_status,
         "quote_fetch_error_code": quote_fetch_error_code,
         "quote_fetch_error_message": quote_fetch_error_message,
+        "quote_provider_used": quote_provider_used,
+        "quote_retry_count": quote_retry_count,
         "ohlcv_fetch_status": ohlcv_fetch_status,
         "ohlcv_fetch_error_code": ohlcv_fetch_error_code,
         "ohlcv_fetch_error_message": ohlcv_fetch_error_message,
+        "ohlcv_provider_used": ohlcv_provider_used,
+        "ohlcv_retry_count": ohlcv_retry_count,
+        "history_provider_used": ohlcv_provider_used,
+        "history_retry_count": ohlcv_retry_count,
         "cache_status": cache_status,
         "cache_error_message": cache_error_message,
         "current_price": current_price,
@@ -651,9 +679,13 @@ def build_candidate_market_snapshot(symbol: str, *, now_et: datetime | None = No
         "benchmark_quote_fetch_status": benchmark_quote_fetch_status,
         "benchmark_quote_error_code": benchmark_quote_error_code,
         "benchmark_quote_error_message": benchmark_quote_error_message,
+        "benchmark_quote_provider_used": benchmark_quote_provider_used,
+        "benchmark_quote_retry_count": benchmark_quote_retry_count,
         "benchmark_ohlcv_fetch_status": benchmark_ohlcv_fetch_status,
         "benchmark_ohlcv_error_code": benchmark_ohlcv_error_code,
         "benchmark_ohlcv_error_message": benchmark_ohlcv_error_message,
+        "benchmark_ohlcv_provider_used": benchmark_ohlcv_provider_used,
+        "benchmark_ohlcv_retry_count": benchmark_ohlcv_retry_count,
         "benchmark_alignment_status": benchmark_status,
         "benchmark_status": benchmark_status,
         "quote_status": quote_status,

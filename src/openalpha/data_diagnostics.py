@@ -11,13 +11,18 @@ Never modifies scoring or selection logic.  Only reads existing data.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 from src.config.runtime_values import get_runtime_env
 from src.data.fetcher import PriceFetcher, _provider_ticker
+from src.openalpha.data_quality import evaluate_candidate_data_quality, normalize_candidate_quality_state
+from src.openalpha.market_context import build_candidate_market_snapshot
+from src.openalpha.selection_report import normalize_provider_audit
 from src.openalpha.universe_filter import (
     UniverseEvaluation,
     evaluate_universe_candidate,
@@ -27,6 +32,354 @@ from src.openalpha.universe_filter import (
 logger = logging.getLogger(__name__)
 
 MIN_HISTORY_ROWS = 60
+
+
+@dataclass(frozen=True, slots=True)
+class MarketDataAudit:
+    symbol: str
+    provider_attempts: tuple[dict[str, Any], ...]
+    provider_used: str
+    cache_status: str
+    quote_status: str
+    ohlcv_status: str
+    history_status: str
+    benchmark_status: str
+    first_failure_node: str
+    normalized_failure_reason: str
+    retry_count: int
+    formal_data_ready: bool
+    record_completeness: str = ""
+    market_data_sufficiency: str = ""
+    research_evidence_status: str = ""
+    formal_scoring_eligibility: bool = False
+    data_status: str = ""
+    freshness_status: str = ""
+    quote_fetch_status: str = ""
+    ohlcv_fetch_status: str = ""
+    benchmark_alignment_status: str = ""
+    notes: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "provider_attempts": [dict(item) for item in self.provider_attempts],
+            "provider_used": self.provider_used,
+            "cache_status": self.cache_status,
+            "quote_status": self.quote_status,
+            "ohlcv_status": self.ohlcv_status,
+            "history_status": self.history_status,
+            "benchmark_status": self.benchmark_status,
+            "first_failure_node": self.first_failure_node,
+            "normalized_failure_reason": self.normalized_failure_reason,
+            "retry_count": self.retry_count,
+            "formal_data_ready": self.formal_data_ready,
+            "record_completeness": self.record_completeness,
+            "market_data_sufficiency": self.market_data_sufficiency,
+            "research_evidence_status": self.research_evidence_status,
+            "formal_scoring_eligibility": self.formal_scoring_eligibility,
+            "data_status": self.data_status,
+            "freshness_status": self.freshness_status,
+            "quote_fetch_status": self.quote_fetch_status,
+            "ohlcv_fetch_status": self.ohlcv_fetch_status,
+            "benchmark_alignment_status": self.benchmark_alignment_status,
+            "notes": list(self.notes),
+        }
+
+
+_AUDIT_REASON_ALIASES: dict[str, str] = {
+    "CACHE_ERROR": "cache_error",
+    "YFINANCE_CACHE_ERROR": "cache_error",
+    "cache_dir_not_writable": "cache_error",
+    "cache_dir_create_failed": "cache_error",
+    "cache_config_failed": "cache_error",
+    "PROVIDER_ERROR": "provider_error",
+    "FAILED": "provider_failure",
+    "PARTIAL": "provider_partial",
+    "NOT_RUN": "provider_not_run",
+    "YAHOO_UNAUTHORIZED": "auth_failed",
+    "DNS_ERROR": "provider_error",
+    "EMPTY_RESPONSE": "empty_response",
+    "EMPTY_JSON": "empty_response",
+    "MISSING_CHART": "empty_response",
+    "MISSING_RESULT": "empty_response",
+    "EMPTY_RESULT": "empty_response",
+    "MALFORMED_RESPONSE": "invalid_payload",
+    "NON_DICT_JSON": "invalid_payload",
+    "NON_DICT_RESULT": "invalid_payload",
+    "CHART_PARSE_ERROR": "invalid_payload",
+    "NO_HISTORY": "ohlcv_missing",
+    "quote_missing": "quote_missing",
+    "ohlcv_missing": "ohlcv_missing",
+    "history_insufficient": "history_insufficient",
+    "benchmark_invalid": "benchmark_invalid",
+    "benchmark_alignment_failed": "benchmark_invalid",
+    "critical_market_data_missing": "market_data_missing",
+    "critical_market_data_stale": "market_data_stale",
+    "market_data_sufficiency_failed": "market_data_sufficiency_failed",
+    "formal_scoring_ineligible": "formal_scoring_ineligible",
+}
+
+_SENTINEL_PROVIDER_NAMES = {
+    "",
+    "N/A",
+    "NA",
+    "NONE",
+    "NULL",
+    "UNKNOWN",
+    "UNAVAILABLE",
+}
+
+
+def _provider_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.upper() in _SENTINEL_PROVIDER_NAMES:
+        return ""
+    return text
+
+
+def _audit_reason(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        for piece in (text, text.split(":", 1)[0], text.split(";", 1)[0]):
+            key = piece.strip().upper() if piece.isupper() else piece.strip().lower()
+            if key in _AUDIT_REASON_ALIASES:
+                return _AUDIT_REASON_ALIASES[key]
+        lowered = text.lower()
+        if "cache" in lowered and "error" in lowered:
+            return "cache_error"
+        if "invalid crumb" in lowered or "unauthorized" in lowered or "401" in lowered:
+            return "auth_failed"
+        if "dns" in lowered or "getaddrinfo" in lowered:
+            return "provider_error"
+        if "empty" in lowered or "missing result" in lowered or "missing chart" in lowered:
+            return "empty_response"
+        if "malformed" in lowered or "parse" in lowered or "non-dict" in lowered:
+            return "invalid_payload"
+        if "benchmark" in lowered and "align" in lowered:
+            return "benchmark_invalid"
+    return "unknown"
+
+
+def _node_status(status: Any) -> str:
+    text = str(status or "").strip().upper()
+    if text in {"COMPLETE", "VALID", "OK", "LATEST_COMPLETED_SESSION"}:
+        return "COMPLETE"
+    if text in {"CACHE_ERROR", "EMPTY_RESPONSE", "MALFORMED_RESPONSE", "PROVIDER_ERROR", "INVALID", "MISSING", "STALE", "FAILED"}:
+        return text
+    if not text:
+        return "UNKNOWN"
+    return text
+
+
+def _first_failure_node(attempts: Sequence[dict[str, Any]], formal_ready: bool) -> str:
+    for attempt in attempts:
+        status = _node_status(attempt.get("status"))
+        if status not in {"COMPLETE", "VALID", "OK", "READY"}:
+            return str(attempt.get("node") or attempt.get("provider") or "unknown")
+    return "validation" if not formal_ready else ""
+
+
+def _build_provider_attempts(snapshot: Mapping[str, Any], quality: Mapping[str, Any], provider_audit: Mapping[str, Any] | None = None, provider_outputs: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    benchmark_symbols = list(snapshot.get("benchmark_symbols") or [])
+    benchmark_quote_status = dict(snapshot.get("benchmark_quote_fetch_status") or {})
+    benchmark_quote_error_code = dict(snapshot.get("benchmark_quote_error_code") or {})
+    benchmark_quote_error_message = dict(snapshot.get("benchmark_quote_error_message") or {})
+    benchmark_quote_provider_used = dict(snapshot.get("benchmark_quote_provider_used") or {})
+    benchmark_quote_retry_count = dict(snapshot.get("benchmark_quote_retry_count") or {})
+    benchmark_ohlcv_status = dict(snapshot.get("benchmark_ohlcv_fetch_status") or {})
+    benchmark_ohlcv_error_code = dict(snapshot.get("benchmark_ohlcv_error_code") or {})
+    benchmark_ohlcv_error_message = dict(snapshot.get("benchmark_ohlcv_error_message") or {})
+    benchmark_ohlcv_provider_used = dict(snapshot.get("benchmark_ohlcv_provider_used") or {})
+    benchmark_ohlcv_retry_count = dict(snapshot.get("benchmark_ohlcv_retry_count") or {})
+
+    attempts.append(
+        {
+            "node": "cache",
+            "provider": "yfinance_cache",
+            "status": str(snapshot.get("cache_status") or "UNKNOWN").upper(),
+            "failure_reason": _audit_reason(snapshot.get("cache_error_message"), snapshot.get("cache_status")),
+            "retry_count": 0,
+        }
+    )
+    attempts.append(
+        {
+            "node": "quote",
+            "provider": _provider_name(snapshot.get("quote_provider_used")).lower() or "unavailable",
+            "status": str(snapshot.get("quote_status") or "UNKNOWN").upper(),
+            "failure_reason": _audit_reason(
+                snapshot.get("quote_fetch_error_code"),
+                snapshot.get("quote_fetch_error_message"),
+                snapshot.get("quote_fetch_status"),
+                snapshot.get("quote_status"),
+            ),
+            "retry_count": int(snapshot.get("quote_retry_count") or 0),
+        }
+    )
+    attempts.append(
+        {
+            "node": "ohlcv",
+            "provider": _provider_name(snapshot.get("ohlcv_provider_used")).lower() or "unavailable",
+            "status": str(snapshot.get("ohlcv_status") or "UNKNOWN").upper(),
+            "failure_reason": _audit_reason(
+                snapshot.get("ohlcv_fetch_error_code"),
+                snapshot.get("ohlcv_fetch_error_message"),
+                snapshot.get("ohlcv_fetch_status"),
+                snapshot.get("ohlcv_status"),
+                snapshot.get("history_status"),
+            ),
+            "retry_count": int(snapshot.get("ohlcv_retry_count") or 0),
+        }
+    )
+    attempts.append(
+        {
+            "node": "history",
+            "provider": _provider_name(snapshot.get("history_provider_used"))
+            .lower()
+            or _provider_name(snapshot.get("ohlcv_provider_used")).lower()
+            or "unavailable",
+            "status": str(snapshot.get("history_status") or "UNKNOWN").upper(),
+            "failure_reason": _audit_reason(
+                "history_insufficient" if snapshot.get("history_missing_windows") else "",
+                snapshot.get("history_status"),
+            ),
+            "retry_count": int(snapshot.get("history_retry_count") or 0),
+        }
+    )
+
+    for benchmark_symbol in benchmark_symbols:
+        attempts.append(
+            {
+                "node": f"benchmark_quote:{benchmark_symbol}",
+                "provider": _provider_name(benchmark_quote_provider_used.get(benchmark_symbol)).lower() or "benchmark",
+                "status": str(benchmark_quote_status.get(benchmark_symbol) or "UNKNOWN").upper(),
+                "failure_reason": _audit_reason(
+                    benchmark_quote_error_code.get(benchmark_symbol),
+                    benchmark_quote_error_message.get(benchmark_symbol),
+                    benchmark_quote_status.get(benchmark_symbol),
+                ),
+                "retry_count": int(benchmark_quote_retry_count.get(benchmark_symbol) or 0),
+            }
+        )
+        attempts.append(
+            {
+                "node": f"benchmark_ohlcv:{benchmark_symbol}",
+                "provider": _provider_name(benchmark_ohlcv_provider_used.get(benchmark_symbol)).lower() or "benchmark",
+                "status": str(benchmark_ohlcv_status.get(benchmark_symbol) or "UNKNOWN").upper(),
+                "failure_reason": _audit_reason(
+                    benchmark_ohlcv_error_code.get(benchmark_symbol),
+                    benchmark_ohlcv_error_message.get(benchmark_symbol),
+                    benchmark_ohlcv_status.get(benchmark_symbol),
+                ),
+                "retry_count": int(benchmark_ohlcv_retry_count.get(benchmark_symbol) or 0),
+            }
+        )
+
+    attempts.append(
+        {
+            "node": "validation",
+            "provider": "data_quality",
+            "status": "COMPLETE" if quality.get("formal_scoring_eligibility") else "FAILED",
+            "failure_reason": _audit_reason(
+                quality.get("market_data_sufficiency"),
+                quality.get("data_status"),
+                quality.get("research_evidence_status"),
+                quality.get("blocking_reasons"),
+            ),
+            "retry_count": 0,
+        }
+    )
+    return attempts
+
+
+def build_market_data_audit(
+    symbol: str,
+    *,
+    now_et: datetime | None = None,
+    snapshot: Mapping[str, Any] | None = None,
+    data_quality: Mapping[str, Any] | None = None,
+    provider_audit: Mapping[str, Any] | None = None,
+    provider_outputs: Mapping[str, Any] | None = None,
+) -> MarketDataAudit:
+    snapshot = dict(snapshot or build_candidate_market_snapshot(symbol, now_et=now_et))
+    quality_result = data_quality
+    if quality_result is None:
+        quality_result = evaluate_candidate_data_quality(
+            snapshot,
+            provider_audit=provider_audit,
+            provider_outputs=provider_outputs,
+        ).to_dict()
+    elif hasattr(quality_result, "to_dict"):
+        quality_result = quality_result.to_dict()
+    quality = dict(quality_result or {})
+    normalized = normalize_candidate_quality_state(
+        snapshot,
+        data_quality=quality,
+        provider_audit=provider_audit,
+        provider_outputs=provider_outputs,
+    )
+    provider_summary = normalize_provider_audit(
+        dict(provider_audit or {}),
+        dict(provider_outputs or {}),
+    )
+    attempts = _build_provider_attempts(snapshot, normalized, provider_audit, provider_outputs)
+    provider_used = (
+        _provider_name(snapshot.get("quote_provider_used"))
+        or _provider_name(snapshot.get("ohlcv_provider_used"))
+        or _provider_name(snapshot.get("history_provider_used"))
+        or "UNKNOWN"
+    )
+    if provider_used == "UNKNOWN":
+        for entry in attempts:
+            provider_name = _provider_name(entry.get("provider"))
+            if provider_name and _node_status(entry.get("status")) in {"COMPLETE", "VALID", "OK"}:
+                provider_used = provider_name
+                break
+    retry_count = sum(int(entry.get("retry_count") or 0) for entry in attempts)
+    first_failure = _first_failure_node(attempts, bool(normalized.get("formal_scoring_eligibility")))
+    normalized_failure_reason = "unknown"
+    if first_failure:
+        for entry in attempts:
+            if str(entry.get("node") or "") == first_failure:
+                normalized_failure_reason = str(entry.get("failure_reason") or "unknown")
+                break
+    formal_data_ready = bool(normalized.get("formal_scoring_eligibility"))
+    return MarketDataAudit(
+        symbol=str(snapshot.get("symbol") or _provider_ticker(symbol) or symbol).upper(),
+        provider_attempts=tuple(attempts),
+        provider_used=str(provider_used).upper(),
+        cache_status=str(snapshot.get("cache_status") or "UNKNOWN").upper(),
+        quote_status=str(snapshot.get("quote_status") or "UNKNOWN").upper(),
+        ohlcv_status=str(snapshot.get("ohlcv_status") or "UNKNOWN").upper(),
+        history_status=str(snapshot.get("history_status") or "UNKNOWN").upper(),
+        benchmark_status=str(snapshot.get("benchmark_status") or "UNKNOWN").upper(),
+        first_failure_node=first_failure,
+        normalized_failure_reason=normalized_failure_reason,
+        retry_count=retry_count,
+        formal_data_ready=formal_data_ready,
+        record_completeness=str(normalized.get("record_completeness") or "").upper(),
+        market_data_sufficiency=str(normalized.get("market_data_sufficiency") or "").upper(),
+        research_evidence_status=str(normalized.get("research_evidence_status") or "").upper(),
+        formal_scoring_eligibility=bool(normalized.get("formal_scoring_eligibility")),
+        data_status=str(normalized.get("data_status") or quality.get("data_status") or "").upper(),
+        freshness_status=str(snapshot.get("freshness_status") or "").upper(),
+        quote_fetch_status=str(snapshot.get("quote_fetch_status") or "").upper(),
+        ohlcv_fetch_status=str(snapshot.get("ohlcv_fetch_status") or "").upper(),
+        benchmark_alignment_status=str(snapshot.get("benchmark_alignment_status") or "").upper(),
+        notes=tuple(provider_summary.get("contributors") or []),
+    )
+
+
+def diagnose_market_data(
+    symbols: Sequence[str],
+    *,
+    now_et: datetime | None = None,
+) -> list[MarketDataAudit]:
+    return [build_market_data_audit(symbol, now_et=now_et) for symbol in symbols]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

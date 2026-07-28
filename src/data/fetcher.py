@@ -176,9 +176,13 @@ class PriceFetcher:
         self._last_quote_fetch_status: str = "UNAVAILABLE"
         self._last_quote_error_code: str | None = None
         self._last_quote_error_message: str | None = None
+        self._last_quote_provider: str = "UNAVAILABLE"
+        self._last_quote_retry_count: int = 0
         self._last_history_fetch_status: str = "UNAVAILABLE"
         self._last_history_error_code: str | None = None
         self._last_history_error_message: str | None = None
+        self._last_history_provider: str = "UNAVAILABLE"
+        self._last_history_retry_count: int = 0
         self._synthetic_market = os.environ.get("SOXS_SYNTHETIC_MARKET", "").strip().lower() in {"1", "true", "yes", "on"}
         self._synthetic_start_price = _positive_float(os.environ.get("SOXS_SYNTHETIC_START_PRICE"), 100.0)
         self._synthetic_amplitude_pct = _positive_float(os.environ.get("SOXS_SYNTHETIC_AMPLITUDE_PCT"), 2.0)
@@ -212,27 +216,44 @@ class PriceFetcher:
         self._last_history_error_code = error_code
         self._last_history_error_message = error_message
 
-    def _call_with_retries(self, func, attempts: int = 3, base_delay: float = 0.5):
+    def _set_quote_provider(self, provider: str, retry_count: int = 0) -> None:
+        self._last_quote_provider = provider
+        self._last_quote_retry_count = max(0, int(retry_count or 0))
+
+    def _set_history_provider(self, provider: str, retry_count: int = 0) -> None:
+        self._last_history_provider = provider
+        self._last_history_retry_count = max(0, int(retry_count or 0))
+
+    def _call_with_retries(self, func, attempts: int = 3, base_delay: float = 0.5, *, attempt_attr: str | None = None):
         """Call *func* with retries and exponential backoff.
 
         This wrapper protects against transient yfinance/http failures while
         preserving the original exception when retries are exhausted.
         """
         last_exc = None
-        for i in range(attempts):
-            try:
-                return func()
-            except Exception as e:
-                last_exc = e
-                logger.debug(
-                    "yfinance call failed (attempt %d/%d) for %s: %s",
-                    i + 1,
-                    attempts,
-                    self.ticker,
-                    e,
-                )
-                time.sleep(base_delay * (2 ** i))
-        raise last_exc
+        attempts_used = 0
+        try:
+            for i in range(attempts):
+                attempts_used = i + 1
+                try:
+                    return func()
+                except Exception as e:
+                    last_exc = e
+                    logger.debug(
+                        "yfinance call failed (attempt %d/%d) for %s: %s",
+                        i + 1,
+                        attempts,
+                        self.ticker,
+                        e,
+                    )
+                    time.sleep(base_delay * (2 ** i))
+            raise last_exc
+        finally:
+            if attempt_attr:
+                try:
+                    setattr(self, attempt_attr, max(0, attempts_used - 1))
+                except Exception:
+                    pass
 
     def _get_safe_fast_info(self) -> dict[str, float]:
         """Safely extract numeric fast_info fields without triggering lazy yfinance fetches."""
@@ -286,15 +307,19 @@ class PriceFetcher:
     def _fetch_history(self, period: str, interval: str, prepost: bool = True):
         """Fetch historical data with retries and pre/post-market support."""
         try:
-            return self._call_with_retries(
+            hist = self._call_with_retries(
                 lambda: self._ticker_obj.history(period=period, interval=interval, prepost=prepost),
                 attempts=3,
                 base_delay=0.25,
+                attempt_attr="_last_history_retry_count",
             )
+            self._set_history_provider("yfinance_history", self._last_history_retry_count)
+            return hist
         except Exception as e:
             logger.debug("History fetch failed for %s (%s %s): %s", self.ticker, period, interval, e)
             status, code = _classify_provider_error(e)
             self._set_history_diagnostic(status, code, str(e))
+            self._set_history_provider("yfinance_history", self._last_history_retry_count)
             return None
 
     def _fetch_chart_quote(self) -> dict:
@@ -309,8 +334,10 @@ class PriceFetcher:
         session.trust_env = False
         last_exc = None
         unauthorized_retry_used = False
+        attempts_used = 0
         try:
             for attempt in range(3):
+                attempts_used = attempt + 1
                 try:
                     resp = session.get(
                         url,
@@ -340,6 +367,7 @@ class PriceFetcher:
                 logger.debug("Yahoo chart fallback failed for %s: %s", self.ticker, last_exc)
                 status, code = _classify_provider_error(last_exc)
                 self._set_quote_diagnostic(status, code, str(last_exc) if last_exc else None)
+                self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
                 return {}
         finally:
             _close_session(session)
@@ -347,24 +375,30 @@ class PriceFetcher:
         try:
             if data is None:
                 self._set_quote_diagnostic("EMPTY_RESPONSE", "EMPTY_JSON", "chart payload is null")
+                self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
                 return {}
             if not isinstance(data, dict):
                 self._set_quote_diagnostic("MALFORMED_RESPONSE", "NON_DICT_JSON", f"chart payload type={type(data).__name__}")
+                self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
                 return {}
             chart = data.get("chart")
             if not isinstance(chart, dict):
                 self._set_quote_diagnostic("EMPTY_RESPONSE", "MISSING_CHART", "chart payload missing")
+                self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
                 return {}
             result_list = chart.get("result")
             if not isinstance(result_list, list) or not result_list or result_list[0] is None:
                 self._set_quote_diagnostic("EMPTY_RESPONSE", "MISSING_RESULT", "chart result missing")
+                self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
                 return {}
             result = result_list[0]
             if not isinstance(result, dict):
                 self._set_quote_diagnostic("MALFORMED_RESPONSE", "NON_DICT_RESULT", f"result type={type(result).__name__}")
+                self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
                 return {}
             if not result:
                 self._set_quote_diagnostic("EMPTY_RESPONSE", "EMPTY_RESULT", "chart result empty")
+                self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
                 return {}
 
             meta = result.get("meta") or {}
@@ -383,6 +417,7 @@ class PriceFetcher:
                 price = _positive_float(_last(quote.get("close")))
 
             self._set_quote_diagnostic("COMPLETE")
+            self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
             return {
                 "status": "COMPLETE",
                 "price": price,
@@ -406,6 +441,7 @@ class PriceFetcher:
         except Exception as e:
             logger.debug("Yahoo chart fallback parse failed for %s: %s", self.ticker, e)
             self._set_quote_diagnostic("MALFORMED_RESPONSE", "CHART_PARSE_ERROR", str(e))
+            self._set_quote_provider("yahoo_chart", max(0, attempts_used - 1))
             return {}
 
     def _fetch_chart_history(self, period: str, interval: str) -> list[OHLCV]:
@@ -431,7 +467,9 @@ class PriceFetcher:
         try:
             unauthorized_retry_used = False
             payload = None
+            attempts_used = 0
             for attempt in range(3):
+                attempts_used = attempt + 1
                 try:
                     resp = session.get(
                         f"https://query1.finance.yahoo.com/v8/finance/chart/{self._provider_ticker}",
@@ -459,27 +497,34 @@ class PriceFetcher:
                     time.sleep(0.25 * (2 ** attempt))
             if payload is None:
                 self._set_history_diagnostic("EMPTY_RESPONSE", "EMPTY_JSON", "chart payload is null")
+                self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
                 return []
             if payload is None:
                 self._set_history_diagnostic("EMPTY_RESPONSE", "EMPTY_JSON", "chart payload is null")
+                self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
                 return []
             if not isinstance(payload, dict):
                 self._set_history_diagnostic("MALFORMED_RESPONSE", "NON_DICT_JSON", f"chart payload type={type(payload).__name__}")
+                self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
                 return []
             chart = payload.get("chart")
             if not isinstance(chart, dict):
                 self._set_history_diagnostic("EMPTY_RESPONSE", "MISSING_CHART", "chart payload missing")
+                self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
                 return []
             result_list = chart.get("result")
             if not isinstance(result_list, list) or not result_list or result_list[0] is None:
                 self._set_history_diagnostic("EMPTY_RESPONSE", "MISSING_RESULT", "chart result missing")
+                self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
                 return []
             result = result_list[0]
             if not isinstance(result, dict):
                 self._set_history_diagnostic("MALFORMED_RESPONSE", "NON_DICT_RESULT", f"result type={type(result).__name__}")
+                self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
                 return []
             if not result:
                 self._set_history_diagnostic("EMPTY_RESPONSE", "EMPTY_RESULT", "chart result empty")
+                self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
                 return []
             timestamps = result.get("timestamp") or []
             quote = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
@@ -503,6 +548,7 @@ class PriceFetcher:
                     )
                 )
             self._set_history_diagnostic("COMPLETE")
+            self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
             return candles
         except Exception as e:
             logger.debug("Direct chart history failed for %s (%s %s): %s", self.ticker, period, interval, e)
@@ -510,6 +556,7 @@ class PriceFetcher:
             if code == "PROVIDER_ERROR":
                 code = "CHART_HISTORY_ERROR"
             self._set_history_diagnostic(status, code, str(e))
+            self._set_history_provider("yahoo_chart_history", max(0, attempts_used - 1))
             return []
         finally:
             _close_session(session)
@@ -555,6 +602,7 @@ class PriceFetcher:
         """
         now = time.time()
         if self._cached_quote and (now - self._last_fetch_time) < self.poll_interval:
+            self._set_quote_provider("cache", 0)
             return self._cached_quote
 
         try:
@@ -587,6 +635,7 @@ class PriceFetcher:
                 try:
                     hist = self._fetch_history(period="5d", interval="1m", prepost=True)
                     if hist is not None and not hist.empty:
+                        self._set_quote_provider("yfinance_history_5d_1m", self._last_history_retry_count)
                         last_row = hist.iloc[-1]
                         price = float(last_row["Close"])
                         volume = int(last_row["Volume"])
@@ -600,6 +649,7 @@ class PriceFetcher:
                 try:
                     hist = self._fetch_history(period="1d", interval="5m", prepost=True)
                     if hist is not None and not hist.empty:
+                        self._set_quote_provider("yfinance_history_1d_5m", self._last_history_retry_count)
                         last_row = hist.iloc[-1]
                         price = float(last_row["Close"])
                         volume = int(last_row["Volume"])
@@ -613,6 +663,7 @@ class PriceFetcher:
                 try:
                     hist = self._fetch_history(period="1d", interval="1m", prepost=True)
                     if hist is not None and not hist.empty:
+                        self._set_quote_provider("yfinance_history_1d_1m", self._last_history_retry_count)
                         last_row = hist.iloc[-1]
                         price = float(last_row["Close"])
                         volume = int(last_row["Volume"])
@@ -626,6 +677,7 @@ class PriceFetcher:
                 try:
                     hist = self._fetch_history(period="max", interval="1d", prepost=False)
                     if hist is not None and not hist.empty:
+                        self._set_quote_provider("yfinance_history_daily", self._last_history_retry_count)
                         last_row = hist.iloc[-1]
                         price = float(last_row["Close"])
                         volume = int(_positive_float(last_row.get("Volume", 0)))
@@ -648,8 +700,10 @@ class PriceFetcher:
                 post = _positive_float(price_info.get("postMarketPrice"))
                 if pre > 0:
                     price = pre
+                    self._set_quote_provider("yahoo_info")
                 elif post > 0:
                     price = post
+                    self._set_quote_provider("yahoo_info")
 
             # ── Layer 3: fast_info ──
             if price <= 0:
@@ -658,11 +712,15 @@ class PriceFetcher:
                     _positive_float(fast.get("regularMarketPrice")),
                 )
                 volume = int(_positive_float(fast.get("lastVolume")))
+                if price > 0:
+                    self._set_quote_provider("yfinance_fast_info")
 
             # ── Layer 4: synthetic fallback or stale cache ──
             if price <= 0 and self._synthetic_market:
+                self._set_quote_provider("synthetic")
                 return self._synthetic_quote()
             if price <= 0 and self._cached_quote:
+                self._set_quote_provider("cache")
                 return self._cached_quote
 
             # If all data sources failed and we have no fallback, raise
@@ -680,6 +738,7 @@ class PriceFetcher:
                     )
                 # Data is unavailable but last_fetch is still fresh — return stale cache
                 if self._cached_quote:
+                    self._set_quote_provider("cache")
                     return self._cached_quote
                 raise PriceDataError(
                     f"Failed to fetch price for {self.ticker}: "
@@ -718,7 +777,10 @@ class PriceFetcher:
         except Exception as e:
             logger.warning(f"Failed to fetch quote for {self.ticker}: {e}")
             if self._synthetic_market:
+                self._set_quote_provider("synthetic")
                 return self._synthetic_quote()
+            if self._cached_quote:
+                self._set_quote_provider("cache")
             return self._cached_quote  # Return stale cache if available
 
     def get_ohlcv(self, period: str = "1d", interval: str = "5m") -> list[OHLCV]:
@@ -733,6 +795,7 @@ class PriceFetcher:
         if direct_first:
             candles = self._fetch_chart_history(period=period, interval=interval)
             if candles:
+                self._set_history_provider("yahoo_chart_history", self._last_history_retry_count)
                 return candles
             if skip_slow_fallbacks:
                 logger.warning(
@@ -748,8 +811,10 @@ class PriceFetcher:
             logger.error(f"Failed to fetch OHLCV for {self.ticker}: no data returned")
             if self._last_history_fetch_status == "UNAVAILABLE":
                 self._set_history_diagnostic("EMPTY_RESPONSE", "NO_HISTORY", "no data returned")
+            self._set_history_provider("yfinance_history", self._last_history_retry_count)
             return []
 
+        self._set_history_provider("yfinance_history", self._last_history_retry_count)
         candles = []
         for idx, row in hist.iterrows():
             try:

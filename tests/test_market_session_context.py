@@ -15,9 +15,13 @@ class _FakePriceFetcher:
         self._last_quote_fetch_status = "COMPLETE"
         self._last_quote_error_code = None
         self._last_quote_error_message = None
+        self._last_quote_provider = "YAHOO_CHART"
+        self._last_quote_retry_count = 0
         self._last_history_fetch_status = "COMPLETE"
         self._last_history_error_code = None
         self._last_history_error_message = None
+        self._last_history_provider = "YAHOO_CHART_HISTORY"
+        self._last_history_retry_count = 0
         self._cache_status = "COMPLETE"
         self._cache_error_message = None
 
@@ -95,6 +99,8 @@ def test_build_candidate_market_snapshot_keeps_friday_daily_data_latest_complete
     assert snapshot["quote_status"] == "COMPLETE"
     assert snapshot["ohlcv_status"] == "COMPLETE"
     assert snapshot["history_status"] == "COMPLETE"
+    assert snapshot["quote_provider_used"] == "YAHOO_CHART"
+    assert snapshot["ohlcv_provider_used"] == "YAHOO_CHART_HISTORY"
     assert snapshot["history_available_bars"] == 220
     assert snapshot["history_required_bars"] == 200
     assert snapshot["history_missing_windows"] == []
