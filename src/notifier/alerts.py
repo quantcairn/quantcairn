@@ -1585,8 +1585,7 @@ def _build_public_channel_message(
     ct_label = {"LIVE_TRADABLE": "Tradable", "PAPER_ELIGIBLE": "Paper Eligible", "RESEARCH_ONLY": "Research Only"}.get(candidate_type, candidate_type)
 
     # ── Market state ─────────────────────────────────────────────────────
-    preflight = dict(report.get("preflight") or report.get("preflight_report") or {})
-    market_state = str(preflight.get("market_state") or "").strip() or "UNKNOWN"
+    market_state = _resolve_selection_market_state(report)
     market_icon = {"MARKET_OPEN": "🟢", "PRE_MARKET": "🌅", "AFTER_HOURS": "🌙", "CLOSED": "⚫"}.get(market_state, "⚪")
 
     # ── Header ───────────────────────────────────────────────────────────
@@ -1667,6 +1666,41 @@ def _build_public_channel_message(
             body = body[:1470] + "..."
 
     return title, body.strip()
+
+
+def _resolve_selection_market_state(selection_report: dict) -> str:
+    """Resolve a user-visible market state for selection notifications.
+
+    Priority:
+      1. report["preflight"]["market_state"]
+      2. report["preflight_report"]["market_state"]
+      3. report["market_context"]["session_label"]
+      4. report["market_context"]["current_session_status"]
+      5. UNKNOWN
+    """
+
+    preflight = selection_report.get("preflight")
+    if isinstance(preflight, dict):
+        market_state = str(preflight.get("market_state") or "").strip()
+        if market_state:
+            return market_state
+
+    preflight_report = selection_report.get("preflight_report")
+    if isinstance(preflight_report, dict):
+        market_state = str(preflight_report.get("market_state") or "").strip()
+        if market_state:
+            return market_state
+
+    market_context = selection_report.get("market_context")
+    if isinstance(market_context, dict):
+        market_state = str(market_context.get("session_label") or "").strip()
+        if market_state:
+            return market_state
+        market_state = str(market_context.get("current_session_status") or "").strip()
+        if market_state:
+            return market_state
+
+    return "UNKNOWN"
 
 
 def _build_admin_debug_message(

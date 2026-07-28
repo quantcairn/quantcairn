@@ -1,4 +1,4 @@
-from src.notifier.alerts import Notifier
+from src.notifier.alerts import Notifier, _build_public_channel_message, _resolve_selection_market_state
 
 
 def test_trade_notification_rejects_invalid_fill(monkeypatch):
@@ -44,6 +44,53 @@ def test_only_trade_notifications_reach_macos(tmp_path):
 
     assert len(calls) == 1
     assert "NVDA" in calls[0][0]
+
+
+def test_selection_market_state_prefers_preflight_over_market_context(monkeypatch):
+    report = {
+        "preflight": {"market_state": "AFTER_HOURS"},
+        "market_context": {"session_label": "REGULAR", "current_session_status": "OPEN"},
+    }
+
+    assert _resolve_selection_market_state(report) == "AFTER_HOURS"
+    import src.notifier.alerts as alerts
+    monkeypatch.setattr(
+        alerts,
+        "_resolve_manifest_first_selection_payload",
+        lambda selection_report, top_configs=None: (selection_report, [], "report"),
+    )
+    title, body = _build_public_channel_message(report)
+    assert "Market: AFTER_HOURS" in body
+
+
+def test_selection_market_state_falls_back_to_market_context(monkeypatch):
+    report = {
+        "market_context": {"session_label": "REGULAR", "current_session_status": "OPEN"},
+    }
+
+    assert _resolve_selection_market_state(report) == "REGULAR"
+    import src.notifier.alerts as alerts
+    monkeypatch.setattr(
+        alerts,
+        "_resolve_manifest_first_selection_payload",
+        lambda selection_report, top_configs=None: (selection_report, [], "report"),
+    )
+    title, body = _build_public_channel_message(report)
+    assert "Market: REGULAR" in body
+
+
+def test_selection_market_state_unknown_when_fields_missing(monkeypatch):
+    report = {}
+
+    assert _resolve_selection_market_state(report) == "UNKNOWN"
+    import src.notifier.alerts as alerts
+    monkeypatch.setattr(
+        alerts,
+        "_resolve_manifest_first_selection_payload",
+        lambda selection_report, top_configs=None: (selection_report, [], "report"),
+    )
+    title, body = _build_public_channel_message(report)
+    assert "Market: UNKNOWN" in body
 
 
 def test_trade_notification_key_prevents_duplicate_send(tmp_path, monkeypatch):
