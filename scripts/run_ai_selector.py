@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import argparse
+from collections import Counter
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
@@ -1074,6 +1075,221 @@ def _merge_rejected_rows(rows: list[dict]) -> list[dict]:
         merged.append(dict(item))
         seen.add(key)
     return merged
+
+
+def _symbols_from_rows(rows: list[dict] | list[str] | tuple) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw in rows or []:
+        value = raw
+        if isinstance(raw, dict):
+            value = raw.get("ticker") or raw.get("symbol")
+        symbol = _normalize_ticker(str(value or ""))
+        if not symbol or symbol in seen:
+            continue
+        symbols.append(symbol)
+        seen.add(symbol)
+    return symbols
+
+
+def _funnel_stage_dict(
+    stage: str,
+    input_symbols: list[str],
+    output_symbols: list[str],
+    dropped: list[dict] | None = None,
+) -> dict:
+    input_list = _symbols_from_rows(input_symbols)
+    output_list = _symbols_from_rows(output_symbols)
+    output_set = set(output_list)
+    dropped_by_symbol = {
+        _normalize_ticker(str(item.get("symbol") or item.get("ticker") or "")): dict(item)
+        for item in dropped or []
+        if _normalize_ticker(str(item.get("symbol") or item.get("ticker") or ""))
+    }
+    dropped_symbols = [symbol for symbol in input_list if symbol not in output_set]
+    dropped_rows = [
+        dropped_by_symbol.get(symbol)
+        or dropped_record(symbol, "post_filter_removed", "removed by final post-processing")
+        for symbol in dropped_symbols
+    ]
+    reason_counts = Counter(
+        str(item.get("reason_code") or "unknown")
+        for item in dropped_rows
+        if str(item.get("reason_code") or "").strip()
+    )
+    return {
+        "stage": stage,
+        "input_count": len(input_list),
+        "output_count": len(output_list),
+        "eliminated": max(0, len(input_list) - len(output_list)),
+        "input_symbols": input_list,
+        "output_symbols": output_list,
+        "dropped_symbols": dropped_symbols,
+        "dropped": dropped_rows,
+        "drop_reason_counts": dict(sorted(reason_counts.items())),
+        "status": "WARN" if len(output_list) > len(input_list) else "PASS",
+    }
+
+
+def _rejection_rows_by_symbol(*groups: list[dict]) -> dict[str, dict]:
+    reasons: dict[str, dict] = {}
+    for group in groups:
+        for raw in group or []:
+            if not isinstance(raw, dict):
+                continue
+            symbol = _normalize_ticker(str(raw.get("ticker") or raw.get("symbol") or ""))
+            if not symbol or symbol in reasons:
+                continue
+            reason = reason_from_candidate(raw)
+            detail = str(
+                raw.get("reason_detail")
+                or raw.get("details")
+                or raw.get("reason")
+                or raw.get("reject_reason")
+                or raw.get("composition_reject_reason")
+                or ""
+            )
+            reasons[symbol] = dropped_record(symbol, reason, detail, stage="POST_FILTER")
+    return reasons
+
+
+def _post_filter_drop_records(
+    input_symbols: list[str],
+    output_symbols: list[str],
+    diagnostic_candidates: list[dict],
+    *,
+    trade_rejected: list[dict],
+    universe_rejected: list[dict],
+    price_rejected: list[dict],
+    composition_rejected: list[dict],
+    entry_quality_rejected: list[dict],
+) -> list[dict]:
+    output_set = set(_symbols_from_rows(output_symbols))
+    diagnostic_by_symbol = {
+        _normalize_ticker(str(item.get("ticker") or item.get("symbol") or "")): dict(item)
+        for item in diagnostic_candidates or []
+        if _normalize_ticker(str(item.get("ticker") or item.get("symbol") or ""))
+    }
+    explicit_reasons = _rejection_rows_by_symbol(
+        trade_rejected,
+        universe_rejected,
+        price_rejected,
+        composition_rejected,
+        entry_quality_rejected,
+    )
+    dropped: list[dict] = []
+    for symbol in _symbols_from_rows(input_symbols):
+        if symbol in output_set:
+            continue
+        item = diagnostic_by_symbol.get(symbol)
+        if item is not None:
+            reasons = formal_selection_ineligibility_reasons(item)
+            reason_code = reasons[0] if reasons else "post_filter_removed"
+            dropped.append(
+                dropped_record(
+                    symbol,
+                    reason_code,
+                    ";".join(reasons),
+                    stage="POST_FILTER",
+                    rejection_reason_codes=reasons,
+                )
+            )
+            continue
+        if symbol in explicit_reasons:
+            dropped.append(explicit_reasons[symbol])
+            continue
+        dropped.append(dropped_record(symbol, "post_filter_removed", "removed by final post-processing", stage="POST_FILTER"))
+    return dropped
+
+
+def _append_final_selection_funnel_stages(
+    funnel: dict,
+    *,
+    diagnostic_candidates: list[dict],
+    post_filter_candidates: list[dict],
+    final_selected_candidates: list[dict],
+    trade_rejected: list[dict],
+    universe_rejected: list[dict],
+    price_rejected: list[dict],
+    composition_rejected: list[dict],
+    entry_quality_rejected: list[dict],
+) -> dict:
+    report = dict(funnel or {})
+    stages = [dict(stage) for stage in (report.get("stages") or []) if isinstance(stage, dict)]
+    formal_top_stage = next((stage for stage in reversed(stages) if stage.get("stage") == "FORMAL_TOP"), None)
+    post_input_symbols = _symbols_from_rows(
+        (formal_top_stage or {}).get("output_symbols") or diagnostic_candidates
+    )
+    post_output_symbols = _symbols_from_rows(post_filter_candidates)
+    final_output_symbols = _symbols_from_rows(final_selected_candidates)
+    post_stage = _funnel_stage_dict(
+        "POST_FILTER",
+        post_input_symbols,
+        post_output_symbols,
+        _post_filter_drop_records(
+            post_input_symbols,
+            post_output_symbols,
+            diagnostic_candidates,
+            trade_rejected=trade_rejected,
+            universe_rejected=universe_rejected,
+            price_rejected=price_rejected,
+            composition_rejected=composition_rejected,
+            entry_quality_rejected=entry_quality_rejected,
+        ),
+    )
+    final_stage = _funnel_stage_dict(
+        "FINAL_SELECTED",
+        post_output_symbols,
+        final_output_symbols,
+        [
+            dropped_record(symbol, "final_selection_limit", "outside final executable TOP slots", stage="FINAL_SELECTED")
+            for symbol in post_output_symbols
+            if symbol not in set(final_output_symbols)
+        ],
+    )
+    stages.extend([post_stage, final_stage])
+
+    reason_counts = Counter(report.get("rejection_reason_counts") or {})
+    nearest = [dict(item) for item in (report.get("nearest_rejected_candidates") or []) if isinstance(item, dict)]
+    for stage in (post_stage, final_stage):
+        reason_counts.update(stage.get("drop_reason_counts") or {})
+        for item in stage.get("dropped") or []:
+            nearest.append(
+                {
+                    **dict(item),
+                    "stage": stage["stage"],
+                    "reason_code": item.get("reason_code") or "unknown",
+                    "reason_detail": item.get("reason_detail") or "",
+                    "blocking": bool(item.get("blocking", True)),
+                }
+            )
+
+    warnings = [dict(item) for item in (report.get("warnings") or []) if isinstance(item, dict)]
+    if post_stage["output_count"] > post_stage["input_count"]:
+        warnings.append({"stage": "POST_FILTER", "check": "output_gt_input", "detail": f"input={post_stage['input_count']} output={post_stage['output_count']}"})
+    if final_stage["output_count"] > final_stage["input_count"]:
+        warnings.append({"stage": "FINAL_SELECTED", "check": "output_gt_input", "detail": f"input={final_stage['input_count']} output={final_stage['output_count']}"})
+    if stages[-3:-2]:
+        previous_output = _symbols_from_rows(stages[-3].get("output_symbols") or [])
+        if post_input_symbols != previous_output:
+            warnings.append({
+                "stage": "POST_FILTER",
+                "check": "chain_break",
+                "detail": f"previous_stage={stages[-3].get('stage')} expected_input={len(previous_output)} actual_input={len(post_input_symbols)}",
+            })
+
+    first_input_count = int((stages[0] if stages else {}).get("input_count") or 0)
+    report["stages"] = stages
+    report["rejection_reason_counts"] = dict(sorted(reason_counts.items()))
+    report["nearest_rejected_candidates"] = nearest[:20]
+    report["pipeline_consistent"] = bool(report.get("pipeline_consistent", True)) and not warnings
+    report["warnings"] = warnings
+    report["pipeline_success_rate"] = round((len(final_output_symbols) / first_input_count), 4) if first_input_count else 0.0
+    report["final_selected"] = len(final_output_symbols)
+    report["final_selected_symbols"] = final_output_symbols
+    report["post_filter_selected"] = len(post_output_symbols)
+    report["post_filter_symbols"] = post_output_symbols
+    return report
 
 
 def _selector_run_mode(value: str | None = None) -> str:
@@ -2226,6 +2442,7 @@ def main(mode: str | None = None):
     report_top10 = _attach_ranking_context(report_top10, report_top10)
     diagnostic_selected = list(selected)
     selected = [item for item in selected if is_formal_selection_eligible(item)]
+    post_filter_selected = list(selected)
     selection_stage = "FINALIZED"
     market_stage = selection_stage
     selection_run_id = uuid.uuid4().hex
@@ -2372,7 +2589,6 @@ def main(mode: str | None = None):
     out["settings"]["processing_phase"] = processing_phase
     out["settings"]["entry_proximity_enabled"] = bool(ENTRY_PROXIMITY_ENABLED)
     out["settings"]["entry_proximity_weight"] = float(ENTRY_PROXIMITY_WEIGHT)
-    write_selection_filter_log(quality_report)
     summary_top3_source = list(selected)
     if selected:
         for item in selected:
@@ -2403,6 +2619,37 @@ def main(mode: str | None = None):
         out["top5"] = []
         out["top3"] = []
         out["report"] = []
+    final_selected_symbols = [
+        str(item.get("ticker") or "").strip().upper()
+        for item in selected
+        if str(item.get("ticker") or "").strip()
+    ]
+    quality_report["final_selected_symbols"] = list(final_selected_symbols)
+    quality_report["selection_count"] = len(selected)
+    quality_report["top_n_filled"] = len(selected) >= TOP_COUNT
+    quality_report["missing_slots"] = max(0, TOP_COUNT - len(selected))
+    quality_report["disabled_configs"] = [
+        f"TOP{i}.yaml" for i in range(len(selected) + 1, TOP_COUNT + 1)
+    ]
+    quality_report["selection_funnel"] = _append_final_selection_funnel_stages(
+        dict(quality_report.get("selection_funnel") or {}),
+        diagnostic_candidates=list(diagnostic_selected),
+        post_filter_candidates=list(post_filter_selected),
+        final_selected_candidates=list(selected),
+        trade_rejected=list(trade_filter_rejected or []),
+        universe_rejected=list(universe_rejected_rows or []),
+        price_rejected=list(price_band_rejected_rows or []),
+        composition_rejected=list(composition_filter_report.get("rejected") or []),
+        entry_quality_rejected=list(low_quality_rejected or []),
+    )
+    quality_report["rejection_reason_counts"] = dict(
+        quality_report["selection_funnel"].get("rejection_reason_counts") or {}
+    )
+    quality_report["nearest_rejected_candidates"] = list(
+        quality_report["selection_funnel"].get("nearest_rejected_candidates") or []
+    )
+    out["quality_filter_report"] = quality_report
+    write_selection_filter_log(quality_report)
     timestamp = datetime.now().isoformat()
     print(f"AI selection completed at {timestamp}")
     print("Top10:")

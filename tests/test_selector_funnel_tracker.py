@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import json
 
-from src.openalpha.funnel_tracker import FunnelTracker, dropped_record
+from src.openalpha.funnel_tracker import FUNNEL_STAGES, FunnelTracker, dropped_record
+
+
+def test_funnel_stage_contract_includes_final_selection_stages():
+    formal_top_index = FUNNEL_STAGES.index("FORMAL_TOP")
+    assert FUNNEL_STAGES[formal_top_index + 1:formal_top_index + 3] == [
+        "POST_FILTER",
+        "FINAL_SELECTED",
+    ]
 
 
 def test_funnel_tracker_records_stage_invariants_and_reason_counts(tmp_path, monkeypatch):

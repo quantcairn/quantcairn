@@ -70,6 +70,59 @@ def _load_module():
     return module
 
 
+def test_final_selection_funnel_adds_post_filter_and_final_selected_stages():
+    module = _load_module()
+    tradable = _formal_candidate_row("NVDA", 91.5, 100.0)
+    research_only = {
+        **_formal_candidate_row("SOFI", 88.0, 10.0),
+        "trade_admission_status": "NOT_TRADABLE",
+        "trade_admission": "NOT_TRADABLE",
+    }
+    funnel = {
+        "selection_run_id": "run-final",
+        "selection_date": "2026-07-16",
+        "stages": [
+            {
+                "stage": "FORMAL_TOP",
+                "input_count": 2,
+                "output_count": 2,
+                "input_symbols": ["NVDA", "SOFI"],
+                "output_symbols": ["NVDA", "SOFI"],
+                "dropped_symbols": [],
+                "dropped": [],
+                "drop_reason_counts": {},
+                "status": "PASS",
+            }
+        ],
+        "rejection_reason_counts": {},
+        "nearest_rejected_candidates": [],
+        "pipeline_consistent": True,
+    }
+
+    updated = module._append_final_selection_funnel_stages(
+        funnel,
+        diagnostic_candidates=[tradable, research_only],
+        post_filter_candidates=[tradable],
+        final_selected_candidates=[tradable],
+        trade_rejected=[],
+        universe_rejected=[],
+        price_rejected=[],
+        composition_rejected=[],
+        entry_quality_rejected=[],
+    )
+
+    assert [stage["stage"] for stage in updated["stages"][-2:]] == ["POST_FILTER", "FINAL_SELECTED"]
+    post_filter = updated["stages"][-2]
+    final_selected = updated["stages"][-1]
+    assert post_filter["input_symbols"] == ["NVDA", "SOFI"]
+    assert post_filter["output_symbols"] == ["NVDA"]
+    assert post_filter["dropped"][0]["symbol"] == "SOFI"
+    assert post_filter["dropped"][0]["reason_code"] == "trade_admission_not_tradable"
+    assert final_selected["output_symbols"] == ["NVDA"]
+    assert updated["final_selected_symbols"] == ["NVDA"]
+    assert updated["pipeline_consistent"] is True
+
+
 def test_enrich_selection_rows_uses_nested_complete_market_quality_over_stale_top_level_status():
     module = _load_module()
     market_data = {

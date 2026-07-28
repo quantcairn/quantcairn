@@ -328,6 +328,146 @@ def test_selection_bundle_marks_empty_slots_as_selection_blocked_when_run_blocke
     assert manifest["top_slot_count"] == 3
 
 
+def test_validate_top_config_sync_rejects_empty_bundle_with_live_top_yaml(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    (tmp_path / "configs" / "TOP1.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "ticker": "SOXS",
+                "mode": "live",
+                "selection_date": "2026-07-21",
+                "selection": {
+                    "source": "manual_override",
+                    "selection_date": "2026-07-21",
+                    "symbol": "SOXS",
+                    "mode": "live",
+                },
+                "broker": {"longbridge": {"enabled": True, "allow_live_order": False}},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = selection_state.validate_top_config_sync(
+        selected_symbols=[],
+        selection_date="2026-07-22",
+        selection_run_id="run-empty",
+        limit=3,
+    )
+
+    assert result["top_sync_status"] == "NOT_OK"
+    assert any("TOP1" in item for item in result["mismatches"])
+
+
+def test_validate_top_config_sync_accepts_matching_bundle_and_top_yaml(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    config_writer.write_top_configs(
+        [
+            _formal_top_item(
+                "NVDA",
+                91.5,
+                current_price=100.0,
+                range_low=95.0,
+                range_high=105.0,
+                risk={"stop_loss_pct": 1.5},
+                size=5,
+            )
+        ],
+        selection_run_id="run-match",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="DEGRADED",
+        research_admission="RESEARCH_ONLY",
+        slot_limit=3,
+    )
+
+    result = selection_state.validate_top_config_sync(
+        selected_symbols=["NVDA"],
+        selection_date="2026-07-16",
+        selection_run_id="run-match",
+        top_items=[{"ticker": "NVDA"}],
+        limit=3,
+    )
+
+    assert result["top_sync_status"] == "OK"
+    assert result["mismatches"] == []
+
+
+def test_selection_bundle_marks_top_sync_not_ok_when_live_top_preserved(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    (tmp_path / "configs" / "TOP1.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "ticker": "SOXS",
+                "mode": "live",
+                "selection_date": "2026-07-15",
+                "selection": {
+                    "source": "manual_override",
+                    "selection_date": "2026-07-15",
+                    "symbol": "SOXS",
+                    "mode": "live",
+                },
+                "broker": {"longbridge": {"enabled": True, "allow_live_order": False}},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"),
+            "top3": [_formal_top_item("NVDA", 91.5)],
+            "selection_count": 1,
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": ["NVDA"],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selection_run_id": "run-live-preserved",
+            "selection_symbols": ["NVDA"],
+            "configured_top_symbols": ["NVDA"],
+        },
+        top_items=[
+            _formal_top_item(
+                "NVDA",
+                91.5,
+                current_price=100.0,
+                range_low=95.0,
+                range_high=105.0,
+                risk={"stop_loss_pct": 1.5},
+                size=5,
+            )
+        ],
+        selection_run_id="run-live-preserved",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="DEGRADED",
+        research_admission="RESEARCH_ONLY",
+        processing_phase="fast_preliminary",
+    )
+
+    result = persist_selection_bundle(bundle)
+
+    report = json.loads((tmp_path / "reports" / "ai_selection_latest.json").read_text(encoding="utf-8"))
+    state = json.loads((tmp_path / "state" / "ai_selection_state.json").read_text(encoding="utf-8"))
+    top1 = yaml.safe_load((tmp_path / "configs" / "TOP1.yaml").read_text(encoding="utf-8"))
+
+    assert top1["ticker"] == "SOXS"
+    assert result["top_sync_status"] == "NOT_OK"
+    assert report["top_sync_status"] == "NOT_OK"
+    assert state["top_sync_status"] == "NOT_OK"
+    assert "TOP1:symbol_mismatch" in result["top_sync_error"]
+
+
 def test_selection_bundle_rejects_top_items_over_requested_top_n(tmp_path, monkeypatch):
     _patch_bundle_roots(tmp_path, monkeypatch)
 

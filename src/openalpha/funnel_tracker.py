@@ -27,6 +27,8 @@ FUNNEL_STAGES = [
     "FORMAL_ELIGIBILITY",
     "COMPOSITION_FILTER",
     "FORMAL_TOP",
+    "POST_FILTER",
+    "FINAL_SELECTED",
 ]
 
 KNOWN_REASON_CODES = {
@@ -40,6 +42,7 @@ KNOWN_REASON_CODES = {
     "provider_malformed_response", "refinement_rejected",
     "entry_quality_too_low", "leveraged_etf_limit_exceeded",
     "composition_limit", "top_n_limit", "top_n_not_filled", "unknown",
+    "post_filter_removed", "final_selection_limit",
     # Quality filter reasons (DATA_QUALITY stage)
     "missing_market_data", "volume_filter", "spread_filter",
     "spread_unavailable", "volatility_filter",
@@ -518,6 +521,8 @@ class FunnelTracker:
         "volatility_missing": "波动率数据缺失",
         "volatility_too_low": "波动率过低",
         "volatility_too_high": "波动率过高",
+        "post_filter_removed": "最终后处理移除",
+        "final_selection_limit": "最终入选数量限制",
         "unknown": "原因未记录",
     }
 
