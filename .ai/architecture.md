@@ -101,6 +101,12 @@ notifier/alerts.py
 - Full mode, all rejected: `quality_fallback_active=True` → preview only
 - Non-FULL mode: `topk` from relaxed quality → formal candidates (`RESEARCH_ONLY`)
 
+### Reporting Tail: POST_FILTER → FINAL_SELECTED
+- The selector-stage funnel still reaches `FORMAL_TOP` first.
+- `scripts/run_ai_selector.py` appends `POST_FILTER` to expose existing final post-processing removals, including trade-admission and validation eligibility reasons.
+- `FINAL_SELECTED` is the exact executable selected-symbol list used for selection bundle/TOP config publication and mirrored by `final_selected_symbols`.
+- This is observability-only: it must not change scoring, ranking, composition, data quality, risk filters, or formal eligibility helpers.
+
 ## Scoring Model Reference
 
 ### Subscore Formulas
