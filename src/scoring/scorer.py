@@ -399,14 +399,21 @@ class Scorer:
                         pass
         if resp is None:
             raise last_error
-        payload = resp.json()
+        payload = None
+        try:
+            payload = resp.json()
+        except Exception:
+            return pd.DataFrame()
         if not isinstance(payload, dict):
             return pd.DataFrame()
         chart = payload.get("chart")
         if not isinstance(chart, dict):
             return pd.DataFrame()
-        result = (chart.get("result") or [None])[0]
-        if not result:
+        result_list = chart.get("result")
+        if not isinstance(result_list, list) or not result_list or result_list[0] is None:
+            return pd.DataFrame()
+        result = result_list[0]
+        if not isinstance(result, dict):
             return pd.DataFrame()
         quote = (result.get("indicators", {}).get("quote") or [None])[0]
         ts = result.get("timestamp") or []
@@ -528,7 +535,18 @@ class Scorer:
                 session.trust_env = trust_env
                 resp = session.get(url, params=params, headers=headers, timeout=self.market_timeout)
                 resp.raise_for_status()
-                result = (resp.json().get("chart", {}).get("result") or [None])[0] or {}
+                payload = resp.json()
+                if not isinstance(payload, dict):
+                    raise ValueError(f"unexpected chart payload type={type(payload).__name__}")
+                chart = payload.get("chart")
+                if not isinstance(chart, dict):
+                    raise ValueError("chart payload missing")
+                result_list = chart.get("result")
+                if not isinstance(result_list, list) or not result_list or result_list[0] is None:
+                    raise ValueError("chart result missing")
+                result = result_list[0]
+                if not isinstance(result, dict):
+                    raise ValueError(f"unexpected chart result type={type(result).__name__}")
                 meta = result.get("meta") or {}
                 quote = ((result.get("indicators") or {}).get("quote") or [None])[0] or {}
 

@@ -28,9 +28,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_YFINANCE_CACHE_DIR = Path(
-    os.environ.get("SOXS_YFINANCE_CACHE_DIR", str(PROJECT_DIR / "state" / "yfinance_cache"))
-).expanduser().resolve()
+DEFAULT_YFINANCE_CACHE_DIR = Path(PROJECT_DIR / "state" / "yfinance_cache").expanduser().resolve()
 _YFINANCE_CACHE_LOCK = Lock()
 _YFINANCE_CACHE_INITIALIZED = False
 _YFINANCE_CACHE_ERROR: str | None = None
@@ -62,6 +60,24 @@ def _provider_ticker(symbol: str) -> str:
     return upper
 
 
+def _resolve_project_dir() -> Path:
+    for name in ("QUANTCAIRN_HOME", "SOXS_PROJECT_DIR"):
+        raw = os.environ.get(name)
+        if raw:
+            return Path(raw).expanduser().resolve()
+    return PROJECT_DIR
+
+
+def _resolve_yfinance_cache_dir() -> Path:
+    raw = os.environ.get("SOXS_YFINANCE_CACHE_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    project_home = os.environ.get("QUANTCAIRN_HOME") or os.environ.get("SOXS_PROJECT_DIR")
+    if project_home:
+        return (Path(project_home).expanduser().resolve() / "state" / "yfinance_cache").resolve()
+    return DEFAULT_YFINANCE_CACHE_DIR
+
+
 def _close_session(session) -> None:
     close = getattr(session, "close", None)
     if callable(close):
@@ -90,12 +106,16 @@ def _configure_yfinance_cache() -> tuple[str, str | None]:
         if _YFINANCE_CACHE_INITIALIZED:
             return ("CACHE_ERROR" if _YFINANCE_CACHE_ERROR else "COMPLETE", _YFINANCE_CACHE_ERROR)
         _YFINANCE_CACHE_INITIALIZED = True
-        cache_dir = DEFAULT_YFINANCE_CACHE_DIR
+        cache_dir = _resolve_yfinance_cache_dir()
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             _YFINANCE_CACHE_ERROR = f"cache_dir_create_failed:{exc}"
             logger.warning("Failed to create yfinance cache dir %s: %s", cache_dir, exc)
+            return "CACHE_ERROR", _YFINANCE_CACHE_ERROR
+        if not os.access(cache_dir, os.W_OK):
+            _YFINANCE_CACHE_ERROR = f"cache_dir_not_writable:{cache_dir}"
+            logger.warning("YFinance cache dir not writable: %s", cache_dir)
             return "CACHE_ERROR", _YFINANCE_CACHE_ERROR
         try:
             import yfinance.cache as yf_cache

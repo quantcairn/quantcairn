@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import requests
 
 from src.universe.models import UniverseSymbol, UniverseSnapshot
 from src.universe.profiles import (
@@ -353,6 +354,30 @@ class TestSelectorIntegration:
         import src.openalpha.selector as sel_mod
         assert hasattr(sel_mod, '_load_managed_universe')
         assert callable(sel_mod.Universe()._load_local_snapshot)
+
+    def test_fetch_chart_daily_handles_invalid_json_payload(self, monkeypatch):
+        from src.universe.universe import Universe
+
+        class DummyResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return None
+
+        class DummySession:
+            def __init__(self):
+                self.trust_env = False
+
+            def get(self, *_args, **_kwargs):
+                return DummyResponse()
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(requests, "Session", DummySession)
+        universe = Universe()
+        assert universe._fetch_chart_daily("AAPL") is None
 
 
 if __name__ == "__main__":

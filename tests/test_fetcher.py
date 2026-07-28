@@ -329,6 +329,75 @@ def test_price_fetcher_uses_absolute_yfinance_cache_dir(monkeypatch, tmp_path: P
     assert pf._cache_status == "COMPLETE"
 
 
+def test_price_fetcher_uses_quantcairn_home_for_yfinance_cache_dir(monkeypatch, tmp_path: Path):
+    try:
+        import yfinance.cache as yf_cache
+    except ImportError:
+        pytest.skip("yfinance not installed")
+
+    project_home = tmp_path / "quantcairn-home"
+    cache_dir = project_home / "state" / "yfinance_cache"
+    recorded: dict[str, str] = {}
+
+    def _record_cache_location(location):
+        recorded["location"] = location
+
+    monkeypatch.setenv("QUANTCAIRN_HOME", str(project_home))
+    monkeypatch.delenv("SOXS_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("SOXS_YFINANCE_CACHE_DIR", raising=False)
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
+    monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_INITIALIZED", False)
+    monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_ERROR", None)
+
+    original_set_cache_location = yf_cache.set_cache_location
+    yf_cache.set_cache_location = _record_cache_location
+    try:
+        pf = PriceFetcher("SOFI.US")
+    finally:
+        yf_cache.set_cache_location = original_set_cache_location
+
+    assert cache_dir.is_dir()
+    assert recorded["location"] == str(cache_dir.resolve())
+    assert pf._cache_status == "COMPLETE"
+
+
+def test_price_fetcher_marks_unwritable_cache_dir_and_keeps_fallback(monkeypatch, tmp_path: Path):
+    cache_dir = tmp_path / "state" / "yfinance_cache"
+    monkeypatch.setenv("SOXS_YFINANCE_CACHE_DIR", str(cache_dir))
+    monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
+    monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_INITIALIZED", False)
+    monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_ERROR", None)
+
+    original_access = fetcher_mod.os.access
+
+    def _fake_access(path, mode):
+        if Path(path) == cache_dir and mode == os.W_OK:
+            return False
+        return original_access(path, mode)
+
+    monkeypatch.setattr(fetcher_mod.os, "access", _fake_access)
+
+    pf = PriceFetcher("SOFI.US")
+    assert pf._cache_status == "CACHE_ERROR"
+    assert "not_writable" in (pf._cache_error_message or "")
+
+    original_fetch_chart_quote = fetcher_mod.PriceFetcher._fetch_chart_quote
+    original_get_safe_fast_info = fetcher_mod.PriceFetcher._get_safe_fast_info
+    original_fetch_history = fetcher_mod.PriceFetcher._fetch_history
+    fetcher_mod.PriceFetcher._fetch_chart_quote = lambda self: {}
+    fetcher_mod.PriceFetcher._get_safe_fast_info = lambda self: {}
+    fetcher_mod.PriceFetcher._fetch_history = lambda self, period, interval, prepost=True: DummyHist()
+    try:
+        quote = pf.get_quote()
+    finally:
+        fetcher_mod.PriceFetcher._fetch_chart_quote = original_fetch_chart_quote
+        fetcher_mod.PriceFetcher._get_safe_fast_info = original_get_safe_fast_info
+        fetcher_mod.PriceFetcher._fetch_history = original_fetch_history
+
+    assert quote is not None
+    assert quote.price == 10.0
+
+
 def test_price_fetcher_close_releases_yfinance_session(monkeypatch):
     closed = []
 
@@ -680,6 +749,62 @@ def test_scorer_direct_sessions_are_closed_and_symbol_normalized(monkeypatch):
     assert snapshot["price"] == 10.1
     assert all(session.closed for session in sessions)
     assert all(url.endswith("/SOFI") for url in requested_urls)
+
+
+def test_scorer_fetch_chart_daily_handles_invalid_json_payload(monkeypatch):
+    from src.scoring.scorer import Scorer
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return None
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, *_args, **_kwargs):
+            return DummyResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(requests, "Session", DummySession)
+    df = Scorer()._fetch_chart_daily("SOFI.US")
+    assert df.empty
+
+
+def test_scorer_live_snapshot_falls_back_after_invalid_json_payload(monkeypatch):
+    from src.scoring.scorer import Scorer
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return []
+
+    class DummySession:
+        def __init__(self):
+            self.trust_env = False
+
+        def get(self, *_args, **_kwargs):
+            return DummyResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(requests, "Session", DummySession)
+    monkeypatch.setattr(Scorer, "_fetch_longbridge_snapshot", lambda self, symbol: {
+        "price": 42.0,
+        "recent_high": 43.0,
+        "recent_low": 41.0,
+        "volume": 1234,
+    })
+    snapshot = Scorer()._fetch_live_snapshot("SOFI.US")
+    assert snapshot["price"] == 42.0
 
 
 def test_scorer_load_history_does_not_use_yfinance_fallback_by_default(monkeypatch):

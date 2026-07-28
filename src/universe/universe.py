@@ -122,21 +122,39 @@ class Universe:
         }
         session = requests.Session()
         session.trust_env = False
-        resp = session.get(url, params=params, headers=headers, timeout=10)
-        resp.raise_for_status()
-        result = (resp.json().get("chart", {}).get("result") or [None])[0]
-        if not result:
-            return None
-        quote = (result.get("indicators", {}).get("quote") or [None])[0]
-        ts = result.get("timestamp") or []
-        if not quote or not ts:
-            return None
-        df = pd.DataFrame({
-            "Close": quote.get("close") or [],
-            "Volume": quote.get("volume") or [],
-        })
-        df = df.dropna(subset=["Close"])
-        return df if not df.empty else None
+        try:
+            resp = session.get(url, params=params, headers=headers, timeout=10)
+            resp.raise_for_status()
+            try:
+                payload = resp.json()
+            except Exception:
+                return None
+            if not isinstance(payload, dict):
+                return None
+            chart = payload.get("chart")
+            if not isinstance(chart, dict):
+                return None
+            result_list = chart.get("result")
+            if not isinstance(result_list, list) or not result_list or result_list[0] is None:
+                return None
+            result = result_list[0]
+            if not isinstance(result, dict):
+                return None
+            quote = (result.get("indicators", {}).get("quote") or [None])[0]
+            ts = result.get("timestamp") or []
+            if not quote or not ts:
+                return None
+            df = pd.DataFrame({
+                "Close": quote.get("close") or [],
+                "Volume": quote.get("volume") or [],
+            })
+            df = df.dropna(subset=["Close"])
+            return df if not df.empty else None
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     def _check_symbol(self, symbol: str) -> bool:
         if not _REQUESTS_AVAILABLE or not _YF_AVAILABLE:
