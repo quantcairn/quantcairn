@@ -5,7 +5,15 @@ initial risk/liquidity/volatility scores.  These profiles are the
 starting configuration for the Universe Manager filter pipeline.
 """
 
+import os
+from typing import Any, Iterable
+
 from src.universe.models import UniverseSymbol
+
+try:  # optional research dependency
+    from yfinance.screener import screen as _yf_screen
+except Exception:  # pragma: no cover - yfinance may be absent in core-only mode
+    _yf_screen = None
 
 
 INDEX_ETFS = [
@@ -76,13 +84,194 @@ ADDITIONAL_STOCKS = [
 ]
 
 
+DEFAULT_DYNAMIC_SCREENERS = (
+    "most_actives",
+    "day_gainers",
+    "undervalued_large_caps",
+    "growth_technology_stocks",
+    "small_cap_gainers",
+    "undervalued_growth_stocks",
+)
+DEFAULT_DYNAMIC_EXCHANGES = ("NMS", "NYQ", "NGM", "NCM")
+DEFAULT_DYNAMIC_TARGET_SIZE = 300
+DEFAULT_DYNAMIC_MIN_PRICE = 5.0
+DEFAULT_DYNAMIC_MIN_MARKET_CAP = 2_000_000_000.0
+DEFAULT_DYNAMIC_MIN_AVG_VOLUME = 1_000_000.0
+
+
+def _csv_env(name: str, default: Iterable[str]) -> tuple[str, ...]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return tuple(default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return max(1, int(float(raw)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+        return value if value == value else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _normalize_symbol(value: Any) -> str:
+    return str(value or "").strip().upper().split(".")[0]
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return float(default)
+        parsed = float(value)
+        return parsed if parsed == parsed else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _quote_rank(row: dict[str, Any]) -> tuple[float, float, float, str]:
+    return (
+        _safe_float(row.get("averageDailyVolume3Month") or row.get("regularMarketVolume")),
+        _safe_float(row.get("marketCap")),
+        _safe_float(row.get("regularMarketPrice")),
+        _normalize_symbol(row.get("symbol")),
+    )
+
+
+def _quote_is_eligible(
+    row: dict[str, Any],
+    *,
+    allowed_exchanges: set[str],
+    min_price: float,
+    min_market_cap: float,
+    min_avg_volume: float,
+) -> bool:
+    if str(row.get("quoteType") or "").upper() != "EQUITY":
+        return False
+    if str(row.get("market") or "").strip().lower() != "us_market":
+        return False
+    if str(row.get("exchange") or "").strip().upper() not in allowed_exchanges:
+        return False
+    if _safe_float(row.get("regularMarketPrice")) < min_price:
+        return False
+    if _safe_float(row.get("marketCap")) < min_market_cap:
+        return False
+    if _safe_float(row.get("averageDailyVolume3Month") or row.get("regularMarketVolume")) < min_avg_volume:
+        return False
+    return True
+
+
+def _load_dynamic_common_stock_quotes() -> list[dict[str, Any]]:
+    """Pull liquid US equity candidates from Yahoo screener data.
+
+    Returns an empty list if the optional research dependency is missing
+    or Yahoo is temporarily unavailable. The caller will then fall back
+    to the curated seed universe.
+    """
+
+    if _yf_screen is None:
+        return []
+
+    screeners = _csv_env("QUANTCAIRN_UNIVERSE_SCREENERS", DEFAULT_DYNAMIC_SCREENERS)
+    allowed_exchanges = {item.upper() for item in _csv_env("QUANTCAIRN_UNIVERSE_INCLUDED_EXCHANGES", DEFAULT_DYNAMIC_EXCHANGES)}
+    target_size = _int_env("QUANTCAIRN_UNIVERSE_TARGET_SIZE", DEFAULT_DYNAMIC_TARGET_SIZE)
+    min_price = _float_env("QUANTCAIRN_UNIVERSE_MIN_PRICE", DEFAULT_DYNAMIC_MIN_PRICE)
+    min_market_cap = _float_env("QUANTCAIRN_UNIVERSE_MIN_MARKET_CAP", DEFAULT_DYNAMIC_MIN_MARKET_CAP)
+    min_avg_volume = _float_env("QUANTCAIRN_UNIVERSE_MIN_AVG_VOLUME", DEFAULT_DYNAMIC_MIN_AVG_VOLUME)
+
+    best_by_symbol: dict[str, dict[str, Any]] = {}
+    for screener_name in screeners:
+        try:
+            payload = _yf_screen(screener_name, count=100)
+        except Exception:
+            continue
+        quotes = payload.get("quotes") if isinstance(payload, dict) else []
+        if not isinstance(quotes, list):
+            continue
+        for row in quotes:
+            if not isinstance(row, dict):
+                continue
+            symbol = _normalize_symbol(row.get("symbol"))
+            if not symbol:
+                continue
+            if not _quote_is_eligible(
+                row,
+                allowed_exchanges=allowed_exchanges,
+                min_price=min_price,
+                min_market_cap=min_market_cap,
+                min_avg_volume=min_avg_volume,
+            ):
+                continue
+            current = best_by_symbol.get(symbol)
+            if current is None or _quote_rank(row) > _quote_rank(current):
+                best_by_symbol[symbol] = dict(row)
+
+    ordered = sorted(best_by_symbol.values(), key=_quote_rank, reverse=True)
+    return ordered[:target_size]
+
+
+def _clone_symbol(symbol: UniverseSymbol) -> UniverseSymbol:
+    return UniverseSymbol.from_dict(symbol.to_dict())
+
+
+def _dedupe_profiles(groups: Iterable[Iterable[UniverseSymbol]]) -> list[UniverseSymbol]:
+    result: list[UniverseSymbol] = []
+    seen: set[str] = set()
+    for group in groups:
+        for symbol in group:
+            key = _normalize_symbol(symbol.symbol)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(_clone_symbol(symbol))
+    return result
+
+
 def default_universe() -> list[UniverseSymbol]:
-    """Return the complete default universe — 48 symbols."""
-    return [
-        *INDEX_ETFS,
-        *MEGA_CAPS,
-        *SEMICONDUCTOR,
-        *SECTOR_ETFS,
-        *LEVERAGED_AND_INVERSE,
-        *ADDITIONAL_STOCKS,
+    """Return the complete default universe.
+
+    The curated seed symbols remain intact, while an additional liquid
+    US equity pool is sourced from Yahoo screener results at runtime.
+    """
+
+    dynamic_common_stocks = [
+        UniverseSymbol(
+            symbol=_normalize_symbol(row.get("symbol")),
+            name=str(row.get("longName") or row.get("shortName") or row.get("displayName") or _normalize_symbol(row.get("symbol"))),
+            asset_type="common_stock",
+            sector=str(row.get("sector") or ""),
+            benchmark="SPY",
+            leverage_type="1x",
+            min_price=DEFAULT_DYNAMIC_MIN_PRICE,
+            min_avg_volume=500_000,
+            min_market_cap=DEFAULT_DYNAMIC_MIN_MARKET_CAP,
+            liquidity_score=90.0,
+            risk_score=35.0,
+            volatility_score=35.0,
+            tags=["dynamic", "yahoo_screener"],
+        )
+        for row in _load_dynamic_common_stock_quotes()
+        if _normalize_symbol(row.get("symbol"))
     ]
+
+    return _dedupe_profiles([
+        INDEX_ETFS,
+        MEGA_CAPS,
+        SEMICONDUCTOR,
+        SECTOR_ETFS,
+        LEVERAGED_AND_INVERSE,
+        ADDITIONAL_STOCKS,
+        dynamic_common_stocks,
+    ])

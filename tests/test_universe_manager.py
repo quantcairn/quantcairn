@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 import requests
 
+import src.universe.profiles as universe_profiles
 from src.universe.models import UniverseSymbol, UniverseSnapshot
 from src.universe.profiles import (
     default_universe, INDEX_ETFS, MEGA_CAPS, LEVERAGED_AND_INVERSE,
@@ -53,9 +54,37 @@ class TestSymbolValidation:
         assert s.enabled is True
 
     def test_default_universe_size(self):
-        uni = default_universe()
-        assert len(uni) >= 30
-        assert len(uni) <= 60
+        fake_rows = []
+        for idx in range(260):
+            sym = f"Q{idx:03d}"
+            fake_rows.append(
+                {
+                    "symbol": sym,
+                    "longName": f"Dynamic {sym}",
+                    "quoteType": "EQUITY",
+                    "market": "us_market",
+                    "exchange": "NMS",
+                    "regularMarketPrice": 25.0 + (idx % 10),
+                    "marketCap": 3_000_000_000.0 + idx * 10_000_000.0,
+                    "averageDailyVolume3Month": 1_500_000.0 + idx * 5_000.0,
+                }
+            )
+        fake_rows.append(
+            {
+                "symbol": "AAPL",
+                "longName": "Apple Inc. Screener Duplicate",
+                "quoteType": "EQUITY",
+                "market": "us_market",
+                "exchange": "NMS",
+                "regularMarketPrice": 200.0,
+                "marketCap": 3_500_000_000_000.0,
+                "averageDailyVolume3Month": 150_000_000.0,
+            }
+        )
+        with patch.object(universe_profiles, "_load_dynamic_common_stock_quotes", return_value=fake_rows):
+            uni = default_universe()
+        assert len(uni) >= 250
+        assert len(uni) <= 350
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -240,8 +269,25 @@ class TestInvalidData:
 
     def test_manager_loads_default_when_no_file(self, tmp_path: Path):
         mgr = UniverseManager(universe_path=tmp_path / "nonexistent.json", snapshot_path=tmp_path / "snap.json")
-        symbols = mgr.load_symbols()
-        assert len(symbols) >= 30
+        fake_rows = []
+        for idx in range(260):
+            sym = f"M{idx:03d}"
+            fake_rows.append(
+                {
+                    "symbol": sym,
+                    "longName": f"Managed {sym}",
+                    "quoteType": "EQUITY",
+                    "market": "us_market",
+                    "exchange": "NYQ",
+                    "regularMarketPrice": 30.0 + (idx % 8),
+                    "marketCap": 4_000_000_000.0 + idx * 12_000_000.0,
+                    "averageDailyVolume3Month": 2_000_000.0 + idx * 6_000.0,
+                }
+            )
+        with patch.object(universe_profiles, "_load_dynamic_common_stock_quotes", return_value=fake_rows):
+            symbols = mgr.load_symbols()
+        assert len(symbols) >= 250
+        assert len(symbols) <= 350
 
 
 # ═══════════════════════════════════════════════════════════════════════
