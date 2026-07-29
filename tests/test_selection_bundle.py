@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import yaml
+import pytest
 
 from src.openalpha import config_writer, selection_state
 from src.openalpha.selection_bundle import build_selection_bundle, persist_selection_bundle
@@ -731,6 +732,46 @@ def test_selection_bundle_keeps_research_top_separate_from_tradable_top(tmp_path
     assert manifest["research_selected_top_n"] == 1
     assert manifest["tradable_selected_top_n"] == 0
     assert manifest["selection_symbols"] == []
+
+
+def test_selection_bundle_rejects_cross_run_identity_mismatch(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"),
+            "selection_run_id": "run-b",
+            "selection_funnel": {"selection_run_id": "run-b", "stages": []},
+            "top3": [_formal_top_item("NVDA", 91.5)],
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": ["NVDA"],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selection_run_id": "run-b",
+            "selection_symbols": ["NVDA"],
+            "configured_top_symbols": ["NVDA"],
+        },
+        top_items=[_formal_top_item("NVDA", 91.5)],
+        selection_run_id="run-a",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="DEGRADED",
+        research_admission="RESEARCH_ONLY",
+        processing_phase="fast_preliminary",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        persist_selection_bundle(bundle)
+
+    assert "bundle_validation_failed" in str(excinfo.value)
+    assert "selection_run_id_mismatch" in str(excinfo.value)
+    assert not (tmp_path / "reports" / "ai_selection_latest.json").exists()
+    assert not (tmp_path / "state" / "selection_bundle_manifest.json").exists()
 
 
 def test_selection_bundle_rolls_back_when_compat_sync_fails_after_manifest_commit(tmp_path, monkeypatch):

@@ -117,6 +117,41 @@ class TestDataAvailability:
         assert report.ohlcv_coverage_pct == 50.0
         assert report.run_mode == "FULL"
 
+    def test_run_preflight_persists_selection_run_id(self, monkeypatch, tmp_path):
+        class FakeSession:
+            is_market_holiday = False
+            is_premarket = False
+            is_regular_session = True
+            is_after_hours = False
+            session_label = "MARKET_OPEN"
+            current_session_reason = ""
+            current_session = __import__("datetime").date(2026, 7, 24)
+            previous_completed_session = __import__("datetime").date(2026, 7, 23)
+
+        def fake_scan(symbols, max_symbols=20):
+            return {"quotes": 2, "ohlcv": 2, "checked": 2}
+
+        monkeypatch.setattr("src.openalpha.preflight.market_session_context", lambda now_et: FakeSession())
+        monkeypatch.setattr("src.openalpha.preflight._scan_data_availability", fake_scan)
+        monkeypatch.setattr(
+            "src.openalpha.preflight._et_now",
+            lambda: __import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")),
+        )
+        monkeypatch.setattr("src.openalpha.preflight.PREFLIGHT_ARTIFACT_DIR", tmp_path / "artifacts" / "selection")
+
+        report = run_preflight(
+            symbols=["AAPL", "MSFT"],
+            max_scan_symbols=2,
+            dry_run=False,
+            selection_run_id="run-preflight-1",
+        )
+
+        written = json.loads((tmp_path / "artifacts" / "selection" / "preflight.json").read_text(encoding="utf-8"))
+        assert report.selection_run_id == "run-preflight-1"
+        assert report.to_dict()["selection_run_id"] == "run-preflight-1"
+        assert written["selection_run_id"] == "run-preflight-1"
+        assert written["diagnostic_preflight"] is False
+
     def test_run_preflight_without_symbols_keeps_legacy_zero_coverage(self, monkeypatch):
         class FakeSession:
             is_market_holiday = False
@@ -148,6 +183,7 @@ class TestDataAvailability:
         assert report.quote_coverage_pct == 0.0
         assert report.ohlcv_coverage_pct == 0.0
         assert report.run_mode == "DEGRADED"
+        assert report.selection_run_id == ""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -167,6 +203,8 @@ class TestSerialization:
         assert d["market_state"] == "AFTER_HOURS"
         assert d["run_mode"] == "AFTER_MARKET"
         assert d["quote_coverage_pct"] == 30.0
+        assert d["selection_run_id"] == ""
+        assert d["diagnostic_preflight"] is False
 
     def test_print_does_not_crash(self):
         r = PreflightReport(

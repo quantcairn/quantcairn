@@ -372,8 +372,10 @@ def test_run_ai_selector_emits_preview_without_writing_configs_when_no_finalized
     class FakeSelector:
         selection_size = 5
 
-        def run_selection(self, write_configs: bool = True, symbols_override=None):
+        def run_selection(self, write_configs: bool = True, symbols_override=None, selection_run_id=None):
             return {
+                "selection_run_id": selection_run_id or "run-1",
+                "selection_funnel": {"selection_run_id": selection_run_id or "run-1", "stages": []},
                 "top10": [],
                 "top5": [],
                 "top3": [],
@@ -442,6 +444,70 @@ def test_run_ai_selector_emits_preview_without_writing_configs_when_no_finalized
     assert captured_bundles[0]["top_items"] == []
 
 
+def test_run_ai_selector_rejects_cross_run_identity_mismatch():
+    module = _load_module()
+    captured_bundles: list[dict] = []
+
+    class FakeSelector:
+        selection_size = 5
+
+        def run_selection(self, write_configs: bool = True, symbols_override=None, selection_run_id=None):
+            return {
+                "selection_run_id": "run-selector-other",
+                "selection_funnel": {"selection_run_id": "run-selector-other", "stages": []},
+                "top10": [],
+                "top5": [],
+                "top3": [],
+                "report": [],
+                "settings": {},
+                "quality_filter_report": {},
+            }
+
+    original_selector = module.AIStrategySelector
+    original_live_positions = module._live_equity_positions
+    original_has_live = module._has_live_top_configs
+    original_load_settings = module.load_runtime_settings
+    original_write_log = module.write_selection_filter_log
+    original_run_integrated = module._run_integrated_ai_selector
+    original_bundle_writer = module.write_selection_bundle_atomic
+    raised = None
+    try:
+        module.AIStrategySelector = FakeSelector
+        module._live_equity_positions = lambda: []
+        module._has_live_top_configs = lambda: False
+        module.load_runtime_settings = lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5}
+        module.write_selection_filter_log = lambda payload: None
+        module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or payload
+        module._run_integrated_ai_selector = lambda: {
+            "enabled": True,
+            "top3": [],
+            "top10": [],
+            "preferred_symbols": [],
+            "signal_map": {},
+            "providers_used": [],
+            "providers_disabled": [],
+            "fmp_enabled": False,
+            "fallback_used": False,
+        }
+
+        try:
+            module.main()
+        except SystemExit as exc:
+            raised = exc
+    finally:
+        module.AIStrategySelector = original_selector
+        module._live_equity_positions = original_live_positions
+        module._has_live_top_configs = original_has_live
+        module.load_runtime_settings = original_load_settings
+        module.write_selection_filter_log = original_write_log
+        module._run_integrated_ai_selector = original_run_integrated
+        module.write_selection_bundle_atomic = original_bundle_writer
+
+    assert raised is not None
+    assert getattr(raised, "code", None) == 1
+    assert not captured_bundles
+
+
 def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     module = _load_module()
     captured_bundles: list[dict] = []
@@ -451,8 +517,10 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     class FakeSelector:
         selection_size = 5
 
-        def run_selection(self, write_configs: bool = True, symbols_override=None):
+        def run_selection(self, write_configs: bool = True, symbols_override=None, selection_run_id=None):
             return {
+                "selection_run_id": selection_run_id or "run-1",
+                "selection_funnel": {"selection_run_id": selection_run_id or "run-1", "stages": []},
                 "top10": [
                     _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
                     _formal_candidate_row("MSFT", 88.2, 100.0, reason="research_complete"),
@@ -602,8 +670,10 @@ def test_run_ai_selector_filters_ineligible_candidates_before_bundle_publish():
     class FakeSelector:
         selection_size = 5
 
-        def run_selection(self, write_configs: bool = True, symbols_override=None):
+        def run_selection(self, write_configs: bool = True, symbols_override=None, selection_run_id=None):
             return {
+                "selection_run_id": selection_run_id or "run-1",
+                "selection_funnel": {"selection_run_id": selection_run_id or "run-1", "stages": []},
                 "top10": [
                     _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
                     {
@@ -837,6 +907,9 @@ def test_run_ai_selector_filters_ineligible_candidates_before_bundle_publish():
 
     assert captured_bundles
     bundle = captured_bundles[0]
+    assert bundle["selection_run_id"] == bundle["selection_state_payload"]["selection_run_id"]
+    assert bundle["selection_run_id"] == bundle["summary"]["selection_run_id"]
+    assert bundle["selection_run_id"] == bundle["summary"]["selection_funnel"]["selection_run_id"]
     assert [item["ticker"] for item in bundle["top_items"]] == ["NVDA"]
     assert bundle["selection_state_payload"]["selected_symbols"] == ["NVDA"]
     assert bundle["summary"]["selection_count"] == 1
@@ -850,12 +923,14 @@ def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
     class FakeSelector:
         selection_size = 5
 
-        def run_selection(self, write_configs: bool = True, symbols_override=None):
+        def run_selection(self, write_configs: bool = True, symbols_override=None, selection_run_id=None):
             return {
-            "top10": [],
-            "top5": [
-                        _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
-                        _formal_candidate_row("MSFT", 88.2, 100.0, reason="research_complete"),
+                "selection_run_id": selection_run_id or "run-1",
+                "selection_funnel": {"selection_run_id": selection_run_id or "run-1", "stages": []},
+                "top10": [],
+                "top5": [
+                    _formal_candidate_row("NVDA", 91.5, 100.0, reason="research_complete"),
+                    _formal_candidate_row("MSFT", 88.2, 100.0, reason="research_complete"),
                 ],
                 "top3": [],
                 "report": [],

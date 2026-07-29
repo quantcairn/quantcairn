@@ -2352,6 +2352,7 @@ def main(mode: str | None = None):
     os.environ.setdefault("OPENALPHA_DIRECT_HISTORY", "1")
     os.environ.setdefault("OPENALPHA_SKIP_YFINANCE_HISTORY", "0")
     os.environ.setdefault("OPENALPHA_HTTP_TIMEOUT_SECONDS", "3")
+    selection_run_id = uuid.uuid4().hex
     live_positions = _live_equity_positions()
     if live_positions is None and _has_live_top_configs():
         print("Live position verification failed; refusing to run selection or replace TOP configs.")
@@ -2359,7 +2360,7 @@ def main(mode: str | None = None):
 
     # ── Preflight: market state + data availability ────────────────────
     from src.openalpha.preflight import run_preflight as _run_preflight, print_preflight
-    _pf = _run_preflight(symbols=None, max_scan_symbols=5)
+    _pf = _run_preflight(symbols=None, max_scan_symbols=5, selection_run_id=selection_run_id)
     print_preflight(_pf)
 
     integrated_ai = _run_integrated_ai_selector()
@@ -2368,12 +2369,20 @@ def main(mode: str | None = None):
     sel = AIStrategySelector()
     # Let selector choose universe source (managed/sample/sp500) unless
     # explicitly overridden via --universe-source CLI.
-    out = sel.run_selection(write_configs=False)
+    out = sel.run_selection(write_configs=False, selection_run_id=selection_run_id)
     selected = out.get('top5') or out.get('top3') or []
     if not selected and selection_symbols:
         integrated_ai["fallback_used"] = True
-        out = sel.run_selection(write_configs=False)
+        out = sel.run_selection(write_configs=False, selection_run_id=selection_run_id)
         selected = out.get('top5') or out.get('top3') or []
+    selector_run_id = str(out.get("selection_run_id") or "").strip()
+    funnel_run_id = str((out.get("selection_funnel") or {}).get("selection_run_id") or "").strip()
+    if selector_run_id and selector_run_id != selection_run_id:
+        print(f"selection_run_id_mismatch: expected {selection_run_id}, got {selector_run_id}")
+        sys.exit(1)
+    if funnel_run_id and funnel_run_id != selection_run_id:
+        print(f"selection_funnel_run_id_mismatch: expected {selection_run_id}, got {funnel_run_id}")
+        sys.exit(1)
 
     selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
     selected = [_normalize_selection_metadata(item) for item in selected]
@@ -2500,7 +2509,6 @@ def main(mode: str | None = None):
     post_filter_selected = list(selected)
     selection_stage = "FINALIZED"
     market_stage = selection_stage
-    selection_run_id = uuid.uuid4().hex
     current_session = _selection_date()
     # Read actual universe from selector's own funnel stages (not legacy selection_symbols)
     _sel_funnel = out.get("selection_funnel") or {}

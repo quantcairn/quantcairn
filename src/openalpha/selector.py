@@ -603,9 +603,14 @@ class AIStrategySelector:
                 os.environ["OPENALPHA_LIVE_DATA"] = previous
             self.scorer = Scorer()
 
-    def run_selection(self, write_configs: bool = True, symbols_override: List[str] | None = None):
+    def run_selection(
+        self,
+        write_configs: bool = True,
+        symbols_override: List[str] | None = None,
+        selection_run_id: str | None = None,
+    ):
         selection_started_at = datetime.now().timestamp()
-        selection_run_id = uuid.uuid4().hex
+        selection_run_id = str(selection_run_id or "").strip() or uuid.uuid4().hex
         selection_date = datetime.now().strftime("%Y-%m-%d")
         tracker = FunnelTracker(
             selection_run_id=selection_run_id,
@@ -654,6 +659,10 @@ class AIStrategySelector:
                     preflight_kwargs["symbols"] = list(symbols) if symbols else None
                 if "max_scan_symbols" in preflight_signature.parameters:
                     preflight_kwargs["max_scan_symbols"] = min(20, len(symbols) or 20)
+                if "selection_run_id" in preflight_signature.parameters:
+                    preflight_kwargs["selection_run_id"] = selection_run_id
+                if "diagnostic_preflight" in preflight_signature.parameters:
+                    preflight_kwargs["diagnostic_preflight"] = True
             except (TypeError, ValueError):
                 pass
 

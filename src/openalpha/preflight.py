@@ -54,6 +54,8 @@ def _normalize_symbol(value: Any) -> str:
 class PreflightReport:
     """Complete market data readiness assessment before selector execution."""
 
+    selection_run_id: str = ""
+    diagnostic_preflight: bool = False
     market_state: str = "UNKNOWN"  # PRE_MARKET | MARKET_OPEN | AFTER_HOURS | CLOSED
     is_trading_day: bool = False
     session_label: str = ""
@@ -74,6 +76,8 @@ class PreflightReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "selection_run_id": self.selection_run_id,
+            "diagnostic_preflight": self.diagnostic_preflight,
             "market_state": self.market_state,
             "is_trading_day": self.is_trading_day,
             "session_label": self.session_label,
@@ -142,6 +146,8 @@ def run_preflight(
     symbols: list[str] | None = None,
     max_scan_symbols: int = 20,
     dry_run: bool = False,
+    selection_run_id: str | None = None,
+    diagnostic_preflight: bool = False,
 ) -> PreflightReport:
     """Assess market state and data availability before selector execution.
 
@@ -153,6 +159,8 @@ def run_preflight(
     req_date = required_selection_date(now_et)
 
     report = PreflightReport(
+        selection_run_id=str(selection_run_id or "").strip(),
+        diagnostic_preflight=bool(diagnostic_preflight),
         is_trading_day=(not session.is_market_holiday) and session.session_label != "CLOSED",
         session_label=session.session_label or "",
         session_reason=session.current_session_reason or "",

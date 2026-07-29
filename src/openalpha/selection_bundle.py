@@ -513,6 +513,12 @@ def build_selection_bundle(
     selection_stage = str(summary.get("selection_stage") or selection_state_payload.get("selection_stage") or "")
     result_quality = str(result_quality or summary.get("result_quality") or "")
     research_admission = str(research_admission or summary.get("research_admission") or "")
+    summary = dict(summary or {})
+    selection_state_payload = dict(selection_state_payload or {})
+    summary["selection_run_id"] = selection_run_id
+    summary["top_sync_run_id"] = selection_run_id
+    selection_state_payload["selection_run_id"] = selection_run_id
+    selection_state_payload["top_sync_run_id"] = selection_run_id
     requested_top_n = requested_top_n if requested_top_n is not None else summary.get("requested_top_n")
     if requested_top_n is None:
         requested_top_n = summary.get("target_top_n") or selection_state_payload.get("requested_top_n") or selection_state_payload.get("top_slot_count")
@@ -611,6 +617,14 @@ def _bundle_validation_errors(bundle: SelectionBundle) -> list[str]:
     from src.openalpha.data_quality import formal_selection_ineligibility_reasons, is_formal_selection_eligible
 
     errors: list[str] = []
+    bundle_run_id = str(getattr(bundle, "selection_run_id", "") or "").strip()
+    summary_run_id = str((bundle.summary or {}).get("selection_run_id") or "").strip() if isinstance(bundle.summary, dict) else ""
+    funnel_run_id = str(((bundle.summary or {}).get("selection_funnel") or {}).get("selection_run_id") or "").strip() if isinstance(bundle.summary, dict) else ""
+    state_run_id = str((bundle.selection_state_payload or {}).get("selection_run_id") or "").strip() if isinstance(bundle.selection_state_payload, dict) else ""
+    for candidate_run_id in (summary_run_id, funnel_run_id, state_run_id):
+        if candidate_run_id and bundle_run_id and candidate_run_id != bundle_run_id:
+            errors.append("selection_run_id_mismatch")
+            break
     provider_audit = bundle.summary.get("provider_audit") if isinstance(bundle.summary, dict) else {}
     provider_contributors = []
     provider_attempts = 0
