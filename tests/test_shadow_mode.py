@@ -138,7 +138,7 @@ def test_shadow_mode_uses_quote_only_and_writes_outputs(monkeypatch, tmp_path):
     pages = _prepare_pages()
     fake_module = _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
-    _shadow_sandbox_root(monkeypatch, tmp_path)
+    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
     runtime_output_dir = Path("artifacts/shadow/test_shadow_runtime")
     runtime = ShadowRuntimeConfig(
         output_dir=runtime_output_dir,
@@ -178,7 +178,7 @@ def test_shadow_restart_skips_duplicate_bars(monkeypatch, tmp_path):
     pages = _prepare_pages()
     _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
-    _shadow_sandbox_root(monkeypatch, tmp_path)
+    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
     runtime = ShadowRuntimeConfig(
         output_dir=Path("artifacts/shadow/test_shadow_restart"),
         symbol="SOXS.US",
@@ -221,12 +221,13 @@ def test_shadow_config_refuses_invalid_flags(monkeypatch):
     assert any("TRADING_ENABLED" in error for error in errors)
 
 
-def test_shadow_runtime_config_derives_universe_metadata(monkeypatch):
+def test_shadow_runtime_config_derives_universe_metadata(monkeypatch, tmp_path):
     monkeypatch.setenv("SOXS_SHADOW_SYMBOL", "AAPL")
     monkeypatch.setenv("SOXS_SHADOW_BENCHMARKS", "QQQ.US,SPY.US")
     monkeypatch.setenv("SOXS_SHADOW_TIMEFRAME", "15m")
     monkeypatch.setenv("SOXS_SHADOW_STRATEGY_VERSION", "baseline")
     monkeypatch.setenv("SOXS_SHADOW_STRATEGY_FAMILY", "equity_mean_reversion")
+    project_dir, shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
     monkeypatch.setenv("SOXS_SHADOW_OUTPUT_DIR", "artifacts/shadow/aapl_15m")
     monkeypatch.setenv("SOXS_SHADOW_ENABLED", "true")
     monkeypatch.setenv("SOXS_TRADING_ENABLED", "false")
