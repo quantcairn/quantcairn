@@ -29,7 +29,7 @@ ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Rate limiting for Telegram: max 1 msg/sec
 _telegram_last_send = 0.0
 _trade_notification_lock = threading.Lock()
-_ai_selection_notification_lock = threading.Lock()
+_ai_selection_notification_lock = threading.RLock()
 _TRADE_NOTIFICATION_SCHEMA_VERSION = "trade_notification_state.v1"
 _MAX_TRADE_NOTIFICATION_KEYS = 5000
 _AI_SELECTION_NOTIFICATION_TYPE = "AI_SELECTION_FINALIZED"
@@ -167,10 +167,9 @@ def _record_trade_notification_key(path: Path, notification_key: str, metadata: 
 
 def _selection_notification_key(report: dict, notification_type: str = _AI_SELECTION_NOTIFICATION_TYPE) -> str | None:
     run_id = str(report.get("selection_run_id") or "").strip()
-    bundle_hash = str(report.get("selection_bundle_hash") or "").strip()
-    if not run_id or not bundle_hash:
+    if not run_id:
         return None
-    return f"{run_id}:{bundle_hash}:{notification_type}"
+    return f"{run_id}:{notification_type}"
 
 
 def _read_ai_selection_notification_ledger(path: Path) -> list[dict]:
@@ -194,9 +193,29 @@ def _read_ai_selection_notification_ledger(path: Path) -> list[dict]:
     return records
 
 
-def _ai_selection_notification_status(path: Path, notification_key: str) -> tuple[bool, int]:
+def _ai_selection_notification_status(path: Path, *, selection_run_id: str, notification_type: str = _AI_SELECTION_NOTIFICATION_TYPE) -> tuple[bool, int]:
     records = _read_ai_selection_notification_ledger(path)
-    matching = [item for item in records if str(item.get("notification_key") or "") == notification_key]
+    normalized_run_id = str(selection_run_id or "").strip()
+    normalized_type = str(notification_type or _AI_SELECTION_NOTIFICATION_TYPE).strip().upper()
+    matching: list[dict] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("notification_type") or "").strip().upper()
+        if item_type and item_type != normalized_type:
+            continue
+        item_run_id = str(item.get("selection_run_id") or "").strip()
+        if item_run_id and item_run_id == normalized_run_id:
+            matching.append(item)
+            continue
+        notification_key = str(item.get("notification_key") or "").strip()
+        if notification_key == f"{normalized_run_id}:{normalized_type}":
+            matching.append(item)
+            continue
+        legacy_bundle_hash = str(item.get("selection_bundle_hash") or "").strip()
+        if legacy_bundle_hash and notification_key == f"{normalized_run_id}:{legacy_bundle_hash}:{normalized_type}":
+            matching.append(item)
+            continue
     sent = any(str(item.get("status") or "").upper() == "SENT" for item in matching)
     attempts = len(matching)
     return sent, attempts
@@ -233,6 +252,7 @@ def _record_ai_selection_notification_attempt(
     *,
     report: dict,
     notification_key: str,
+    notification_type: str = _AI_SELECTION_NOTIFICATION_TYPE,
     status: str,
     attempt_count: int,
     error: str | None = None,
@@ -241,7 +261,7 @@ def _record_ai_selection_notification_attempt(
         path,
         {
             "notification_key": notification_key,
-            "notification_type": _AI_SELECTION_NOTIFICATION_TYPE,
+            "notification_type": notification_type,
             "selection_run_id": str(report.get("selection_run_id") or ""),
             "selection_bundle_hash": str(report.get("selection_bundle_hash") or ""),
             "status": str(status or "").upper(),
@@ -1773,100 +1793,124 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
         logger.info("AI selection notification skipped: notification_key_missing")
         return
     ledger_path = default_ai_selection_notification_ledger_path()
-    already_sent, attempt_count = _ai_selection_notification_status(ledger_path, notification_key)
-    if already_sent:
-        logger.info("AI selection notification skipped: duplicate bundle %s", notification_key)
-        return
-    if attempt_count >= _MAX_AI_SELECTION_NOTIFICATION_ATTEMPTS:
-        logger.warning("AI selection notification skipped after max attempts: %s", notification_key)
-        return
+    notification_type = _AI_SELECTION_NOTIFICATION_TYPE
 
-    notification_cfg = _load_ai_selector_notification_config()
-    webhook_url = (
-        os.environ.get("SOXS_OPENALPHA_WEBHOOK")
-        or os.environ.get("OPENALPHA_WEBHOOK")
-        or notification_cfg.get("ai_selector_webhook_url")
-        or notification_cfg.get("webhook_url")
-    )
-    bot_token = (
-        notification_cfg.get("ai_selector_telegram_bot_token", "")
-        or os.environ.get("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN")
-        or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
-        or notification_cfg.get("telegram_bot_token", "")
-    )
-    channel_chat_id = (
-        notification_cfg.get("ai_selector_telegram_chat_id", "")
-        or os.environ.get("SOXS_OPENALPHA_TELEGRAM_CHAT_ID")
-        or os.environ.get("SOXS_TELEGRAM_CHAT_ID")
-        or notification_cfg.get("telegram_chat_id", "")
-    )
-
-    # ── Admin chat (full debug) — separate from public channel ──────────
-    admin_chat_id = (
-        os.environ.get("QUANTCAIRN_ADMIN_CHAT_ID", "")
-        or os.environ.get("SOXS_OPENALPHA_ADMIN_CHAT_ID", "")
-        or notification_cfg.get("ai_selector_admin_chat_id", "")
-    )
-
-    # ── Determine which templates to send ────────────────────────────────
-    pipeline_status = str(report.get("pipeline_status") or report.get("execution_status") or "COMPLETED").strip().upper()
-    selected_top_n = len([item for item in resolved_top_items if _is_formal_trade_selection(dict(item))])
-
-    send_public = pipeline_status != "FAILED"
-    send_admin = bool(admin_chat_id)
-
-    # ── 1. Public channel message ────────────────────────────────────────
-    if send_public and channel_chat_id:
-        public_notifier = Notifier(
-            console=False,
-            macos_notification=False,
-            webhook_url=webhook_url,
-            trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
-            telegram_bot_token=bot_token,
-            telegram_chat_id=channel_chat_id,
-        )
-        pub_title, pub_body = _build_public_channel_message(report, resolved_top_items)
-        public_sent = False
-        if public_notifier._telegram_enabled:
+    lock_path = ledger_path.with_suffix(ledger_path.suffix + ".notify.lock")
+    with _ai_selection_notification_lock:
+        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
             try:
-                public_notifier._send(pub_title, pub_body, "summary", macos=False, remote=True)
-                public_sent = True
-                logger.info("Public channel notification sent: %s — %d chars",
-                            pub_title, len(pub_body))
-            except Exception as exc:
-                logger.warning("Public channel notification failed: %s", _redact_telegram_sensitive_text(exc))
+                import fcntl
 
-    # ── 2. Admin debug message ───────────────────────────────────────────
-    admin_sent = False
-    if send_admin:
-        admin_notifier = Notifier(
-            console=False,
-            macos_notification=False,
-            webhook_url=webhook_url,
-            trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
-            telegram_bot_token=bot_token,
-            telegram_chat_id=admin_chat_id,
-        )
-        admin_title, admin_body = _build_admin_debug_message(report, resolved_top_items)
-        if admin_notifier._telegram_enabled:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
             try:
-                admin_notifier._send(admin_title, admin_body, "summary", macos=False, remote=True)
-                admin_sent = True
-                logger.info("Admin debug notification sent: %s — %d chars",
-                            admin_title, len(admin_body))
-            except Exception as exc:
-                logger.warning("Admin debug notification failed: %s", _redact_telegram_sensitive_text(exc))
+                already_sent, attempt_count = _ai_selection_notification_status(
+                    ledger_path,
+                    selection_run_id=str(report.get("selection_run_id") or ""),
+                    notification_type=notification_type,
+                )
+                if already_sent:
+                    logger.info("AI selection notification skipped: duplicate run/type %s", notification_key)
+                    return
+                if attempt_count >= _MAX_AI_SELECTION_NOTIFICATION_ATTEMPTS:
+                    logger.warning("AI selection notification skipped after max attempts: %s", notification_key)
+                    return
 
-    # ── 3. Record notification attempt ───────────────────────────────────
-    # Record if at least one channel succeeded (public takes priority for SENT status)
-    if (send_public and channel_chat_id) or send_admin:
-        _record_ai_selection_notification_attempt(
-            ledger_path,
-            report=report,
-            notification_key=notification_key,
-            status="SENT" if (public_sent or admin_sent) else "FAILED",
-            attempt_count=attempt_count + 1,
-            error=None if (public_sent or admin_sent) else "notification_send_failed",
-        )
-    else:
-        logger.info("AI selection notification skipped: no Telegram channel configured")
+                notification_cfg = _load_ai_selector_notification_config()
+                webhook_url = (
+                    os.environ.get("SOXS_OPENALPHA_WEBHOOK")
+                    or os.environ.get("OPENALPHA_WEBHOOK")
+                    or notification_cfg.get("ai_selector_webhook_url")
+                    or notification_cfg.get("webhook_url")
+                )
+                bot_token = (
+                    notification_cfg.get("ai_selector_telegram_bot_token", "")
+                    or os.environ.get("SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN")
+                    or os.environ.get("SOXS_TELEGRAM_BOT_TOKEN")
+                    or notification_cfg.get("telegram_bot_token", "")
+                )
+                channel_chat_id = (
+                    notification_cfg.get("ai_selector_telegram_chat_id", "")
+                    or os.environ.get("SOXS_OPENALPHA_TELEGRAM_CHAT_ID")
+                    or os.environ.get("SOXS_TELEGRAM_CHAT_ID")
+                    or notification_cfg.get("telegram_chat_id", "")
+                )
+
+                # ── Admin chat (full debug) — separate from public channel ──────────
+                admin_chat_id = (
+                    os.environ.get("QUANTCAIRN_ADMIN_CHAT_ID", "")
+                    or os.environ.get("SOXS_OPENALPHA_ADMIN_CHAT_ID", "")
+                    or notification_cfg.get("ai_selector_admin_chat_id", "")
+                )
+
+                # ── Determine which templates to send ────────────────────────────────
+                pipeline_status = str(report.get("pipeline_status") or report.get("execution_status") or "COMPLETED").strip().upper()
+                selected_top_n = len([item for item in resolved_top_items if _is_formal_trade_selection(dict(item))])
+
+                send_public = pipeline_status != "FAILED"
+                send_admin = bool(admin_chat_id)
+
+                # ── 1. Public channel message ────────────────────────────────────────
+                public_sent = False
+                if send_public and channel_chat_id:
+                    public_notifier = Notifier(
+                        console=False,
+                        macos_notification=False,
+                        webhook_url=webhook_url,
+                        trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
+                        telegram_bot_token=bot_token,
+                        telegram_chat_id=channel_chat_id,
+                    )
+                    pub_title, pub_body = _build_public_channel_message(report, resolved_top_items)
+                    if public_notifier._telegram_enabled:
+                        try:
+                            public_notifier._send(pub_title, pub_body, "summary", macos=False, remote=True)
+                            public_sent = True
+                            logger.info("Public channel notification sent: %s — %d chars",
+                                        pub_title, len(pub_body))
+                        except Exception as exc:
+                            logger.warning("Public channel notification failed: %s", _redact_telegram_sensitive_text(exc))
+
+                # ── 2. Admin debug message ───────────────────────────────────────────
+                admin_sent = False
+                if send_admin:
+                    admin_notifier = Notifier(
+                        console=False,
+                        macos_notification=False,
+                        webhook_url=webhook_url,
+                        trade_summary_interval=int(notification_cfg.get("trade_summary_interval", 5) or 5),
+                        telegram_bot_token=bot_token,
+                        telegram_chat_id=admin_chat_id,
+                    )
+                    admin_title, admin_body = _build_admin_debug_message(report, resolved_top_items)
+                    if admin_notifier._telegram_enabled:
+                        try:
+                            admin_notifier._send(admin_title, admin_body, "summary", macos=False, remote=True)
+                            admin_sent = True
+                            logger.info("Admin debug notification sent: %s — %d chars",
+                                        admin_title, len(admin_body))
+                        except Exception as exc:
+                            logger.warning("Admin debug notification failed: %s", _redact_telegram_sensitive_text(exc))
+
+                # ── 3. Record notification attempt ───────────────────────────────────
+                # Record if at least one channel succeeded (public takes priority for SENT status)
+                if (send_public and channel_chat_id) or send_admin:
+                    _record_ai_selection_notification_attempt(
+                        ledger_path,
+                        report=report,
+                        notification_key=notification_key,
+                        notification_type=notification_type,
+                        status="SENT" if (public_sent or admin_sent) else "FAILED",
+                        attempt_count=attempt_count + 1,
+                        error=None if (public_sent or admin_sent) else "notification_send_failed",
+                    )
+                else:
+                    logger.info("AI selection notification skipped: no Telegram channel configured")
+            finally:
+                try:
+                    import fcntl
+
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass

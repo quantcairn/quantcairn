@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -1108,6 +1109,136 @@ def test_ai_selection_notification_sends_once_per_bundle(monkeypatch, tmp_path):
     ledger_lines = ledger_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(ledger_lines) == 1
     assert "AI_SELECTION_FINALIZED" in ledger_lines[0]
+
+
+def test_ai_selection_notification_sends_once_even_if_bundle_hash_changes(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(ledger_path))
+    bundle_hashes = iter(["bundle-hash-one", "bundle-hash-two"])
+
+    def fake_load_committed_bundle(*_args, **_kwargs):
+        return {
+            "report": _committed_bundle_report(
+                selection_run_id="bundle-run-hash-change",
+                selection_bundle_hash=next(bundle_hashes),
+            )
+        }
+
+    monkeypatch.setattr(alerts, "load_committed_selection_bundle", fake_load_committed_bundle)
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {"ai_selector_telegram_bot_token": "ai-bot", "ai_selector_telegram_chat_id": "ai-chat"},
+    )
+    sent = []
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self._telegram_enabled = True
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            sent.append(args)
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    assert len(sent) == 1
+    ledger_lines = ledger_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(ledger_lines) == 1
+    payload = json.loads(ledger_lines[0])
+    assert payload["selection_run_id"] == "bundle-run-hash-change"
+    assert payload["notification_type"] == "AI_SELECTION_FINALIZED"
+    assert payload["notification_key"] == "bundle-run-hash-change:AI_SELECTION_FINALIZED"
+
+
+def test_ai_selection_notification_legacy_ledger_blocks_duplicate_run(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(ledger_path))
+    legacy_record = {
+        "notification_key": "legacy-run:legacy-bundle-hash:AI_SELECTION_FINALIZED",
+        "notification_type": "AI_SELECTION_FINALIZED",
+        "selection_run_id": "legacy-run",
+        "selection_bundle_hash": "legacy-bundle-hash",
+        "status": "SENT",
+        "sent_at": "2026-07-29T00:00:00-04:00",
+        "attempted_at": "2026-07-29T00:00:00-04:00",
+        "attempt_count": 1,
+        "error": None,
+    }
+    ledger_path.write_text(json.dumps(legacy_record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+
+    sent = []
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self._telegram_enabled = True
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            sent.append(args)
+
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="legacy-run", selection_bundle_hash="new-bundle-hash")},
+    )
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {"ai_selector_telegram_bot_token": "ai-bot", "ai_selector_telegram_chat_id": "ai-chat"},
+    )
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    assert sent == []
+    ledger_lines = ledger_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(ledger_lines) == 1
+
+
+def test_ai_selection_notification_key_is_scoped_by_type():
+    report = {"selection_run_id": "run-123", "selection_bundle_hash": "bundle-123"}
+
+    assert alerts._selection_notification_key(report, "AI_SELECTION_FINALIZED") == "run-123:AI_SELECTION_FINALIZED"
+    assert alerts._selection_notification_key(report, "AI_SELECTION_DRY_RUN") == "run-123:AI_SELECTION_DRY_RUN"
+
+
+def test_ai_selection_notification_status_is_type_scoped(tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "notification_key": "run-1:old-hash:AI_SELECTION_FINALIZED",
+                "notification_type": "AI_SELECTION_FINALIZED",
+                "selection_run_id": "run-1",
+                "selection_bundle_hash": "old-hash",
+                "status": "SENT",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    sent, attempts = alerts._ai_selection_notification_status(
+        ledger_path,
+        selection_run_id="run-1",
+        notification_type="AI_SELECTION_FINALIZED",
+    )
+    assert sent is True
+    assert attempts == 1
+
+    other_sent, other_attempts = alerts._ai_selection_notification_status(
+        ledger_path,
+        selection_run_id="run-1",
+        notification_type="AI_SELECTION_OTHER",
+    )
+    assert other_sent is False
+    assert other_attempts == 0
 
 
 def test_ai_selection_notification_failure_can_retry(monkeypatch, tmp_path):
