@@ -437,7 +437,22 @@ def test_combined_dashboard_flags_sandbox_vs_paper_execution_conflict(monkeypatc
     assert "TOP 引擎模式不一致" not in html
 
 
-def test_selection_dashboard_view_separates_research_and_tradable_candidates():
+def test_selection_dashboard_view_separates_research_and_tradable_candidates(tmp_path, monkeypatch):
+    for index, ticker in enumerate(("SOXS", "LABD", "YINN"), start=1):
+        (tmp_path / f"TOP{index}.yaml").write_text(
+            "\n".join([
+                f"ticker: {ticker}",
+                "mode: live",
+                "selection:",
+                "  source: manual_override",
+            ]),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(combined, "current_top_config_slots", lambda limit=None: [
+        {"slot": 1, "path": tmp_path / "TOP1.yaml", "exists": True, "enabled": True, "ticker": "SOXS"},
+        {"slot": 2, "path": tmp_path / "TOP2.yaml", "exists": True, "enabled": True, "ticker": "LABD"},
+        {"slot": 3, "path": tmp_path / "TOP3.yaml", "exists": True, "enabled": True, "ticker": "YINN"},
+    ])
     view = combined._selection_dashboard_view(
         {
             "selection_date": "2026-07-21",
@@ -615,6 +630,62 @@ def test_selection_dashboard_view_marks_conflict_and_missing(tmp_path, monkeypat
     assert conflict_view["selection_state"]["code"] == "BLOCKED"
     assert conflict_view["live_config_state"]["code"] == "CONFLICT"
     assert conflict_view["system_state"]["code"] == "BROKEN"
+
+
+def test_combined_dashboard_prefers_committed_bundle_report(monkeypatch):
+    latest_calls = []
+
+    monkeypatch.setattr(combined, "load_committed_selection_bundle", lambda project_dir: {
+        "report": {
+            "selection_run_id": "bundle-run",
+            "selection_date": "2026-07-29",
+            "market_state": "MARKET_OPEN",
+            "run_mode": "FULL",
+            "data_mode": "INTRADAY",
+            "result_quality": "COMPLETE",
+            "research_admission": "RESEARCH_READY",
+            "selected_top_n": 3,
+            "requested_top_n": 3,
+            "selected_symbols": ["AAPL", "SOFI", "DRIP"],
+            "final_selected_symbols": ["AAPL", "SOFI", "DRIP"],
+        },
+        "manifest": {"bundle_report_path": "state/selection_bundles/bundle-run/selection_bundle_v1/ai_selection_report.json"},
+    })
+    monkeypatch.setattr(combined, "load_latest_ai_selection_state", lambda project_dir: latest_calls.append(True) or {
+        "selection_run_id": "latest-run",
+        "selected_top_n": 0,
+    })
+
+    report = combined._load_ai_selection_report()
+
+    assert report["selection_run_id"] == "bundle-run"
+    assert report["selected_top_n"] == 3
+    assert latest_calls == []
+
+
+def test_selection_dashboard_view_shows_empty_top_label_and_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(combined, "current_top_config_slots", lambda limit=None: [
+        {"slot": 1, "path": tmp_path / "TOP1.yaml", "exists": True, "enabled": True, "ticker": "SOXS"},
+        {"slot": 2, "path": tmp_path / "TOP2.yaml", "exists": True, "enabled": True, "ticker": "LABD"},
+        {"slot": 3, "path": tmp_path / "TOP3.yaml", "exists": True, "enabled": True, "ticker": "YINN"},
+    ])
+
+    view = combined._selection_dashboard_view(
+        {
+            "selection_date": "2026-07-29",
+            "selection_stage": "FINALIZED",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selected_top_n": 0,
+            "requested_top_n": 3,
+            "top3": [],
+            "selection_state": {"detail": "AI 没有生成可交易候选。"},
+        },
+        {"ok": False, "reason": "selection_state_date_mismatch:2026-07-29", "mismatch_reason": "selection_state_date_mismatch:2026-07-29", "detail": "raw", "state_date": "2026-07-29", "required_date": "2026-07-29"},
+    )
+
+    assert view["top_count_label"] == "EMPTY · selected 0/3"
+    assert view["missing_label"] == "原因：AI 没有生成可交易候选。"
 
 
 def test_combined_dashboard_shows_lifecycle_result_cards(monkeypatch):
@@ -799,7 +870,22 @@ def test_refresh_live_account_uses_broker_error_details(monkeypatch):
     assert result["stale_reason"] == "凭证无效，请更新 LongBridge Access Token"
 
 
-def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
+def test_combined_dashboard_renders_ai_selection_report(tmp_path, monkeypatch):
+    for index, ticker in enumerate(("SOFI", "NVDA", "AAPL"), start=1):
+        (tmp_path / f"TOP{index}.yaml").write_text(
+            "\n".join([
+                f"ticker: {ticker}",
+                "mode: paper",
+                "selection:",
+                "  source: ai_selector",
+            ]),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(combined, "current_top_config_slots", lambda limit=None: [
+        {"slot": 1, "path": tmp_path / "TOP1.yaml", "exists": True, "enabled": True, "ticker": "SOFI"},
+        {"slot": 2, "path": tmp_path / "TOP2.yaml", "exists": True, "enabled": True, "ticker": "NVDA"},
+        {"slot": 3, "path": tmp_path / "TOP3.yaml", "exists": True, "enabled": True, "ticker": "AAPL"},
+    ])
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
     monkeypatch.setattr(combined, "load_runtime_settings", lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5})
     monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
@@ -825,6 +911,11 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
         "resistance": 110.0,
     })
     monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: {
+        "selection_run_id": "run-2026-06-30-001",
+        "selection_date": "2026-06-30",
+        "market_state": "MARKET_OPEN",
+        "run_mode": "FULL",
+        "data_mode": "INTRADAY",
         "timestamp": "2026-06-30T09:29:00",
         "settings": {
             "min_price": 10.0,
@@ -850,6 +941,9 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
             }
         ],
         "top3": [{"ticker": "SOFI"}, {"ticker": "NVDA"}, {"ticker": "AAPL"}],
+        "selected_top_n": 3,
+        "requested_top_n": 3,
+        "final_selected_symbols": ["SOFI", "NVDA", "AAPL"],
         "top10": [],
         "protected_positions": [],
         "refinement_status": "background_fast_preliminary",
@@ -913,6 +1007,11 @@ def test_combined_dashboard_renders_ai_selection_report(monkeypatch):
     assert "部分降级" in html
     assert "缺少 OPENAI_API_KEY" in html
     assert "FMP 已禁用，不影响运行。" in html
+    assert "运行编号" in html
+    assert "MARKET_OPEN" in html
+    assert "FULL" in html
+    assert "INTRADAY" in html
+    assert "SOFI / NVDA / AAPL" in html
     assert "NVDA" in html
     assert "84.19" in html
     assert "$118.00 - $154.00" in html

@@ -127,6 +127,24 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
             for item in (ai_selection.get("top3") or [])[:selected_count]
             if isinstance(item, dict) and str(item.get("ticker") or item.get("symbol") or "").strip()
         ]
+    final_selected_symbols = [
+        str(symbol or "").strip().upper()
+        for symbol in (ai_selection.get("final_selected_symbols") or selected_symbols)
+        if str(symbol or "").strip()
+    ]
+    if selected_count <= 0 and requested_count > 0:
+        top_count_label = f"EMPTY · selected 0/{requested_count}"
+        empty_reason = str(
+            (ai_selection.get("selection_state") or {}).get("detail")
+            or (ai_selection.get("system_state") or {}).get("detail")
+            or selection_sync.get("detail")
+            or ai_selection.get("reason")
+            or "暂无原因"
+        ).strip()
+        missing_label = f"原因：{empty_reason}"
+    else:
+        top_count_label = f"已入选 {selected_count} / 目标 {requested_count}"
+        missing_label = "数量完整" if missing_count == 0 else f"缺失 {missing_count} 个"
 
     funnel = ai_selection.get("selection_funnel") or {}
     funnel_stages = funnel.get("stages") or []
@@ -183,6 +201,10 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
 
     return {
         "selection_date": format_optional(ai_selection.get("selection_date") or ai_selection.get("date") or selection_sync.get("state_date")),
+        "selection_run_id": format_optional(ai_selection.get("selection_run_id")),
+        "market_state": translate_status(ai_selection.get("market_state") or (ai_selection.get("market_context") or {}).get("session_label") or (ai_selection.get("market_context") or {}).get("current_session_status") or "UNAVAILABLE"),
+        "run_mode": translate_status(ai_selection.get("run_mode") or (ai_selection.get("settings") or {}).get("run_mode") or "UNAVAILABLE"),
+        "data_mode": translate_status(ai_selection.get("data_mode") or (ai_selection.get("settings") or {}).get("data_mode") or "UNAVAILABLE"),
         "selection_stage": translate_status(ai_selection.get("selection_stage") or "UNAVAILABLE"),
         "result_quality": translate_status(ai_selection.get("result_quality") or "UNAVAILABLE"),
         "research_admission": translate_status(ai_selection.get("research_admission") or "UNAVAILABLE"),
@@ -193,12 +215,14 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "tradable_selected_count": tradable_selected_count,
         "tradable_requested_count": tradable_requested_count,
         "research_symbols": research_symbols,
+        "final_selected_symbols": final_selected_symbols,
         "next_validation_stage": next_validation_stage_text,
         "paper_live_status": selection_states["system_state"]["label"],
         "paper_live_detail": selection_states["system_state"]["detail"],
         "selected_symbols": selected_symbols,
         "missing_count": missing_count,
-        "missing_label": "数量完整" if missing_count == 0 else f"缺失 {missing_count} 个",
+        "missing_label": missing_label,
+        "top_count_label": top_count_label,
         "sync_ok": selection_states["system_state"]["code"] == "OK",
         "sync_summary": selection_states["system_state"]["label"],
         "sync_detail": selection_states["system_state"]["detail"],
@@ -216,7 +240,6 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "funnel_rows": funnel_rows,
         "reason_rows": reason_rows,
         "nearest_rejected": nearest_rejected,
-        "selection_run_id": format_optional(ai_selection.get("selection_run_id")),
         "bundle_version": format_optional(ai_selection.get("bundle_version")),
         "bundle_hash": format_optional(ai_selection.get("bundle_hash")),
         "generated_at": format_timestamp(ai_selection.get("generated_at") or ai_selection.get("timestamp")),
@@ -966,6 +989,24 @@ def _dashboard_active_symbols(ai_selection: dict | None, selection_sync: dict | 
 
 
 def _load_ai_selection_report():
+    bundle = load_committed_selection_bundle(PROJECT_DIR)
+    if isinstance(bundle, dict):
+        bundle_report = bundle.get("report")
+        if isinstance(bundle_report, dict):
+            return dict(bundle_report)
+        bundle_manifest = bundle.get("manifest")
+        if isinstance(bundle_manifest, dict):
+            bundle_report_path = str(bundle_manifest.get("bundle_report_path") or bundle_report or "").strip()
+            if bundle_report_path:
+                candidate = Path(bundle_report_path)
+                if not candidate.is_absolute():
+                    candidate = PROJECT_DIR / bundle_report_path
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                except Exception:
+                    data = None
+                if isinstance(data, dict):
+                    return data
     return load_latest_ai_selection_state(PROJECT_DIR)
 
 
@@ -4669,6 +4710,22 @@ HTML = """<!DOCTYPE html>
                 <strong id="selection-overview-date">{{ selection_dashboard.selection_date }}</strong>
             </div>
             <div class="selection-overview-item">
+                <span>运行编号</span>
+                <strong id="selection-overview-run-id">{{ selection_dashboard.selection_run_id }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>市场状态</span>
+                <strong id="selection-overview-market-state">{{ selection_dashboard.market_state }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>运行模式</span>
+                <strong id="selection-overview-run-mode">{{ selection_dashboard.run_mode }}</strong>
+            </div>
+            <div class="selection-overview-item">
+                <span>数据模式</span>
+                <strong id="selection-overview-data-mode">{{ selection_dashboard.data_mode }}</strong>
+            </div>
+            <div class="selection-overview-item">
                 <span>当前阶段</span>
                 <strong id="selection-overview-stage">{{ selection_dashboard.selection_stage }}</strong>
             </div>
@@ -4682,7 +4739,7 @@ HTML = """<!DOCTYPE html>
             </div>
             <div class="selection-overview-item emphasis">
                 <span>正式 TOP</span>
-                <strong id="selection-overview-top-count">已入选 {{ selection_dashboard.selected_count }} / 目标 {{ selection_dashboard.requested_count }}</strong>
+                <strong id="selection-overview-top-count">{{ selection_dashboard.top_count_label }}</strong>
             </div>
             <div class="selection-overview-item emphasis">
                 <span>研究候选</span>
@@ -4697,6 +4754,13 @@ HTML = """<!DOCTYPE html>
                 <div class="symbol-chips" id="selection-overview-symbols">
                     {% for symbol in selection_dashboard.selected_symbols %}<span class="symbol-chip">{{ symbol }}</span>{% endfor %}
                     {% if not selection_dashboard.selected_symbols %}<strong>无</strong>{% endif %}
+                </div>
+            </div>
+            <div class="selection-overview-item">
+                <span>最终候选</span>
+                <div class="symbol-chips" id="selection-overview-final-symbols">
+                    {% for symbol in selection_dashboard.final_selected_symbols %}<span class="symbol-chip">{{ symbol }}</span>{% endfor %}
+                    {% if not selection_dashboard.final_selected_symbols %}<strong>无</strong>{% endif %}
                 </div>
             </div>
             <div class="selection-overview-item">
@@ -6825,6 +6889,9 @@ HTML = """<!DOCTYPE html>
             const selectionPresentation = selection.presentation || {};
             const formalTop = Array.isArray(aiSelection.top3) ? aiSelection.top3 : [];
             const selectedSymbols = formalTop.map((item) => item.ticker || item.symbol).filter(Boolean);
+            const finalSelectedSymbols = Array.isArray(aiSelection.final_selected_symbols)
+                ? aiSelection.final_selected_symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean)
+                : selectedSymbols;
             const missingCount = Number(aiSelection.top_n_missing_count || 0);
             const requestedCount = selectedSymbols.length + missingCount;
             const researchCandidates = Array.isArray(aiSelection.research_top_candidates) ? aiSelection.research_top_candidates : [];
@@ -6832,17 +6899,35 @@ HTML = """<!DOCTYPE html>
             const researchRequestedCount = Number(aiSelection.research_requested_top_n ?? requestedCount);
             const tradableSelectedCount = Number(aiSelection.tradable_selected_top_n ?? selectedSymbols.length);
             const tradableRequestedCount = Number(aiSelection.tradable_requested_top_n ?? requestedCount);
+            const topCountLabel = selectedSymbols.length > 0
+                ? `已入选 ${selectedSymbols.length} / 目标 ${requestedCount}`
+                : requestedCount > 0
+                    ? `EMPTY · selected 0/${requestedCount}`
+                    : 'EMPTY';
+            const emptyReason = String(
+                (selectionPresentation.ai_selection_state && selectionPresentation.ai_selection_state.detail)
+                || (selectionPresentation.system_state && selectionPresentation.system_state.detail)
+                || selection.reason
+                || '暂无原因'
+            ).trim();
             const validationSummary = aiSelection.validation_pipeline_summary || {};
             const nextValidationStage = String(aiSelection.next_validation_stage || validationSummary.next_validation_stage || '').toUpperCase();
             const nextValidationLabel = String(aiSelection.next_validation_stage_label || validationSummary.next_validation_stage_label || '');
             setText('selection-overview-date', displayOptional(selection.selection_date));
+            setText('selection-overview-run-id', displayOptional(selection.selection_run_id));
+            setText('selection-overview-market-state', displayStatus(aiSelection.market_state || (aiSelection.market_context && (aiSelection.market_context.session_label || aiSelection.market_context.current_session_status)) || 'UNAVAILABLE'));
+            setText('selection-overview-run-mode', displayStatus(aiSelection.run_mode || 'UNAVAILABLE'));
+            setText('selection-overview-data-mode', displayStatus(aiSelection.data_mode || (aiSelection.settings && aiSelection.settings.data_mode) || 'UNAVAILABLE'));
             setText('selection-overview-stage', displayStatus(aiSelection.selection_stage || 'UNAVAILABLE'));
             setText('selection-overview-quality', displayStatus(aiSelection.result_quality || 'UNAVAILABLE'));
             setText('selection-overview-admission', displayStatus(aiSelection.research_admission || 'UNAVAILABLE'));
-            setText('selection-overview-top-count', `已入选 ${selectedSymbols.length} / 目标 ${requestedCount}`);
+            setText('selection-overview-top-count', topCountLabel);
             setText('selection-overview-research-count', `${researchSelectedCount} / ${researchRequestedCount}`);
             setText('selection-overview-tradable-count', `${tradableSelectedCount} / ${tradableRequestedCount}`);
-            setText('selection-overview-missing', missingCount ? `缺失 ${missingCount} 个` : '数量完整');
+            setText('selection-overview-final-symbols', finalSelectedSymbols.length ? finalSelectedSymbols.join(' / ') : '无');
+            setText('selection-overview-missing', selectedSymbols.length > 0
+                ? (missingCount ? `缺失 ${missingCount} 个` : '数量完整')
+                : `原因：${emptyReason}`);
             const syncReason = displayReason(selection.reason);
             const systemState = selectionPresentation.system_state || {};
             const aiSelectionState = selectionPresentation.ai_selection_state || {};
