@@ -1,4 +1,54 @@
+import logging
+
+import requests
+
+from src.notifier import alerts
 from src.notifier.alerts import Notifier, _build_public_channel_message, _resolve_selection_market_state
+
+
+def _sample_top(ticker: str = "SOXS", score: float = 88.0) -> dict:
+    return {
+        "ticker": ticker,
+        "score": score,
+        "final_score": score,
+        "ai_score": score,
+        "range_score": score - 1.0,
+        "current_price": 10.0,
+        "size": 10,
+        "leveraged_etf": False,
+        "trade_filter_passed": True,
+        "current_validation_status": "DATA_VALID",
+        "trade_admission_status": "TRADABLE",
+        "data_status": "COMPLETE",
+        "scoring_eligible": True,
+        "score_source": "current_run_candidate_ranking",
+        "score_provider": "local_factor_scoring",
+        "score_generated_at": "2026-07-16T09:00:00-04:00",
+        "score_is_current_run": True,
+        "selection": {
+            "selection_date": "2026-07-16",
+            "score": score,
+            "reason": "test",
+        },
+    }
+
+
+def _committed_bundle_report(*, selection_run_id: str, selection_bundle_hash: str) -> dict:
+    return {
+        "selection_run_id": selection_run_id,
+        "selection_bundle_hash": selection_bundle_hash,
+        "selection_date": "2026-07-16",
+        "generated_at": "2026-07-17T23:42:21+08:00",
+        "selection_stage": "FINALIZED",
+        "execution_status": "COMPLETED",
+        "pipeline_status": "COMPLETED",
+        "result_quality": "COMPLETE",
+        "research_admission": "RESEARCH_READY",
+        "top_sync_status": "OK",
+        "requested_top_n": 3,
+        "selected_top_n": 1,
+        "top3": [_sample_top()],
+    }
 
 
 def test_trade_notification_rejects_invalid_fill(monkeypatch):
@@ -263,6 +313,90 @@ def test_fallback_key_persists_across_instances(tmp_path, monkeypatch):
 
     assert len(first_calls) == 1
     assert second_calls == []
+
+
+def test_telegram_send_single_redacts_token_from_exception_logs(monkeypatch, caplog):
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+
+    def fake_post(url, **kwargs):
+        raise requests.RequestException(f"boom url={url}")
+
+    monkeypatch.setattr(alerts.requests, "post", fake_post)
+
+    with caplog.at_level(logging.WARNING):
+        ok = notifier._telegram_send_single("hello", use_html=False, plain_title="title", plain_body="body")
+
+    assert ok is False
+    assert "123456:SECRET" not in caplog.text
+    assert "***REDACTED***" in caplog.text
+
+
+def test_notify_ai_selection_result_redacts_token_in_failure_logs(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(tmp_path / "notification_ledger.jsonl"))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-redact", selection_bundle_hash="bundle-hash-redact")},
+    )
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {"ai_selector_telegram_bot_token": "123456:SECRET", "ai_selector_telegram_chat_id": "ai-chat"},
+    )
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self._telegram_enabled = True
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            raise RuntimeError("telegram down: https://api.telegram.org/bot123456:SECRET/sendMessage")
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    with caplog.at_level(logging.WARNING):
+        alerts.notify_ai_selection_result(
+            _committed_bundle_report(selection_run_id="bundle-run-redact", selection_bundle_hash="bundle-hash-redact"),
+            [_sample_top("SOXS")],
+        )
+
+    assert "123456:SECRET" not in caplog.text
+    assert "***REDACTED***" in caplog.text
+
+
+def test_telegram_send_single_preserves_successful_payload(monkeypatch):
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+    captured = {}
+
+    class FakeResponse:
+        ok = True
+        status_code = 200
+        text = "ok"
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts.requests, "post", fake_post)
+
+    ok = notifier._telegram_send_single("<b>hello</b>", use_html=True, plain_title="title", plain_body="body")
+
+    assert ok is True
+    assert captured["url"] == "https://api.telegram.org/bot123456:SECRET/sendMessage"
+    assert captured["kwargs"]["json"]["chat_id"] == "@test_channel"
+    assert captured["kwargs"]["json"]["parse_mode"] == "HTML"
+    assert captured["kwargs"]["json"]["text"] == "<b>hello</b>"
 
 
 def run_test_direct():

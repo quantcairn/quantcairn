@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import re
 import subprocess
 import threading
 import time
@@ -33,6 +34,8 @@ _TRADE_NOTIFICATION_SCHEMA_VERSION = "trade_notification_state.v1"
 _MAX_TRADE_NOTIFICATION_KEYS = 5000
 _AI_SELECTION_NOTIFICATION_TYPE = "AI_SELECTION_FINALIZED"
 _MAX_AI_SELECTION_NOTIFICATION_ATTEMPTS = 3
+_TELEGRAM_URL_RE = re.compile(r"https://api\.telegram\.org/bot([^/\s?]+)(/sendMessage)", re.IGNORECASE)
+_TELEGRAM_TOKEN_RE = re.compile(r"bot([0-9]+:[A-Za-z0-9_-]+)")
 
 
 def _telegram_rate_limit():
@@ -42,6 +45,14 @@ def _telegram_rate_limit():
     if elapsed < 1.0:
         time.sleep(1.0 - elapsed)
     _telegram_last_send = time.time()
+
+
+def _redact_telegram_sensitive_text(value: object) -> str:
+    """Redact Telegram bot token material from loggable text."""
+    text = "" if value is None else str(value)
+    text = _TELEGRAM_URL_RE.sub("https://api.telegram.org/bot***REDACTED***/\\2", text)
+    text = _TELEGRAM_TOKEN_RE.sub("bot***REDACTED***", text)
+    return text
 
 
 def _build_fallback_trade_notification_key(
@@ -601,7 +612,7 @@ class Notifier:
             if resp.ok:
                 return True
 
-            logger.warning("Telegram send failed: %s %s", resp.status_code, resp.text[:200])
+            logger.warning("Telegram send failed: %s %s", resp.status_code, _redact_telegram_sensitive_text(resp.text[:200]))
             # Retry as plain text if HTML was used
             if use_html:
                 _telegram_rate_limit()
@@ -613,10 +624,10 @@ class Notifier:
                 )
                 if resp2.ok:
                     return True
-                logger.warning("Telegram plain retry also failed: %s %s", resp2.status_code, resp2.text[:200])
+                logger.warning("Telegram plain retry also failed: %s %s", resp2.status_code, _redact_telegram_sensitive_text(resp2.text[:200]))
             return False
         except Exception as e:
-            logger.warning("Telegram send error: %s", e)
+            logger.warning("Telegram send error: %s", _redact_telegram_sensitive_text(e))
             return False
 
     def _telegram_send_chunked(
@@ -1823,7 +1834,7 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
                 logger.info("Public channel notification sent: %s — %d chars",
                             pub_title, len(pub_body))
             except Exception as exc:
-                logger.warning("Public channel notification failed: %s", exc)
+                logger.warning("Public channel notification failed: %s", _redact_telegram_sensitive_text(exc))
 
     # ── 2. Admin debug message ───────────────────────────────────────────
     admin_sent = False
@@ -1844,7 +1855,7 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
                 logger.info("Admin debug notification sent: %s — %d chars",
                             admin_title, len(admin_body))
             except Exception as exc:
-                logger.warning("Admin debug notification failed: %s", exc)
+                logger.warning("Admin debug notification failed: %s", _redact_telegram_sensitive_text(exc))
 
     # ── 3. Record notification attempt ───────────────────────────────────
     # Record if at least one channel succeeded (public takes priority for SENT status)
