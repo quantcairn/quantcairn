@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib
 import os
 import sys
 import types
@@ -502,6 +503,282 @@ def test_run_ai_selector_rejects_cross_run_identity_mismatch():
         module.write_selection_filter_log = original_write_log
         module._run_integrated_ai_selector = original_run_integrated
         module.write_selection_bundle_atomic = original_bundle_writer
+
+    assert raised is not None
+    assert getattr(raised, "code", None) == 1
+    assert not captured_bundles
+
+
+def test_run_ai_selector_passes_real_universe_into_preflight():
+    module = _load_module()
+    preflight_module = importlib.import_module("src.openalpha.preflight")
+    captured_preflight: dict[str, object] = {}
+    captured_bundles: list[dict] = []
+
+    class FakeSelector:
+        selection_size = 5
+
+        def run_selection(self, write_configs: bool = True, symbols_override=None, selection_run_id=None):
+            return {
+                "selection_run_id": selection_run_id or "run-1",
+                "selection_funnel": {
+                    "selection_run_id": selection_run_id or "run-1",
+                    "run_mode": "FULL",
+                    "stages": [],
+                },
+                "top10": [],
+                "top5": [],
+                "top3": [],
+                "report": [],
+                "settings": {},
+                "quality_filter_report": {},
+            }
+
+    def fake_run_preflight(**kwargs):
+        captured_preflight.update(kwargs)
+        from src.openalpha.preflight import PreflightReport
+
+        symbols = list(kwargs.get("symbols") or [])
+        return PreflightReport(
+            selection_run_id=str(kwargs.get("selection_run_id") or ""),
+            diagnostic_preflight=bool(kwargs.get("diagnostic_preflight", False)),
+            market_state="MARKET_OPEN",
+            is_trading_day=True,
+            session_label="MARKET_OPEN",
+            run_mode="FULL",
+            data_mode="LIVE",
+            symbols_checked=len(symbols),
+            quotes_available=len(symbols),
+            ohlcv_available=len(symbols),
+            quote_coverage_pct=100.0 if symbols else 0.0,
+            ohlcv_coverage_pct=100.0 if symbols else 0.0,
+        )
+
+    original_selector = module.AIStrategySelector
+    original_live_positions = module._live_equity_positions
+    original_has_live = module._has_live_top_configs
+    original_load_settings = module.load_runtime_settings
+    original_write_log = module.write_selection_filter_log
+    original_restart = module._restart_top_engines
+    original_spawn = module._spawn_background_refinement
+    original_load_local_env = module.load_local_ai_env
+    original_run_integrated = module._run_integrated_ai_selector
+    original_split_selected = module._split_selected_and_protected_positions
+    original_annotate = module._annotate_with_ai_signals
+    original_apply_range_scores = module._apply_range_scores
+    original_build_report_top10 = module._build_report_top10
+    original_finalize_price_band = module._finalize_price_band
+    original_apply_trade_filter = module._apply_trade_filter
+    original_apply_composition_filter = module._apply_composition_filter
+    original_bundle_writer = module.write_selection_bundle_atomic
+    original_selector_universe = module._selector_module._load_managed_universe
+    original_preflight_run = preflight_module.run_preflight
+    original_env = os.environ.copy()
+    try:
+        module.AIStrategySelector = FakeSelector
+        module._live_equity_positions = lambda: []
+        module._has_live_top_configs = lambda: False
+        module.load_runtime_settings = lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5, "max_symbols": 20}
+        module.write_selection_filter_log = lambda payload: None
+        module._restart_top_engines = lambda: 0
+        module._spawn_background_refinement = lambda timestamp: None
+        module.load_local_ai_env = lambda: None
+        module._annotate_with_ai_signals = lambda rows, signal_map: [dict(item) for item in rows]
+        module._apply_range_scores = lambda rows: [dict(item) for item in rows]
+        module._enrich_candidate_quality_rows = lambda rows, provider_audit=None, provider_outputs=None: [dict(item) for item in rows]
+        module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: [dict(item) for item in (selector_top10 or selected or [])]
+        module._finalize_price_band = lambda candidates, min_price, max_price: ([dict(item) for item in candidates], [])
+        module._apply_trade_filter = lambda rows: ([dict(item) for item in rows], {"rejected": [], "fallback_used": False})
+        module._apply_composition_filter = lambda rows, top_n=3: ([dict(item) for item in rows], {"rejected": [], "warnings": []})
+        module._split_selected_and_protected_positions = lambda candidates, positions, limit=5: (list(candidates)[:limit], [])
+        module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or {
+            "selection_run_id": payload.get("selection_run_id", "run-1"),
+            "selection_bundle_hash": "bundle-hash",
+            "selection_bundle_manifest_path": "state/selection_bundle_manifest.json",
+            "selection_date": payload.get("selection_date", "2026-07-16"),
+            "generated_at": payload.get("generated_at", "2026-07-16T08:30:00-04:00"),
+            "selection_stage": payload.get("selection_state_payload", {}).get("selection_stage", "FINALIZED"),
+            "disabled_slots": [],
+            "selected_symbols": [],
+            "audit_path": "state/selection_sync_audit.json",
+            "state_path": "state/ai_selection_state.json",
+            "report_path": "reports/ai_selection_latest.json",
+            "top_paths": ["configs/TOP1.yaml", "configs/TOP2.yaml", "configs/TOP3.yaml"],
+        }
+        module._run_integrated_ai_selector = lambda: {
+            "enabled": True,
+            "top3": [],
+            "top10": [],
+            "preferred_symbols": [],
+            "signal_map": {},
+            "providers_used": [],
+            "providers_disabled": ["openbb", "fmp"],
+            "fmp_enabled": False,
+            "fallback_used": False,
+        }
+        module._selector_module._load_managed_universe = lambda: ["AAPL", "MSFT", "NVDA"]
+        preflight_module.run_preflight = fake_run_preflight
+
+        os.environ["SOXS_OPENBB_ENABLED"] = "1"
+        os.environ["OPENALPHA_RESTART_TOP"] = "0"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
+
+        module.main()
+    finally:
+        module.AIStrategySelector = original_selector
+        module._live_equity_positions = original_live_positions
+        module._has_live_top_configs = original_has_live
+        module.load_runtime_settings = original_load_settings
+        module.write_selection_filter_log = original_write_log
+        module._restart_top_engines = original_restart
+        module._spawn_background_refinement = original_spawn
+        module.load_local_ai_env = original_load_local_env
+        module._run_integrated_ai_selector = original_run_integrated
+        module._split_selected_and_protected_positions = original_split_selected
+        module._annotate_with_ai_signals = original_annotate
+        module._apply_range_scores = original_apply_range_scores
+        module._build_report_top10 = original_build_report_top10
+        module._finalize_price_band = original_finalize_price_band
+        module._apply_trade_filter = original_apply_trade_filter
+        module._apply_composition_filter = original_apply_composition_filter
+        module.write_selection_bundle_atomic = original_bundle_writer
+        module._selector_module._load_managed_universe = original_selector_universe
+        preflight_module.run_preflight = original_preflight_run
+        os.environ.clear()
+        os.environ.update(original_env)
+
+    assert captured_preflight["symbols"] == ["AAPL", "MSFT", "NVDA"]
+    assert captured_preflight["selection_run_id"]
+    assert captured_bundles
+    assert captured_bundles[0]["selection_run_id"] == captured_preflight["selection_run_id"]
+    assert captured_bundles[0]["summary"]["selection_funnel"]["run_mode"] == "FULL"
+
+
+def test_run_ai_selector_rejects_preflight_mode_mismatch():
+    module = _load_module()
+    preflight_module = importlib.import_module("src.openalpha.preflight")
+    captured_bundles: list[dict] = []
+
+    class FakeSelector:
+        selection_size = 5
+
+        def run_selection(self, write_configs: bool = True, symbols_override=None, selection_run_id=None):
+            return {
+                "selection_run_id": selection_run_id or "run-1",
+                "selection_funnel": {
+                    "selection_run_id": selection_run_id or "run-1",
+                    "run_mode": "FULL",
+                    "stages": [],
+                },
+                "top10": [],
+                "top5": [],
+                "top3": [],
+                "report": [],
+                "settings": {},
+                "quality_filter_report": {},
+            }
+
+    def fake_run_preflight(**kwargs):
+        from src.openalpha.preflight import PreflightReport
+
+        return PreflightReport(
+            selection_run_id=str(kwargs.get("selection_run_id") or ""),
+            diagnostic_preflight=bool(kwargs.get("diagnostic_preflight", False)),
+            market_state="MARKET_OPEN",
+            is_trading_day=True,
+            session_label="MARKET_OPEN",
+            run_mode="DEGRADED",
+            data_mode="EOD_ONLY",
+            symbols_checked=3,
+            quotes_available=0,
+            ohlcv_available=0,
+            quote_coverage_pct=0.0,
+            ohlcv_coverage_pct=0.0,
+        )
+
+    original_selector = module.AIStrategySelector
+    original_live_positions = module._live_equity_positions
+    original_has_live = module._has_live_top_configs
+    original_load_settings = module.load_runtime_settings
+    original_write_log = module.write_selection_filter_log
+    original_restart = module._restart_top_engines
+    original_spawn = module._spawn_background_refinement
+    original_load_local_env = module.load_local_ai_env
+    original_run_integrated = module._run_integrated_ai_selector
+    original_split_selected = module._split_selected_and_protected_positions
+    original_annotate = module._annotate_with_ai_signals
+    original_apply_range_scores = module._apply_range_scores
+    original_build_report_top10 = module._build_report_top10
+    original_finalize_price_band = module._finalize_price_band
+    original_apply_trade_filter = module._apply_trade_filter
+    original_apply_composition_filter = module._apply_composition_filter
+    original_bundle_writer = module.write_selection_bundle_atomic
+    original_selector_universe = module._selector_module._load_managed_universe
+    original_preflight_run = preflight_module.run_preflight
+    original_env = os.environ.copy()
+    raised = None
+    try:
+        module.AIStrategySelector = FakeSelector
+        module._live_equity_positions = lambda: []
+        module._has_live_top_configs = lambda: False
+        module.load_runtime_settings = lambda: {"min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5, "max_symbols": 20}
+        module.write_selection_filter_log = lambda payload: None
+        module._restart_top_engines = lambda: 0
+        module._spawn_background_refinement = lambda timestamp: None
+        module.load_local_ai_env = lambda: None
+        module._annotate_with_ai_signals = lambda rows, signal_map: [dict(item) for item in rows]
+        module._apply_range_scores = lambda rows: [dict(item) for item in rows]
+        module._enrich_candidate_quality_rows = lambda rows, provider_audit=None, provider_outputs=None: [dict(item) for item in rows]
+        module._build_report_top10 = lambda selector_top10, selected, signal_map, live_positions: [dict(item) for item in (selector_top10 or selected or [])]
+        module._finalize_price_band = lambda candidates, min_price, max_price: ([dict(item) for item in candidates], [])
+        module._apply_trade_filter = lambda rows: ([dict(item) for item in rows], {"rejected": [], "fallback_used": False})
+        module._apply_composition_filter = lambda rows, top_n=3: ([dict(item) for item in rows], {"rejected": [], "warnings": []})
+        module._split_selected_and_protected_positions = lambda candidates, positions, limit=5: (list(candidates)[:limit], [])
+        module.write_selection_bundle_atomic = lambda **payload: captured_bundles.append(dict(payload)) or payload
+        module._run_integrated_ai_selector = lambda: {
+            "enabled": True,
+            "top3": [],
+            "top10": [],
+            "preferred_symbols": [],
+            "signal_map": {},
+            "providers_used": [],
+            "providers_disabled": ["openbb", "fmp"],
+            "fmp_enabled": False,
+            "fallback_used": False,
+        }
+        module._selector_module._load_managed_universe = lambda: ["AAPL", "MSFT", "NVDA"]
+        preflight_module.run_preflight = fake_run_preflight
+
+        os.environ["SOXS_OPENBB_ENABLED"] = "1"
+        os.environ["OPENALPHA_RESTART_TOP"] = "0"
+        os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
+
+        try:
+            module.main()
+        except SystemExit as exc:
+            raised = exc
+    finally:
+        module.AIStrategySelector = original_selector
+        module._live_equity_positions = original_live_positions
+        module._has_live_top_configs = original_has_live
+        module.load_runtime_settings = original_load_settings
+        module.write_selection_filter_log = original_write_log
+        module._restart_top_engines = original_restart
+        module._spawn_background_refinement = original_spawn
+        module.load_local_ai_env = original_load_local_env
+        module._run_integrated_ai_selector = original_run_integrated
+        module._split_selected_and_protected_positions = original_split_selected
+        module._annotate_with_ai_signals = original_annotate
+        module._apply_range_scores = original_apply_range_scores
+        module._build_report_top10 = original_build_report_top10
+        module._finalize_price_band = original_finalize_price_band
+        module._apply_trade_filter = original_apply_trade_filter
+        module._apply_composition_filter = original_apply_composition_filter
+        module.write_selection_bundle_atomic = original_bundle_writer
+        module._selector_module._load_managed_universe = original_selector_universe
+        preflight_module.run_preflight = original_preflight_run
+        os.environ.clear()
+        os.environ.update(original_env)
 
     assert raised is not None
     assert getattr(raised, "code", None) == 1

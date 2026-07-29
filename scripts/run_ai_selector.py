@@ -986,6 +986,27 @@ def _merged_selection_symbols(preferred_symbols: list[str] | None) -> list[str] 
     return merged or None
 
 
+def _resolve_preflight_symbols(selector: AIStrategySelector) -> list[str] | None:
+    """Resolve the symbol universe used for the authoritative wrapper preflight.
+
+    The selector and wrapper must observe the same runtime universe source so the
+    persisted preflight artifact reflects the actual run context rather than a
+    zero-sample diagnostic scan.
+    """
+    source = str(os.environ.get("OPENALPHA_UNIVERSE", "managed") or "managed").strip().lower()
+    if source == "managed":
+        managed = _selector_module._load_managed_universe()
+        if managed:
+            return list(managed)
+        return list(selector.universe._load_local_snapshot())
+    if source == "sample":
+        return list(selector.universe._load_local_snapshot())
+    try:
+        return list(selector.universe.build_universe(source=source))
+    except Exception:
+        return list(selector.universe._load_local_snapshot())
+
+
 def _live_candidate_price(ticker: str) -> float | None:
     symbol = _normalize_ticker(ticker)
     if not symbol:
@@ -2357,16 +2378,20 @@ def main(mode: str | None = None):
     if live_positions is None and _has_live_top_configs():
         print("Live position verification failed; refusing to run selection or replace TOP configs.")
         sys.exit(1)
+    sel = AIStrategySelector()
 
     # ── Preflight: market state + data availability ────────────────────
     from src.openalpha.preflight import run_preflight as _run_preflight, print_preflight
-    _pf = _run_preflight(symbols=None, max_scan_symbols=5, selection_run_id=selection_run_id)
+    _pf = _run_preflight(
+        symbols=_resolve_preflight_symbols(sel),
+        max_scan_symbols=5,
+        selection_run_id=selection_run_id,
+    )
     print_preflight(_pf)
 
     integrated_ai = _run_integrated_ai_selector()
     preferred_symbols = integrated_ai.get("preferred_symbols") or None
     selection_symbols = _merged_selection_symbols(preferred_symbols)
-    sel = AIStrategySelector()
     # Let selector choose universe source (managed/sample/sp500) unless
     # explicitly overridden via --universe-source CLI.
     out = sel.run_selection(write_configs=False, selection_run_id=selection_run_id)
@@ -2382,6 +2407,18 @@ def main(mode: str | None = None):
         sys.exit(1)
     if funnel_run_id and funnel_run_id != selection_run_id:
         print(f"selection_funnel_run_id_mismatch: expected {selection_run_id}, got {funnel_run_id}")
+        sys.exit(1)
+    selector_run_mode = str(
+        (out.get("selection_funnel") or {}).get("run_mode")
+        or out.get("run_mode")
+        or ""
+    ).strip().upper()
+    preflight_run_mode = str(getattr(_pf, "run_mode", "") or "").strip().upper()
+    if preflight_run_mode and selector_run_mode and preflight_run_mode != selector_run_mode:
+        print(
+            "selection_run_mode_mismatch: "
+            f"expected preflight={preflight_run_mode}, selector={selector_run_mode}"
+        )
         sys.exit(1)
 
     selected = _annotate_with_ai_signals(list(selected or []), integrated_ai.get("signal_map") or {})
