@@ -66,17 +66,13 @@ def is_trading_day(now_et: datetime) -> bool:
 def is_market_time(now_et: datetime) -> bool:
     if not is_trading_day(now_et):
         return False
-    # Launchd fires at 21:00/22:30 Beijing time. In EDT the desired ET
-    # pre-open window is 09:00, while in EST it is 09:30.
-    if now_et.dst() and now_et.dst().total_seconds() != 0:
-        target_hour = 9
-        target_minute = 0
-    else:
-        target_hour = 9
-        target_minute = 30
-    target = now_et.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
-    delta = abs((now_et - target).total_seconds())
-    return delta <= 90
+    # Allow the selector to run in the early intraday window once the
+    # market has settled past the open gap but before the midday stretch.
+    # ET handles DST/standard time automatically, so the window is expressed
+    # entirely in America/New_York time.
+    window_start = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+    window_end = now_et.replace(hour=10, minute=30, second=0, microsecond=0)
+    return window_start <= now_et <= window_end
 
 
 def already_ran_today(now_et: datetime) -> bool:

@@ -79,6 +79,76 @@ class TestDataAvailability:
         assert availability["quotes"] >= 0
         assert availability["ohlcv"] >= 0
 
+    def test_run_preflight_uses_provided_symbols_for_coverage(self, monkeypatch):
+        class FakeSession:
+            is_market_holiday = False
+            is_premarket = False
+            is_regular_session = True
+            is_after_hours = False
+            session_label = "MARKET_OPEN"
+            current_session_reason = ""
+            current_session = __import__("datetime").date(2026, 7, 24)
+            previous_completed_session = __import__("datetime").date(2026, 7, 23)
+
+        captured = {}
+
+        def fake_scan(symbols, max_symbols=20):
+            captured["symbols"] = list(symbols)
+            captured["max_symbols"] = max_symbols
+            return {"quotes": 2, "ohlcv": 2, "checked": 4}
+
+        monkeypatch.setattr("src.openalpha.preflight.market_session_context", lambda now_et: FakeSession())
+        monkeypatch.setattr("src.openalpha.preflight._scan_data_availability", fake_scan)
+        monkeypatch.setattr(
+            "src.openalpha.preflight._et_now",
+            lambda: __import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")),
+        )
+
+        report = run_preflight(
+            symbols=["AAPL", "MSFT", "NVDA"],
+            max_scan_symbols=2,
+            dry_run=True,
+        )
+
+        assert captured["symbols"] == ["AAPL", "MSFT", "NVDA"]
+        assert captured["max_symbols"] == 2
+        assert report.symbols_checked == 4
+        assert report.quote_coverage_pct == 50.0
+        assert report.ohlcv_coverage_pct == 50.0
+        assert report.run_mode == "FULL"
+
+    def test_run_preflight_without_symbols_keeps_legacy_zero_coverage(self, monkeypatch):
+        class FakeSession:
+            is_market_holiday = False
+            is_premarket = False
+            is_regular_session = True
+            is_after_hours = False
+            session_label = "MARKET_OPEN"
+            current_session_reason = ""
+            current_session = __import__("datetime").date(2026, 7, 24)
+            previous_completed_session = __import__("datetime").date(2026, 7, 23)
+
+        called = {"count": 0}
+
+        def fake_scan(symbols, max_symbols=20):
+            called["count"] += 1
+            return {"quotes": 1, "ohlcv": 1, "checked": 1}
+
+        monkeypatch.setattr("src.openalpha.preflight.market_session_context", lambda now_et: FakeSession())
+        monkeypatch.setattr("src.openalpha.preflight._scan_data_availability", fake_scan)
+        monkeypatch.setattr(
+            "src.openalpha.preflight._et_now",
+            lambda: __import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")),
+        )
+
+        report = run_preflight(symbols=None, max_scan_symbols=2, dry_run=True)
+
+        assert called["count"] == 0
+        assert report.symbols_checked == 0
+        assert report.quote_coverage_pct == 0.0
+        assert report.ohlcv_coverage_pct == 0.0
+        assert report.run_mode == "DEGRADED"
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Serialization

@@ -237,6 +237,18 @@ def test_selector_never_pads_quality_output_to_reach_selection_size():
 
             monkeypatch.setattr(selector_module, "_QualityFilterContext", FakeContext)
             monkeypatch.setattr(selector_module, "LOG_DIR", log_dir)
+            from src.openalpha import preflight as pf_module
+            monkeypatch.setattr(
+                pf_module,
+                "run_preflight",
+                lambda *, symbols=None, max_scan_symbols=20, dry_run=True: type("PF", (), {
+                    "to_dict": lambda self: {
+                        "market_state": "MARKET_OPEN",
+                        "run_mode": "FULL",
+                        "is_trading_day": True,
+                    },
+                })(),
+            )
 
             with _with_sample_universe():
                 selector = AIStrategySelector()

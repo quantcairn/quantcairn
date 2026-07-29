@@ -61,10 +61,14 @@ def test_ai_selector_does_not_run_on_market_holiday():
     assert is_trading_day(et(2026, 7, 3, 9, 0)) is False
     assert is_trading_day(et(2026, 7, 2, 9, 0)) is True
     assert is_market_time(et(2026, 7, 3, 9, 0)) is False
-    assert is_market_time(et(2026, 7, 2, 9, 0)) is True
-    assert is_market_time(et(2026, 7, 2, 9, 25)) is False
-    assert is_market_time(et(2026, 11, 2, 9, 30)) is True
-    assert is_market_time(et(2026, 11, 2, 9, 0)) is False
+    assert is_market_time(et(2026, 7, 2, 9, 34)) is False
+    assert is_market_time(et(2026, 7, 2, 9, 35)) is True
+    assert is_market_time(et(2026, 7, 2, 10, 30)) is True
+    assert is_market_time(et(2026, 7, 2, 10, 31)) is False
+    assert is_market_time(et(2026, 11, 2, 9, 34)) is False
+    assert is_market_time(et(2026, 11, 2, 9, 35)) is True
+    assert is_market_time(et(2026, 11, 2, 10, 30)) is True
+    assert is_market_time(et(2026, 11, 2, 10, 31)) is False
 
 
 def test_ai_selector_wrapper_is_quiet_when_not_due(monkeypatch, capsys):

@@ -1,4 +1,5 @@
 import json
+import inspect
 import math
 import os
 import uuid
@@ -611,20 +612,6 @@ class AIStrategySelector:
             selection_date=selection_date,
         )
 
-        # ── Preflight: check market state before building universe ───────
-        _preflight_report: dict[str, Any] = {}
-        _run_mode: str = "FULL"
-        try:
-            from src.openalpha.preflight import run_preflight as _run_preflight, PreflightReport
-            _pf = _run_preflight(dry_run=True)
-            _preflight_report = _pf.to_dict()
-            _run_mode = str(_preflight_report.get("run_mode") or "FULL").strip().upper()
-        except Exception:
-            _preflight_report = {"market_state": "UNKNOWN", "run_mode": "FULL"}
-
-        # ── Execution mode: LIVE / PAPER / RESEARCH ─────────────────────
-        _execution_mode = _resolve_execution_mode(_run_mode)
-
         # 1. build universe
         source = "override"
         if symbols_override:
@@ -653,6 +640,31 @@ class AIStrategySelector:
 
         symbols = symbols[:self.max_symbols]
         tracker.add_stage("UNIVERSE_FILTER", symbols, symbols)
+
+        # ── Preflight: check market state with the actual running universe ──
+        _preflight_report: dict[str, Any] = {}
+        _run_mode: str = "FULL"
+        try:
+            from src.openalpha.preflight import run_preflight as _run_preflight, PreflightReport
+
+            preflight_kwargs: dict[str, Any] = {"dry_run": True}
+            try:
+                preflight_signature = inspect.signature(_run_preflight)
+                if "symbols" in preflight_signature.parameters:
+                    preflight_kwargs["symbols"] = list(symbols) if symbols else None
+                if "max_scan_symbols" in preflight_signature.parameters:
+                    preflight_kwargs["max_scan_symbols"] = min(20, len(symbols) or 20)
+            except (TypeError, ValueError):
+                pass
+
+            _pf = _run_preflight(**preflight_kwargs)
+            _preflight_report = _pf.to_dict()
+            _run_mode = str(_preflight_report.get("run_mode") or "FULL").strip().upper()
+        except Exception:
+            _preflight_report = {"market_state": "UNKNOWN", "run_mode": "FULL"}
+
+        # ── Execution mode: LIVE / PAPER / RESEARCH ─────────────────────
+        _execution_mode = _resolve_execution_mode(_run_mode)
 
         # 2. Market data: validate OHLCV availability independently of scoring.
         #    MARKET_DATA output = symbols with >= 60 rows of OHLCV data,

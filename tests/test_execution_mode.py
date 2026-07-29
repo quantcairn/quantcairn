@@ -171,6 +171,73 @@ class TestPaperMode:
                 assert len(result["formal_candidates"]) > 0
                 assert result["quality_fallback_active"] is False
 
+    def test_run_selection_passes_universe_symbols_to_preflight(self, monkeypatch):
+        monkeypatch.delenv("QUANTCAIRN_EXECUTION_MODE", raising=False)
+        from src.openalpha.selector import AIStrategySelector
+        from src.openalpha import selector as selector_module
+
+        captured = {}
+
+        class GoodContext:
+            def history_metrics(self, symbol):
+                return (2_000_000, 0.5, 50.0)
+            def quote_metrics(self, symbol):
+                return (50.0, 49.98, 50.02, True)
+            def close(self):
+                pass
+
+        def fake_preflight(*, symbols=None, max_scan_symbols=20, dry_run=False):
+            captured["symbols"] = list(symbols or [])
+            captured["max_scan_symbols"] = max_scan_symbols
+            return type("PF", (), {
+                "to_dict": lambda self: {
+                    "market_state": "MARKET_OPEN",
+                    "run_mode": "FULL",
+                    "is_trading_day": True,
+                },
+            })()
+
+        monkeypatch.setattr("src.openalpha.preflight.run_preflight", fake_preflight)
+        monkeypatch.setattr("src.openalpha.selector._QualityFilterContext", GoodContext)
+        monkeypatch.setattr(
+            "src.openalpha.selector._apply_quality_filters_with_report",
+            lambda candidates, max_seconds=None, run_mode="FULL": (
+                list(candidates),
+                {
+                    "generated_at": "2026-07-24T09:00:00",
+                    "total_candidates_before_filters": len(candidates),
+                    "removed_by_volume_filter": 0,
+                    "removed_by_spread_filter": 0,
+                    "removed_by_volatility_filter": 0,
+                    "removed_due_to_missing_data": 0,
+                    "final_selected_symbols": [],
+                    "existing_real_positions_preserved": [],
+                    "timed_out": False,
+                    "rows": [],
+                },
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setattr(selector_module, "LOG_DIR", Path(tmpdir) / "logs")
+            with _with_sample_universe():
+                selector = AIStrategySelector()
+                selector.selection_size = 1
+                selector.universe._load_local_snapshot = lambda: ["AAPL", "MSFT", "NVDA"]
+                selector.news.collect_for_symbols = lambda symbols: {s: [] for s in symbols}
+                selector._score_with_live_flag = lambda symbols, news_map, live_enabled: [
+                    _candidate("AAPL", 95.0),
+                    _candidate("MSFT", 85.0),
+                    _candidate("NVDA", 75.0),
+                ]
+
+                result = selector.run_selection(write_configs=False)
+
+        assert captured["symbols"] == ["AAPL", "MSFT", "NVDA"]
+        assert captured["max_scan_symbols"] == 3
+        assert result["run_mode"] == "FULL"
+        assert result["execution_mode"] == "LIVE"
+
     def test_paper_mode_candidates_have_confidence(self, monkeypatch):
         monkeypatch.setenv("QUANTCAIRN_EXECUTION_MODE", "PAPER")
         from src.openalpha.selector import AIStrategySelector
