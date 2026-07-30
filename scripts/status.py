@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.openalpha.selection_bundle import load_committed_selection_bundle
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", str(PROJECT_DIR / "state")))
 ARTIFACTS_SEL = PROJECT_DIR / "artifacts" / "selection"
@@ -57,6 +59,48 @@ def _safe_float(v: Any, d: float = 0.0) -> float:
         return d
 
 
+def _safe_int(v: Any, d: int = 0) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def _display_text(value: Any, default: str = "UNKNOWN") -> str:
+    text = str(value or "").strip()
+    return text if text else default
+
+
+def _load_latest_report_fallback() -> dict[str, Any] | None:
+    latest_path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
+    latest = _read_json(latest_path)
+    return latest if isinstance(latest, dict) else None
+
+
+def _load_committed_selection_report() -> tuple[dict[str, Any] | None, str]:
+    committed = None
+    try:
+        committed = load_committed_selection_bundle(PROJECT_DIR)
+    except Exception:
+        committed = None
+
+    if isinstance(committed, dict):
+        report = committed.get("report")
+        if isinstance(report, dict):
+            return dict(report), "committed bundle"
+
+    latest = _load_latest_report_fallback()
+    if isinstance(latest, dict):
+        return dict(latest), "latest report fallback"
+
+    return None, "none"
+
+
+def _load_diagnostic_preflight() -> dict[str, Any] | None:
+    preflight = _read_json(ARTIFACTS_SEL / "preflight.json")
+    return preflight if isinstance(preflight, dict) else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Data sections
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -77,52 +121,72 @@ def _section_execution_mode() -> None:
     print(f"  Env var:  QUANTCAIRN_EXECUTION_MODE={'<not set>' if not env else env}")
 
 
-def _section_last_selector_run() -> None:
-    done_files = sorted(STATE_DIR.glob("ai_selector_*.done"))
-    if not done_files:
-        print()
-        print("═" * 52)
-        print("  Last Selector Run:  never")
-        print("═" * 52)
-        return
-
-    last_done = done_files[-1]
-    run_date = last_done.stem.replace("ai_selector_", "")
-    run_time = last_done.read_text().strip()
-
-    # Funnel debug
-    funnel = _read_json(ARTIFACTS_SEL / "funnel_debug.json") or {}
-    preflight = _read_json(ARTIFACTS_SEL / "preflight.json") or {}
-    sel_state = _read_json(STATE_DIR / "ai_selection_state.json") or {}
-
-    # Bundle manifest for count
-    bundle_manifest = _read_json(STATE_DIR / "selection_bundle_manifest.json")
-
+def _section_committed_selection_run() -> None:
+    selection, source = _load_committed_selection_report()
     print()
     print("═" * 52)
-    print("  Last Selector Run")
+    print("  Committed Selection Run")
     print("═" * 52)
-    print(f"  Date:          {run_date}")
-    print(f"  Time:          {run_time[:19]}")
-    print(f"  Preflight:     market={preflight.get('market_state','?')}  "
-          f"run_mode={preflight.get('run_mode','?')}  "
-          f"trading_day={preflight.get('is_trading_day','?')}")
-    print(f"  Pipeline rate: {funnel.get('pipeline_success_rate', 0):.1%}")
-    print(f"  Formal cands:  {funnel.get('formal_candidates', 0)}")
-    print(f"  Preview cands: {funnel.get('preview_candidates', 0)}")
-    print(f"  Fallback:      {funnel.get('fallback_used', False)}")
-    if sel_state:
-        print(f"  Selection state: date={sel_state.get('selection_date','?')}  "
-              f"count={sel_state.get('top_count','?')}  "
-              f"mode={sel_state.get('mode','?')}")
+    print(f"  Source:        {source}")
+    if not selection:
+        print("  Selection run: no committed selection run")
+        print("  selection_run_id: UNKNOWN")
+        print("  selection_outcome: UNKNOWN")
+        print("  selected_top_n: N/A")
+        print("  final_selected_symbols: []")
+        print("  market_state: UNKNOWN")
+        print("  run_mode: UNKNOWN")
+        print("  data_mode: UNKNOWN")
+        print("  generated_at: UNKNOWN")
+        return
 
-    # Latest candidates from funnel symbol list
-    formal_syms = funnel.get("formal_symbols", [])
-    preview_syms = funnel.get("preview_symbols", [])
-    if formal_syms:
-        print(f"  Latest TOP:    {', '.join(formal_syms[:10])}")
-    elif preview_syms:
-        print(f"  Latest Preview: {', '.join(preview_syms[:10])}")
+    selected_symbols = (
+        selection.get("final_selected_symbols")
+        or selection.get("selected_symbols")
+        or [item.get("ticker") for item in (selection.get("top3") or []) if isinstance(item, dict)]
+    )
+    if not isinstance(selected_symbols, list):
+        selected_symbols = []
+    normalized_symbols = [str(symbol).strip().upper() for symbol in selected_symbols if str(symbol).strip()]
+    top_n = selection.get("selected_top_n")
+    if top_n is None:
+        top_n = len(normalized_symbols)
+    print(f"  selection_run_id: {_display_text(selection.get('selection_run_id'))}")
+    print(f"  selection_outcome: {_display_text(selection.get('selection_outcome'))}")
+    print(f"  selected_top_n: {_safe_int(top_n, len(normalized_symbols))}")
+    print(f"  final_selected_symbols: {normalized_symbols if normalized_symbols else []}")
+    print(f"  market_state: {_display_text(selection.get('market_state'))}")
+    print(f"  run_mode: {_display_text(selection.get('run_mode'))}")
+    print(f"  data_mode: {_display_text(selection.get('data_mode'))}")
+    print(f"  generated_at: {_display_text(selection.get('generated_at'))}")
+
+
+def _section_diagnostic_preflight() -> None:
+    preflight = _load_diagnostic_preflight()
+    print()
+    print("═" * 52)
+    print("  Diagnostic Preflight Snapshot")
+    print("═" * 52)
+    print("  This snapshot is diagnostic only and is not the committed selection state.")
+    if not preflight:
+        print("  diagnostic selection_run_id: UNKNOWN")
+        print("  generated_at: UNKNOWN")
+        print("  market_state: UNKNOWN")
+        print("  run_mode: UNKNOWN")
+        print("  data_mode: UNKNOWN")
+        print("  Diagnostic snapshot: unavailable")
+        return
+
+    diag_run_id = _display_text(preflight.get("selection_run_id"))
+    print(f"  diagnostic selection_run_id: {diag_run_id}")
+    print(f"  generated_at: {_display_text(preflight.get('generated_at'))}")
+    print(f"  market_state: {_display_text(preflight.get('market_state'))}")
+    print(f"  run_mode: {_display_text(preflight.get('run_mode'))}")
+    print(f"  data_mode: {_display_text(preflight.get('data_mode'))}")
+    committed, _ = _load_committed_selection_report()
+    committed_run_id = _display_text((committed or {}).get("selection_run_id")) if committed else ""
+    if committed_run_id and diag_run_id and diag_run_id != committed_run_id:
+        print("  Diagnostic snapshot is not bound to the current committed selection run.")
 
 
 def _section_paper_portfolio() -> None:
@@ -375,7 +439,8 @@ def main() -> None:
     print(f"  PID:  {os.getpid()}")
 
     _section_execution_mode()
-    _section_last_selector_run()
+    _section_committed_selection_run()
+    _section_diagnostic_preflight()
     _section_paper_portfolio()
     _section_recent_trades()
     _section_outcome_records()
