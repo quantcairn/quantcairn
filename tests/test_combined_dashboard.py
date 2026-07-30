@@ -463,6 +463,32 @@ def test_selection_dashboard_view_separates_research_and_tradable_candidates(tmp
             "requested_top_n": 3,
             "top_n_missing_count": 3,
             "top3": [],
+            "candidate_layers": {
+                "trade_candidates": [
+                    {
+                        "ticker": "AAPL",
+                        "candidate_score": 91.2,
+                        "trade_admission_status": "TRADABLE",
+                        "final_selected": True,
+                    }
+                ],
+                "research_candidates": [
+                    {
+                        "ticker": "SOFI",
+                        "candidate_score": 71.45,
+                        "research_status": "RESEARCH_ONLY",
+                        "why_interesting": "高动量观察",
+                    }
+                ],
+                "watchlist_candidates": [
+                    {
+                        "ticker": "DRIP",
+                        "rejection_stage": "POST_FILTER",
+                        "primary_blocking_reason": "entry_quality_too_low",
+                        "blocking_reasons": ["entry_quality_too_low", "composition_limit"],
+                    }
+                ],
+            },
             "research_top_candidates": [
                 {
                     "ticker": "SOFI",
@@ -487,10 +513,41 @@ def test_selection_dashboard_view_separates_research_and_tradable_candidates(tmp
     assert view["research_selected_count"] == 1
     assert view["research_symbols"] == ["SOFI"]
     assert view["tradable_selected_count"] == 0
+    assert view["candidate_layers"]["trade_candidates"][0]["symbol"] == "AAPL"
+    assert view["candidate_layers"]["research_candidates"][0]["symbol"] == "SOFI"
+    assert view["candidate_layers"]["watchlist_candidates"][0]["symbol"] == "DRIP"
+    assert view["candidate_layers"]["trade_candidates"][0]["final_selected"] is True
     assert view["next_validation_stage"] == "候选分类（CLASSIFICATION）"
     assert view["selection_state"]["code"] == "NO_TRADABLE_SELECTION"
     assert view["live_config_state"]["code"] == "PRESERVED_MANUAL_OVERRIDE"
     assert view["system_state"]["code"] == "SAFE_HOLD"
+
+
+def test_selection_dashboard_view_falls_back_to_legacy_candidate_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(combined, "current_top_config_slots", lambda limit=None: [
+        {"slot": 1, "path": tmp_path / "TOP1.yaml", "exists": True, "enabled": True, "ticker": "SOXS"},
+        {"slot": 2, "path": tmp_path / "TOP2.yaml", "exists": True, "enabled": True, "ticker": "LABD"},
+        {"slot": 3, "path": tmp_path / "TOP3.yaml", "exists": True, "enabled": True, "ticker": "YINN"},
+    ])
+
+    view = combined._selection_dashboard_view(
+        {
+            "selection_date": "2026-07-21",
+            "selection_stage": "FINALIZED",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selected_top_n": 1,
+            "requested_top_n": 3,
+            "top3": [{"ticker": "AAPL", "candidate_score": 90.0, "trade_admission_status": "TRADABLE"}],
+            "research_top_candidates": [{"ticker": "SOFI", "candidate_score": 71.45, "research_status": "RESEARCH_ONLY"}],
+            "nearest_rejected_candidates": [{"ticker": "DRIP", "rejection_stage": "POST_FILTER", "primary_blocking_reason": "entry_quality_too_low"}],
+        },
+        {"ok": False, "reason": "selection_state_date_mismatch:2026-07-24", "mismatch_reason": "selection_state_date_mismatch:2026-07-24", "detail": "raw", "state_date": "2026-07-24", "required_date": "2026-07-27"},
+    )
+
+    assert view["candidate_layers"]["trade_candidates"][0]["symbol"] == "AAPL"
+    assert view["candidate_layers"]["research_candidates"][0]["symbol"] == "SOFI"
+    assert view["candidate_layers"]["watchlist_candidates"][0]["symbol"] == "DRIP"
 
 
 def test_selection_dashboard_view_marks_active_ai_synced_and_ok(tmp_path, monkeypatch):
@@ -945,6 +1002,17 @@ def test_combined_dashboard_renders_ai_selection_report(tmp_path, monkeypatch):
         "requested_top_n": 3,
         "final_selected_symbols": ["SOFI", "NVDA", "AAPL"],
         "top10": [],
+        "candidate_layers": {
+            "trade_candidates": [
+                {"ticker": "SOFI", "candidate_score": 88.2, "trade_admission_status": "TRADABLE", "final_selected": True},
+            ],
+            "research_candidates": [
+                {"ticker": "NVDA", "candidate_score": 84.19, "research_status": "RESEARCH_ONLY", "why_interesting": "AI 研究候选"},
+            ],
+            "watchlist_candidates": [
+                {"ticker": "DRIP", "rejection_stage": "POST_FILTER", "primary_blocking_reason": "entry_quality_too_low", "blocking_reasons": ["entry_quality_too_low"]},
+            ],
+        },
         "protected_positions": [],
         "refinement_status": "background_fast_preliminary",
         "refinement_selection_stage": "fast_preliminary",
@@ -1008,6 +1076,11 @@ def test_combined_dashboard_renders_ai_selection_report(tmp_path, monkeypatch):
     assert "缺少 OPENAI_API_KEY" in html
     assert "FMP 已禁用，不影响运行。" in html
     assert "运行编号" in html
+    assert "Trade Candidates" in html
+    assert "Research Candidates" in html
+    assert "Watchlist / Near Miss" in html
+    assert "AI 研究候选" in html
+    assert "入场质量不足" in html
     assert "MARKET_OPEN" in html
     assert "FULL" in html
     assert "INTRADAY" in html

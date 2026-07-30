@@ -90,10 +90,149 @@ def _env(name: str, default: str = "") -> str:
     return get_runtime_env(name, default)
 
 
+def _candidate_layer_symbol(item: dict[str, object]) -> str:
+    return str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+
+
+def _candidate_layer_reason_list(item: dict[str, object]) -> list[str]:
+    raw_reasons = (
+        item.get("blocking_reasons")
+        or item.get("rejection_reasons")
+        or item.get("reason_codes")
+        or item.get("reason")
+        or item.get("rejection_reason")
+    )
+    if isinstance(raw_reasons, (list, tuple, set)):
+        reasons = [str(reason).strip() for reason in raw_reasons if str(reason).strip()]
+    elif raw_reasons is None:
+        reasons = []
+    else:
+        reasons = [str(raw_reasons).strip()] if str(raw_reasons).strip() else []
+    return reasons
+
+
+def _candidate_layer_score(item: dict[str, object]) -> object | None:
+    for key in ("candidate_score", "final_score", "score"):
+        value = item.get(key)
+        if value is not None and str(value).strip() != "":
+            return value
+    return None
+
+
+def _candidate_layer_view_row(
+    item: dict[str, object],
+    *,
+    final_selected_symbols: set[str],
+) -> dict[str, object] | None:
+    symbol = _candidate_layer_symbol(item)
+    if not symbol:
+        return None
+    blocking_reasons = _candidate_layer_reason_list(item)
+    primary_blocking_reason = (
+        blocking_reasons[0]
+        if blocking_reasons
+        else str(
+            item.get("primary_blocking_reason")
+            or item.get("reason")
+            or item.get("rejection_reason")
+            or item.get("validation_status")
+            or item.get("status")
+            or ""
+        ).strip()
+    )
+    return {
+        "symbol": symbol,
+        "ticker": symbol,
+        "rank": item.get("rank"),
+        "score": _candidate_layer_score(item),
+        "trade_admission_status": str(
+            item.get("trade_admission_status")
+            or item.get("validation_status")
+            or item.get("status")
+            or "UNKNOWN"
+        ).strip() or "UNKNOWN",
+        "research_status": str(
+            item.get("research_status")
+            or item.get("research_evidence_status")
+            or item.get("validation_status")
+            or item.get("status")
+            or "UNKNOWN"
+        ).strip() or "UNKNOWN",
+        "final_selected": symbol in final_selected_symbols or bool(item.get("final_selected")),
+        "rejection_stage": str(
+            item.get("rejection_stage")
+            or item.get("stage")
+            or item.get("validation_stage")
+            or item.get("trade_admission_stage")
+            or "UNKNOWN"
+        ).strip() or "UNKNOWN",
+        "primary_blocking_reason": primary_blocking_reason or "UNKNOWN",
+        "blocking_reasons": blocking_reasons,
+        "why_interesting": str(
+            item.get("score_reason")
+            or item.get("research_reason")
+            or item.get("reason")
+            or item.get("description")
+            or ""
+        ).strip(),
+    }
+
+
+def _candidate_layers_view(ai_selection: dict | None) -> dict[str, list[dict[str, object]]]:
+    report = ai_selection if isinstance(ai_selection, dict) else {}
+    candidate_layers = report.get("candidate_layers") if isinstance(report.get("candidate_layers"), dict) else {}
+    final_selected_symbols = {
+        str(symbol or "").strip().upper()
+        for symbol in (
+            report.get("final_selected_symbols")
+            or report.get("selected_symbols")
+            or [
+                item.get("ticker") or item.get("symbol")
+                for item in (report.get("top3") or [])
+                if isinstance(item, dict)
+            ]
+        )
+        if str(symbol or "").strip()
+    }
+
+    def _bucket(name: str, fallback_keys: tuple[str, ...]) -> list[dict[str, object]]:
+        rows = candidate_layers.get(name) if name in candidate_layers else None
+        if not isinstance(rows, list):
+            rows = None
+            for key in fallback_keys:
+                fallback_rows = report.get(key)
+                if isinstance(fallback_rows, list):
+                    rows = fallback_rows
+                    break
+            if rows is None:
+                rows = []
+        normalized_rows: list[dict[str, object]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            row_view = _candidate_layer_view_row(item, final_selected_symbols=final_selected_symbols)
+            if row_view is not None:
+                normalized_rows.append(row_view)
+        return normalized_rows
+
+    return {
+        "research_candidates": _bucket("research_candidates", ("research_top_candidates",)),
+        "trade_candidates": _bucket("trade_candidates", ("tradable_top_candidates", "top3")),
+        "watchlist_candidates": _bucket("watchlist_candidates", ("nearest_rejected_candidates",)),
+    }
+
+
+def _selection_report_with_candidate_layers(ai_selection: dict | None) -> dict[str, object]:
+    report = dict(ai_selection or {})
+    report["candidate_layers"] = _candidate_layers_view(report)
+    return report
+
+
 def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[str, object]:
     """Build an HTML-only view model without changing API or selection state."""
     if not isinstance(selection_sync, dict):
         selection_sync = vars(selection_sync) if hasattr(selection_sync, "__dict__") else {}
+    candidate_layers = _candidate_layers_view(ai_selection)
     selected_count = int(
         ai_selection.get("selected_top_n")
         if ai_selection.get("selected_top_n") is not None
@@ -215,6 +354,13 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
         "tradable_selected_count": tradable_selected_count,
         "tradable_requested_count": tradable_requested_count,
         "research_symbols": research_symbols,
+        "candidate_layers": candidate_layers,
+        "trade_candidates": candidate_layers["trade_candidates"],
+        "research_candidates": candidate_layers["research_candidates"],
+        "watchlist_candidates": candidate_layers["watchlist_candidates"],
+        "trade_candidate_count": len(candidate_layers["trade_candidates"]),
+        "research_candidate_count": len(candidate_layers["research_candidates"]),
+        "watchlist_candidate_count": len(candidate_layers["watchlist_candidates"]),
         "final_selected_symbols": final_selected_symbols,
         "next_validation_stage": next_validation_stage_text,
         "paper_live_status": selection_states["system_state"]["label"],
@@ -6022,6 +6168,95 @@ HTML = """<!DOCTYPE html>
                         </div>
                     </div>
                     {% endif %}
+                    {% set candidate_layers = selection_dashboard.candidate_layers or {} %}
+                    <div style="margin-top:12px" id="candidate-layers-section">
+                        <div style="font-weight:600;color:var(--accent2);margin-bottom:6px;font-size:13px">🧭 候选分层</div>
+                        <div style="display:grid;gap:12px">
+                            <div>
+                                <div style="font-weight:600;color:#f8fafc;margin-bottom:4px">Trade Candidates</div>
+                                <div style="font-size:12px;color:var(--muted);margin-bottom:6px">正式交易候选 · 来自 candidate_layers.trade_candidates / tradable_top_candidates / top3</div>
+                                <div class="selector-table" id="trade-candidates-table" style="max-height:none">
+                                    <div class="selector-head">
+                                        <span>标的</span>
+                                        <span>分数</span>
+                                        <span>交易准入</span>
+                                        <span>最终入选</span>
+                                    </div>
+                                    {% for row in candidate_layers.trade_candidates or [] %}
+                                    <div class="selector-row">
+                                        <span class="ticker">{{ row.symbol or row.ticker or '暂无' }}</span>
+                                        <span class="num">{{ format_optional(row.score) }}</span>
+                                        <span>{{ translate_status(row.trade_admission_status or 'UNKNOWN') }}</span>
+                                        <span>{{ '是' if row.final_selected else '否' }}</span>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not candidate_layers.trade_candidates %}
+                                    <div class="selector-row">
+                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight:600;color:#f8fafc;margin-bottom:4px">Research Candidates</div>
+                                <div style="font-size:12px;color:var(--muted);margin-bottom:6px">AI 研究候选，不代表可交易 · 来自 candidate_layers.research_candidates / research_top_candidates</div>
+                                <div class="selector-table" id="research-candidates-table" style="max-height:none">
+                                    <div class="selector-head">
+                                        <span>标的</span>
+                                        <span>分数</span>
+                                        <span>研究状态</span>
+                                        <span>why interesting</span>
+                                    </div>
+                                    {% for row in candidate_layers.research_candidates or [] %}
+                                    <div class="selector-row">
+                                        <span class="ticker">{{ row.symbol or row.ticker or '暂无' }}</span>
+                                        <span class="num">{{ format_optional(row.score) }}</span>
+                                        <span>{{ translate_status(row.research_status or 'UNKNOWN') }}</span>
+                                        <span>{{ row.why_interesting or '暂无' }}</span>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not candidate_layers.research_candidates %}
+                                    <div class="selector-row">
+                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight:600;color:#f8fafc;margin-bottom:4px">Watchlist / Near Miss</div>
+                                <div style="font-size:12px;color:var(--muted);margin-bottom:6px">仅用于诊断 · watchlist ≠ tradable · watchlist ≠ final_selected · 来自 candidate_layers.watchlist_candidates / nearest_rejected_candidates</div>
+                                <div class="selector-table" id="watchlist-candidates-table" style="max-height:none">
+                                    <div class="selector-head">
+                                        <span>标的</span>
+                                        <span>拒绝阶段</span>
+                                        <span>首要阻断</span>
+                                        <span>阻断原因</span>
+                                    </div>
+                                    {% for row in candidate_layers.watchlist_candidates or [] %}
+                                    <div class="selector-row">
+                                        <span class="ticker">{{ row.symbol or row.ticker or '暂无' }}</span>
+                                        <span>{{ translate_status(row.rejection_stage or 'UNKNOWN') }}</span>
+                                        <span>{{ translate_reason(row.primary_blocking_reason or 'unknown') }}</span>
+                                        <span>
+                                            {% if row.blocking_reasons %}
+                                                {% for reason in row.blocking_reasons %}
+                                                    {{ translate_reason(reason) }}{% if not loop.last %} / {% endif %}
+                                                {% endfor %}
+                                            {% else %}
+                                                暂无
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not candidate_layers.watchlist_candidates %}
+                                    <div class="selector-row">
+                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="selection-brief">
                         <div class="selection-brief-item">
                             <span class="selection-tag live">启用中</span>
@@ -6367,6 +6602,16 @@ HTML = """<!DOCTYPE html>
         }).format(parsed).replaceAll('/', '-');
     }
 
+    function escapeHtml(value) {
+        return String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, (ch) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        })[ch] || ch);
+    }
+
     const charts = Array.from(document.querySelectorAll('.mini-chart[data-ticker]'));
     if (!charts.length) {
         return;
@@ -6553,6 +6798,89 @@ HTML = """<!DOCTYPE html>
             const count = Number(item && item.count ? item.count : 0);
             return `<span class="shadow-chip">${reason} · ${count}</span>`;
         }).join('');
+    }
+
+    function candidateLayerRows(aiSelection, key, fallbackKeys) {
+        const layers = aiSelection && typeof aiSelection.candidate_layers === 'object' && aiSelection.candidate_layers !== null
+            ? aiSelection.candidate_layers
+            : {};
+        if (Object.prototype.hasOwnProperty.call(layers, key)) {
+            return Array.isArray(layers[key]) ? layers[key] : [];
+        }
+        for (const fallbackKey of Array.isArray(fallbackKeys) ? fallbackKeys : []) {
+            if (Array.isArray(aiSelection[fallbackKey])) {
+                return aiSelection[fallbackKey];
+            }
+        }
+        return [];
+    }
+
+    function candidateSymbol(item) {
+        return String((item && (item.symbol || item.ticker || item.name)) || '').trim().toUpperCase() || '暂无';
+    }
+
+    function candidateScore(item) {
+        const value = item && (item.score ?? item.candidate_score ?? item.final_score);
+        return value === null || value === undefined || String(value).trim() === '' ? EMPTY_TEXT : displayOptional(value);
+    }
+
+    function candidateReasons(item) {
+        const raw = item && Array.isArray(item.blocking_reasons) ? item.blocking_reasons : [];
+        if (!raw.length) {
+            return '暂无';
+        }
+        return raw.map((reason) => displayReason(reason)).join(' / ');
+    }
+
+    function renderCandidateLayerTable(nodeId, rows, kind) {
+        const node = document.getElementById(nodeId);
+        if (!node) {
+            return;
+        }
+        const items = Array.isArray(rows) ? rows : [];
+        if (!items.length) {
+            node.innerHTML = '<div class="selector-row"><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span></div>';
+            return;
+        }
+        if (kind === 'trade') {
+            node.innerHTML = items.map((item) => `
+                <div class="selector-row">
+                    <span class="ticker">${escapeHtml(candidateSymbol(item))}</span>
+                    <span class="num">${escapeHtml(candidateScore(item))}</span>
+                    <span>${escapeHtml(displayStatus(item && item.trade_admission_status ? item.trade_admission_status : 'UNKNOWN'))}</span>
+                    <span>${displayBool(Boolean(item && item.final_selected))}</span>
+                </div>
+            `).join('');
+            return;
+        }
+        if (kind === 'research') {
+            node.innerHTML = items.map((item) => `
+                <div class="selector-row">
+                    <span class="ticker">${escapeHtml(candidateSymbol(item))}</span>
+                    <span class="num">${escapeHtml(candidateScore(item))}</span>
+                    <span>${escapeHtml(displayStatus(item && item.research_status ? item.research_status : 'UNKNOWN'))}</span>
+                    <span>${escapeHtml(displayOptional(item && item.why_interesting ? item.why_interesting : '暂无'))}</span>
+                </div>
+            `).join('');
+            return;
+        }
+        node.innerHTML = items.map((item) => `
+            <div class="selector-row">
+                <span class="ticker">${escapeHtml(candidateSymbol(item))}</span>
+                <span>${escapeHtml(displayStatus(item && item.rejection_stage ? item.rejection_stage : 'UNKNOWN'))}</span>
+                <span>${escapeHtml(displayReason(item && item.primary_blocking_reason ? item.primary_blocking_reason : 'unknown'))}</span>
+                <span>${escapeHtml(candidateReasons(item))}</span>
+            </div>
+        `).join('');
+    }
+
+    function renderCandidateLayers(aiSelection) {
+        const tradeRows = candidateLayerRows(aiSelection, 'trade_candidates', ['tradable_top_candidates', 'top3']);
+        const researchRows = candidateLayerRows(aiSelection, 'research_candidates', ['research_top_candidates']);
+        const watchlistRows = candidateLayerRows(aiSelection, 'watchlist_candidates', ['nearest_rejected_candidates']);
+        renderCandidateLayerTable('trade-candidates-table', tradeRows, 'trade');
+        renderCandidateLayerTable('research-candidates-table', researchRows, 'research');
+        renderCandidateLayerTable('watchlist-candidates-table', watchlistRows, 'watchlist');
     }
 
     let statusRefreshPaused = false;
@@ -6943,6 +7271,7 @@ HTML = """<!DOCTYPE html>
                     detailNode.textContent = selectionStatusDetail;
                 }
             }
+            renderCandidateLayers(aiSelection);
             const semanticGrid = document.getElementById('selection-semantic-layer');
             if (semanticGrid) {
                 semanticGrid.innerHTML = `
@@ -7156,6 +7485,7 @@ def _api_status_payload() -> dict[str, object]:
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
+    ai_selection = _selection_report_with_candidate_layers(ai_selection)
     selection_sync = _selection_sync_status()
     selection_presentation = _selection_dashboard_states(ai_selection, selection_sync)
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=None, mode=_desired_audit_mode())
@@ -7346,6 +7676,7 @@ def _api_status_payload() -> dict[str, object]:
                 }
             ),
             "top3": list(ai_selection.get("top3") or []),
+            "candidate_layers": dict(ai_selection.get("candidate_layers") or _candidate_layers_view(ai_selection)),
             "position_policy": position_policy_snapshot,
         },
         "system": system_status,
@@ -7940,6 +8271,7 @@ def index():
     ai_selection = _load_ai_selection_report()
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
+    ai_selection = _selection_report_with_candidate_layers(ai_selection)
     _enrich_ticker_descriptions(ai_selection.get("top3", []))
     ai_ranges = _ai_range_lookup(ai_selection)
     ai_selection_price_band = _ai_selection_price_band(ai_selection)
