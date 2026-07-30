@@ -182,6 +182,25 @@ def _relative_path(path: Path) -> str:
         return str(path)
 
 
+def _candidate_layers_from_summary(summary: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    """Diagnostic-only projection of the committed candidate buckets."""
+
+    payload = summary if isinstance(summary, dict) else {}
+
+    def _copy_bucket(key: str) -> list[dict[str, Any]]:
+        rows = payload.get(key)
+        if not isinstance(rows, list):
+            return []
+        return [dict(item) for item in rows if isinstance(item, dict)]
+
+    # Keep this strictly derived from authoritative committed fields.
+    return {
+        "research_candidates": _copy_bucket("research_top_candidates"),
+        "trade_candidates": _copy_bucket("tradable_top_candidates"),
+        "watchlist_candidates": _copy_bucket("nearest_rejected_candidates"),
+    }
+
+
 @dataclass(slots=True)
 class SelectionBundle:
     summary: dict[str, Any]
@@ -285,6 +304,7 @@ class SelectionBundle:
 
     def report_payload(self) -> dict[str, Any]:
         payload = dict(self.summary or {})
+        candidate_layers = _candidate_layers_from_summary(payload)
         selected_top_n = self.selected_top_n
         requested_top_n = int(self.requested_top_n or self.slot_count)
         execution_status = str(payload.get("execution_status") or payload.get("selection_execution_status") or "COMPLETED")
@@ -317,6 +337,7 @@ class SelectionBundle:
                 "selection_bundle_manifest_path": _relative_path(self.manifest_path),
                 "selection_bundle_root_path": _relative_path(self.bundle_root_path),
                 "selection_bundle_report_path": _relative_path(self.bundle_report_path),
+                "candidate_layers": candidate_layers,
                 "requested_top_n": requested_top_n,
                 "selected_top_n": selected_top_n,
                 "top_slot_count": self.slot_count,
@@ -343,6 +364,7 @@ class SelectionBundle:
 
     def state_payload(self) -> dict[str, Any]:
         payload = dict(self.selection_state_payload or {})
+        candidate_layers = _candidate_layers_from_summary(self.summary)
         payload.update(
             {
                 "selection_run_id": self.selection_run_id,
@@ -367,6 +389,7 @@ class SelectionBundle:
                 "selection_bundle_manifest_path": _relative_path(self.manifest_path),
                 "selection_bundle_root_path": _relative_path(self.bundle_root_path),
                 "selection_bundle_state_path": _relative_path(self.bundle_state_path),
+                "candidate_layers": candidate_layers,
             }
         )
         payload.setdefault("selection_symbols", list(self.selected_symbols))
@@ -379,6 +402,7 @@ class SelectionBundle:
         return payload
 
     def audit_payload(self) -> dict[str, Any]:
+        candidate_layers = _candidate_layers_from_summary(self.summary)
         return {
             "selection_run_id": self.selection_run_id,
             "top_sync_run_id": self.selection_run_id,
@@ -408,6 +432,7 @@ class SelectionBundle:
             "selection_bundle_manifest_path": _relative_path(self.manifest_path),
             "selection_bundle_root_path": _relative_path(self.bundle_root_path),
             "selection_bundle_audit_path": _relative_path(self.bundle_audit_path),
+            "candidate_layers": candidate_layers,
         }
 
     def manifest_payload(self, bundle_root: Path | None = None) -> dict[str, Any]:
@@ -449,6 +474,7 @@ class SelectionBundle:
             "selection_bundle_hash": self.selection_bundle_hash,
             "bundle_root": _relative_path(bundle_root),
             "bundle_metadata_path": _relative_path(bundle_metadata_path),
+            "candidate_layers": _candidate_layers_from_summary(report_payload),
             "selection_symbols": list(self.selected_symbols),
             "disabled_slots": list(self.disabled_slots),
             "enabled_slots": list(self.enabled_slots),
@@ -957,6 +983,7 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
         "bundle_state_path": _relative_path(bundle_root / "ai_selection_state.json"),
         "bundle_audit_path": _relative_path(bundle_root / "selection_sync_audit.json"),
         "bundle_metadata_path": _relative_path(bundle_root / "bundle_metadata.json"),
+        "candidate_layers": _candidate_layers_from_summary(report_payload),
     }
 
 

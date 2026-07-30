@@ -7,7 +7,7 @@ import yaml
 import pytest
 
 from src.openalpha import config_writer, selection_state
-from src.openalpha.selection_bundle import build_selection_bundle, persist_selection_bundle
+from src.openalpha.selection_bundle import build_selection_bundle, load_committed_selection_bundle, persist_selection_bundle
 from src.openalpha.selection_report import load_latest_ai_selection_state
 
 
@@ -732,6 +732,158 @@ def test_selection_bundle_keeps_research_top_separate_from_tradable_top(tmp_path
     assert manifest["research_selected_top_n"] == 1
     assert manifest["tradable_selected_top_n"] == 0
     assert manifest["selection_symbols"] == []
+
+
+def test_selection_bundle_exposes_candidate_layers_as_derived_views(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+    research_candidate = {
+        **_formal_top_item("SOFI", 71.45),
+        "candidate_id": "cand_SOFI_US_test",
+        "validation_status": "AI_CANDIDATE",
+        "current_validation_status": "AI_CANDIDATE",
+        "trade_admission_status": "NOT_TRADABLE",
+        "research_rank": 1,
+        "next_validation_stage": "CLASSIFICATION",
+        "next_validation_stage_label": "候选分类",
+    }
+    tradable_candidate = _formal_top_item(
+        "NVDA",
+        91.5,
+        current_price=100.0,
+        range_low=95.0,
+        range_high=105.0,
+        risk={"stop_loss_pct": 1.5},
+        size=5,
+    )
+    watchlist_candidate = {
+        "symbol": "BAC",
+        "ticker": "BAC",
+        "candidate_score": 79.0,
+        "trade_admission_status": "NOT_TRADABLE",
+        "trade_admission": "NOT_TRADABLE",
+        "rejection_stage": "POST_FILTER",
+        "primary_blocking_reason": "entry_quality_too_low",
+        "blocking_reasons": ["entry_quality_too_low"],
+        "reason": "entry_quality_too_low",
+        "final_selected": False,
+    }
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "DEGRADED", "RESEARCH_ONLY"),
+            "top3": [tradable_candidate],
+            "research_top_candidates": [research_candidate],
+            "research_selected_top_n": 1,
+            "research_requested_top_n": 3,
+            "tradable_top_candidates": [tradable_candidate],
+            "tradable_selected_top_n": 1,
+            "tradable_requested_top_n": 3,
+            "nearest_rejected_candidates": [watchlist_candidate],
+            "selection_funnel": {
+                "selection_run_id": "run-layered",
+                "selection_date": "2026-07-16",
+                "stages": [],
+            },
+            "rejection_reason_counts": {"entry_quality_too_low": 1},
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": ["NVDA"],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "DEGRADED",
+            "research_admission": "RESEARCH_ONLY",
+            "selection_run_id": "run-layered",
+            "selection_symbols": ["NVDA"],
+            "configured_top_symbols": ["NVDA"],
+        },
+        top_items=[tradable_candidate],
+        selection_run_id="run-layered",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="DEGRADED",
+        research_admission="RESEARCH_ONLY",
+        processing_phase="fast_preliminary",
+    )
+
+    report = bundle.report_payload()
+    state = bundle.state_payload()
+    audit = bundle.audit_payload()
+    manifest = bundle.manifest_payload(bundle_root=bundle.bundle_root_path)
+    result = persist_selection_bundle(bundle)
+
+    assert report["candidate_layers"]["research_candidates"][0]["ticker"] == "SOFI"
+    assert report["candidate_layers"]["trade_candidates"][0]["ticker"] == "NVDA"
+    assert report["candidate_layers"]["watchlist_candidates"][0]["ticker"] == "BAC"
+    assert report["candidate_layers"]["watchlist_candidates"][0]["trade_admission_status"] == "NOT_TRADABLE"
+    assert state["candidate_layers"] == report["candidate_layers"]
+    assert audit["candidate_layers"] == report["candidate_layers"]
+    assert manifest["candidate_layers"] == report["candidate_layers"]
+    assert result["candidate_layers"] == report["candidate_layers"]
+    assert bundle.selected_symbols == ["NVDA"]
+    assert bundle.selected_top_n == 1
+
+
+def test_selection_bundle_loads_legacy_committed_bundle_without_candidate_layers(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    bundle_root = tmp_path / "state" / "selection_bundles" / "run-legacy" / "selection_bundle_v1"
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "bundle_version": "selection_bundle_v1",
+        "selection_run_id": "run-legacy",
+        "bundle_root": "state/selection_bundles/run-legacy/selection_bundle_v1",
+        "bundle_metadata_path": "state/selection_bundles/run-legacy/selection_bundle_v1/bundle_metadata.json",
+        "selection_bundle_hash": "legacy-hash",
+        "selection_date": "2026-07-16",
+        "generated_at": "2026-07-16T09:00:00-04:00",
+        "paths": {
+            "bundle_root": "state/selection_bundles/run-legacy/selection_bundle_v1",
+            "bundle_report": "state/selection_bundles/run-legacy/selection_bundle_v1/ai_selection_report.json",
+            "bundle_state": "state/selection_bundles/run-legacy/selection_bundle_v1/ai_selection_state.json",
+            "bundle_audit": "state/selection_bundles/run-legacy/selection_bundle_v1/selection_sync_audit.json",
+            "bundle_metadata": "state/selection_bundles/run-legacy/selection_bundle_v1/bundle_metadata.json",
+        },
+    }
+    report = {
+        "selection_run_id": "run-legacy",
+        "selection_date": "2026-07-16",
+        "generated_at": "2026-07-16T09:00:00-04:00",
+        "selection_stage": "FINALIZED",
+        "processing_phase": "fast_preliminary",
+        "selection_outcome": "NO_TRADABLE_SELECTION",
+        "selected_top_n": 0,
+        "requested_top_n": 3,
+        "top3": [],
+        "top10": [],
+        "research_top_candidates": [],
+        "tradable_top_candidates": [],
+        "nearest_rejected_candidates": [],
+    }
+    state = {
+        "selection_run_id": "run-legacy",
+        "selected_symbols": [],
+        "selection_stage": "FINALIZED",
+        "processing_phase": "fast_preliminary",
+    }
+    audit = {"selection_run_id": "run-legacy"}
+
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "reports").mkdir(parents=True, exist_ok=True)
+    (bundle_root).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "selection_bundle_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (bundle_root / "ai_selection_report.json").write_text(json.dumps(report), encoding="utf-8")
+    (bundle_root / "ai_selection_state.json").write_text(json.dumps(state), encoding="utf-8")
+    (bundle_root / "selection_sync_audit.json").write_text(json.dumps(audit), encoding="utf-8")
+    (bundle_root / "bundle_metadata.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    loaded = load_committed_selection_bundle(tmp_path)
+
+    assert loaded is not None
+    assert loaded["report"]["selection_run_id"] == "run-legacy"
+    assert "candidate_layers" not in loaded["report"]
+    assert loaded["state"]["selection_run_id"] == "run-legacy"
 
 
 def test_selection_bundle_rejects_cross_run_identity_mismatch(tmp_path, monkeypatch):
