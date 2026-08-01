@@ -8,6 +8,7 @@ Templates for running QuantCairn services under macOS `launchd` (LaunchAgent).
 |-------|--------|---------|-----------|
 | `com.quantcairn.combined` | `scripts/start_combined.py` | Unified research dashboard (port 8090) | Long-lived (KeepAlive) |
 | `com.quantcairn.ai-selector` | `scripts/ai_selector_wrapper.py` | AI selection pipeline scheduler | 21:00 / 22:30 Beijing time |
+| `com.quantcairn.candidate-validation` | `scripts/run_candidate_validation_scheduler.py --apply` | Candidate validation scheduler (`com.quantcairn.candidate-validation.plist.template`) | 21:40 / 21:50 / 22:05 / 22:20 / 22:35 Beijing time |
 | `com.quantcairn.orphan-monitor` | `scripts/start_orphan_monitor.py` | Broker position safety net | Long-lived (KeepAlive) |
 
 ## Quick Start
@@ -46,6 +47,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.combined.
 # AI selector (recommended for automated daily selection)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.ai-selector.plist
 
+# Candidate validation scheduler (safe early validation progression)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.candidate-validation.plist
+
 # Orphan monitor (only if using LongBridge live/sandbox)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.orphan-monitor.plist
 ```
@@ -70,6 +74,8 @@ tail -f logs/combined.log           # Dashboard stdout
 tail -f logs/combined.err.log       # Dashboard stderr
 tail -f logs/ai_selector.out.log    # AI selector stdout
 tail -f logs/ai_selector.err.log    # AI selector stderr (scheduler decisions)
+tail -f logs/candidate-validation.out.log  # Candidate validation stdout
+tail -f logs/candidate-validation.err.log   # Candidate validation stderr / audit
 ```
 
 ## Migration from Legacy com.soxs Labels
@@ -187,5 +193,6 @@ deploy/
     ├── README.md                                    # This file
     ├── com.quantcairn.combined.plist.template        # Combined dashboard
     ├── com.quantcairn.ai-selector.plist.template     # AI selector scheduler
+    ├── com.quantcairn.candidate-validation.plist.template  # Candidate validation scheduler
     └── com.quantcairn.orphan-monitor.plist.template  # Orphan position monitor
 ```

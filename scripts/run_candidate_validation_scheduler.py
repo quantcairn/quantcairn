@@ -14,15 +14,102 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.candidate_validation.orchestrator import CandidateValidationOrchestrator
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(item) for item in value]
+    if hasattr(value, "value") and not isinstance(value, (str, bytes)):
+        try:
+            return _jsonable(value.value)
+        except Exception:
+            pass
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    return str(value)
+
+
+def _append_jsonl(path: Path, row: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = ""
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+    line = json.dumps(_jsonable(row), ensure_ascii=False, default=str)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{path.stem}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(existing)
+            handle.write(line + "\n")
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except Exception:
+            pass
+        raise
+    return path
+
+
+def _audit_path() -> Path:
+    return PROJECT_DIR / "artifacts" / "candidates" / "validation_scheduler_runs.jsonl"
+
+
+def _write_run_audit(result: dict[str, Any], *, dry_run: bool) -> None:
+    transition_events = [
+        {
+            "candidate_id": cr.get("candidate_id"),
+            "symbol": cr.get("symbol"),
+            "advanced": bool(cr.get("advanced")),
+            "final_status": cr.get("final_status"),
+            "phases_executed": cr.get("phases_executed", []),
+            "skip_reason": cr.get("skip_reason", ""),
+            "note": cr.get("note", ""),
+            "data_validation_error": cr.get("data_validation_error", ""),
+        }
+        for cr in (result.get("candidate_results") or [])
+        if isinstance(cr, dict)
+    ]
+    audit_row = {
+        "run_id": result.get("run_id"),
+        "timestamp": _utc_now_iso(),
+        "mode": "dry_run" if dry_run else "apply",
+        "dry_run": dry_run,
+        "candidates_scanned": len(result.get("candidate_results") or []),
+        "candidates_advanced": result.get("candidates_advanced", 0),
+        "transition_events": transition_events,
+        "errors": result.get("errors", []),
+        "status": result.get("status", "UNKNOWN"),
+        "applied": bool(result.get("applied", False)),
+    }
+    _append_jsonl(_audit_path(), audit_row)
 
 
 def main() -> int:
@@ -51,6 +138,12 @@ def main() -> int:
 
     orchestrator = CandidateValidationOrchestrator()
     result = orchestrator.run(dry_run=dry_run)
+    try:
+        _write_run_audit(result, dry_run=dry_run)
+    except Exception as exc:
+        result.setdefault("errors", []).append(
+            f"validation_scheduler_audit_error:{type(exc).__name__}:{exc}"
+        )
 
     if args.json_output:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

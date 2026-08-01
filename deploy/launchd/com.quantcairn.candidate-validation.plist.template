@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  QuantCairn — Candidate Validation Scheduler
+
+  Runs the candidate validation orchestrator in APPLY mode so safe
+  early validation stages can progress under launchd with independent
+  logs and audit output.
+
+  Installation:
+      cp deploy/launchd/com.quantcairn.candidate-validation.plist.template \
+         ~/Library/LaunchAgents/com.quantcairn.candidate-validation.plist
+
+  Edit the copied file and replace all REPLACE_WITH_* values.
+  See deploy/launchd/README.md for full instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quantcairn.candidate-validation</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
+        <string>REPLACE_WITH_PROJECT_ROOT/scripts/run_candidate_validation_scheduler.py</string>
+        <string>--apply</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_PROJECT_ROOT</string>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/candidate-validation.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/candidate-validation.err.log</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>21</integer>
+            <key>Minute</key>
+            <integer>40</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>21</integer>
+            <key>Minute</key>
+            <integer>50</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>22</integer>
+            <key>Minute</key>
+            <integer>5</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>22</integer>
+            <key>Minute</key>
+            <integer>20</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>22</integer>
+            <key>Minute</key>
+            <integer>35</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>QUANTCAIRN_HOME</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_PROJECT_DIR</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>YF_DISABLE_CURL_CFFI</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

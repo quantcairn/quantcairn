@@ -130,37 +130,7 @@ def _apply_transition(
     reason: str = "",
 ) -> CandidateRecord:
     """Transition a candidate status bypassing the store's initial-state check."""
-    candidates = store.load_latest_candidates()
-    target: CandidateRecord | None = None
-    updated: dict[str, CandidateRecord] = {}
-    for r in candidates:
-        updated[r.candidate_id] = r
-        if r.candidate_id == candidate_id:
-            target = r
-    if target is None:
-        raise CandidateTransitionError(f"candidate_not_found:{candidate_id}")
-
-    assert_transition_allowed(target.validation_status, new_status)
-    previous = str(target.validation_status)
-    target = CandidateRecord.from_dict({
-        **target.to_dict(), "validation_status": new_status.value,
-    })
-    target.touch()
-    updated[candidate_id] = target
-
-    store._write_jsonl(
-        store.candidates_path,
-        [r.to_dict() for r in store._sorted_records(updated.values())],
-    )
-    store._append_jsonl(
-        store.history_path,
-        store._history_event(
-            target, event_type="status_transition",
-            previous_status=previous, reason=reason,
-        ),
-    )
-    store._write_summary_csv(store._sorted_records(updated.values()))
-    return target
+    return store.transition(candidate_id, new_status, reason=reason, metadata={})
 
 
 def _dry_advance(record: CandidateRecord, status: ValidationStatus) -> CandidateRecord:

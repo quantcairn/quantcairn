@@ -73,3 +73,16 @@ def test_ai_selector_template_uses_calendar_schedule():
     assert "<integer>21</integer>" in content
     assert "<integer>22</integer>" in content
     assert "<integer>30</integer>" in content
+
+
+def test_candidate_validation_template_uses_apply_scheduler():
+    """Candidate validation launchd template must call the scheduler in APPLY mode."""
+    tmpl = DEPLOY_LAUNCHD / "com.quantcairn.candidate-validation.plist.template"
+    assert tmpl.exists()
+    content = tmpl.read_text()
+    assert "run_candidate_validation_scheduler.py" in content
+    assert "--apply" in content
+    assert "<key>Label</key>" in content
+    assert "com.quantcairn.candidate-validation" in content
+    assert "candidate-validation.out.log" in content
+    assert "candidate-validation.err.log" in content
