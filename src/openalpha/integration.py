@@ -9,7 +9,7 @@ from typing import Optional
 
 from .config import AISelectorRuntimeConfig, load_runtime_config
 from .composition_filter import CompositionFilter
-from .earnings_provider import (
+from .earnings_calendar_provider import (
     EarningsInfo,
     EarningsProvider,
     candidate_earnings_info,
@@ -54,7 +54,7 @@ class AISelector:
         self.tradingagents_provider = tradingagents_provider or TradingAgentsProvider(self.config)
         self.finrobot_provider = finrobot_provider or FinRobotProvider(self.config)
         self.openbb_provider = openbb_provider or OpenBBProvider(self.config)
-        self.earnings_provider = earnings_provider or get_default_earnings_provider()
+        self.earnings_provider = earnings_provider or get_default_earnings_provider(self.config)
         self.range_scorer = RangeFitnessScorer()
         self.trade_filter = TradeEligibilityFilter()
         self.composition_filter = CompositionFilter()

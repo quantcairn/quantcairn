@@ -15,7 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.openalpha import selection_state
 from src.openalpha.config import AISelectorRuntimeConfig
-from src.openalpha.earnings_provider import normalize_earnings_info
+from src.openalpha.earnings_calendar_provider import normalize_earnings_info
 from src.openalpha.integration import AISelector
 from src.config.loader import AppConfig
 from src.engine import trading_engine as engine_module

@@ -5,12 +5,14 @@ import importlib
 import os
 import sys
 import types
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_DIR / "scripts" / "run_ai_selector.py"
+
+from src.openalpha.earnings_calendar_provider import normalize_earnings_info
 
 
 def _formal_candidate_row(ticker: str, score: float, price: float, *, reason: str = "research_complete", source: str = "selector") -> dict:
@@ -181,22 +183,26 @@ def test_enrich_selection_rows_uses_nested_complete_market_quality_over_stale_to
 
 def test_ai_signals_keep_earnings_info_through_report_building():
     module = _load_module()
+    earnings_info = normalize_earnings_info(
+        {
+            "symbol": "NVDA",
+            "earnings_date": "2026-08-04",
+            "earnings_time": "AMC",
+            "market_timezone": "America/New_York",
+            "trading_days_to_earnings": 2,
+            "earnings_risk_level": "HIGH",
+            "source": "static_provider",
+            "updated_at": "2026-08-01T12:00:00Z",
+            "confidence": 0.77,
+        },
+        as_of=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+    )
     signal_map = {
         "NVDA": {
             "ticker": "NVDA",
             "final_score": 91.5,
             "score": 91.5,
-            "earnings_info": {
-                "symbol": "NVDA",
-                "earnings_date": "2026-08-04",
-                "earnings_time": "AMC",
-                "market_timezone": "America/New_York",
-                "trading_days_to_earnings": 2,
-                "earnings_risk_level": "HIGH",
-                "source": "static_provider",
-                "updated_at": "2026-08-01T12:00:00Z",
-                "confidence": 0.77,
-            },
+            "earnings_info": earnings_info.to_dict() if earnings_info is not None else {},
             "earnings_date": "2026-08-04",
             "earnings_time": "AMC",
             "trading_days_to_earnings": 2,
