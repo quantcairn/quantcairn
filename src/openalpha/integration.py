@@ -9,6 +9,12 @@ from typing import Optional
 
 from .config import AISelectorRuntimeConfig, load_runtime_config
 from .composition_filter import CompositionFilter
+from .earnings_provider import (
+    EarningsInfo,
+    EarningsProvider,
+    candidate_earnings_info,
+    get_default_earnings_provider,
+)
 from .data_sufficiency import evaluate_data_sufficiency
 from .providers.finrobot_provider import FinRobotProvider
 from .providers.openbb_provider import OpenBBProvider
@@ -42,11 +48,13 @@ class AISelector:
         tradingagents_provider: Optional[TradingAgentsProvider] = None,
         finrobot_provider: Optional[FinRobotProvider] = None,
         openbb_provider: Optional[OpenBBProvider] = None,
+        earnings_provider: Optional[EarningsProvider] = None,
     ) -> None:
         self.config = config or load_runtime_config()
         self.tradingagents_provider = tradingagents_provider or TradingAgentsProvider(self.config)
         self.finrobot_provider = finrobot_provider or FinRobotProvider(self.config)
         self.openbb_provider = openbb_provider or OpenBBProvider(self.config)
+        self.earnings_provider = earnings_provider or get_default_earnings_provider()
         self.range_scorer = RangeFitnessScorer()
         self.trade_filter = TradeEligibilityFilter()
         self.composition_filter = CompositionFilter()
@@ -186,6 +194,7 @@ class AISelector:
                 "market_data": dict(market_data or {}),
                 "trade_market_data": dict(market_data or {}),
             }
+            candidate = self._attach_earnings_info_to_candidate(candidate)
             sufficiency = evaluate_data_sufficiency(
                 candidate,
                 strict_quote=False,
@@ -417,6 +426,7 @@ class AISelector:
             candidate["ai_score"] = round(ai_score, 2)
             candidate["entry"] = entry
             candidate.setdefault("base_score", round(float(candidate.get("score", candidate.get("final_score", ai_score))), 2))
+            candidate = self._attach_earnings_info_to_candidate(candidate)
             sufficiency = evaluate_data_sufficiency(
                 candidate,
                 strict_quote=False,
@@ -442,6 +452,23 @@ class AISelector:
             scored.append(candidate)
         scored.sort(key=lambda item: (-float(item.get("final_score") or 0.0), item.get("ticker") or ""))
         return scored
+
+    def _attach_earnings_info_to_candidate(self, candidate: dict) -> dict:
+        payload = dict(candidate or {})
+        try:
+            info = candidate_earnings_info(payload, provider=self.earnings_provider)
+        except Exception:
+            info = None
+        if isinstance(info, EarningsInfo):
+            payload["earnings_info"] = info.to_dict()
+            payload["earnings_date"] = info.earnings_date
+            payload["earnings_time"] = info.earnings_time
+            payload["trading_days_to_earnings"] = info.trading_days_to_earnings
+            payload["earnings_risk_level"] = info.earnings_risk_level.value
+            payload["earnings_source"] = info.source
+            payload["earnings_updated_at"] = info.updated_at
+            payload["earnings_confidence"] = info.confidence
+        return payload
 
     def _apply_trade_filter(self, ranked: list[dict]) -> list[dict]:
         market_data = {

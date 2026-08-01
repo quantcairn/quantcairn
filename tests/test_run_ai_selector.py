@@ -179,6 +179,43 @@ def test_enrich_selection_rows_uses_nested_complete_market_quality_over_stale_to
     assert enriched["blocking_reasons"] == []
 
 
+def test_ai_signals_keep_earnings_info_through_report_building():
+    module = _load_module()
+    signal_map = {
+        "NVDA": {
+            "ticker": "NVDA",
+            "final_score": 91.5,
+            "score": 91.5,
+            "earnings_info": {
+                "symbol": "NVDA",
+                "earnings_date": "2026-08-04",
+                "earnings_time": "AMC",
+                "market_timezone": "America/New_York",
+                "trading_days_to_earnings": 2,
+                "earnings_risk_level": "HIGH",
+                "source": "static_provider",
+                "updated_at": "2026-08-01T12:00:00Z",
+                "confidence": 0.77,
+            },
+            "earnings_date": "2026-08-04",
+            "earnings_time": "AMC",
+            "trading_days_to_earnings": 2,
+            "earnings_risk_level": "HIGH",
+            "earnings_source": "static_provider",
+            "earnings_updated_at": "2026-08-01T12:00:00Z",
+            "earnings_confidence": 0.77,
+        }
+    }
+    selector_top10 = [{"ticker": "NVDA", "score": 91.5, "final_score": 91.5}]
+
+    annotated = module._annotate_with_ai_signals(selector_top10, signal_map)
+    report_top10 = module._build_report_top10(annotated, annotated, signal_map, [])
+
+    assert report_top10[0]["earnings_info"]["symbol"] == "NVDA"
+    assert report_top10[0]["earnings_risk_level"] == "HIGH"
+    assert report_top10[0]["earnings_source"] == "static_provider"
+
+
 def test_research_top_candidates_keep_ai_candidate_out_of_tradable_top():
     module = _load_module()
     row = {

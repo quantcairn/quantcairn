@@ -15,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.openalpha import selection_state
 from src.openalpha.config import AISelectorRuntimeConfig
+from src.openalpha.earnings_provider import normalize_earnings_info
 from src.openalpha.integration import AISelector
 from src.config.loader import AppConfig
 from src.engine import trading_engine as engine_module
@@ -117,6 +118,28 @@ class RecordingProvider:
         }
 
 
+class StaticEarningsProvider:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def get_earnings_info(self, candidate, *, as_of=None):
+        ticker = str(candidate.get("ticker") or candidate.get("symbol") or "").strip().upper()
+        self.calls.append(ticker)
+        if ticker != "NVDA":
+            return None
+        return normalize_earnings_info(
+            {
+                "symbol": ticker,
+                "earnings_date": "2026-08-04",
+                "earnings_time": "AMC",
+                "market_timezone": "America/New_York",
+                "source": "static_provider",
+                "confidence": 0.77,
+            },
+            as_of=datetime(2026, 8, 3),
+        )
+
+
 class SimpleMonkeyPatch:
     def __init__(self):
         self._originals = []
@@ -169,6 +192,77 @@ def test_ai_selector_returns_top3_and_writes_top10_report():
         payload = json.loads(top10_path.read_text(encoding="utf-8"))
         assert {item["ticker"] for item in payload["top10"][:3]} == {"NVDA", "MSFT", "AAPL"}
         assert len(payload["top3"]) == 3
+
+
+def test_ai_selector_attaches_earnings_info_in_candidate_enrichment_paths():
+    selector = AISelector(
+        config=AISelectorRuntimeConfig(
+            enabled=True,
+            top_n=3,
+            universe=["NVDA", "MSFT"],
+            top10_path=Path(tempfile.gettempdir()) / "unused_top10.json",
+            tradingagents_path="",
+            tradingagents_python="python3",
+            tradingagents_analysis_date=None,
+            finrobot_path="",
+            finrobot_python="python3",
+            finrobot_config_file="",
+            finrobot_output_dir="",
+        ),
+        earnings_provider=StaticEarningsProvider(),
+    )
+
+    class FakeSufficiency:
+        data_mode = "EOD_ONLY"
+        data_freshness = "SAFE"
+        data_status = "COMPLETE"
+        scoring_eligible = True
+        scoring_block_reason = ""
+        missing_fields: list[str] = []
+
+        def to_dict(self):
+            return {
+                "data_mode": self.data_mode,
+                "data_freshness": self.data_freshness,
+                "data_status": self.data_status,
+                "scoring_eligible": self.scoring_eligible,
+                "scoring_block_reason": self.scoring_block_reason,
+                "missing_fields": list(self.missing_fields),
+            }
+
+    selector._market_data_snapshot = lambda ticker: {"current_price": 100.0, "average_dollar_volume_20d": 250_000_000.0}  # type: ignore[method-assign]
+    # monkeypatching module-level helper avoids touching other tests
+    import src.openalpha.integration as integration_module
+
+    original_evaluate = integration_module.evaluate_data_sufficiency
+    original_score = integration_module.score_candidate
+    original_range_calculate = selector.range_scorer.calculate
+    try:
+        integration_module.evaluate_data_sufficiency = lambda candidate, **kwargs: FakeSufficiency()
+        integration_module.score_candidate = lambda item: dict(item)
+        selector.range_scorer.calculate = lambda ticker, market_data: {  # type: ignore[method-assign]
+            "range_score": 88.0,
+            "entry": {"entry_proximity_score": 55.0},
+        }
+
+        preliminary = selector._build_preliminary_ranked_candidates(["NVDA", "MSFT"])
+        ranged = selector._apply_range_scores([{"ticker": "NVDA", "score": 91.0, "final_score": 91.0, "ai_score": 91.0}])
+    finally:
+        integration_module.evaluate_data_sufficiency = original_evaluate
+        integration_module.score_candidate = original_score
+        selector.range_scorer.calculate = original_range_calculate  # type: ignore[method-assign]
+
+    nvda_preliminary = next(item for item in preliminary if item["ticker"] == "NVDA")
+    msft_preliminary = next(item for item in preliminary if item["ticker"] == "MSFT")
+    assert nvda_preliminary["earnings_info"]["symbol"] == "NVDA"
+    assert nvda_preliminary["earnings_risk_level"] in {"VERY_HIGH", "HIGH"}
+    assert nvda_preliminary["earnings_source"] == "static_provider"
+    assert "earnings_info" not in msft_preliminary
+
+    nvda_ranged = ranged[0]
+    assert nvda_ranged["earnings_info"]["symbol"] == "NVDA"
+    assert nvda_ranged["earnings_risk_level"] in {"VERY_HIGH", "HIGH"}
+    assert nvda_ranged["earnings_source"] == "static_provider"
 
 
 def test_ai_selector_with_openbb_enabled_enhances_scores():
