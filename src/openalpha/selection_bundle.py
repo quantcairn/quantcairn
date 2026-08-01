@@ -162,6 +162,7 @@ def _selection_bundle_fingerprint(bundle: "SelectionBundle") -> str:
                 "selection_date": item.get("selection_date"),
                 "fallback_used": bool(item.get("fallback_used", False)),
                 "reduce_only": bool(item.get("reduce_only", False)),
+                "earnings_info": dict(item.get("earnings_info") or {}),
             }
             for item in bundle.top_items
         ],

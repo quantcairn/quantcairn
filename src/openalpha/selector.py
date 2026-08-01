@@ -14,6 +14,12 @@ from src.universe.universe import Universe
 from src.scoring.scorer import Scorer
 from src.news_agent.news_collector import NewsCollector
 from src.openalpha.settings import load_runtime_settings
+from src.openalpha.earnings_provider import (
+    EarningsInfo,
+    EarningsProvider,
+    candidate_earnings_info,
+    get_default_earnings_provider,
+)
 from src.data.fetcher import PriceFetcher
 from src.openalpha.candidate_ranking import score_candidate
 from src.openalpha.funnel_tracker import FunnelTracker, FunnelStageRecord
@@ -528,7 +534,7 @@ def write_selection_filter_log(report: dict[str, Any], now: datetime | None = No
 
 
 class AIStrategySelector:
-    def __init__(self, config=None):
+    def __init__(self, config=None, earnings_provider: EarningsProvider | None = None):
         self.universe = Universe()
         try:
             self.news = NewsCollector()
@@ -539,6 +545,7 @@ class AIStrategySelector:
                 "News fetching disabled. Install quantcairn[research] for news support."
             )
         self.scorer = Scorer()
+        self.earnings_provider = earnings_provider or get_default_earnings_provider()
         self.selection_size = self._selection_size_from_env()
         self.max_symbols = self._max_symbols_from_env()
         self._last_quality_filter_report: dict[str, Any] = {}
@@ -602,6 +609,27 @@ class AIStrategySelector:
             else:
                 os.environ["OPENALPHA_LIVE_DATA"] = previous
             self.scorer = Scorer()
+
+    def _attach_earnings_info(self, rows: List[dict]) -> List[dict]:
+        enriched: List[dict] = []
+        for raw in rows or []:
+            item = dict(raw)
+            try:
+                info = candidate_earnings_info(item, provider=self.earnings_provider)
+            except Exception:
+                info = None
+            if isinstance(info, EarningsInfo):
+                item["earnings_info"] = info.to_dict()
+                item["earnings_risk_level"] = info.earnings_risk_level.value
+                item["trading_days_to_earnings"] = info.trading_days_to_earnings
+                item["earnings_date"] = info.earnings_date
+                item["earnings_time"] = info.earnings_time
+                item["earnings_market_timezone"] = info.market_timezone
+                item["earnings_source"] = info.source
+                item["earnings_updated_at"] = info.updated_at
+                item["earnings_confidence"] = info.confidence
+            enriched.append(item)
+        return enriched
 
     def run_selection(
         self,
@@ -701,6 +729,7 @@ class AIStrategySelector:
         live_requested = self._live_data_requested()
         scored = self._score_with_live_flag(_data_available, news_map, live_enabled=live_requested)
         scored = [score_candidate(item) for item in scored]
+        scored = self._attach_earnings_info(scored)
 
         data_mode = "live" if live_requested else "fallback"
         fallback_used = False
@@ -925,6 +954,8 @@ class AIStrategySelector:
         # Compute top10 for downstream consumers
         _pool_for_top10 = _pre_quality_pool if quality_fallback_active else (filtered_candidates or _pre_quality_pool)
         top10 = [dict(item) for item in (_pool_for_top10[: max(self.selection_size, self._filter_candidate_limit_from_env())])]
+        topk = self._attach_earnings_info(topk)
+        top10 = self._attach_earnings_info(top10)
         funnel_summary = tracker.to_dict()
         try:
             tracker.write_report()
@@ -1125,6 +1156,7 @@ class AIStrategySelector:
                 "strategy_fit_score": float(round(row.get("strategy_fit_score", 0.0), 2)),
                 "recommended_strategy": row.get("recommended_strategy"),
                 "score_reason": row.get("score_reason"),
+                "earnings_info": dict(row.get("earnings_info") or {}),
                 "repeatability": float(round(row.get("repeatability_score", 0.0), 2)),
                 "drawdown": float(round(row.get("drawdown_safety_score", 0.0), 2)),
                 "correlation_penalty": float(round(row.get("correlation_penalty", 0.0), 2)),

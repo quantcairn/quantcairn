@@ -825,6 +825,64 @@ def test_selection_bundle_exposes_candidate_layers_as_derived_views(tmp_path, mo
     assert bundle.selected_top_n == 1
 
 
+def test_selection_bundle_preserves_optional_earnings_info_metadata(tmp_path, monkeypatch):
+    _patch_bundle_roots(tmp_path, monkeypatch)
+
+    tradable_candidate = {
+        **_formal_top_item("NVDA", 91.5, current_price=100.0, range_low=95.0, range_high=105.0, risk={"stop_loss_pct": 1.5}, size=5),
+        "earnings_info": {
+            "symbol": "NVDA",
+            "earnings_date": "2026-08-04",
+            "earnings_time": "AMC",
+            "market_timezone": "America/New_York",
+            "trading_days_to_earnings": 2,
+            "earnings_risk_level": "HIGH",
+            "source": "unit_test",
+            "updated_at": "2026-08-01T12:00:00Z",
+            "confidence": 0.9,
+        },
+    }
+
+    bundle = build_selection_bundle(
+        summary={
+            **_base_summary("FINALIZED", "COMPLETE", "RESEARCH_READY"),
+            "top3": [tradable_candidate],
+            "tradable_top_candidates": [tradable_candidate],
+            "research_top_candidates": [],
+            "nearest_rejected_candidates": [],
+        },
+        selection_state_payload={
+            "et_date": "2026-07-16",
+            "generated_at": "2026-07-16T09:00:00-04:00",
+            "selected_symbols": ["NVDA"],
+            "selection_stage": "FINALIZED",
+            "processing_phase": "fast_preliminary",
+            "result_quality": "COMPLETE",
+            "research_admission": "RESEARCH_READY",
+            "selection_run_id": "run-earnings",
+            "selection_symbols": ["NVDA"],
+            "configured_top_symbols": ["NVDA"],
+        },
+        top_items=[tradable_candidate],
+        selection_run_id="run-earnings",
+        selection_date="2026-07-16",
+        generated_at="2026-07-16T09:00:00-04:00",
+        result_quality="COMPLETE",
+        research_admission="RESEARCH_READY",
+        processing_phase="fast_preliminary",
+    )
+
+    result = persist_selection_bundle(bundle)
+    loaded = load_committed_selection_bundle(tmp_path)
+
+    assert bundle.report_payload()["top3"][0]["earnings_info"]["symbol"] == "NVDA"
+    assert loaded is not None
+    assert loaded["report"]["top3"][0]["earnings_info"]["earnings_risk_level"] == "HIGH"
+    assert loaded["state"]["candidate_layers"]["trade_candidates"][0]["earnings_info"]["symbol"] == "NVDA"
+    assert loaded["audit"]["candidate_layers"]["trade_candidates"][0]["earnings_info"]["symbol"] == "NVDA"
+    assert result["candidate_layers"]["trade_candidates"][0]["earnings_info"]["symbol"] == "NVDA"
+
+
 def test_selection_bundle_loads_legacy_committed_bundle_without_candidate_layers(tmp_path, monkeypatch):
     _patch_bundle_roots(tmp_path, monkeypatch)
 
