@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from src.candidate_validation.models import ValidationStatus
 from src.candidate_validation.orchestrator import CandidateValidationOrchestrator
 from src.candidate_validation.store import CandidateValidationStore
 
@@ -33,6 +34,18 @@ def _run_scheduler(monkeypatch, tmp_path: Path, *, apply: bool):
     orchestrator = CandidateValidationOrchestrator(store=store, project_dir=tmp_path)
 
     monkeypatch.setattr(scheduler, "PROJECT_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(
+        orch_mod,
+        "CANDIDATE_ROOT",
+        store_root,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        orch_mod,
+        "VALIDATION_ROOT",
+        store_root / "validation",
+        raising=False,
+    )
     monkeypatch.setattr(
         orch_mod,
         "ORCHESTRATOR_LOCK_PATH",
@@ -102,9 +115,17 @@ def test_scheduler_apply_writes_validation_transition_without_paper_live(tmp_pat
     assert "PAPER_ELIGIBLE" not in history
     assert "LIVE_ELIGIBLE" not in history
 
+    latest = store.load_latest_candidates()
+    assert latest
+    assert all(item.validation_status == ValidationStatus.DATA_INVALID.value for item in latest)
+
     audit_path = scheduler.PROJECT_DIR / "artifacts" / "candidates" / "validation_scheduler_runs.jsonl"
     audit_rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert audit_rows[-1]["mode"] == "apply"
     assert audit_rows[-1]["candidates_scanned"] >= 1
     assert audit_rows[-1]["candidates_advanced"] >= 1
     assert audit_rows[-1]["transition_events"]
+    assert all(
+        event["final_status"] == ValidationStatus.DATA_INVALID.value
+        for event in audit_rows[-1]["transition_events"]
+    )

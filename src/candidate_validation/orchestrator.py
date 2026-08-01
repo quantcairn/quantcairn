@@ -286,14 +286,27 @@ def _stage_run_dv(record, store, *, dry_run=False):
     except Exception as exc:
         raise CandidateTransitionError(f"data_validation_error:{type(exc).__name__}:{exc}") from exc
     result["validation"] = dict(vr or {})
-    ov = (vr or {}).get("overall") or {}
-    st = str(ov.get("status") or "").strip().upper()
-    if st == ValidationStatus.DATA_VALID.value and not dry_run:
-        record = _apply_transition(store, record.candidate_id, ValidationStatus.DATA_VALID, reason="orchestrator_auto_data_valid")
-        result["action"] = "data_valid"
-    elif st == ValidationStatus.DATA_INVALID.value and not dry_run:
-        record = _apply_transition(store, record.candidate_id, ValidationStatus.DATA_INVALID, reason="orchestrator_data_invalid")
-        result["action"] = "data_invalid"
+    ov = (vr or {}).get("overall") if isinstance(vr, dict) else {}
+    st = str(
+        (vr or {}).get("new_status")
+        or (vr or {}).get("validation_result")
+        or (ov or {}).get("status")
+        or ""
+    ).strip().upper()
+    if st == ValidationStatus.DATA_VALID.value:
+        if not dry_run:
+            record = store.get_candidate(record.candidate_id) or record
+            result["action"] = "data_valid"
+        else:
+            record = _dry_advance(record, ValidationStatus.DATA_VALID)
+            result["action"] = "dry_run"
+    elif st == ValidationStatus.DATA_INVALID.value:
+        if not dry_run:
+            record = store.get_candidate(record.candidate_id) or record
+            result["action"] = "data_invalid"
+        else:
+            record = _dry_advance(record, ValidationStatus.DATA_INVALID)
+            result["action"] = "dry_run"
     elif dry_run:
         result["action"] = "dry_run"
     else:
