@@ -7,7 +7,7 @@ Templates for running QuantCairn services under macOS `launchd` (LaunchAgent).
 | Label | Script | Purpose | Frequency |
 |-------|--------|---------|-----------|
 | `com.quantcairn.combined` | `scripts/start_combined.py` | Unified research dashboard (port 8090) | Long-lived (KeepAlive) |
-| `com.quantcairn.ai-selector` | `scripts/ai_selector_wrapper.py` | AI selection pipeline scheduler | 21:00 / 22:30 Beijing time |
+| `com.quantcairn.ai-selector` | `scripts/ai_selector_wrapper.py` | AI selection pipeline scheduler | 21:35 / 21:45 / 22:00 / 22:15 / 22:30 Beijing time |
 | `com.quantcairn.candidate-validation` | `scripts/run_candidate_validation_scheduler.py --apply` | Candidate validation scheduler (`com.quantcairn.candidate-validation.plist.template`) | 21:40 / 21:50 / 22:05 / 22:20 / 22:35 Beijing time |
 | `com.quantcairn.orphan-monitor` | `scripts/start_orphan_monitor.py` | Broker position safety net | Long-lived (KeepAlive) |
 
