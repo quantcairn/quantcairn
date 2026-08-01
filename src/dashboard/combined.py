@@ -119,6 +119,42 @@ def _candidate_layer_score(item: dict[str, object]) -> object | None:
     return None
 
 
+def _candidate_layer_earnings_details(item: dict[str, object]) -> dict[str, object]:
+    raw_info = item.get("earnings_info")
+    earnings_info = raw_info if isinstance(raw_info, dict) else {}
+
+    def _pick(*keys: str) -> object | None:
+        for key in keys:
+            value = earnings_info.get(key)
+            if value is not None and str(value).strip() != "":
+                return value
+            value = item.get(key)
+            if value is not None and str(value).strip() != "":
+                return value
+        return None
+
+    earnings_date = _pick("earnings_date")
+    earnings_time = _pick("earnings_time")
+    trading_days_to_earnings = _pick("trading_days_to_earnings")
+    earnings_risk_level = _pick("earnings_risk_level")
+    summary_parts: list[str] = []
+    if earnings_date is not None:
+        summary_parts.append(str(earnings_date))
+    if earnings_time is not None:
+        summary_parts.append(str(earnings_time))
+    if trading_days_to_earnings is not None:
+        summary_parts.append(f"{trading_days_to_earnings}个交易日后")
+    if earnings_risk_level is not None:
+        summary_parts.append(f"风险 {str(earnings_risk_level).strip().upper()}")
+    return {
+        "earnings_date": earnings_date,
+        "earnings_time": earnings_time,
+        "trading_days_to_earnings": trading_days_to_earnings,
+        "earnings_risk_level": earnings_risk_level,
+        "earnings_summary": " · ".join(summary_parts),
+    }
+
+
 def _candidate_layer_view_row(
     item: dict[str, object],
     *,
@@ -128,6 +164,7 @@ def _candidate_layer_view_row(
     if not symbol:
         return None
     blocking_reasons = _candidate_layer_reason_list(item)
+    earnings_details = _candidate_layer_earnings_details(item)
     primary_blocking_reason = (
         blocking_reasons[0]
         if blocking_reasons
@@ -175,6 +212,11 @@ def _candidate_layer_view_row(
             or item.get("description")
             or ""
         ).strip(),
+        "earnings_date": earnings_details["earnings_date"],
+        "earnings_time": earnings_details["earnings_time"],
+        "trading_days_to_earnings": earnings_details["trading_days_to_earnings"],
+        "earnings_risk_level": earnings_details["earnings_risk_level"],
+        "earnings_summary": earnings_details["earnings_summary"] or "N/A",
     }
 
 
@@ -6181,6 +6223,7 @@ HTML = """<!DOCTYPE html>
                                         <span>分数</span>
                                         <span>交易准入</span>
                                         <span>最终入选</span>
+                                        <span>财报</span>
                                     </div>
                                     {% for row in candidate_layers.trade_candidates or [] %}
                                     <div class="selector-row">
@@ -6188,11 +6231,12 @@ HTML = """<!DOCTYPE html>
                                         <span class="num">{{ format_optional(row.score) }}</span>
                                         <span>{{ translate_status(row.trade_admission_status or 'UNKNOWN') }}</span>
                                         <span>{{ '是' if row.final_selected else '否' }}</span>
+                                        <span>{{ format_optional(row.earnings_summary) }}</span>
                                     </div>
                                     {% endfor %}
                                     {% if not candidate_layers.trade_candidates %}
                                     <div class="selector-row">
-                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
+                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
                                     </div>
                                     {% endif %}
                                 </div>
@@ -6206,6 +6250,7 @@ HTML = """<!DOCTYPE html>
                                         <span>分数</span>
                                         <span>研究状态</span>
                                         <span>why interesting</span>
+                                        <span>财报</span>
                                     </div>
                                     {% for row in candidate_layers.research_candidates or [] %}
                                     <div class="selector-row">
@@ -6213,11 +6258,12 @@ HTML = """<!DOCTYPE html>
                                         <span class="num">{{ format_optional(row.score) }}</span>
                                         <span>{{ translate_status(row.research_status or 'UNKNOWN') }}</span>
                                         <span>{{ row.why_interesting or '暂无' }}</span>
+                                        <span>{{ format_optional(row.earnings_summary) }}</span>
                                     </div>
                                     {% endfor %}
                                     {% if not candidate_layers.research_candidates %}
                                     <div class="selector-row">
-                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
+                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
                                     </div>
                                     {% endif %}
                                 </div>
@@ -6231,6 +6277,7 @@ HTML = """<!DOCTYPE html>
                                         <span>拒绝阶段</span>
                                         <span>首要阻断</span>
                                         <span>阻断原因</span>
+                                        <span>财报</span>
                                     </div>
                                     {% for row in candidate_layers.watchlist_candidates or [] %}
                                     <div class="selector-row">
@@ -6246,11 +6293,12 @@ HTML = """<!DOCTYPE html>
                                                 暂无
                                             {% endif %}
                                         </span>
+                                        <span>{{ format_optional(row.earnings_summary) }}</span>
                                     </div>
                                     {% endfor %}
                                     {% if not candidate_layers.watchlist_candidates %}
                                     <div class="selector-row">
-                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
+                                        <span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span>
                                     </div>
                                     {% endif %}
                                 </div>
@@ -6832,6 +6880,38 @@ HTML = """<!DOCTYPE html>
         return raw.map((reason) => displayReason(reason)).join(' / ');
     }
 
+    function candidateEarningsInfo(item) {
+        const info = item && typeof item.earnings_info === 'object' && item.earnings_info !== null
+            ? item.earnings_info
+            : {};
+        return {
+            date: item && item.earnings_date ? item.earnings_date : (info.earnings_date || ''),
+            time: item && item.earnings_time ? item.earnings_time : (info.earnings_time || ''),
+            days: item && item.trading_days_to_earnings !== undefined && item.trading_days_to_earnings !== null
+                ? item.trading_days_to_earnings
+                : (info.trading_days_to_earnings ?? ''),
+            risk: item && item.earnings_risk_level ? item.earnings_risk_level : (info.earnings_risk_level || ''),
+        };
+    }
+
+    function candidateEarningsSummary(item) {
+        const info = candidateEarningsInfo(item);
+        const parts = [];
+        if (info.date) {
+            parts.push(String(info.date));
+        }
+        if (info.time) {
+            parts.push(String(info.time));
+        }
+        if (info.days !== null && info.days !== undefined && String(info.days).trim() !== '') {
+            parts.push(`${String(info.days)}个交易日后`);
+        }
+        if (info.risk) {
+            parts.push(`风险 ${String(info.risk).toUpperCase()}`);
+        }
+        return parts.length ? parts.join(' · ') : 'N/A';
+    }
+
     function renderCandidateLayerTable(nodeId, rows, kind) {
         const node = document.getElementById(nodeId);
         if (!node) {
@@ -6839,7 +6919,7 @@ HTML = """<!DOCTYPE html>
         }
         const items = Array.isArray(rows) ? rows : [];
         if (!items.length) {
-            node.innerHTML = '<div class="selector-row"><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span></div>';
+            node.innerHTML = '<div class="selector-row"><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span><span>暂无</span></div>';
             return;
         }
         if (kind === 'trade') {
@@ -6849,6 +6929,7 @@ HTML = """<!DOCTYPE html>
                     <span class="num">${escapeHtml(candidateScore(item))}</span>
                     <span>${escapeHtml(displayStatus(item && item.trade_admission_status ? item.trade_admission_status : 'UNKNOWN'))}</span>
                     <span>${displayBool(Boolean(item && item.final_selected))}</span>
+                    <span>${escapeHtml(candidateEarningsSummary(item))}</span>
                 </div>
             `).join('');
             return;
@@ -6860,6 +6941,7 @@ HTML = """<!DOCTYPE html>
                     <span class="num">${escapeHtml(candidateScore(item))}</span>
                     <span>${escapeHtml(displayStatus(item && item.research_status ? item.research_status : 'UNKNOWN'))}</span>
                     <span>${escapeHtml(displayOptional(item && item.why_interesting ? item.why_interesting : '暂无'))}</span>
+                    <span>${escapeHtml(candidateEarningsSummary(item))}</span>
                 </div>
             `).join('');
             return;
@@ -6870,6 +6952,7 @@ HTML = """<!DOCTYPE html>
                 <span>${escapeHtml(displayStatus(item && item.rejection_stage ? item.rejection_stage : 'UNKNOWN'))}</span>
                 <span>${escapeHtml(displayReason(item && item.primary_blocking_reason ? item.primary_blocking_reason : 'unknown'))}</span>
                 <span>${escapeHtml(candidateReasons(item))}</span>
+                <span>${escapeHtml(candidateEarningsSummary(item))}</span>
             </div>
         `).join('');
     }

@@ -470,6 +470,12 @@ def test_selection_dashboard_view_separates_research_and_tradable_candidates(tmp
                         "candidate_score": 91.2,
                         "trade_admission_status": "TRADABLE",
                         "final_selected": True,
+                        "earnings_info": {
+                            "earnings_date": "2026-08-07",
+                            "earnings_time": "AMC",
+                            "trading_days_to_earnings": 5,
+                            "earnings_risk_level": "MEDIUM",
+                        },
                     }
                 ],
                 "research_candidates": [
@@ -478,6 +484,12 @@ def test_selection_dashboard_view_separates_research_and_tradable_candidates(tmp
                         "candidate_score": 71.45,
                         "research_status": "RESEARCH_ONLY",
                         "why_interesting": "高动量观察",
+                        "earnings_info": {
+                            "earnings_date": "2026-08-09",
+                            "earnings_time": "BMO",
+                            "trading_days_to_earnings": 7,
+                            "earnings_risk_level": "LOW",
+                        },
                     }
                 ],
                 "watchlist_candidates": [
@@ -486,6 +498,12 @@ def test_selection_dashboard_view_separates_research_and_tradable_candidates(tmp
                         "rejection_stage": "POST_FILTER",
                         "primary_blocking_reason": "entry_quality_too_low",
                         "blocking_reasons": ["entry_quality_too_low", "composition_limit"],
+                        "earnings_info": {
+                            "earnings_date": "2026-08-05",
+                            "earnings_time": "AMC",
+                            "trading_days_to_earnings": 3,
+                            "earnings_risk_level": "HIGH",
+                        },
                     }
                 ],
             },
@@ -517,6 +535,13 @@ def test_selection_dashboard_view_separates_research_and_tradable_candidates(tmp
     assert view["candidate_layers"]["research_candidates"][0]["symbol"] == "SOFI"
     assert view["candidate_layers"]["watchlist_candidates"][0]["symbol"] == "DRIP"
     assert view["candidate_layers"]["trade_candidates"][0]["final_selected"] is True
+    assert view["candidate_layers"]["trade_candidates"][0]["earnings_date"] == "2026-08-07"
+    assert view["candidate_layers"]["trade_candidates"][0]["earnings_time"] == "AMC"
+    assert view["candidate_layers"]["trade_candidates"][0]["trading_days_to_earnings"] == 5
+    assert view["candidate_layers"]["trade_candidates"][0]["earnings_risk_level"] == "MEDIUM"
+    assert view["candidate_layers"]["trade_candidates"][0]["earnings_summary"] == "2026-08-07 · AMC · 5个交易日后 · 风险 MEDIUM"
+    assert view["candidate_layers"]["research_candidates"][0]["earnings_summary"] == "2026-08-09 · BMO · 7个交易日后 · 风险 LOW"
+    assert view["candidate_layers"]["watchlist_candidates"][0]["earnings_summary"] == "2026-08-05 · AMC · 3个交易日后 · 风险 HIGH"
     assert view["next_validation_stage"] == "候选分类（CLASSIFICATION）"
     assert view["selection_state"]["code"] == "NO_TRADABLE_SELECTION"
     assert view["live_config_state"]["code"] == "PRESERVED_MANUAL_OVERRIDE"
@@ -548,6 +573,9 @@ def test_selection_dashboard_view_falls_back_to_legacy_candidate_fields(tmp_path
     assert view["candidate_layers"]["trade_candidates"][0]["symbol"] == "AAPL"
     assert view["candidate_layers"]["research_candidates"][0]["symbol"] == "SOFI"
     assert view["candidate_layers"]["watchlist_candidates"][0]["symbol"] == "DRIP"
+    assert view["candidate_layers"]["trade_candidates"][0]["earnings_summary"] == "N/A"
+    assert view["candidate_layers"]["research_candidates"][0]["earnings_summary"] == "N/A"
+    assert view["candidate_layers"]["watchlist_candidates"][0]["earnings_summary"] == "N/A"
 
 
 def test_selection_dashboard_view_marks_active_ai_synced_and_ok(tmp_path, monkeypatch):

@@ -1097,6 +1097,36 @@ def _research_status_for_item(item: dict, report: dict | None = None) -> tuple[b
     return False, str(item.get("research_status") or "INCOMPLETE"), str(item.get("reason") or "research_evidence_incomplete")
 
 
+def _earnings_summary_for_item(item: dict) -> str:
+    raw_info = item.get("earnings_info")
+    earnings_info = raw_info if isinstance(raw_info, dict) else {}
+
+    def _pick(*keys: str) -> object | None:
+        for key in keys:
+            value = earnings_info.get(key)
+            if value is not None and str(value).strip() != "":
+                return value
+            value = item.get(key)
+            if value is not None and str(value).strip() != "":
+                return value
+        return None
+
+    earnings_date = _pick("earnings_date")
+    earnings_time = _pick("earnings_time")
+    trading_days_to_earnings = _pick("trading_days_to_earnings")
+    earnings_risk_level = _pick("earnings_risk_level")
+    parts: list[str] = []
+    if earnings_date is not None:
+        parts.append(str(earnings_date))
+    if earnings_time is not None:
+        parts.append(str(earnings_time))
+    if trading_days_to_earnings is not None:
+        parts.append(f"{trading_days_to_earnings}个交易日后")
+    if earnings_risk_level is not None:
+        parts.append(f"风险 {str(earnings_risk_level).strip().upper()}")
+    return " · ".join(parts)
+
+
 def _merge_top_item_with_report(top_item: dict, selection_report: dict, rank: int) -> dict:
     merged = dict(top_item or {})
     report_items = _selection_report_top_items(selection_report)
@@ -1316,6 +1346,9 @@ def _ticker_line(top_config: dict, rank: int, *, label: str | None = None, repor
         fields = ", ".join(str(field) for field in affected_fields if str(field).strip())
         if fields:
             lines.append(f"fallback影响：{fields}")
+    earnings_summary = _earnings_summary_for_item(top_config)
+    if earnings_summary:
+        lines.append(f"财报：{earnings_summary}")
     lines.append(f"理由：{reason or '无'}")
     return "\n".join(lines)
 

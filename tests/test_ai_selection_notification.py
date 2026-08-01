@@ -336,6 +336,41 @@ def test_ai_selection_message_includes_top3():
     assert "仓位：$" in body
 
 
+def test_ai_selection_message_includes_earnings_summary_when_present():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    candidate = _sample_top(1, "SOXS")
+    candidate["earnings_info"] = {
+        "symbol": "SOXS",
+        "earnings_date": "2026-08-07",
+        "earnings_time": "AMC",
+        "trading_days_to_earnings": 5,
+        "earnings_risk_level": "MEDIUM",
+        "source": "fmp",
+        "updated_at": "2026-08-01T09:00:00+08:00",
+        "confidence": 0.91,
+    }
+    _, body = alerts._build_ai_selection_message(
+        _sample_report(),
+        [candidate],
+    )
+    monkeypatch.undo()
+
+    assert "财报：2026-08-07 · AMC · 5个交易日后 · 风险 MEDIUM" in body
+
+
+def test_ai_selection_message_omits_earnings_summary_when_missing():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
+    _, body = alerts._build_ai_selection_message(
+        _sample_report(),
+        [_sample_top(1, "SOXS")],
+    )
+    monkeypatch.undo()
+
+    assert "财报：" not in body
+
+
 def test_ai_selection_message_handles_only_top2():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(alerts, "_current_notification_sent_at", _fixed_notification_time)
