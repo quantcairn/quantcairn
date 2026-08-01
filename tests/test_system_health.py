@@ -41,7 +41,7 @@ class TestSystemHealthScript:
         assert isinstance(data, dict)
         required_keys = {
             "scheduler", "ai_selector", "market",
-            "execution_mode", "notifier", "paper_portfolio", "processes",
+            "execution_mode", "notifier", "paper_portfolio", "orphan_monitor", "processes",
         }
         assert required_keys.issubset(set(data.keys())), \
             f"Missing keys: {required_keys - set(data.keys())}"
@@ -175,6 +175,62 @@ class TestPaperPortfolioCheck:
 
 
 
+class TestOrphanMonitorCheck:
+    """_check_orphan_monitor() handles missing and populated states."""
+
+    def test_handles_missing_installation_and_logs(self, monkeypatch, tmp_path):
+        import subprocess
+        import scripts.system_health as module
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        def _fake_check_output(cmd, text=True, stderr=None):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(subprocess, "check_output", _fake_check_output)
+
+        result = module._check_orphan_monitor(project_dir=tmp_path)
+        assert result["installed"] is False
+        assert result["loaded"] is False
+        assert result["running"] is False
+        assert result["logs_present"] is False
+        assert result["last_log_file"] is None
+
+    def test_reads_installed_loaded_and_logs(self, monkeypatch, tmp_path):
+        import subprocess
+        import scripts.system_health as module
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        plist = launch_agents / "com.quantcairn.orphan-monitor.plist"
+        plist.write_text("<plist />")
+
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir(parents=True)
+        err_file = logs_dir / "orphan-monitor.err.log"
+        err_file.write_text("stderr line\n")
+        log_file = logs_dir / "orphan-monitor.log"
+        log_file.write_text("line 1\nline 2\norphan monitor ready\n")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        def _fake_check_output(cmd, text=True, stderr=None):
+            if cmd[:2] == ["launchctl", "print"]:
+                return "pid = 4321\nstate = running\n"
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(subprocess, "check_output", _fake_check_output)
+
+        result = module._check_orphan_monitor(project_dir=tmp_path)
+        assert result["installed"] is True
+        assert result["loaded"] is True
+        assert result["logs_present"] is True
+        assert result["last_log_file"] == str(log_file)
+        assert result["last_log_excerpt"] == "orphan monitor ready"
+        assert result["log_files"][0]["exists"] is True
+        assert result["log_files"][1]["exists"] is True
+
+
 class TestReportGeneration:
     """generate_report() always returns a structured dict."""
 
@@ -189,6 +245,7 @@ class TestReportGeneration:
         assert "execution_mode" in report
         assert "notifier" in report
         assert "paper_portfolio" in report
+        assert "orphan_monitor" in report
         assert "processes" in report
 
     def test_render_text_does_not_crash(self):
@@ -198,6 +255,7 @@ class TestReportGeneration:
         text = render_text(report)
         assert "QuantCairn Health Report" in text
         assert "Scheduler:" in text
+        assert "Orphan Monitor:" in text
         assert "Live Trading:" in text
 
 

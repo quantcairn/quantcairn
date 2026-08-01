@@ -65,6 +65,9 @@ curl -s --max-time 5 http://127.0.0.1:8090/api/status | python3 -m json.tool
 
 # Run health script
 bash health_check.sh
+
+# The health report also shows orphan monitor install/load/run status
+# and the freshness of its log files.
 ```
 
 ### 5. View Logs

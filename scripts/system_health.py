@@ -332,6 +332,94 @@ def _check_processes() -> dict:
     return result
 
 
+def _check_orphan_monitor(project_dir: Path | None = None) -> dict:
+    """Best-effort read-only status for the orphan monitor service."""
+    import subprocess
+
+    root = project_dir or PROJECT_DIR
+    label = "com.quantcairn.orphan-monitor"
+    launch_agent = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    logs_dir = root / "logs"
+    log_paths = [
+        logs_dir / "orphan-monitor.log",
+        logs_dir / "orphan-monitor.err.log",
+    ]
+
+    installed = launch_agent.exists()
+    log_files = []
+    latest_log = None
+    latest_mtime = None
+    for path in log_paths:
+        exists = path.exists()
+        mtime = None
+        if exists:
+            try:
+                mtime = path.stat().st_mtime
+            except Exception:
+                mtime = None
+            if latest_mtime is None or (mtime is not None and mtime > latest_mtime):
+                latest_mtime = mtime
+                latest_log = path
+        log_files.append(
+            {
+                "path": str(path),
+                "exists": exists,
+                "mtime": datetime.fromtimestamp(mtime).isoformat() if mtime else None,
+            }
+        )
+
+    launchctl_loaded = False
+    launchctl_status = None
+    try:
+        uid = os.getuid()
+        for cmd in (
+            ["launchctl", "print", f"gui/{uid}/{label}"],
+            ["launchctl", "list", label],
+        ):
+            try:
+                out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+                if out:
+                    launchctl_loaded = True
+                    launchctl_status = out.splitlines()[0][:200]
+                    break
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+    except Exception:
+        pass
+
+    processes = _check_processes()
+    running = any("start_orphan_monitor" in p for p in processes.get("processes", []))
+
+    last_log_excerpt = None
+    if latest_log and latest_log.exists():
+        try:
+            lines = [
+                line.strip()
+                for line in latest_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if lines:
+                last_log_excerpt = lines[-1][:240]
+        except Exception:
+            pass
+
+    return {
+        "label": label,
+        "installed": installed,
+        "installed_plist": str(launch_agent),
+        "loaded": launchctl_loaded,
+        "running": running,
+        "launchctl_status": launchctl_status,
+        "log_files": log_files,
+        "logs_present": any(item["exists"] for item in log_files),
+        "last_log_file": str(latest_log) if latest_log else None,
+        "last_log_updated": datetime.fromtimestamp(latest_mtime).isoformat()
+        if latest_mtime
+        else None,
+        "last_log_excerpt": last_log_excerpt,
+    }
+
+
 # ── Report rendering ───────────────────────────────────────────────────────
 
 
@@ -411,6 +499,20 @@ def render_text(report: dict) -> str:
             lines.append(f"  symbols: {', '.join(p['position_symbols'])}")
         lines.append(f"  trades: {p['total_trades']}")
 
+    # Orphan Monitor
+    o = report["orphan_monitor"]
+    lines.append(f"\nOrphan Monitor:")
+    lines.append(f"  {_icon(o['installed'])} installed: {o['installed']}")
+    lines.append(f"  {_icon(o['loaded'])} loaded: {o['loaded']}")
+    lines.append(f"  {_icon(o['running'])} running: {o['running']}")
+    lines.append(f"  plist: {o['installed_plist']}")
+    lines.append(f"  logs: {_icon(o['logs_present'])} present: {o['logs_present']}")
+    lines.append(f"  last log: {o['last_log_updated'] or 'none'}")
+    if o.get("last_log_excerpt"):
+        lines.append(f"  last log excerpt: {o['last_log_excerpt']}")
+    if o.get("launchctl_status"):
+        lines.append(f"  launchctl: {o['launchctl_status']}")
+
     # Live Trading
     liveness = "DISABLED" if gate["effective_live_trading"] != "⚠️  ENABLED — VERIFY SAFETY" else gate["effective_live_trading"]
     lines.append(f"\nLive Trading:")
@@ -448,6 +550,7 @@ def generate_report(project_dir: Path | None = None) -> dict:
         "execution_mode": _check_execution_mode(project_dir),
         "notifier": _check_notifier(project_dir),
         "paper_portfolio": _check_paper_portfolio(project_dir),
+        "orphan_monitor": _check_orphan_monitor(project_dir),
         "processes": _check_processes(),
     }
 
