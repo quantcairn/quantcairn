@@ -112,6 +112,8 @@ def test_fmp_provider_parses_success_response():
     assert len(session.calls) == 1
     _, params, timeout = session.calls[0]
     assert params["symbol"] == "NVDA"
+    assert params["from"] == "2026-07-27"
+    assert params["to"] == "2026-09-02"
     assert params["apikey"] == "demo"
     assert params["includeReportTimes"] == "true"
     assert timeout == 7
@@ -150,6 +152,18 @@ def test_fmp_provider_invalid_response_falls_back():
     )
 
     assert provider.get_earnings_info({"ticker": "NVDA"}) is None
+
+
+def test_fmp_provider_empty_array_falls_back():
+    session = DummySession(DummyResponse([]))
+    provider = FmpEarningsCalendarProvider(
+        api_key="demo",
+        base_url="https://example.com/stable/earnings-calendar",
+        session=session,
+    )
+
+    assert provider.get_earnings_info({"ticker": "NVDA"}) is None
+    assert len(session.calls) == 1
 
 
 def test_default_provider_returns_safe_provider_when_disabled():

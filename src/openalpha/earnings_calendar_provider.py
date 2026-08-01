@@ -214,7 +214,11 @@ class FmpEarningsCalendarProvider:
 
     def _fetch_rows(self, symbol: str, *, as_of: datetime) -> list[dict[str, Any]]:
         start = (as_of.astimezone(US_EASTERN).date() - timedelta(days=7)).isoformat()
-        end = (as_of.astimezone(US_EASTERN).date() + timedelta(days=365)).isoformat()
+        # FMP's earnings calendar endpoint is reliable for short forward windows.
+        # A 365-day lookahead often returns an empty array even when shorter windows
+        # (for the same symbol and same API key) do contain rows, so we keep the
+        # query tightly bounded to avoid false "no data" results.
+        end = (as_of.astimezone(US_EASTERN).date() + timedelta(days=30)).isoformat()
         params = {
             "symbol": symbol,
             "from": start,
