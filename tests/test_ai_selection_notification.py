@@ -42,6 +42,29 @@ def _fixed_notification_time() -> datetime:
     return datetime(2026, 7, 18, 6, 25, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
+def _telegram_delivery_result(
+    *,
+    configured: bool = True,
+    attempted: bool = True,
+    success: bool = True,
+    fallback_used: bool = False,
+    chunks_total: int = 1,
+    chunks_successful: int | None = None,
+    error: str | None = None,
+    skipped_reason: str | None = None,
+) -> alerts.TelegramDeliveryResult:
+    return alerts.TelegramDeliveryResult(
+        configured=configured,
+        attempted=attempted,
+        success=success,
+        fallback_used=fallback_used,
+        chunks_total=chunks_total,
+        chunks_successful=chunks_total if chunks_successful is None and success else (chunks_successful or 0),
+        error=error,
+        skipped_reason=skipped_reason,
+    )
+
+
 def _sample_top(rank: int, ticker: str, *, fallback_used: bool = False, reason: str = "High range fitness") -> dict:
     return {
         "ticker": ticker,
@@ -1083,7 +1106,7 @@ def test_ai_selection_notification_prefers_ai_selector_bot(monkeypatch, tmp_path
             self.webhook_url = kwargs.get("webhook_url")
 
         def _send(self, *args, **kwargs):
-            pass
+            return _telegram_delivery_result(success=True)
 
     monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
 
@@ -1134,6 +1157,7 @@ def test_ai_selection_notification_sends_once_per_bundle(monkeypatch, tmp_path):
 
         def _send(self, *args, **kwargs):
             sent.append(args)
+            return _telegram_delivery_result(success=True)
 
     monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
 
@@ -1174,6 +1198,7 @@ def test_ai_selection_notification_sends_once_even_if_bundle_hash_changes(monkey
 
         def _send(self, *args, **kwargs):
             sent.append(args)
+            return _telegram_delivery_result(success=True)
 
     monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
 
@@ -1214,6 +1239,7 @@ def test_ai_selection_notification_legacy_ledger_blocks_duplicate_run(monkeypatc
 
         def _send(self, *args, **kwargs):
             sent.append(args)
+            return _telegram_delivery_result(success=True)
 
     monkeypatch.setattr(
         alerts,
@@ -1300,6 +1326,7 @@ def test_ai_selection_notification_failure_can_retry(monkeypatch, tmp_path):
             attempts["count"] += 1
             if attempts["count"] == 1:
                 raise RuntimeError("telegram down")
+            return _telegram_delivery_result(success=True)
 
     monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
 
@@ -1310,3 +1337,122 @@ def test_ai_selection_notification_failure_can_retry(monkeypatch, tmp_path):
     ledger_text = ledger_path.read_text(encoding="utf-8")
     assert '"status": "FAILED"' in ledger_text
     assert '"status": "SENT"' in ledger_text
+
+
+def test_ai_selection_notification_records_sent_status(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-sent", selection_bundle_hash="bundle-hash-sent")},
+    )
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {
+            "ai_selector_telegram_bot_token": "ai-bot",
+            "ai_selector_telegram_chat_id": "public-chat",
+            "ai_selector_admin_chat_id": "admin-chat",
+        },
+    )
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self.telegram_chat_id = kwargs.get("telegram_chat_id")
+            self._telegram_enabled = True
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            return _telegram_delivery_result(success=True)
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    ledger_lines = ledger_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(ledger_lines) == 1
+    payload = json.loads(ledger_lines[0])
+    assert payload["status"] == "SENT"
+    assert payload["final_status"] == "SENT"
+    assert payload["public_channel_ok"] is True
+    assert payload["admin_channel_ok"] is True
+    assert payload["telegram_attempted"] is True
+
+
+def test_ai_selection_notification_records_partial_status_and_blocks_rerun(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-partial", selection_bundle_hash="bundle-hash-partial")},
+    )
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {
+            "ai_selector_telegram_bot_token": "ai-bot",
+            "ai_selector_telegram_chat_id": "public-chat",
+            "ai_selector_admin_chat_id": "admin-chat",
+        },
+    )
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self.telegram_chat_id = kwargs.get("telegram_chat_id")
+            self._telegram_enabled = True
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            if self.telegram_chat_id == "public-chat":
+                return _telegram_delivery_result(success=True)
+            return _telegram_delivery_result(success=False, error="admin failure")
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    ledger_lines = ledger_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(ledger_lines) == 1
+    payload = json.loads(ledger_lines[0])
+    assert payload["status"] == "PARTIAL"
+    assert payload["final_status"] == "PARTIAL"
+    assert payload["public_channel_ok"] is True
+    assert payload["admin_channel_ok"] is False
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+    assert ledger_path.read_text(encoding="utf-8").strip().splitlines() == ledger_lines
+
+
+def test_ai_selection_notification_ignores_unconfigured_targets(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "notification_ledger.jsonl"
+    monkeypatch.setenv("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setattr(
+        alerts,
+        "load_committed_selection_bundle",
+        lambda *_args, **_kwargs: {"report": _committed_bundle_report(selection_run_id="bundle-run-skip", selection_bundle_hash="bundle-hash-skip")},
+    )
+    monkeypatch.setattr(
+        alerts,
+        "_load_ai_selector_notification_config",
+        lambda: {"ai_selector_telegram_bot_token": "ai-bot", "ai_selector_telegram_chat_id": ""},
+    )
+
+    called = {"count": 0}
+
+    class FakeNotifier:
+        def __init__(self, *args, **kwargs):
+            self._telegram_enabled = False
+            self.webhook_url = ""
+
+        def _send(self, *args, **kwargs):
+            called["count"] += 1
+            return _telegram_delivery_result(configured=False, attempted=False, success=False, skipped_reason="telegram_disabled")
+
+    monkeypatch.setattr(alerts, "Notifier", FakeNotifier)
+
+    alerts.notify_ai_selection_result(_sample_report(), [_sample_top(1, "SOXS")])
+
+    assert called["count"] == 0
+    assert not ledger_path.exists()

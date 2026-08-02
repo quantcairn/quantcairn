@@ -9,6 +9,7 @@ import re
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,18 @@ _AI_SELECTION_NOTIFICATION_TYPE = "AI_SELECTION_FINALIZED"
 _MAX_AI_SELECTION_NOTIFICATION_ATTEMPTS = 3
 _TELEGRAM_URL_RE = re.compile(r"https://api\.telegram\.org/bot([^/\s?]+)(/sendMessage)", re.IGNORECASE)
 _TELEGRAM_TOKEN_RE = re.compile(r"bot([0-9]+:[A-Za-z0-9_-]+)")
+
+
+@dataclass(frozen=True)
+class TelegramDeliveryResult:
+    configured: bool
+    attempted: bool
+    success: bool
+    fallback_used: bool = False
+    chunks_total: int = 0
+    chunks_successful: int = 0
+    error: str | None = None
+    skipped_reason: str | None = None
 
 
 def _telegram_rate_limit():
@@ -216,7 +229,10 @@ def _ai_selection_notification_status(path: Path, *, selection_run_id: str, noti
         if legacy_bundle_hash and notification_key == f"{normalized_run_id}:{legacy_bundle_hash}:{normalized_type}":
             matching.append(item)
             continue
-    sent = any(str(item.get("status") or "").upper() == "SENT" for item in matching)
+    sent = any(
+        str(item.get("status") or item.get("final_status") or "").upper() in {"SENT", "PARTIAL"}
+        for item in matching
+    )
     attempts = len(matching)
     return sent, attempts
 
@@ -256,6 +272,15 @@ def _record_ai_selection_notification_attempt(
     status: str,
     attempt_count: int,
     error: str | None = None,
+    public_channel_requested: bool = False,
+    public_channel_configured: bool = False,
+    public_channel_ok: bool = False,
+    public_channel_error: str | None = None,
+    admin_channel_requested: bool = False,
+    admin_channel_configured: bool = False,
+    admin_channel_ok: bool = False,
+    admin_channel_error: str | None = None,
+    telegram_attempted: bool = False,
 ) -> None:
     _append_ai_selection_notification_ledger(
         path,
@@ -265,12 +290,67 @@ def _record_ai_selection_notification_attempt(
             "selection_run_id": str(report.get("selection_run_id") or ""),
             "selection_bundle_hash": str(report.get("selection_bundle_hash") or ""),
             "status": str(status or "").upper(),
+            "final_status": str(status or "").upper(),
             "sent_at": datetime.now(US_EASTERN).isoformat() if str(status or "").upper() == "SENT" else None,
             "attempted_at": datetime.now(US_EASTERN).isoformat(),
             "attempt_count": int(attempt_count),
             "error": error,
+            "telegram_attempted": bool(telegram_attempted),
+            "public_channel_requested": bool(public_channel_requested),
+            "public_channel_configured": bool(public_channel_configured),
+            "public_channel_ok": bool(public_channel_ok),
+            "public_channel_error": public_channel_error,
+            "admin_channel_requested": bool(admin_channel_requested),
+            "admin_channel_configured": bool(admin_channel_configured),
+            "admin_channel_ok": bool(admin_channel_ok),
+            "admin_channel_error": admin_channel_error,
         },
     )
+
+
+def _coerce_telegram_delivery_result(
+    value: object,
+    *,
+    configured: bool,
+    attempted: bool,
+) -> TelegramDeliveryResult:
+    if isinstance(value, TelegramDeliveryResult):
+        return value
+    if isinstance(value, dict):
+        return TelegramDeliveryResult(
+            configured=bool(value.get("configured", configured)),
+            attempted=bool(value.get("attempted", attempted)),
+            success=bool(value.get("success", False)),
+            fallback_used=bool(value.get("fallback_used", False)),
+            chunks_total=int(value.get("chunks_total", 0) or 0),
+            chunks_successful=int(value.get("chunks_successful", 0) or 0),
+            error=value.get("error"),
+            skipped_reason=value.get("skipped_reason"),
+        )
+    if isinstance(value, bool):
+        return TelegramDeliveryResult(
+            configured=configured,
+            attempted=attempted,
+            success=value,
+        )
+    return TelegramDeliveryResult(
+        configured=configured,
+        attempted=attempted,
+        success=False,
+        skipped_reason="no_result",
+    )
+
+
+def _ai_selection_notification_final_status(results: list[TelegramDeliveryResult]) -> str | None:
+    configured = [result for result in results if result.configured]
+    if not configured:
+        return None
+    success_count = sum(1 for result in configured if result.success)
+    if success_count == len(configured):
+        return "SENT"
+    if success_count == 0:
+        return "FAILED"
+    return "PARTIAL"
 
 
 def _is_formal_ai_selection_notification_payload(report: dict, source: str) -> tuple[bool, str]:
@@ -509,8 +589,12 @@ class Notifier:
         category: str,
         macos: bool = False,
         remote: bool = False,
-    ) -> None:
-        """Send notification through all enabled channels."""
+    ) -> TelegramDeliveryResult:
+        """Send notification through all enabled channels.
+
+        Returns the Telegram delivery result when Telegram is enabled and remote
+        delivery is requested. Other channels remain best-effort side effects.
+        """
         timestamp = datetime.now().strftime("%H:%M:%S")
 
         # Console
@@ -526,8 +610,15 @@ class Notifier:
             self._webhook_send(title, body, category)
 
         # Telegram
+        telegram_result = TelegramDeliveryResult(
+            configured=False,
+            attempted=False,
+            success=False,
+            skipped_reason="not_requested",
+        )
         if self._telegram_enabled and remote:
-            self._telegram_send(title, body)
+            telegram_result = self._telegram_send(title, body)
+        return telegram_result
 
     def _console_out(self, timestamp: str, title: str, body: str, category: str) -> None:
         """Rich console output with colors."""
@@ -589,7 +680,7 @@ class Notifier:
     TELEGRAM_MAX_CHARS = 4096
     TELEGRAM_SAFE_CHARS = 4000  # margin for HTML tags and continuation markers
 
-    def _telegram_send(self, title: str, body: str) -> None:
+    def _telegram_send(self, title: str, body: str) -> TelegramDeliveryResult:
         """Send notification via Telegram Bot API using HTML formatting.
 
         Messages exceeding ~4000 characters are split into multiple messages
@@ -600,19 +691,25 @@ class Notifier:
         text = f"<b>{safe_title}</b>\n{safe_body}"
 
         if len(text) <= self.TELEGRAM_SAFE_CHARS:
-            self._telegram_send_single(text, use_html=True, plain_title=title, plain_body=body)
-            return
+            return self._telegram_send_single(text, use_html=True, plain_title=title, plain_body=body)
 
         # ── Chunked send for long messages ─────────────────────────────
         logger.info("Telegram message too long (%d chars) — splitting into chunks", len(text))
-        self._telegram_send_chunked(safe_title, safe_body, plain_title=title, plain_body=body)
+        return self._telegram_send_chunked(safe_title, safe_body, plain_title=title, plain_body=body)
 
     # ── Telegram chunked delivery ──────────────────────────────────────────
 
     def _telegram_send_single(
         self, text: str, *, use_html: bool = True, plain_title: str = "", plain_body: str = ""
-    ) -> bool:
-        """Send a single Telegram message. Returns True on success."""
+    ) -> TelegramDeliveryResult:
+        """Send a single Telegram message and return a structured result."""
+        if not self._telegram_enabled:
+            return TelegramDeliveryResult(
+                configured=False,
+                attempted=False,
+                success=False,
+                skipped_reason="telegram_disabled",
+            )
         try:
             _telegram_rate_limit()
             payload: dict = {
@@ -630,7 +727,14 @@ class Notifier:
                 json=payload, timeout=8,
             )
             if resp.ok:
-                return True
+                return TelegramDeliveryResult(
+                    configured=True,
+                    attempted=True,
+                    success=True,
+                    fallback_used=False,
+                    chunks_total=1,
+                    chunks_successful=1,
+                )
 
             logger.warning("Telegram send failed: %s %s", resp.status_code, _redact_telegram_sensitive_text(resp.text[:200]))
             # Retry as plain text if HTML was used
@@ -643,12 +747,44 @@ class Notifier:
                     json=payload, timeout=8,
                 )
                 if resp2.ok:
-                    return True
+                    return TelegramDeliveryResult(
+                        configured=True,
+                        attempted=True,
+                        success=True,
+                        fallback_used=True,
+                        chunks_total=1,
+                        chunks_successful=1,
+                    )
                 logger.warning("Telegram plain retry also failed: %s %s", resp2.status_code, _redact_telegram_sensitive_text(resp2.text[:200]))
-            return False
+                return TelegramDeliveryResult(
+                    configured=True,
+                    attempted=True,
+                    success=False,
+                    fallback_used=True,
+                    chunks_total=1,
+                    chunks_successful=0,
+                    error=_redact_telegram_sensitive_text(resp2.text[:200]),
+                )
+            return TelegramDeliveryResult(
+                configured=True,
+                attempted=True,
+                success=False,
+                fallback_used=False,
+                chunks_total=1,
+                chunks_successful=0,
+                error=f"telegram_http_{resp.status_code}",
+            )
         except Exception as e:
             logger.warning("Telegram send error: %s", _redact_telegram_sensitive_text(e))
-            return False
+            return TelegramDeliveryResult(
+                configured=True,
+                attempted=True,
+                success=False,
+                fallback_used=False,
+                chunks_total=1,
+                chunks_successful=0,
+                error=_redact_telegram_sensitive_text(e),
+            )
 
     def _telegram_send_chunked(
         self,
@@ -657,7 +793,7 @@ class Notifier:
         *,
         plain_title: str = "",
         plain_body: str = "",
-    ) -> None:
+    ) -> TelegramDeliveryResult:
         """Split a long body into ≤4096-char chunks at natural boundaries.
 
         Strategy:
@@ -692,6 +828,9 @@ class Notifier:
             chunks.append("\n\n".join(current))
 
         total = len(chunks)
+        success_count = 0
+        fallback_used = False
+        first_error: str | None = None
         for i, chunk in enumerate(chunks):
             if i == 0:
                 header = f"<b>{safe_html_title}</b>\n\n"
@@ -712,14 +851,27 @@ class Notifier:
                 truncated = "\n".join(trimmed_lines)
                 chunk_text = header + truncated + "\n\n... (截断)"
 
-            success = self._telegram_send_single(
+            result = self._telegram_send_single(
                 chunk_text[:self.TELEGRAM_MAX_CHARS],
                 use_html=True,
                 plain_title=plain_title,
                 plain_body=chunk,
             )
-            if not success:
+            success_count += 1 if result.success else 0
+            fallback_used = fallback_used or result.fallback_used
+            if not result.success and first_error is None:
+                first_error = result.error or f"chunk_{i + 1}_failed"
+            if not result.success:
                 logger.warning("Telegram chunk %d/%d failed", i + 1, total)
+        return TelegramDeliveryResult(
+            configured=True,
+            attempted=True,
+            success=success_count == total,
+            fallback_used=fallback_used,
+            chunks_total=total,
+            chunks_successful=success_count,
+            error=None if success_count == total else first_error,
+        )
 
     @staticmethod
     def _make_bar(pct: float, width: int = 20) -> str:
@@ -1885,7 +2037,12 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
                 send_admin = bool(admin_chat_id)
 
                 # ── 1. Public channel message ────────────────────────────────────────
-                public_sent = False
+                public_result = TelegramDeliveryResult(
+                    configured=False,
+                    attempted=False,
+                    success=False,
+                    skipped_reason="not_requested",
+                )
                 if send_public and channel_chat_id:
                     public_notifier = Notifier(
                         console=False,
@@ -1898,15 +2055,42 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
                     pub_title, pub_body = _build_public_channel_message(report, resolved_top_items)
                     if public_notifier._telegram_enabled:
                         try:
-                            public_notifier._send(pub_title, pub_body, "summary", macos=False, remote=True)
-                            public_sent = True
-                            logger.info("Public channel notification sent: %s — %d chars",
-                                        pub_title, len(pub_body))
+                            public_result = _coerce_telegram_delivery_result(
+                                public_notifier._send(pub_title, pub_body, "summary", macos=False, remote=True),
+                                configured=True,
+                                attempted=True,
+                            )
+                            if public_result.success:
+                                logger.info("Public channel notification sent: %s — %d chars",
+                                            pub_title, len(pub_body))
+                            else:
+                                logger.warning(
+                                    "Public channel notification failed: %s",
+                                    _redact_telegram_sensitive_text(public_result.error or public_result.skipped_reason or "telegram_failed"),
+                                )
                         except Exception as exc:
+                            public_result = TelegramDeliveryResult(
+                                configured=True,
+                                attempted=True,
+                                success=False,
+                                error=_redact_telegram_sensitive_text(exc),
+                            )
                             logger.warning("Public channel notification failed: %s", _redact_telegram_sensitive_text(exc))
+                    else:
+                        public_result = TelegramDeliveryResult(
+                            configured=False,
+                            attempted=False,
+                            success=False,
+                            skipped_reason="telegram_disabled",
+                        )
 
                 # ── 2. Admin debug message ───────────────────────────────────────────
-                admin_sent = False
+                admin_result = TelegramDeliveryResult(
+                    configured=False,
+                    attempted=False,
+                    success=False,
+                    skipped_reason="not_requested",
+                )
                 if send_admin:
                     admin_notifier = Notifier(
                         console=False,
@@ -1919,26 +2103,64 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
                     admin_title, admin_body = _build_admin_debug_message(report, resolved_top_items)
                     if admin_notifier._telegram_enabled:
                         try:
-                            admin_notifier._send(admin_title, admin_body, "summary", macos=False, remote=True)
-                            admin_sent = True
-                            logger.info("Admin debug notification sent: %s — %d chars",
-                                        admin_title, len(admin_body))
+                            admin_result = _coerce_telegram_delivery_result(
+                                admin_notifier._send(admin_title, admin_body, "summary", macos=False, remote=True),
+                                configured=True,
+                                attempted=True,
+                            )
+                            if admin_result.success:
+                                logger.info("Admin debug notification sent: %s — %d chars",
+                                            admin_title, len(admin_body))
+                            else:
+                                logger.warning(
+                                    "Admin debug notification failed: %s",
+                                    _redact_telegram_sensitive_text(admin_result.error or admin_result.skipped_reason or "telegram_failed"),
+                                )
                         except Exception as exc:
+                            admin_result = TelegramDeliveryResult(
+                                configured=True,
+                                attempted=True,
+                                success=False,
+                                error=_redact_telegram_sensitive_text(exc),
+                            )
                             logger.warning("Admin debug notification failed: %s", _redact_telegram_sensitive_text(exc))
+                    else:
+                        admin_result = TelegramDeliveryResult(
+                            configured=False,
+                            attempted=False,
+                            success=False,
+                            skipped_reason="telegram_disabled",
+                        )
 
                 # ── 3. Record notification attempt ───────────────────────────────────
-                # Record if at least one channel succeeded (public takes priority for SENT status)
-                if (send_public and channel_chat_id) or send_admin:
+                configured_results = [result for result in (public_result, admin_result) if result.configured]
+                final_status = _ai_selection_notification_final_status(configured_results)
+
+                # Record only when at least one Telegram target was configured.
+                if final_status is not None:
+                    public_requested = bool(send_public and channel_chat_id)
+                    admin_requested = bool(send_admin and admin_chat_id)
                     _record_ai_selection_notification_attempt(
                         ledger_path,
                         report=report,
                         notification_key=notification_key,
                         notification_type=notification_type,
-                        status="SENT" if (public_sent or admin_sent) else "FAILED",
+                        status=final_status,
                         attempt_count=attempt_count + 1,
-                        error=None if (public_sent or admin_sent) else "notification_send_failed",
+                        error=None if final_status == "SENT" else "notification_send_failed",
+                        public_channel_requested=public_requested,
+                        public_channel_configured=public_result.configured,
+                        public_channel_ok=public_result.success,
+                        public_channel_error=public_result.error,
+                        admin_channel_requested=admin_requested,
+                        admin_channel_configured=admin_result.configured,
+                        admin_channel_ok=admin_result.success,
+                        admin_channel_error=admin_result.error,
+                        telegram_attempted=any(result.attempted for result in configured_results),
                     )
                 else:
+                    # No Telegram target was configured for this run; preserve the current
+                    # behavior of doing nothing rather than recording a misleading failure.
                     logger.info("AI selection notification skipped: no Telegram channel configured")
             finally:
                 try:

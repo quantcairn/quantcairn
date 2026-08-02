@@ -331,9 +331,152 @@ def test_telegram_send_single_redacts_token_from_exception_logs(monkeypatch, cap
     with caplog.at_level(logging.WARNING):
         ok = notifier._telegram_send_single("hello", use_html=False, plain_title="title", plain_body="body")
 
-    assert ok is False
+    assert ok.success is False
+    assert ok.attempted is True
+    assert ok.configured is True
     assert "123456:SECRET" not in caplog.text
     assert "***REDACTED***" in caplog.text
+
+
+def test_telegram_send_single_records_proxy_error(monkeypatch):
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+
+    def fake_post(url, **kwargs):
+        raise requests.exceptions.ProxyError("proxy unavailable")
+
+    monkeypatch.setattr(alerts.requests, "post", fake_post)
+
+    result = notifier._telegram_send_single("hello", use_html=False, plain_title="title", plain_body="body")
+
+    assert result.configured is True
+    assert result.attempted is True
+    assert result.success is False
+    assert "proxy" in (result.error or "").lower()
+
+
+def test_telegram_send_single_records_timeout(monkeypatch):
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+
+    def fake_post(url, **kwargs):
+        raise requests.exceptions.Timeout("timed out")
+
+    monkeypatch.setattr(alerts.requests, "post", fake_post)
+
+    result = notifier._telegram_send_single("hello", use_html=False, plain_title="title", plain_body="body")
+
+    assert result.configured is True
+    assert result.attempted is True
+    assert result.success is False
+    assert "timeout" in (result.error or "").lower() or "timed out" in (result.error or "").lower()
+
+
+def test_telegram_send_single_falls_back_to_plain_text_on_html_failure(monkeypatch):
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, ok: bool, status_code: int = 400, text: str = "bad request"):
+            self.ok = ok
+            self.status_code = status_code
+            self.text = text
+
+    def fake_post(url, **kwargs):
+        calls.append(kwargs["json"].copy())
+        if len(calls) == 1:
+            return FakeResponse(False, 400, "html failed")
+        return FakeResponse(True, 200, "ok")
+
+    monkeypatch.setattr(alerts.requests, "post", fake_post)
+
+    result = notifier._telegram_send_single("<b>hello</b>", use_html=True, plain_title="title", plain_body="body")
+
+    assert result.success is True
+    assert result.fallback_used is True
+    assert len(calls) == 2
+    assert calls[0]["parse_mode"] == "HTML"
+    assert "parse_mode" not in calls[1]
+    assert calls[1]["text"] == "title\nbody"
+
+
+def test_telegram_send_single_reports_failure_when_html_and_plaintext_fail(monkeypatch):
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, ok: bool, status_code: int = 400, text: str = "bad request"):
+            self.ok = ok
+            self.status_code = status_code
+            self.text = text
+
+    def fake_post(url, **kwargs):
+        calls.append(kwargs["json"].copy())
+        return FakeResponse(False, 400, "still bad")
+
+    monkeypatch.setattr(alerts.requests, "post", fake_post)
+
+    result = notifier._telegram_send_single("<b>hello</b>", use_html=True, plain_title="title", plain_body="body")
+
+    assert result.success is False
+    assert result.fallback_used is True
+    assert len(calls) == 2
+    assert calls[0]["parse_mode"] == "HTML"
+    assert "parse_mode" not in calls[1]
+    assert result.error is not None
+
+
+def test_send_preserves_console_macos_webhook_side_effects(monkeypatch):
+    notifier = Notifier(
+        console=True,
+        macos_notification=True,
+        webhook_url="https://example.com/hook",
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+
+    calls = {"console": 0, "macos": 0, "webhook": 0, "telegram": 0}
+
+    def fake_console(*args, **kwargs):
+        calls["console"] += 1
+
+    def fake_macos(*args, **kwargs):
+        calls["macos"] += 1
+
+    def fake_webhook(*args, **kwargs):
+        calls["webhook"] += 1
+
+    def fake_telegram(*args, **kwargs):
+        calls["telegram"] += 1
+        return alerts.TelegramDeliveryResult(configured=True, attempted=True, success=True, chunks_total=1, chunks_successful=1)
+
+    monkeypatch.setattr(notifier, "_console_out", fake_console)
+    monkeypatch.setattr(notifier, "_macos_notify", fake_macos)
+    monkeypatch.setattr(notifier, "_webhook_send", fake_webhook)
+    monkeypatch.setattr(notifier, "_telegram_send", fake_telegram)
+
+    result = notifier._send("title", "body", "summary", macos=True, remote=True)
+
+    assert result.success is True
+    assert calls == {"console": 1, "macos": 1, "webhook": 1, "telegram": 1}
 
 
 def test_notify_ai_selection_result_redacts_token_in_failure_logs(monkeypatch, tmp_path, caplog):
@@ -392,11 +535,45 @@ def test_telegram_send_single_preserves_successful_payload(monkeypatch):
 
     ok = notifier._telegram_send_single("<b>hello</b>", use_html=True, plain_title="title", plain_body="body")
 
-    assert ok is True
+    assert ok.success is True
+    assert ok.attempted is True
+    assert ok.configured is True
     assert captured["url"] == "https://api.telegram.org/bot123456:SECRET/sendMessage"
     assert captured["kwargs"]["json"]["chat_id"] == "@test_channel"
     assert captured["kwargs"]["json"]["parse_mode"] == "HTML"
     assert captured["kwargs"]["json"]["text"] == "<b>hello</b>"
+
+
+def test_telegram_send_chunked_reports_partial_failure(monkeypatch):
+    notifier = Notifier(
+        console=False,
+        macos_notification=False,
+        telegram_bot_token="123456:SECRET",
+        telegram_chat_id="@test_channel",
+    )
+    notifier.TELEGRAM_SAFE_CHARS = 80
+    results = iter([
+        alerts.TelegramDeliveryResult(configured=True, attempted=True, success=True, chunks_total=1, chunks_successful=1),
+        alerts.TelegramDeliveryResult(configured=True, attempted=True, success=False, chunks_total=1, chunks_successful=0, error="boom"),
+    ])
+
+    def fake_single(*args, **kwargs):
+        return next(results)
+
+    monkeypatch.setattr(notifier, "_telegram_send_single", fake_single)
+
+    result = notifier._telegram_send_chunked(
+        "title",
+        "paragraph-1 " + ("x" * 90) + "\n\nparagraph-2 " + ("y" * 90),
+        plain_title="title",
+        plain_body="body",
+    )
+
+    assert result.success is False
+    assert result.attempted is True
+    assert result.configured is True
+    assert result.chunks_total == 2
+    assert result.chunks_successful == 1
 
 
 def run_test_direct():
