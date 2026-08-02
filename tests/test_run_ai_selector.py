@@ -70,6 +70,7 @@ def _load_module():
     assert spec and spec.loader
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    module.write_dashboard_snapshot = lambda *args, **kwargs: None
     return module
 
 
@@ -220,6 +221,141 @@ def test_ai_signals_keep_earnings_info_through_report_building():
     assert report_top10[0]["earnings_info"]["symbol"] == "NVDA"
     assert report_top10[0]["earnings_risk_level"] == "HIGH"
     assert report_top10[0]["earnings_source"] == "static_provider"
+
+
+def test_publish_candidate_validation_records_writes_dashboard_snapshot(monkeypatch):
+    module = _load_module()
+    captured_ingest: list[dict] = []
+    captured_snapshots: list[dict] = []
+
+    class FakeRecord:
+        def to_dict(self):
+            return {
+                "symbol": "NVDA",
+                "validation_status": "AI_CANDIDATE",
+                "candidate_score": 91.5,
+                "updated_at": "2026-08-02T10:00:00Z",
+                "metadata": {
+                    "selection_stage": "FORMAL_TOP",
+                    "trade_admission_status": "NOT_TRADABLE",
+                    "scoring_eligible": True,
+                },
+            }
+
+    class FakeStore:
+        def ingest_ai_selection_report(self, summary, candidate_rows):
+            captured_ingest.append({"summary": dict(summary), "candidate_rows": list(candidate_rows)})
+            return [FakeRecord()]
+
+    monkeypatch.setattr(module, "CandidateValidationStore", lambda: FakeStore())
+    monkeypatch.setattr(
+        module,
+        "write_dashboard_snapshot",
+        lambda name, data, **kwargs: captured_snapshots.append({"name": name, "data": dict(data), "kwargs": dict(kwargs)}),
+    )
+    summary = {
+        "selection_run_id": "run-snapshot",
+        "generated_at": "2026-08-02T10:00:00+08:00",
+        "top10": [{"ticker": "NVDA", "score": 91.5}],
+    }
+
+    module._publish_candidate_validation_records(summary)
+
+    assert captured_ingest[0]["candidate_rows"] == [{"ticker": "NVDA", "score": 91.5}]
+    assert captured_snapshots[0]["name"] == "candidate_validation"
+    assert captured_snapshots[0]["kwargs"]["source_run_id"] == "run-snapshot"
+    assert captured_snapshots[0]["kwargs"]["generated_at"] == "2026-08-02T10:00:00+08:00"
+    assert captured_snapshots[0]["data"]["title"] == "AI Candidate Validation"
+    assert captured_snapshots[0]["data"]["candidate_count"] == 1
+    assert captured_snapshots[0]["data"]["candidate_validation_rows"][0]["symbol"] == "NVDA"
+    assert captured_snapshots[0]["data"]["trade_admission_status"] == "NOT_TRADABLE"
+
+
+def test_publish_candidate_validation_snapshot_failure_does_not_abort(monkeypatch, capsys):
+    module = _load_module()
+    captured_ingest: list[dict] = []
+
+    class FakeRecord:
+        def to_dict(self):
+            return {"symbol": "NVDA", "validation_status": "AI_CANDIDATE", "metadata": {}}
+
+    class FakeStore:
+        def ingest_ai_selection_report(self, summary, candidate_rows):
+            captured_ingest.append({"summary": dict(summary), "candidate_rows": list(candidate_rows)})
+            return [FakeRecord()]
+
+    def fail_snapshot(*args, **kwargs):
+        raise RuntimeError("snapshot unavailable")
+
+    monkeypatch.setattr(module, "CandidateValidationStore", lambda: FakeStore())
+    monkeypatch.setattr(module, "write_dashboard_snapshot", fail_snapshot)
+
+    module._publish_candidate_validation_records(
+        {
+            "selection_run_id": "run-snapshot",
+            "generated_at": "2026-08-02T10:00:00+08:00",
+            "top3": [{"ticker": "NVDA", "score": 91.5}],
+        }
+    )
+
+    assert captured_ingest
+    assert "AI selection candidate validation snapshot warning: snapshot unavailable" in capsys.readouterr().out
+
+
+def test_candidate_validation_dashboard_snapshot_data_matches_dashboard_payload_shape():
+    module = _load_module()
+
+    class FakeRecord:
+        def to_dict(self):
+            return {
+                "symbol": "NVDA",
+                "validation_status": "AI_CANDIDATE",
+                "candidate_score": 91.5,
+                "updated_at": "2026-08-02T10:00:00Z",
+                "metadata": {
+                    "selection_stage": "FORMAL_TOP",
+                    "freshness_status": "SAFE",
+                    "daily_data_as_of": "2026-08-01",
+                    "data_status": "COMPLETE",
+                    "scoring_eligible": True,
+                    "trade_filter_passed": True,
+                    "trade_admission_status": "NOT_TRADABLE",
+                },
+            }
+
+    payload = module._candidate_validation_dashboard_snapshot_data(
+        [FakeRecord()],
+        {"selection_run_id": "run-snapshot", "generated_at": "2026-08-02T10:00:00+08:00"},
+    )
+
+    for key in (
+        "available",
+        "state",
+        "status_label",
+        "detail",
+        "title",
+        "candidate_count",
+        "history_count",
+        "latest_candidate",
+        "candidate_validation_rows",
+        "performance",
+        "research_report",
+        "last_updated",
+        "validation_status",
+        "selection_stage",
+        "freshness_status",
+        "data_status",
+        "scoring_eligible",
+        "trade_admission_status",
+    ):
+        assert key in payload
+    assert payload["available"] is True
+    assert payload["state"] == "SAFE"
+    assert payload["candidate_count"] == 1
+    assert payload["latest_candidate"]["symbol"] == "NVDA"
+    assert payload["candidate_validation_rows"][0]["symbol"] == "NVDA"
+    assert payload["performance"]["available"] is False
+    assert payload["research_report"]["available"] is False
 
 
 def test_research_top_candidates_keep_ai_candidate_out_of_tradable_top():
@@ -663,6 +799,8 @@ def test_run_ai_selector_passes_real_universe_into_preflight():
         preflight_module.run_preflight = fake_run_preflight
 
         os.environ["SOXS_OPENBB_ENABLED"] = "1"
+        os.environ["SOXS_FMP_ENABLED"] = "0"
+        os.environ.pop("FMP_API_KEY", None)
         os.environ["OPENALPHA_RESTART_TOP"] = "0"
         os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
 
@@ -793,6 +931,8 @@ def test_run_ai_selector_rejects_preflight_mode_mismatch():
         preflight_module.run_preflight = fake_run_preflight
 
         os.environ["SOXS_OPENBB_ENABLED"] = "1"
+        os.environ["SOXS_FMP_ENABLED"] = "0"
+        os.environ.pop("FMP_API_KEY", None)
         os.environ["OPENALPHA_RESTART_TOP"] = "0"
         os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
 
@@ -929,6 +1069,8 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
         }
 
         os.environ["SOXS_OPENBB_ENABLED"] = "1"
+        os.environ["SOXS_FMP_ENABLED"] = "0"
+        os.environ.pop("FMP_API_KEY", None)
         os.environ["OPENALPHA_RESTART_TOP"] = "0"
         os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "1"
 
@@ -1200,6 +1342,8 @@ def test_run_ai_selector_filters_ineligible_candidates_before_bundle_publish():
         }
 
         os.environ["SOXS_OPENBB_ENABLED"] = "1"
+        os.environ["SOXS_FMP_ENABLED"] = "0"
+        os.environ.pop("FMP_API_KEY", None)
         os.environ["OPENALPHA_RESTART_TOP"] = "0"
         os.environ["OPENALPHA_BACKGROUND_REFINEMENT"] = "0"
 

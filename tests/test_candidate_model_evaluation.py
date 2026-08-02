@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
+import src.candidate_validation.model_evaluation as model_evaluation_module
 from src.candidate_validation import (
+    CandidateModelEvaluationService,
     CandidateModelManifest,
     CandidateModelRegistry,
     CandidateModelStatus,
@@ -110,6 +113,73 @@ def test_candidate_score_calibration_preserves_raw_scores():
     assert calibration.calibration_error is not None
     assert calibration.to_dict()["source_metric"] == "composite_target"
     assert calibration.to_dict()["warnings"] is not None
+
+
+def test_candidate_model_evaluation_write_publishes_dashboard_snapshot(monkeypatch, tmp_path):
+    report = {
+        "title": "Candidate Model Evaluation",
+        "generated_at": "2026-08-02T10:00:00+00:00",
+        "source_run_id": "model-eval-run-1",
+        "baseline_version": "baseline_v1",
+        "training_sample_count": 12,
+    }
+    calls = []
+
+    monkeypatch.setattr(CandidateModelEvaluationService, "evaluate", lambda self: dict(report))
+
+    def fake_write_dashboard_snapshot(name, data, *, source_run_id=None, generated_at=None, state_dir=None):
+        calls.append(
+            {
+                "name": name,
+                "data": dict(data),
+                "source_run_id": source_run_id,
+                "generated_at": generated_at,
+                "state_dir": state_dir,
+            }
+        )
+        return tmp_path / "state" / "dashboard_snapshots" / f"{name}.json"
+
+    monkeypatch.setattr(model_evaluation_module, "write_dashboard_snapshot", fake_write_dashboard_snapshot)
+
+    service = CandidateModelEvaluationService(evaluation_root=tmp_path / "evaluation")
+    result = service.write()
+
+    assert result == report
+    artifact_path = tmp_path / "evaluation" / "candidate_model_evaluation.json"
+    assert json.loads(artifact_path.read_text(encoding="utf-8")) == report
+    assert calls == [
+        {
+            "name": "candidate_model_evaluation",
+            "data": report,
+            "source_run_id": "model-eval-run-1",
+            "generated_at": "2026-08-02T10:00:00+00:00",
+            "state_dir": None,
+        }
+    ]
+
+
+def test_candidate_model_evaluation_dashboard_snapshot_failure_does_not_abort(monkeypatch, tmp_path, capsys):
+    report = {
+        "title": "Candidate Model Evaluation",
+        "generated_at": "2026-08-02T10:00:00+00:00",
+        "baseline_version": "baseline_v1",
+        "training_sample_count": 12,
+    }
+
+    monkeypatch.setattr(CandidateModelEvaluationService, "evaluate", lambda self: dict(report))
+
+    def fail_write_dashboard_snapshot(*args, **kwargs):
+        raise RuntimeError("snapshot unavailable")
+
+    monkeypatch.setattr(model_evaluation_module, "write_dashboard_snapshot", fail_write_dashboard_snapshot)
+
+    service = CandidateModelEvaluationService(evaluation_root=tmp_path / "evaluation")
+    result = service.write()
+
+    assert result == report
+    artifact_path = tmp_path / "evaluation" / "candidate_model_evaluation.json"
+    assert json.loads(artifact_path.read_text(encoding="utf-8")) == report
+    assert "failed to write candidate model evaluation dashboard snapshot" in capsys.readouterr().out
 
 
 def test_candidate_model_registry_requires_human_approval_for_active(tmp_path):

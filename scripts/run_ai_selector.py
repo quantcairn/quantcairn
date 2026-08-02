@@ -61,6 +61,7 @@ from src.openalpha.universe_filter import filter_universe_candidates, load_unive
 from src.data.fetcher import PriceFetcher
 from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
+from src.dashboard.snapshots import write_dashboard_snapshot
 from src.openalpha.selection_bundle import write_selection_bundle_atomic
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -2946,9 +2947,103 @@ def _publish_candidate_validation_records(summary: dict) -> None:
             candidate_rows = list(summary.get("top3") or [])
         if not candidate_rows:
             candidate_rows = list(summary.get("report") or [])
-        store.ingest_ai_selection_report(summary, candidate_rows)
+        records = store.ingest_ai_selection_report(summary, candidate_rows)
     except Exception as exc:
         print(f"AI selection candidate validation warning: {exc}")
+        return
+    try:
+        write_dashboard_snapshot(
+            "candidate_validation",
+            _candidate_validation_dashboard_snapshot_data(records, summary),
+            source_run_id=str(summary.get("selection_run_id") or ""),
+            generated_at=str(summary.get("generated_at") or summary.get("timestamp") or ""),
+        )
+    except Exception as exc:
+        print(f"AI selection candidate validation snapshot warning: {exc}")
+
+
+def _candidate_validation_dashboard_snapshot_data(records: list, summary: dict) -> dict[str, object]:
+    rows = [
+        record.to_dict() if hasattr(record, "to_dict") else dict(record)
+        for record in (records or [])
+        if hasattr(record, "to_dict") or isinstance(record, dict)
+    ]
+    latest = dict(rows[0]) if rows else {}
+    metadata = dict(latest.get("metadata") or {}) if isinstance(latest.get("metadata"), dict) else {}
+    updated_at = str(latest.get("updated_at") or summary.get("generated_at") or summary.get("timestamp") or "")
+    validation_status = str(latest.get("validation_status") or metadata.get("current_validation_status") or "AI_CANDIDATE").strip().upper()
+    status_issue = None
+    state = "SAFE" if rows else "STALE"
+    detail = "candidate validation ready" if rows else "candidate validation data unavailable"
+    if validation_status == "REJECTED" and not latest.get("rejection_reason"):
+        status_issue = "rejection_reason_missing"
+        state = "UNSAFE"
+        detail = "data_invalid"
+    return {
+        "available": bool(rows),
+        "state": state,
+        "status_label": state,
+        "detail": detail,
+        "title": "AI Candidate Validation",
+        "candidate_count": len(rows),
+        "history_count": 0,
+        "latest_candidate": latest,
+        "candidate_validation_rows": rows[:5],
+        "performance": {
+            "available": False,
+            "state": "STALE",
+            "status_label": "STALE",
+            "detail": "candidate performance unavailable in selector snapshot",
+            "title": "Candidate Ranking Performance",
+            "candidate_count": 0,
+            "average_score": None,
+            "high_score_threshold": 80.0,
+            "high_score_candidate_count": 0,
+            "high_score_success_rate": None,
+            "score_bucket_distribution": [],
+            "performance_rows": [],
+            "last_updated": None,
+        },
+        "research_report": {
+            "available": False,
+            "state": "STALE",
+            "status_label": "STALE",
+            "detail": "research report unavailable in selector snapshot",
+            "title": "AI Candidate Daily Research Report",
+            "display_title": "AI Research Report",
+            "generated_at": None,
+            "candidate_count": 0,
+            "top_candidates": [],
+            "final_selected": [],
+            "final_selected_count": 0,
+            "selection_outcome": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+            "actionable_candidate_status": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+        },
+        "last_updated": updated_at or None,
+        "status_issue": status_issue,
+        "validation_status": validation_status,
+        "selection_stage": str(latest.get("selection_stage") or metadata.get("selection_stage") or metadata.get("market_selection_stage") or "PRELIMINARY").strip().upper(),
+        "freshness_status": str(latest.get("freshness_status") or metadata.get("freshness_status") or "SAFE").strip().upper(),
+        "stale_reason": str(latest.get("stale_reason") or metadata.get("stale_reason") or ""),
+        "last_completed_session": str(latest.get("last_completed_session") or metadata.get("last_completed_session") or ""),
+        "daily_data_as_of": str(latest.get("daily_data_as_of") or metadata.get("daily_data_as_of") or ""),
+        "premarket_snapshot_at": str(latest.get("premarket_snapshot_at") or metadata.get("premarket_snapshot_at") or ""),
+        "data_mode": str(latest.get("data_mode") or metadata.get("data_mode") or ""),
+        "data_freshness": str(latest.get("data_freshness") or metadata.get("data_freshness") or ""),
+        "data_status": str(latest.get("data_status") or metadata.get("data_status") or ""),
+        "scoring_eligible": bool(latest.get("scoring_eligible") or metadata.get("scoring_eligible") or False),
+        "scoring_block_reason": str(latest.get("scoring_block_reason") or metadata.get("scoring_block_reason") or ""),
+        "trade_filter_passed": bool(latest.get("trade_filter_passed") or metadata.get("trade_filter_passed") or latest.get("scoring_eligible") or False),
+        "missing_fields": list(latest.get("missing_fields") or metadata.get("missing_fields") or []),
+        "candidate_fallback": bool(latest.get("candidate_fallback") or metadata.get("candidate_fallback") or False),
+        "fallback_sources": list(latest.get("fallback_sources") or metadata.get("fallback_sources") or []),
+        "mock_used": bool(latest.get("mock_used") or metadata.get("mock_used") or False),
+        "mock_sources": list(latest.get("mock_sources") or metadata.get("mock_sources") or []),
+        "degraded": bool(latest.get("degraded") or metadata.get("degraded") or False),
+        "degradation_reasons": list(latest.get("degradation_reasons") or metadata.get("degradation_reasons") or []),
+        "current_validation_status": str(latest.get("current_validation_status") or metadata.get("current_validation_status") or validation_status),
+        "trade_admission_status": str(latest.get("trade_admission_status") or metadata.get("trade_admission_status") or "NOT_TRADABLE"),
+    }
 
 
 def _notify_selection_result(summary: dict, selected: list[dict]) -> None:

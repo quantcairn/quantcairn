@@ -10,6 +10,7 @@ import pytest
 
 from src.backtest.models import Bar
 from src.shadow import ShadowMarketDataSource, ShadowObserver, ShadowObservationError, ShadowRuntimeConfig, ShadowRuntimeStateStore, ShadowSafetyConfig
+import src.shadow.observer as shadow_observer_module
 import src.shadow.universe as shadow_universe
 
 
@@ -121,6 +122,11 @@ def _shadow_sandbox_root(monkeypatch, tmp_path):
     return project_dir, shadow_root
 
 
+@pytest.fixture(autouse=True)
+def _disable_dashboard_shadow_snapshot(monkeypatch):
+    monkeypatch.setattr(shadow_observer_module, "write_dashboard_snapshot", lambda *args, **kwargs: None)
+
+
 def test_shadow_safety_config_fail_closed(monkeypatch):
     monkeypatch.delenv("SHADOW_MODE", raising=False)
     monkeypatch.setenv("TRADING_ENABLED", "false")
@@ -172,6 +178,102 @@ def test_shadow_mode_uses_quote_only_and_writes_outputs(monkeypatch, tmp_path):
     assert audit["quote_api_only"] is True
     assert audit["trade_api_used"] is False
     assert fake_module.QuoteContext({"x": 1}).calls == []
+
+
+def test_shadow_mode_writes_dashboard_status_snapshot(monkeypatch, tmp_path):
+    pages = _prepare_pages()
+    _install_fake_longbridge(monkeypatch, pages)
+    _shadow_env(monkeypatch)
+    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_write_dashboard_snapshot(name, data, *, source_run_id=None, generated_at=None, state_dir=None):
+        calls.append(
+            {
+                "name": name,
+                "data": dict(data),
+                "source_run_id": source_run_id,
+                "generated_at": generated_at,
+                "state_dir": state_dir,
+            }
+        )
+        return tmp_path / "state" / "dashboard_snapshots" / f"{name}.json"
+
+    monkeypatch.setattr(shadow_observer_module, "write_dashboard_snapshot", fake_write_dashboard_snapshot)
+
+    runtime = ShadowRuntimeConfig(
+        output_dir=Path("artifacts/shadow") / f"test_shadow_snapshot_{tmp_path.name}",
+        symbol="SOXS.US",
+        benchmark_symbols=("SOXX.US", "SMH.US"),
+        frequency="15m",
+        lookback_days=30,
+        initial_cash=10_000.0,
+        page_size=4,
+        max_retries=3,
+        request_interval_seconds=0.0,
+        poll_interval_seconds=1.0,
+        run_once=True,
+    )
+    observer = ShadowObserver(
+        safety_config=ShadowSafetyConfig.from_env(),
+        runtime_config=runtime,
+        market_source=ShadowMarketDataSource(page_size=4, max_retries=3, request_interval_seconds=0.0),
+        state_store=ShadowRuntimeStateStore(runtime.output_dir / "runtime_state.json"),
+    )
+    result = observer.run_once()
+
+    assert result["quote_api_only"] is True
+    assert calls
+    call = calls[0]
+    assert call["name"] == "shadow_status"
+    assert call["source_run_id"]
+    assert call["generated_at"]
+    snapshot = call["data"]
+    assert snapshot["mode"] == "READ-ONLY SHADOW"
+    assert snapshot["symbol"] == "SOXS.US"
+    assert snapshot["quote_api_only"] is True
+    assert snapshot["trade_api_used"] is False
+    assert snapshot["available"] is True
+    assert snapshot["processed_bar_count"] > 0
+    assert "runtime_state" not in snapshot
+    assert "comparison_summary" not in snapshot
+
+
+def test_shadow_dashboard_status_snapshot_failure_does_not_abort(monkeypatch, tmp_path, capsys):
+    pages = _prepare_pages()
+    _install_fake_longbridge(monkeypatch, pages)
+    _shadow_env(monkeypatch)
+    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
+
+    def fail_write_dashboard_snapshot(*args, **kwargs):
+        raise RuntimeError("snapshot unavailable")
+
+    monkeypatch.setattr(shadow_observer_module, "write_dashboard_snapshot", fail_write_dashboard_snapshot)
+
+    runtime = ShadowRuntimeConfig(
+        output_dir=Path("artifacts/shadow") / f"test_shadow_snapshot_failure_{tmp_path.name}",
+        symbol="SOXS.US",
+        benchmark_symbols=("SOXX.US", "SMH.US"),
+        frequency="15m",
+        lookback_days=30,
+        initial_cash=10_000.0,
+        page_size=4,
+        max_retries=3,
+        request_interval_seconds=0.0,
+        poll_interval_seconds=1.0,
+        run_once=True,
+    )
+    observer = ShadowObserver(
+        safety_config=ShadowSafetyConfig.from_env(),
+        runtime_config=runtime,
+        market_source=ShadowMarketDataSource(page_size=4, max_retries=3, request_interval_seconds=0.0),
+        state_store=ShadowRuntimeStateStore(runtime.output_dir / "runtime_state.json"),
+    )
+    result = observer.run_once()
+
+    assert result["quote_api_only"] is True
+    assert (runtime.output_dir / "comparison_summary.json").exists()
+    assert "failed to write shadow status dashboard snapshot" in capsys.readouterr().out
 
 
 def test_shadow_restart_skips_duplicate_bars(monkeypatch, tmp_path):

@@ -18,6 +18,7 @@ from src.backtest.benchmarking import validate_benchmark_alignment
 from src.backtest.data_feed import infer_bar_frequency
 from src.backtest.metrics import compute_backtest_metrics
 from src.backtest.models import Bar
+from src.dashboard.snapshots import write_dashboard_snapshot
 from src.strategy import DynamicRangeCalculator, EntryLayerPlanner, ExitLayerManager, InventoryAwareSizer, TimeStop, TrendGuard
 from .config import ShadowRuntimeConfig, ShadowSafetyConfig
 from .market_data import ShadowMarketBundle, ShadowMarketDataSource, ShadowMarketDataError
@@ -217,6 +218,155 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame(rows)
     frame.to_csv(path, index=False)
+
+
+def _dashboard_shadow_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _dashboard_shadow_blocked_top5(blocked_reason_counts: Counter[str]) -> list[dict[str, Any]]:
+    rows = [{"reason": reason, "count": count} for reason, count in blocked_reason_counts.items() if reason]
+    rows.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("reason") or "")))
+    return rows[:5]
+
+
+def _dashboard_shadow_status_payload(
+    *,
+    audit: dict[str, Any],
+    comparison_summary: dict[str, Any],
+    runtime_state: dict[str, Any],
+    signal_rows: list[dict[str, Any]],
+    orders: list[dict[str, Any]],
+    trades: list[dict[str, Any]],
+    positions: list[dict[str, Any]],
+    equity_rows: list[dict[str, Any]],
+    blocked_reason_counts: Counter[str],
+    output_dir: Path,
+) -> dict[str, Any]:
+    symbol = str(runtime_state.get("symbol") or comparison_summary.get("symbol") or "SOXS.US").strip().upper() or "SOXS.US"
+    timeframe = str(runtime_state.get("timeframe") or comparison_summary.get("timeframe") or runtime_state.get("frequency") or comparison_summary.get("frequency") or "15m").strip().lower() or "15m"
+    benchmark_status = str((comparison_summary.get("benchmark_alignment") or {}).get("status") or "unavailable")
+    latest_processed_bar_utc = ""
+    latest_processed_bar_et = None
+    data_freshness = "unavailable"
+    latest_ts = _dashboard_shadow_datetime(runtime_state.get("last_processed_timestamp_utc"))
+    if latest_ts is not None:
+        latest_processed_bar_utc = latest_ts.isoformat()
+        latest_processed_bar_et = latest_ts.astimezone(US_EASTERN).isoformat()
+        age_minutes = max(0.0, (datetime.now(UTC) - latest_ts).total_seconds() / 60.0)
+        if age_minutes <= 45.0:
+            data_freshness = "fresh"
+        elif age_minutes <= 240.0:
+            data_freshness = "stale"
+        else:
+            data_freshness = "old"
+
+    summary_metrics = list(comparison_summary.get("strategy_metrics") or [])
+    eligible_rank = list(comparison_summary.get("eligible_ranking") or [])
+    strategy_rank = list(comparison_summary.get("strategy_ranking") or [])
+    best_metric = eligible_rank[0] if eligible_rank else (strategy_rank[0] if strategy_rank else (summary_metrics[0] if summary_metrics else {}))
+    benchmark_symbol = None
+    simulated_return = None
+    simulated_drawdown = None
+    simulated_equity = None
+    open_simulated_positions = None
+    if isinstance(best_metric, dict):
+        best_version = str(best_metric.get("version") or "")
+        benchmark_symbol = str(best_metric.get("benchmark_symbol") or "")
+        try:
+            simulated_return = float(best_metric.get("total_return")) if best_metric.get("total_return") is not None else None
+        except Exception:
+            simulated_return = None
+        try:
+            simulated_drawdown = float(best_metric.get("max_drawdown")) if best_metric.get("max_drawdown") is not None else None
+        except Exception:
+            simulated_drawdown = None
+        try:
+            simulated_equity = float(best_metric.get("equity") or best_metric.get("ending_equity")) if (best_metric.get("equity") is not None or best_metric.get("ending_equity") is not None) else None
+        except Exception:
+            simulated_equity = None
+        try:
+            open_simulated_positions = int(best_metric.get("open_position_count") or 0)
+        except Exception:
+            open_simulated_positions = None
+        if best_version:
+            version_equity_rows = [row for row in equity_rows if str(row.get("version") or "") == best_version]
+            if version_equity_rows:
+                try:
+                    simulated_equity = float(version_equity_rows[-1].get("equity") or 0.0)
+                except Exception:
+                    simulated_equity = None
+
+    safety_ok = bool(audit.get("ok"))
+    quote_api_only = bool(audit.get("quote_api_only"))
+    trade_api_used = bool(audit.get("trade_api_used"))
+    trade_context_initialized = bool(audit.get("trade_context_initialized"))
+    if not safety_ok or not quote_api_only or trade_api_used or trade_context_initialized:
+        state = "UNSAFE"
+        detail = "安全审计失败"
+    elif benchmark_status not in {"VALID", "valid"}:
+        state = "UNSAFE"
+        detail = "benchmark alignment invalid"
+    elif data_freshness in {"stale", "old"}:
+        state = "STALE"
+        detail = f"shadow data {data_freshness}"
+    else:
+        state = "SAFE"
+        detail = "read-only shadow observer healthy"
+
+    return {
+        "ok": state != "UNSAFE",
+        "state": state,
+        "status_label": state,
+        "detail": detail,
+        "mode": "READ-ONLY SHADOW",
+        "title": str(runtime_state.get("shadow_title") or comparison_summary.get("shadow_title") or f"{symbol.split('.')[0]} Shadow Observer"),
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "strategy_family": str(runtime_state.get("strategy_family") or comparison_summary.get("strategy_family") or ""),
+        "strategy_version": str(runtime_state.get("strategy_version") or comparison_summary.get("strategy_version") or ""),
+        "symbol_class": str(runtime_state.get("symbol_class") or comparison_summary.get("symbol_class") or ""),
+        "regular_session_only": bool(runtime_state.get("regular_session_only", comparison_summary.get("regular_session_only", True))),
+        "shadow_enabled": bool(runtime_state.get("shadow_enabled", comparison_summary.get("shadow_enabled", True))),
+        "trading_enabled": bool(runtime_state.get("trading_enabled", comparison_summary.get("trading_enabled", False))),
+        "benchmark_symbols": list(runtime_state.get("benchmark_symbols") or []),
+        "output_directory": str(comparison_summary.get("output_dir") or output_dir.name),
+        "quote_api_only": quote_api_only,
+        "trade_api_used": trade_api_used,
+        "trade_context_initialized": trade_context_initialized,
+        "last_run_at": str(runtime_state.get("last_run_at") or audit.get("generated_at") or ""),
+        "latest_processed_bar_utc": latest_processed_bar_utc,
+        "latest_processed_bar_et": latest_processed_bar_et,
+        "data_freshness": data_freshness,
+        "benchmark_status": benchmark_status,
+        "alignment_status": benchmark_status,
+        "signals_generated": len(signal_rows),
+        "simulated_orders": len(orders),
+        "simulated_trades": len(trades),
+        "open_simulated_positions": open_simulated_positions if open_simulated_positions is not None else sum(
+            1 for row in positions if str(row.get("quantity") or "0").strip() not in {"", "0", "0.0"}
+        ),
+        "simulated_equity": simulated_equity,
+        "simulated_return": simulated_return,
+        "simulated_drawdown": simulated_drawdown,
+        "blocked_reason_top5": _dashboard_shadow_blocked_top5(blocked_reason_counts),
+        "benchmark_sensitive": bool(comparison_summary.get("benchmark_sensitive")),
+        "benchmark_symbol": benchmark_symbol,
+        "available": True,
+        "processed_bar_count": int(runtime_state.get("processed_bar_count") or len(signal_rows)),
+    }
 
 
 class ShadowObserver:
@@ -762,4 +912,24 @@ class ShadowObserver:
             json.dumps(runtime_state, indent=2, ensure_ascii=False, default=str),
             encoding="utf-8",
         )
+        try:
+            write_dashboard_snapshot(
+                "shadow_status",
+                _dashboard_shadow_status_payload(
+                    audit=audit,
+                    comparison_summary=comparison_summary,
+                    runtime_state=runtime_state,
+                    signal_rows=signal_rows,
+                    orders=orders,
+                    trades=trades,
+                    positions=positions,
+                    equity_rows=equity_rows,
+                    blocked_reason_counts=blocked_reason_counts,
+                    output_dir=output_dir,
+                ),
+                source_run_id=str(runtime_state.get("last_processed_timestamp_utc") or ""),
+                generated_at=runtime_state.get("last_run_at"),
+            )
+        except Exception as exc:
+            print(f"Warning: failed to write shadow status dashboard snapshot: {exc}")
         return comparison_summary

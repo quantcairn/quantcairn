@@ -6,8 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
+import pytest
+
 from src.candidate_validation import CandidateRecord, CandidateValidationStore
 from src.config.loader import PositionPolicyConfig
+from src.dashboard.snapshots import dashboard_snapshot_path, load_dashboard_snapshot, write_dashboard_snapshot
 
 VENV_SITE_PACKAGES = next(
     (path for path in (Path(__file__).resolve().parents[1] / ".venv" / "lib").glob("python*/site-packages") if path.exists()),
@@ -17,6 +20,11 @@ if VENV_SITE_PACKAGES is not None and str(VENV_SITE_PACKAGES) not in sys.path:
     sys.path.insert(0, str(VENV_SITE_PACKAGES))
 
 from src.dashboard import combined as dashboard
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dashboard_state_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "STATE_DIR", tmp_path / "state")
 
 
 def test_execution_mode_mapping_preserves_paper_sandbox_live():
@@ -82,6 +90,48 @@ def _write_dashboard_snapshot(root: Path, name: str, data: dict, *, generated_at
         encoding="utf-8",
     )
     return path
+
+
+def test_dashboard_snapshot_write_and_load_roundtrip(tmp_path):
+    state_dir = tmp_path / "state"
+
+    path = write_dashboard_snapshot(
+        "candidate_validation",
+        {"state": "SAFE", "marker": "snapshot"},
+        source_run_id="run-123",
+        generated_at="2026-08-02T10:00:00+08:00",
+        state_dir=state_dir,
+    )
+
+    assert path == state_dir / "dashboard_snapshots" / "candidate_validation.json"
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert envelope["generated_at"] == "2026-08-02T10:00:00+08:00"
+    assert envelope["source_run_id"] == "run-123"
+    assert envelope["data"] == {"state": "SAFE", "marker": "snapshot"}
+    assert load_dashboard_snapshot("candidate_validation", state_dir=state_dir) == {"state": "SAFE", "marker": "snapshot"}
+
+
+def test_dashboard_snapshot_path_rejects_unsafe_names(tmp_path):
+    state_dir = tmp_path / "state"
+
+    assert dashboard_snapshot_path("shadow_status", state_dir=state_dir) == state_dir / "dashboard_snapshots" / "shadow_status.json"
+    for unsafe in ("../shadow_status", "nested/shadow_status", "shadow_status.json", ""):
+        try:
+            dashboard_snapshot_path(unsafe, state_dir=state_dir)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe snapshot name accepted: {unsafe!r}")
+        assert load_dashboard_snapshot(unsafe, state_dir=state_dir) is None
+
+
+def test_write_dashboard_snapshot_rejects_non_mapping(tmp_path):
+    try:
+        write_dashboard_snapshot("candidate_validation", ["invalid"], state_dir=tmp_path / "state")  # type: ignore[arg-type]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("non-mapping dashboard snapshot data accepted")
 
 
 def _write_shadow_artifacts(root: Path, *, symbol="SOXS.US", benchmark_symbols=None, timeframe="15m", strategy_family="range_etf", strategy_version="baseline", symbol_class="inverse_etf", safety_overrides=None, runtime_overrides=None, summary_overrides=None, blocked_rows=None, equity_rows=None, signals_rows=None, orders_rows=None, trades_rows=None, positions_rows=None, daily_rows=None):

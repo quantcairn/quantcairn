@@ -37,6 +37,7 @@ from src.dashboard.labels_zh import (
     translate_status,
     truncate_identifier,
 )
+from src.dashboard.snapshots import load_dashboard_snapshot as _load_dashboard_snapshot_data
 from src.engine.ranked_position_policy import calculate_ranked_target_allocations
 from src.candidate_validation.research_scheduler import latest_research_status
 from src.safety.trading_environment_guard import TradingEnvironmentGuard
@@ -683,18 +684,7 @@ def _cached_read_snapshot(key: str, builder) -> dict[str, object]:
 
 
 def _load_dashboard_snapshot(name: str) -> dict[str, object] | None:
-    snapshot_name = str(name or "").strip()
-    if not snapshot_name or Path(snapshot_name).name != snapshot_name:
-        return None
-    path = STATE_DIR / "dashboard_snapshots" / f"{snapshot_name}.json"
-    try:
-        envelope = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(envelope, dict):
-        return None
-    data = envelope.get("data")
-    return dict(data) if isinstance(data, dict) else None
+    return _load_dashboard_snapshot_data(name, state_dir=STATE_DIR)
 
 
 def _paper_portfolio_state_signature() -> tuple[str, int, int] | None:

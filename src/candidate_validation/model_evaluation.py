@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.dashboard.snapshots import write_dashboard_snapshot
+
 from .calibration import CandidateScoreCalibrator
 from .model_governance import CandidateModelManifest, CandidateModelRegistry, CandidateModelStatus
 from .outcome_dataset import CandidateOutcomeDatasetBuilder
@@ -52,6 +54,11 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> Path:
             pass
         raise
     return path
+
+
+def _dashboard_snapshot_source_run_id(report: dict[str, Any]) -> str:
+    source_run_id = report.get("source_run_id") or report.get("selection_run_id")
+    return str(source_run_id or "")
 
 
 def _compare_metrics(baseline: dict[str, Any], challenger: dict[str, Any]) -> dict[str, Any]:
@@ -264,6 +271,15 @@ class CandidateModelEvaluationService:
         target_root = Path(output_dir or self.evaluation_root)
         target_root.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(target_root / "candidate_model_evaluation.json", report)
+        try:
+            write_dashboard_snapshot(
+                "candidate_model_evaluation",
+                report,
+                source_run_id=_dashboard_snapshot_source_run_id(report),
+                generated_at=report.get("generated_at"),
+            )
+        except Exception as exc:
+            print(f"Warning: failed to write candidate model evaluation dashboard snapshot: {exc}")
         return report
 
 
