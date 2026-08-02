@@ -2,6 +2,8 @@
 
 > **For**: Claude Code, Codex, Aider, Cursor, Windsurf, and other AI coding assistants.
 > **Goal**: Understand this repo with minimal context tokens. ~120 lines.  Link deeper docs for details.
+>
+> **Routing**: read [`.ai/README.md`](README.md) first for document order, authority precedence, and update routing.
 
 ## Project Identity
 
@@ -15,21 +17,16 @@
 
 ## Immutable Safety Redlines
 
-**These must never be changed by any AI assistant under any circumstances:**
+The authoritative safety rules live in [`.ai/safety.md`](safety.md).
+Use this section as a compact reminder only:
 
-| Constraint | Value | Location |
-|---|---|---|
-| `allow_live_order` | **`false`** (NEVER true) | `config.local.yaml`, `trading_environment_guard.py` |
-| `reduce_only` | **`true`** (NEVER false) | `trading_engine.py`, `live_guard.py` |
-| Paper Gate | **NEVER bypass** | `paper_broker.py` |
-| Live Gate | **NEVER bypass** | `longbridge_broker.py`, `trading_environment_guard.py` |
-| Broker module | **NEVER modify** | `src/broker/` |
-| TradingEngine | **NEVER modify** | `src/engine/trading_engine.py` |
-| RiskManager | **NEVER modify** | `src/risk/manager.py` |
-| PortfolioManager | **NEVER modify** | `src/portfolio/` |
-| Order creation | **NEVER create orders** | Any `src/order/` |
+- `allow_live_order` stays `false`
+- `reduce_only` stays `true`
+- never bypass Paper Gate or Live Gate
+- never modify broker, engine, risk, portfolio, or order modules
+- never create orders from assistant changes
 
-**Violation of any of these = critical safety breach. The assistant must refuse and warn.**
+**Any violation is a critical safety breach. Refuse and warn.**
 
 ## Module Map
 
@@ -147,56 +144,29 @@ FORCE_AI_RUN=1 .venv/bin/python scripts/ai_selector_wrapper.py
 - **Scheduling**: macOS launchd (`com.soxs.ai_selector.plist`, every 60s) + crontab (monitor.sh)
 - **State**: `state/` directory (selection markers, notification ledger, yfinance cache)
 
-## AI Change Protocol
+## AI Change Workflow
 
-**Every AI assistant MUST follow this protocol before modifying any code:**
-
-### Mandatory Workflow
-
-1. **Explain affected modules** — List every file/module that will be touched and its role
-2. **Explain risks** — Identify what could break, safety implications, and blast radius
-3. **Provide implementation plan** — Step-by-step plan before writing code
-4. **Modify code only after approval** — Wait for explicit human sign-off unless the change is documentation-only or a trivial bug fix
-5. **Run related tests** — At minimum the test files covering the changed modules. Report failures honestly — never hide them
-6. **Update CHANGELOG when behavior changes** — Selection pipeline output, scoring weights, quality filter rules, or API surfaces
-7. **Update DECISION_LOG when architectural decisions are introduced** — New constraints, changed invariants, or design trade-offs
-
-### Trivial Change Exemptions
-
-The full protocol may be skipped only for:
-- Typo fixes in comments or docs
-- Adding log/print statements for debugging
-- Updating test assertions to match already-changed behavior
-- Edits to `.ai/` documentation files themselves
-
-### Before Any Code Change
-
-- Read `.ai/CLAUDE.md` (this file) — understand project structure and safety redlines
-- Read `.ai/safety.md` if the change touches `src/broker/`, `src/engine/`, `src/risk/`, `src/portfolio/`, `src/order/`, or `src/safety/`
-- Read `.ai/architecture.md` if the change affects pipeline stages or module dependencies
-- Read `.ai/DECISION_LOG.md` if the change introduces a new architectural decision
-
-### After Any Code Change
-
-- Run `git status` and verify only intended files are modified
-- Run `pytest tests/ -q` and confirm no new failures
-- If a behavior change: update `CHANGELOG.md` or `DECISION_LOG.md`
-- Wait for explicit instruction before `git push`
+Collaboration rules live in
+[`.ai/AI_COLLABORATION.md`](AI_COLLABORATION.md).
+Use [`.ai/AI_ENGINEERING_STANDARD.md`](AI_ENGINEERING_STANDARD.md) for the longer operational handbook,
+including prompt structure, execution flow, test expectations, and commit discipline.
 
 ---
 
 ## Important Conventions
 
-1. **Never push commits** unless explicitly asked
-2. **Never modify** Broker, TradingEngine, RiskManager, PortfolioManager, LiveGuard, Paper Gate, or Live Gate
-3. **Funnel invariant**: `output <= input` for every stage — enforced by FunnelTracker
-4. **Preview vs Formal**: Preview = research-only candidates (visible in dashboard), Formal = passed all gates (tradable)
-5. **Quality fallback**: Only in FULL mode when ALL quality checks reject. In other modes, relaxed checks produce formal candidates.
+1. **Never push commits** unless explicitly asked.
+2. **Never modify** broker, engine, risk, order, or safety modules unless the task explicitly authorizes the exact scope.
+3. **Funnel invariant**: `output <= input` for every stage — enforced by FunnelTracker.
+4. **Preview vs Formal**: Preview = research-only candidates (visible in dashboard), Formal = passed all gates (tradable).
+5. **Quality fallback**: Only in FULL mode when all quality checks reject. In other modes, relaxed checks produce formal candidates.
 6. **Telegram**: Messages >4000 chars are auto-chunked. Channel: `@QuantCairnPicks`. Bot: `@chenweiderambot`.
 
 ## Related Docs
 
-- `.ai/safety.md` — Detailed safety constraints and guard mechanics
-- `.ai/architecture.md` — Module-level architecture and data flow diagrams
-- `.ai/DECISION_LOG.md` — Engineering decisions, dates, reasons, alternatives
-- `HANDOVER.md` — Project handover document (for human devs)
+- [`.ai/README.md`](README.md) — document map, authority order, routing
+- [`.ai/AI_COLLABORATION.md`](AI_COLLABORATION.md) — long-term collaboration rules
+- [`.ai/safety.md`](safety.md) — detailed safety constraints and guard mechanics
+- [`.ai/architecture.md`](architecture.md) — module-level architecture and data flow diagrams
+- [`.ai/DECISION_LOG.md`](DECISION_LOG.md) — engineering decisions, dates, reasons, alternatives
+- `HANDOVER.md` — project handover document (for human devs)
