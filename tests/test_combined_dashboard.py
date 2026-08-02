@@ -729,6 +729,8 @@ def test_combined_dashboard_prefers_committed_bundle_report(monkeypatch):
             "data_mode": "INTRADAY",
             "result_quality": "COMPLETE",
             "research_admission": "RESEARCH_READY",
+            "selection_bundle_version": "selection_bundle_v1",
+            "selection_bundle_hash": "bundle-hash-123",
             "selected_top_n": 3,
             "requested_top_n": 3,
             "selected_symbols": ["AAPL", "SOFI", "DRIP"],
@@ -745,6 +747,8 @@ def test_combined_dashboard_prefers_committed_bundle_report(monkeypatch):
 
     assert report["selection_run_id"] == "bundle-run"
     assert report["selected_top_n"] == 3
+    assert report["bundle_version"] == "selection_bundle_v1"
+    assert report["bundle_hash"] == "bundle-hash-123"
     assert latest_calls == []
 
 

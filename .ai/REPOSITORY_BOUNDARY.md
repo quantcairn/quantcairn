@@ -2,7 +2,7 @@
 
 > **Purpose**: Define what is public, what is private, and what must never be committed — so every AI coding assistant (Claude, Codex, Cursor, Aider, etc.) applies the boundary correctly.
 > **Created**: v0.12.3 (2026-07-26)
-> **Related**: [`.ai/safety.md`](safety.md), [`.gitignore`](../.gitignore)
+> **Related**: [`.ai/README.md`](README.md), [`.ai/safety.md`](safety.md), [`.gitignore`](../.gitignore)
 
 ---
 
@@ -22,6 +22,8 @@ quantcairn
 ```
 
 There is **no separate private repository**. The boundary is defined entirely by `.gitignore`. All tracked files are pushed to the public `github.com/quantcairn/quantcairn` repository.
+
+For document routing and precedence, use [`.ai/README.md`](README.md). This file focuses only on tracked vs gitignored boundaries.
 
 ---
 

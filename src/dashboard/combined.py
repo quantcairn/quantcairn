@@ -266,8 +266,37 @@ def _candidate_layers_view(ai_selection: dict | None) -> dict[str, list[dict[str
 
 def _selection_report_with_candidate_layers(ai_selection: dict | None) -> dict[str, object]:
     report = dict(ai_selection or {})
+    if "bundle_version" not in report and report.get("selection_bundle_version") is not None:
+        report["bundle_version"] = report.get("selection_bundle_version")
+    if "bundle_hash" not in report and report.get("selection_bundle_hash") is not None:
+        report["bundle_hash"] = report.get("selection_bundle_hash")
     report["candidate_layers"] = _candidate_layers_view(report)
     return report
+
+
+def _selection_symbols_from_report(ai_selection: dict | None) -> list[str]:
+    report = ai_selection if isinstance(ai_selection, dict) else {}
+    symbols = report.get("selected_symbols") or report.get("selection_symbols") or report.get("final_selected_symbols")
+    normalized = [
+        str(symbol or "").strip().upper()
+        for symbol in (symbols or [])
+        if str(symbol or "").strip()
+    ]
+    if normalized:
+        return normalized
+    selected_top_n = report.get("selected_top_n")
+    try:
+        limit = int(selected_top_n) if selected_top_n is not None else None
+    except Exception:
+        limit = None
+    top_rows = [item for item in (report.get("top3") or []) if isinstance(item, dict)]
+    if limit is not None:
+        top_rows = top_rows[: max(0, limit)]
+    return [
+        str(item.get("ticker") or item.get("symbol") or "").strip().upper()
+        for item in top_rows
+        if str(item.get("ticker") or item.get("symbol") or "").strip()
+    ]
 
 
 def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[str, object]:
@@ -651,6 +680,21 @@ def _cached_read_snapshot(key: str, builder) -> dict[str, object]:
     with _READ_SNAPSHOT_CACHE_LOCK:
         _READ_SNAPSHOT_CACHE[key] = (now, payload)
     return payload
+
+
+def _load_dashboard_snapshot(name: str) -> dict[str, object] | None:
+    snapshot_name = str(name or "").strip()
+    if not snapshot_name or Path(snapshot_name).name != snapshot_name:
+        return None
+    path = STATE_DIR / "dashboard_snapshots" / f"{snapshot_name}.json"
+    try:
+        envelope = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    data = envelope.get("data")
+    return dict(data) if isinstance(data, dict) else None
 
 
 def _paper_portfolio_state_signature() -> tuple[str, int, int] | None:
@@ -1181,7 +1225,7 @@ def _load_ai_selection_report():
     if isinstance(bundle, dict):
         bundle_report = bundle.get("report")
         if isinstance(bundle_report, dict):
-            return dict(bundle_report)
+            return _selection_report_with_candidate_layers(bundle_report)
         bundle_manifest = bundle.get("manifest")
         if isinstance(bundle_manifest, dict):
             bundle_report_path = str(bundle_manifest.get("bundle_report_path") or bundle_report or "").strip()
@@ -1194,7 +1238,7 @@ def _load_ai_selection_report():
                 except Exception:
                     data = None
                 if isinstance(data, dict):
-                    return data
+                    return _selection_report_with_candidate_layers(data)
     return load_latest_ai_selection_state(PROJECT_DIR)
 
 
@@ -2422,6 +2466,9 @@ def _candidate_validation_snapshot() -> dict[str, object]:
 
 
 def _candidate_validation_payload() -> dict[str, object]:
+    snapshot = _load_dashboard_snapshot("candidate_validation")
+    if snapshot is not None:
+        return snapshot
     return _cached_read_snapshot("candidate_validation", _candidate_validation_snapshot)
 
 
@@ -2469,6 +2516,9 @@ def _candidate_research_report_payload() -> dict[str, object]:
 
 
 def _candidate_model_evaluation_payload() -> dict[str, object]:
+    snapshot = _load_dashboard_snapshot("candidate_model_evaluation")
+    if snapshot is not None:
+        return snapshot
     return _cached_read_snapshot("candidate_model_evaluation", _candidate_model_evaluation_snapshot) or {
         "title": "Candidate Model Evaluation",
         "generated_at": None,
@@ -3133,6 +3183,9 @@ def _shadow_status_snapshot() -> dict[str, object]:
 
 
 def _shadow_status_payload() -> dict[str, object]:
+    snapshot_payload = _load_dashboard_snapshot("shadow_status")
+    if snapshot_payload is not None:
+        return snapshot_payload
     snapshot = _shadow_status_snapshot()
     return {
         "ok": snapshot["state"] != "UNSAFE",
@@ -7299,19 +7352,25 @@ HTML = """<!DOCTYPE html>
             const selection = payload.selection || {};
             const selectionPresentation = selection.presentation || {};
             const formalTop = Array.isArray(aiSelection.top3) ? aiSelection.top3 : [];
-            const selectedSymbols = formalTop.map((item) => item.ticker || item.symbol).filter(Boolean);
+            const selectedSymbols = Array.isArray(aiSelection.selected_symbols) && aiSelection.selected_symbols.length
+                ? aiSelection.selected_symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean)
+                : formalTop
+                    .slice(0, Number.isFinite(Number(aiSelection.selected_top_n)) ? Number(aiSelection.selected_top_n) : formalTop.length)
+                    .map((item) => item.ticker || item.symbol)
+                    .filter(Boolean);
+            const selectedTopN = Number(aiSelection.selected_top_n ?? selectedSymbols.length);
             const finalSelectedSymbols = Array.isArray(aiSelection.final_selected_symbols)
                 ? aiSelection.final_selected_symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean)
                 : selectedSymbols;
             const missingCount = Number(aiSelection.top_n_missing_count || 0);
-            const requestedCount = selectedSymbols.length + missingCount;
+            const requestedCount = Number(aiSelection.requested_top_n || selectedTopN + missingCount);
             const researchCandidates = Array.isArray(aiSelection.research_top_candidates) ? aiSelection.research_top_candidates : [];
             const researchSelectedCount = Number(aiSelection.research_selected_top_n ?? researchCandidates.length);
             const researchRequestedCount = Number(aiSelection.research_requested_top_n ?? requestedCount);
             const tradableSelectedCount = Number(aiSelection.tradable_selected_top_n ?? selectedSymbols.length);
             const tradableRequestedCount = Number(aiSelection.tradable_requested_top_n ?? requestedCount);
-            const topCountLabel = selectedSymbols.length > 0
-                ? `已入选 ${selectedSymbols.length} / 目标 ${requestedCount}`
+            const topCountLabel = selectedTopN > 0
+                ? `已入选 ${selectedTopN} / 目标 ${requestedCount}`
                 : requestedCount > 0
                     ? `EMPTY · selected 0/${requestedCount}`
                     : 'EMPTY';
@@ -7336,7 +7395,7 @@ HTML = """<!DOCTYPE html>
             setText('selection-overview-research-count', `${researchSelectedCount} / ${researchRequestedCount}`);
             setText('selection-overview-tradable-count', `${tradableSelectedCount} / ${tradableRequestedCount}`);
             setText('selection-overview-final-symbols', finalSelectedSymbols.length ? finalSelectedSymbols.join(' / ') : '无');
-            setText('selection-overview-missing', selectedSymbols.length > 0
+            setText('selection-overview-missing', selectedTopN > 0
                 ? (missingCount ? `缺失 ${missingCount} 个` : '数量完整')
                 : `原因：${emptyReason}`);
             const syncReason = displayReason(selection.reason);
@@ -7391,7 +7450,7 @@ HTML = """<!DOCTYPE html>
             })());
             setText('selection-process-next-validation', nextValidationStage ? `${nextValidationLabel || nextValidationStage}（${nextValidationStage}）` : '暂无');
             setText('selection-process-paper-live', `${systemState.label || (tradableSelectedCount > 0 ? 'OK' : 'SAFE_HOLD')}${systemState.detail ? ` · ${systemState.detail}` : ''}`);
-            setText('selection-process-target-complete', displayBool(requestedCount > 0 && selectedSymbols.length >= requestedCount));
+            setText('selection-process-target-complete', displayBool(requestedCount > 0 && selectedTopN >= requestedCount));
             setText('selection-process-trade-admission', displayStatus(formalTop.length ? (formalTop[0].trade_admission_status || 'NOT_TRADABLE') : 'NOT_TRADABLE'));
         } catch (error) {
             // Keep last known data on failures.
@@ -7759,6 +7818,31 @@ def _api_status_payload() -> dict[str, object]:
                 }
             ),
             "top3": list(ai_selection.get("top3") or []),
+            "selection_run_id": str(ai_selection.get("selection_run_id") or "").strip(),
+            "selection_date": str(ai_selection.get("selection_date") or ai_selection.get("date") or "").strip(),
+            "market_state": str(ai_selection.get("market_state") or "").strip().upper(),
+            "run_mode": str(ai_selection.get("run_mode") or (ai_selection.get("settings") or {}).get("run_mode") or "").strip().upper(),
+            "data_mode": str(ai_selection.get("data_mode") or (ai_selection.get("settings") or {}).get("data_mode") or "").strip().upper(),
+            "selected_top_n": int(ai_selection.get("selected_top_n") if ai_selection.get("selected_top_n") is not None else len(_selection_symbols_from_report(ai_selection))),
+            "requested_top_n": int(ai_selection.get("requested_top_n") or ai_selection.get("top_slot_count") or 0),
+            "selected_symbols": _selection_symbols_from_report(ai_selection),
+            "final_selected_symbols": [
+                str(symbol or "").strip().upper()
+                for symbol in (ai_selection.get("final_selected_symbols") or _selection_symbols_from_report(ai_selection))
+                if str(symbol or "").strip()
+            ],
+            "research_top_candidates": list(ai_selection.get("research_top_candidates") or []),
+            "research_selected_top_n": int(ai_selection.get("research_selected_top_n") or 0),
+            "research_requested_top_n": int(ai_selection.get("research_requested_top_n") or ai_selection.get("requested_top_n") or ai_selection.get("top_slot_count") or 0),
+            "tradable_selected_top_n": int(ai_selection.get("tradable_selected_top_n") if ai_selection.get("tradable_selected_top_n") is not None else ai_selection.get("selected_top_n") or 0),
+            "tradable_requested_top_n": int(ai_selection.get("tradable_requested_top_n") or ai_selection.get("requested_top_n") or ai_selection.get("top_slot_count") or 0),
+            "selection_bundle_version": str(ai_selection.get("selection_bundle_version") or ai_selection.get("bundle_version") or "").strip(),
+            "selection_bundle_hash": str(ai_selection.get("selection_bundle_hash") or ai_selection.get("bundle_hash") or "").strip(),
+            "bundle_version": str(ai_selection.get("bundle_version") or ai_selection.get("selection_bundle_version") or "").strip(),
+            "bundle_hash": str(ai_selection.get("bundle_hash") or ai_selection.get("selection_bundle_hash") or "").strip(),
+            "validation_pipeline_summary": dict(ai_selection.get("validation_pipeline_summary") or {}),
+            "next_validation_stage": str(ai_selection.get("next_validation_stage") or "").strip(),
+            "next_validation_stage_label": str(ai_selection.get("next_validation_stage_label") or "").strip(),
             "candidate_layers": dict(ai_selection.get("candidate_layers") or _candidate_layers_view(ai_selection)),
             "position_policy": position_policy_snapshot,
         },

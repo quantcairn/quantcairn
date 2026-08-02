@@ -67,6 +67,23 @@ def _patch_status_basics(
     )
 
 
+def _write_dashboard_snapshot(root: Path, name: str, data: dict, *, generated_at: str = "2026-08-02T10:00:00+08:00") -> Path:
+    path = root / "dashboard_snapshots" / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "generated_at": generated_at,
+                "source_run_id": "snapshot-run",
+                "data": data,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_shadow_artifacts(root: Path, *, symbol="SOXS.US", benchmark_symbols=None, timeframe="15m", strategy_family="range_etf", strategy_version="baseline", symbol_class="inverse_etf", safety_overrides=None, runtime_overrides=None, summary_overrides=None, blocked_rows=None, equity_rows=None, signals_rows=None, orders_rows=None, trades_rows=None, positions_rows=None, daily_rows=None):
     root.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).replace(microsecond=0)
@@ -183,6 +200,194 @@ def _write_shadow_artifacts(root: Path, *, symbol="SOXS.US", benchmark_symbols=N
         (root / "daily_summary.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def test_dashboard_snapshot_helper_returns_data_for_valid_snapshot(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    _write_dashboard_snapshot(state_dir, "candidate_validation", {"state": "SAFE", "marker": "snapshot"})
+
+    assert dashboard._load_dashboard_snapshot("candidate_validation") == {"state": "SAFE", "marker": "snapshot"}
+
+
+def test_dashboard_snapshot_helper_returns_none_for_missing_and_malformed(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    snapshot_dir = state_dir / "dashboard_snapshots"
+    snapshot_dir.mkdir(parents=True)
+
+    assert dashboard._load_dashboard_snapshot("missing") is None
+
+    invalid_cases = {
+        "broken_json": "{",
+        "top_level_list": "[]",
+        "missing_data": json.dumps({"generated_at": "2026-08-02T10:00:00+08:00"}),
+        "null_data": json.dumps({"data": None}),
+        "list_data": json.dumps({"data": []}),
+        "string_data": json.dumps({"data": "invalid"}),
+    }
+    for name, content in invalid_cases.items():
+        (snapshot_dir / f"{name}.json").write_text(content, encoding="utf-8")
+        assert dashboard._load_dashboard_snapshot(name) is None
+
+
+def test_candidate_validation_payload_prefers_snapshot(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    _write_dashboard_snapshot(state_dir, "candidate_validation", {"state": "SAFE", "status_label": "SNAPSHOT"})
+    monkeypatch.setattr(
+        dashboard,
+        "_candidate_validation_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("candidate validation fallback should not run")),
+    )
+
+    assert dashboard._candidate_validation_payload()["status_label"] == "SNAPSHOT"
+
+
+def test_candidate_validation_payload_falls_back_when_snapshot_missing_or_broken(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    monkeypatch.setattr(dashboard, "_candidate_validation_snapshot", lambda: {"state": "FALLBACK"})
+
+    assert dashboard._candidate_validation_payload()["state"] == "FALLBACK"
+
+    broken = state_dir / "dashboard_snapshots" / "candidate_validation.json"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_text("{", encoding="utf-8")
+    assert dashboard._candidate_validation_payload()["state"] == "FALLBACK"
+
+
+def test_candidate_model_evaluation_payload_prefers_snapshot(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    _write_dashboard_snapshot(state_dir, "candidate_model_evaluation", {"title": "Snapshot Model", "approval_status": "READY"})
+    monkeypatch.setattr(
+        dashboard,
+        "_candidate_model_evaluation_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("candidate model evaluation fallback should not run")),
+    )
+
+    assert dashboard._candidate_model_evaluation_payload()["title"] == "Snapshot Model"
+
+
+def test_candidate_model_evaluation_payload_falls_back_when_snapshot_missing_or_broken(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    monkeypatch.setattr(dashboard, "_candidate_model_evaluation_snapshot", lambda: {"title": "Fallback Model"})
+
+    assert dashboard._candidate_model_evaluation_payload()["title"] == "Fallback Model"
+
+    broken = state_dir / "dashboard_snapshots" / "candidate_model_evaluation.json"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_text("{", encoding="utf-8")
+    assert dashboard._candidate_model_evaluation_payload()["title"] == "Fallback Model"
+
+
+def _fallback_shadow_snapshot() -> dict[str, object]:
+    return {
+        "state": "STALE",
+        "state_label": "STALE",
+        "safety_gate": "STALE",
+        "detail": "fallback",
+        "mode": "READ-ONLY SHADOW",
+        "title": "Shadow",
+        "symbol": "SOXS.US",
+        "timeframe": "15m",
+        "strategy_family": "",
+        "strategy_version": "",
+        "symbol_class": "",
+        "regular_session_only": True,
+        "shadow_enabled": True,
+        "trading_enabled": False,
+        "benchmark_symbols": [],
+        "output_directory": "shadow",
+        "quote_api_only": False,
+        "trade_api_used": None,
+        "trade_context_initialized": None,
+        "last_run_at": None,
+        "latest_processed_bar_utc": None,
+        "latest_processed_bar_et": None,
+        "data_freshness": "unavailable",
+        "benchmark_status": "unavailable",
+        "alignment_status": "unavailable",
+        "signals_generated": 0,
+        "simulated_orders": 0,
+        "simulated_trades": 0,
+        "open_simulated_positions": 0,
+        "simulated_equity": None,
+        "simulated_return": None,
+        "simulated_drawdown": None,
+        "blocked_reason_top5": [],
+        "benchmark_sensitive": None,
+        "benchmark_symbol": None,
+        "available": False,
+        "processed_bar_count": 0,
+    }
+
+
+def test_shadow_status_payload_prefers_snapshot(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    _write_dashboard_snapshot(state_dir, "shadow_status", {"state": "SAFE", "status_label": "SNAPSHOT", "detail": "snapshot"})
+    monkeypatch.setattr(
+        dashboard,
+        "_shadow_status_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("shadow fallback should not run")),
+    )
+
+    assert dashboard._shadow_status_payload()["status_label"] == "SNAPSHOT"
+
+
+def test_shadow_status_payload_falls_back_when_snapshot_missing_or_broken(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    monkeypatch.setattr(dashboard, "_shadow_status_snapshot", _fallback_shadow_snapshot)
+
+    assert dashboard._shadow_status_payload()["detail"] == "fallback"
+
+    broken = state_dir / "dashboard_snapshots" / "shadow_status.json"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_text("{", encoding="utf-8")
+    assert dashboard._shadow_status_payload()["detail"] == "fallback"
+
+
+def test_api_status_uses_independent_dashboard_snapshots(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    (state_dir / "dashboard_snapshots").mkdir(parents=True)
+    (state_dir / "dashboard_snapshots" / "candidate_validation.json").write_text("{", encoding="utf-8")
+    _write_dashboard_snapshot(state_dir, "candidate_model_evaluation", {"title": "Snapshot Model", "approval_status": "READY"})
+    _write_dashboard_snapshot(state_dir, "shadow_status", {"state": "SAFE", "status_label": "SNAPSHOT", "detail": "snapshot"})
+    monkeypatch.setattr(dashboard, "_candidate_validation_snapshot", lambda: {"state": "FALLBACK", "status_label": "FALLBACK"})
+    monkeypatch.setattr(
+        dashboard,
+        "_candidate_model_evaluation_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("model fallback should not run")),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "_shadow_status_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("shadow fallback should not run")),
+    )
+    _patch_status_basics(
+        monkeypatch,
+        status_map={},
+        selection_sync={
+            "ok": True,
+            "state_date": "2026-07-09",
+            "required_date": "2026-07-09",
+            "selection_state_symbols": [],
+            "current_top_config_symbols": [],
+            "mismatch_reason": "",
+        },
+    )
+
+    payload = dashboard.app.test_client().get("/api/status").get_json()
+
+    assert payload["candidate_validation"]["status_label"] == "FALLBACK"
+    assert payload["candidate_model_evaluation"]["title"] == "Snapshot Model"
+    assert payload["shadow"]["status_label"] == "SNAPSHOT"
+    assert payload["ok"] is True
+
+
 def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inverse_etf", benchmarks=None, strategy_family="range_etf", risk_profile="strict", timeframe="15m", ai_score=91.5, ai_reason="Strong range fit", candidate_score=94.2, liquidity_score=96.0, trend_score=90.0, volatility_score=82.0, risk_score=88.0, strategy_fit_score=97.0, recommended_strategy="trend_following", score_reason="liquidity:strong; trend:strong; volatility:fit; risk:clean; strategy_fit:match", trade_filter_passed=True):
     store = CandidateValidationStore(root)
     record = CandidateRecord.from_ai_candidate(
@@ -243,9 +448,14 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
             "bundle_version": "selection_bundle_v1",
             "bundle_hash": "abcdef1234567890abcdef1234567890",
             "selection_date": "2026-07-09",
+            "market_state": "MARKET_OPEN",
+            "run_mode": "FULL",
+            "data_mode": "INTRADAY",
             "selection_stage": "FINALIZED",
             "selected_top_n": 1,
             "requested_top_n": 3,
+            "selected_symbols": ["SOFI"],
+            "final_selected_symbols": ["SOFI"],
             "execution_status": "COMPLETED",
             "result_quality": "DEGRADED",
             "research_admission": "RESEARCH_ONLY",
@@ -346,6 +556,17 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert payload["ai_selection"]["execution_status"] == "COMPLETED"
     assert payload["ai_selection"]["result_quality"] == "DEGRADED"
     assert payload["ai_selection"]["research_admission"] == "RESEARCH_ONLY"
+    assert payload["ai_selection"]["selection_run_id"] == "1234567890abcdef1234567890abcdef"
+    assert payload["ai_selection"]["selection_date"] == "2026-07-09"
+    assert payload["ai_selection"]["market_state"] == "MARKET_OPEN"
+    assert payload["ai_selection"]["run_mode"] == "FULL"
+    assert payload["ai_selection"]["data_mode"] == "INTRADAY"
+    assert payload["ai_selection"]["selected_top_n"] == 1
+    assert payload["ai_selection"]["requested_top_n"] == 3
+    assert payload["ai_selection"]["selected_symbols"] == ["SOFI"]
+    assert payload["ai_selection"]["final_selected_symbols"] == ["SOFI"]
+    assert payload["ai_selection"]["bundle_version"] == "selection_bundle_v1"
+    assert payload["ai_selection"]["bundle_hash"] == "abcdef1234567890abcdef1234567890"
     assert payload["ai_selection"]["top_n_complete"] is False
     assert payload["ai_selection"]["top_n_missing_count"] == 2
     assert len(payload["ai_selection"]["warnings_structured"]) == 2
