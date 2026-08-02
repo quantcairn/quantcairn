@@ -248,7 +248,7 @@ def _patch_common(module, tmpdir: Path):
         {
             "selection_size": 3,
             "__init__": lambda self, *args, **kwargs: None,
-            "run_selection": lambda self, write_configs=True, symbols_override=None: _base_selector_result(),
+            "run_selection": lambda self, write_configs=True, symbols_override=None, **kwargs: _base_selector_result(),
             "_format_report_rows": lambda self, selected: [
                 {"rank": idx + 1, "ticker": row["ticker"], "score": row["score"]}
                 for idx, row in enumerate(selected)
@@ -345,7 +345,7 @@ def test_fast_preliminary_final_top_enforces_leveraged_etf_limit_and_fallback_me
                 {
                     "selection_size": 3,
                     "__init__": lambda self, *args, **kwargs: None,
-                    "run_selection": lambda self, write_configs=True, symbols_override=None: result,
+                    "run_selection": lambda self, write_configs=True, symbols_override=None, **kwargs: result,
                     "_format_report_rows": lambda self, selected: [
                         {"rank": idx + 1, "ticker": row["ticker"], "score": row["score"]}
                         for idx, row in enumerate(selected)
@@ -545,7 +545,7 @@ def test_low_entry_quality_candidates_do_not_fill_top_slots():
                 {
                     "selection_size": 3,
                     "__init__": lambda self, *args, **kwargs: None,
-                    "run_selection": lambda self, write_configs=True, symbols_override=None: {
+                    "run_selection": lambda self, write_configs=True, symbols_override=None, **kwargs: {
                         "top10": [
                             {
                                 "ticker": "AAA",

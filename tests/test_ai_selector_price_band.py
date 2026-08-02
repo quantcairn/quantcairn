@@ -166,7 +166,7 @@ def _patch_common(module, tmpdir: Path):
         {
             "selection_size": 3,
             "__init__": lambda self, *args, **kwargs: None,
-            "run_selection": lambda self, write_configs=True, symbols_override=None: {
+            "run_selection": lambda self, write_configs=True, symbols_override=None, **kwargs: {
                 "top10": [
                     _formal_candidate_row("BRK.A", 80.0, 600000.0, reason="research_complete"),
                     _formal_candidate_row("SOFI", 70.0, 13.72, reason="research_complete"),
