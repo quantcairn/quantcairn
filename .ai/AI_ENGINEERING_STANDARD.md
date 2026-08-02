@@ -1,27 +1,23 @@
 # AI Engineering Standard
 
-> Long-term operating standard for GPT, Codex, Claude Code, and future AI assistants working in QuantCairn.
+> Long-term engineering standard for GPT, Codex, and Claude Code in QuantCairn.
 >
-> Use this as the default handbook for AI-assisted analysis, implementation, validation, and release work.
+> Use this as the stable workflow guide for AI-assisted analysis, implementation, validation, and release work.
 >
 > For a compact collaboration summary, see [`.ai/AI_COLLABORATION.md`](AI_COLLABORATION.md).
->
-> For document routing and precedence, see [`.ai/README.md`](README.md).
-> For immutable trading and execution redlines, see [`.ai/safety.md`](safety.md).
+> For routing and precedence, see [`.ai/README.md`](README.md).
+> For immutable execution redlines, see [`.ai/safety.md`](safety.md).
 
 ## 1. Purpose
 
-QuantCairn is a safety-sensitive trading research system. AI assistance must improve speed and consistency without weakening correctness, explainability, or control.
+QuantCairn is a safety-sensitive research system. AI assistance must improve speed and consistency without weakening correctness, explainability, or control.
 
 This standard exists to:
 
-- unify collaboration across AI tools
-- preserve safety boundaries across research, paper, and live-capable paths
+- unify AI collaboration across tools
 - keep implementation changes small and reviewable
-- make every decision traceable from analysis to commit
+- make work traceable from analysis to commit
 - prevent prompt drift in long-running tasks
-
-This is a standing repository standard, not a task-specific note.
 
 ## 2. AI Roles
 
@@ -30,43 +26,24 @@ This is a standing repository standard, not a task-specific note.
 Primary responsibilities:
 
 - architecture analysis
-- root cause analysis
+- problem decomposition
 - risk assessment
 - solution design
-- prompt generation
 - acceptance review
 
-Expected behavior:
-
-- analyze before changing code
-- define scope before implementation
-- state risks explicitly
-- provide implementation steps and validation expectations
-- review outcomes against evidence
-
-Not responsible for:
-
-- large direct code rewrites
-- unreviewed refactors across many modules
-- bypassing safety boundaries for convenience
+GPT should frame the problem, define the risk, and produce an implementation plan before code changes are made.
 
 ### Codex
 
 Primary responsibilities:
 
 - read code
-- modify code
+- modify files
 - write tests
 - execute tests
 - perform git operations
 
-Expected behavior:
-
-- make minimal, targeted changes
-- preserve repository invariants
-- report the files changed and why
-- run relevant tests before asking for commit approval
-- keep the working tree clean except for intended changes
+Codex should make minimal changes, report the scope clearly, and validate the result before any commit.
 
 ### Claude Code
 
@@ -74,49 +51,22 @@ Primary responsibilities:
 
 - deep code understanding
 - broad repository reading
-- complex refactoring suggestions
 - architectural consistency checks
+- complex refactoring suggestions
 
-Expected behavior:
-
-- find hidden coupling
-- map data flow and dependency flow
-- identify consistency gaps
-- support design review and audit work
+Claude Code is best used when the task needs wider codebase context or deeper coupling analysis.
 
 ## 3. Engineering Principles
 
-### Research First
-
-Understand current behavior before proposing changes. Prefer reading code, artifacts, and logs before editing.
-
-### Paper First
-
-Any behavior that could affect trading must be validated in paper or read-only mode before touching live-capable paths.
-
-### Safety First
-
-Never weaken broker, engine, risk, order, or live gating protections. Safety redlines take priority over speed.
-
-### Auditability
-
-Changes must be explainable. Prefer traceable artifacts, logs, and tests over implicit behavior.
-
-### Explainability
-
-Every significant pipeline result should be diagnosable. If a state or candidate disappears, the system should show where and why.
-
-### Metadata First
-
-When extending the system, prefer adding read-only metadata over altering decision inputs or execution rules.
-
-### Minimal Changes
-
-Use the smallest change set that solves the problem. Avoid broad refactors unless the architecture requires them.
+- **Research First** — read code, docs, and artifacts before editing
+- **Paper First** — validate any trading-adjacent behavior in paper or read-only mode first
+- **Safety First** — never weaken broker, engine, risk, order, or live gating protections
+- **Auditability** — prefer traceable artifacts, logs, and tests over implicit behavior
+- **Explainability** — every important result should be diagnosable
+- **Metadata First** — add read-only metadata before changing decision inputs
+- **Minimal Changes** — use the smallest patch that solves the problem
 
 ## 4. Standard Workflow
-
-The standard lifecycle for AI-assisted work is:
 
 ```text
 Context
@@ -140,7 +90,7 @@ Acceptance
 
 ### Context
 
-Gather the relevant repository state, docs, and existing behavior.
+Gather the relevant repository state, docs, logs, and artifacts.
 
 ### Goal
 
@@ -174,9 +124,9 @@ Create one commit for one coherent change. Keep the diff focused.
 
 Confirm the result against the original goal, safety constraints, and git status.
 
-## 5. Prompt Standard
+## 5. Codex Prompt Standard
 
-When GPT prepares a task for Codex, the prompt should usually include:
+Every Codex prompt should include:
 
 - Task
 - Context
@@ -184,25 +134,12 @@ When GPT prepares a task for Codex, the prompt should usually include:
 - Scope
 - Risk Assessment
 - Constraints
-- Investigation Steps or Implementation Steps
+- Steps
 - Validation
 - Output Requirements
 - Completion Criteria
 
-Each part serves a purpose:
-
-- **Task**: what is being asked
-- **Context**: what is already known
-- **Goal**: the desired result
-- **Scope**: what may change
-- **Risk Assessment**: what could go wrong
-- **Constraints**: what must never change
-- **Investigation / Implementation Steps**: how to proceed
-- **Validation**: how to prove correctness
-- **Output Requirements**: what should be reported back
-- **Completion Criteria**: when the task is considered done
-
-Prompts should be specific, bounded, and evidence-oriented.
+This keeps prompts specific, bounded, and evidence-oriented.
 
 ## 6. Audit Workflow
 
@@ -212,8 +149,6 @@ Use this workflow for:
 - performance audit
 - architecture audit
 - production audit
-
-Standard flow:
 
 ```text
 Analysis
@@ -255,11 +190,48 @@ Commit
 Guidelines:
 
 - prefer the smallest patch that solves the problem
-- do not expand scope during implementation unless required to preserve correctness
+- do not expand scope unless required to preserve correctness
 - run tests that directly cover the changed behavior
 - verify git status before commit
 
-## 8. Validation Standard
+## 8. Progress Reporting Standard
+
+Long-running work should report progress at milestones.
+
+### Start
+
+Report:
+
+- current goal
+- total plan
+- current phase
+
+### During execution
+
+Report:
+
+- completed items
+- current progress
+- remaining work
+- newly discovered risk
+
+### On scope growth or safety concerns
+
+Pause and report when:
+
+- the scope expands beyond the approved boundary
+- a safety-sensitive file appears
+- a new architectural decision is needed
+
+### Finish
+
+Report:
+
+- completion summary
+- test results
+- remaining risk
+
+## 9. Validation Standard
 
 Every non-trivial change should confirm:
 
@@ -267,7 +239,7 @@ Every non-trivial change should confirm:
 - integration tests
 - system consistency
 
-At minimum, validate that the following remain stable unless the task explicitly changes them:
+At minimum, preserve these invariants unless the task explicitly changes them:
 
 - `selected_symbols`
 - `FORMAL_TOP`
@@ -278,62 +250,16 @@ At minimum, validate that the following remain stable unless the task explicitly
 
 If the task changes read-only metadata only, verify that execution behavior is unchanged.
 
-## 9. Git Workflow
-
-Repository changes should follow these conventions:
+## 10. Git Workflow
 
 - one functional change per commit
-- use Conventional Commits for commit messages
+- use Conventional Commits
 - keep commits small and reviewable
+- use annotated tags for releases
+- create GitHub Releases from tags only after verification
 - never push unless explicitly instructed
 
-When a release is needed:
-
-- use an annotated tag
-- create a GitHub Release from that tag only after verification
-
-## 10. Release Standard
-
-Before any release, confirm:
-
-### Code
-
-- relevant tests pass
-- working tree is clean
-
-### System
-
-- selector behavior is valid
-- dashboard reads the intended artifacts
-- notifier behavior is correct
-- paper broker state is consistent
-- scheduler behavior is understood
-- system health is readable
-
-### Safety
-
-Confirm no unexpected change in:
-
-- broker
-- engine
-- risk
-- order
-- `PAPER/LIVE` gates
-
-## 11. Prompt Continuity Rules
-
-Multi-step AI work should carry forward:
-
-- completed work
-- current problem
-- remaining risk
-- verified assumptions
-
-Do not restart from zero unless the user explicitly asks for a fresh analysis.
-
-Do not repeat the entire repository context if the relevant state is already established.
-
-## 12. Protected Modules
+## 11. Protected Modules
 
 The authoritative protected-module list lives in [`.ai/safety.md`](safety.md).
 
@@ -344,15 +270,18 @@ Also treat these as protected decision surfaces unless a task explicitly include
 - scoring
 - ranking
 - trade_filter
+- PAPER/LIVE gate
 
-## 13. Recommended AI Collaboration Pattern
+## 12. Documentation Ownership
 
-A safe default workflow for QuantCairn is:
+Use the right document for the right job:
 
-1. GPT frames the problem and the risk
-2. Codex reads the relevant code and implements the minimal patch
-3. Codex runs the targeted tests and reports results
-4. GPT reviews the evidence and decides whether the change is ready
-5. Only then does the workflow move to commit, tag, or release
+- [`README.md`](README.md) — document routing and precedence
+- [`CLAUDE.md`](CLAUDE.md) — compact repo orientation and module map
+- [`safety.md`](safety.md) — immutable safety rules
+- [`architecture.md`](architecture.md) — system structure and data flow
+- [`DECISION_LOG.md`](DECISION_LOG.md) — approved decisions and rationale
+- [`AI_COLLABORATION.md`](AI_COLLABORATION.md) — concise collaboration summary
+- [`AI_ENGINEERING_STANDARD.md`](AI_ENGINEERING_STANDARD.md) — long-form collaboration workflow
 
-This pattern keeps architectural reasoning, implementation, and validation separate enough to be reliable, but tight enough to move quickly.
+Keep this document process-oriented. Do not duplicate the full contents of the other AI docs.
