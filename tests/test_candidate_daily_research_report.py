@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from src.candidate_validation import CandidateValidationStore, ValidationStatus
+from src.candidate_validation import research_report as research_report_module
 from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator
 from src.candidate_validation.performance_tracker import CandidatePerformanceTracker
 
@@ -94,6 +95,74 @@ def test_daily_research_report_writes_markdown_and_json(tmp_path):
     assert "Score Distribution" in markdown
     assert "Failure Analysis" in markdown
     assert "AAPL.US" in markdown
+
+
+def test_daily_research_report_writes_dashboard_snapshot(tmp_path, monkeypatch):
+    candidate_root = tmp_path / "candidates"
+    research_root = tmp_path / "research" / "daily"
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(
+        research_report_module,
+        "_load_ai_selection_report",
+        lambda project_dir=None: {
+            "selection_run_id": "research-run-123",
+            "selection_date": "2026-08-02",
+            "selection_stage": "FINALIZED",
+            "execution_status": "COMPLETED",
+            "result_quality": "COMPLETE",
+            "research_admission": "RESEARCH_READY",
+        },
+    )
+    store = CandidateValidationStore(candidate_root)
+    store.save_candidates([
+        _make_candidate(
+            "NVDA.US",
+            91.0,
+            asset_type="common_stock",
+            strategy_family="mean_reversion",
+            benchmarks=("QQQ.US", "SPY.US"),
+        )
+    ])
+
+    report = CandidateDailyResearchReportGenerator(root_dir=research_root, candidate_root=candidate_root).write()
+
+    snapshot_path = state_dir / "dashboard_snapshots" / "candidate_research_report.json"
+    assert snapshot_path.exists()
+    envelope = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert envelope["source_run_id"] == "research-run-123"
+    assert envelope["generated_at"] == report["generated_at"]
+    assert envelope["data"]["snapshot_name"] == "candidate_research_report"
+    assert envelope["data"]["source"] == "candidate_daily_research_report"
+    assert envelope["data"]["run_id"] == "research-run-123"
+    assert envelope["data"]["candidate_count"] == 1
+    assert envelope["data"]["top_candidates"][0]["symbol"] == "NVDA.US"
+
+
+def test_daily_research_report_snapshot_write_failure_does_not_fail_report(tmp_path, monkeypatch):
+    candidate_root = tmp_path / "candidates"
+    research_root = tmp_path / "research" / "daily"
+    store = CandidateValidationStore(candidate_root)
+    store.save_candidates([
+        _make_candidate(
+            "MSFT.US",
+            89.0,
+            asset_type="common_stock",
+            strategy_family="mean_reversion",
+            benchmarks=("QQQ.US", "SPY.US"),
+        )
+    ])
+    monkeypatch.setattr(
+        research_report_module,
+        "write_dashboard_snapshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("snapshot unavailable")),
+    )
+
+    report = CandidateDailyResearchReportGenerator(root_dir=research_root, candidate_root=candidate_root).write()
+
+    assert report["candidate_count"] == 1
+    assert (research_root / "daily_candidate_report.json").exists()
+    assert (research_root / "daily_candidate_report.md").exists()
 
 
 def test_daily_research_report_handles_empty_store(tmp_path):

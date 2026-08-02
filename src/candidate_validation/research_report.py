@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -13,9 +14,11 @@ from .outcome_dataset import CandidateOutcomeDatasetBuilder
 from .model_evaluation import load_candidate_model_evaluation_snapshot
 from src.openalpha.selection_report import load_latest_ai_selection_state
 from .store import CandidateValidationStore
+from src.dashboard.snapshots import write_dashboard_snapshot
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
 RESEARCH_ROOT = PROJECT_DIR / "artifacts" / "research" / "daily"
+LOGGER = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -76,6 +79,55 @@ def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 def _load_ai_selection_report(project_dir: Path | None = None) -> dict[str, Any]:
     return load_latest_ai_selection_state(Path(project_dir or PROJECT_DIR))
+
+
+def candidate_research_dashboard_payload(report: dict[str, Any]) -> dict[str, object]:
+    """Return the Dashboard-facing candidate research payload.
+
+    This is display metadata only. It intentionally mirrors the shape used by
+    the Dashboard fallback path so snapshots do not become a new authority.
+    """
+    performance = report.get("performance") or {}
+    return {
+        "available": True,
+        "state": "SAFE",
+        "status_label": "SAFE",
+        "detail": "daily research report ready",
+        "title": report.get("title") or "AI Candidate Daily Research Report",
+        "display_title": "AI Research Report",
+        "generated_at": report.get("generated_at"),
+        "candidate_count": report.get("candidate_count", 0),
+        "average_score": report.get("average_score"),
+        "score_distribution": report.get("score_distribution") or [],
+        "top_candidates": report.get("top_candidates") or [],
+        "failure_analysis": report.get("failure_analysis") or {"statuses": {}},
+        "market_regime": report.get("market_regime") or {},
+        "strategy_selection": report.get("strategy_selection") or {},
+        "candidate_strategy_matrix": list(report.get("candidate_strategy_matrix") or []),
+        "portfolio_composition": dict(report.get("portfolio_composition") or {}),
+        "final_selected": list(report.get("final_selected") or []),
+        "final_selected_count": int(report.get("final_selected_count") or 0),
+        "selection_outcome": report.get("selection_outcome") or "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+        "actionable_candidate_status": report.get("actionable_candidate_status") or "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+        "selection_execution_status": report.get("selection_execution_status") or "COMPLETED",
+        "selection_result_quality": report.get("selection_result_quality") or "COMPLETE",
+        "selection_research_admission": report.get("selection_research_admission") or "RESEARCH_READY",
+        "selection_stage": report.get("selection_stage") or "FINALIZED",
+        "selection_top_n_complete": bool(report.get("selection_top_n_complete", False)),
+        "selection_top_n_missing_count": int(report.get("selection_top_n_missing_count") or 0),
+        "selection_fallback_used": bool(report.get("selection_fallback_used", False)),
+        "selection_provider_audit": report.get("selection_provider_audit") or {},
+        "selection_provider_outputs": report.get("selection_provider_outputs") or {},
+        "selection_warnings_structured": list(report.get("selection_warnings_structured") or []),
+        "selection_warnings": list(report.get("selection_warnings") or []),
+        "high_score_success_rate": performance.get("high_score_success_rate"),
+        "high_score_threshold": performance.get("high_score_threshold", 80.0),
+        "performance": performance,
+        "run_id": str(report.get("selection_run_id") or ""),
+        "source_run_id": str(report.get("selection_run_id") or ""),
+        "source": "candidate_daily_research_report",
+        "snapshot_name": "candidate_research_report",
+    }
 
 
 @dataclass(slots=True)
@@ -226,6 +278,8 @@ class CandidateDailyResearchReportGenerator:
             "selection_provider_outputs": ai_report.get("provider_outputs") or {},
             "selection_warnings_structured": list(ai_report.get("warnings_structured") or []),
             "selection_warnings": list(ai_report.get("warnings") or []),
+            "selection_run_id": str(ai_report.get("selection_run_id") or ""),
+            "selection_date": str(ai_report.get("selection_date") or ai_report.get("date") or ""),
             "source": {
                 "candidate_store": str((CandidateValidationStore(self.candidate_root).candidates_path) if self.candidate_root is not None else CandidateValidationStore().candidates_path),
                 "performance_store": str((CandidatePerformanceTracker(self.candidate_root).performance_path) if self.candidate_root is not None else CandidatePerformanceTracker().performance_path),
@@ -408,4 +462,13 @@ class CandidateDailyResearchReportGenerator:
         report = self.build()
         _atomic_write_text(self.json_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         _atomic_write_text(self.markdown_path, self._render_markdown(report))
+        try:
+            write_dashboard_snapshot(
+                "candidate_research_report",
+                candidate_research_dashboard_payload(report),
+                source_run_id=str(report.get("selection_run_id") or ""),
+                generated_at=str(report.get("generated_at") or ""),
+            )
+        except Exception as exc:
+            LOGGER.warning("dashboard_candidate_research_snapshot_write_failed: %s", exc)
         return report

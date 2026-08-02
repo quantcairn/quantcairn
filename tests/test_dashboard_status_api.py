@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 
 import pytest
+import yaml
 
 from src.candidate_validation import CandidateRecord, CandidateValidationStore
 from src.config.loader import PositionPolicyConfig
 from src.dashboard.snapshots import dashboard_snapshot_path, load_dashboard_snapshot, write_dashboard_snapshot
+from src.openalpha import selection_state
 
 VENV_SITE_PACKAGES = next(
     (path for path in (Path(__file__).resolve().parents[1] / ".venv" / "lib").glob("python*/site-packages") if path.exists()),
@@ -331,6 +333,118 @@ def test_candidate_model_evaluation_payload_falls_back_when_snapshot_missing_or_
     assert dashboard._candidate_model_evaluation_payload()["title"] == "Fallback Model"
 
 
+def _candidate_research_fallback_payload() -> dict[str, object]:
+    return {
+        "available": True,
+        "state": "SAFE",
+        "status_label": "SAFE",
+        "detail": "daily research report ready",
+        "title": "AI Candidate Daily Research Report",
+        "display_title": "AI Research Report",
+        "generated_at": "2026-08-02T10:00:00+00:00",
+        "candidate_count": 1,
+        "average_score": 91.5,
+        "score_distribution": [{"score_bucket": "90-100", "candidate_count": 1}],
+        "top_candidates": [{"symbol": "NVDA.US", "candidate_score": 91.5}],
+        "failure_analysis": {"statuses": {"DATA_INVALID": 0}},
+        "market_regime": {},
+        "strategy_selection": {},
+        "candidate_strategy_matrix": [],
+        "portfolio_composition": {},
+        "final_selected": [],
+        "final_selected_count": 0,
+        "selection_outcome": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+        "actionable_candidate_status": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
+        "selection_execution_status": "COMPLETED",
+        "selection_result_quality": "COMPLETE",
+        "selection_research_admission": "RESEARCH_READY",
+        "selection_stage": "FINALIZED",
+        "selection_top_n_complete": False,
+        "selection_top_n_missing_count": 0,
+        "selection_fallback_used": False,
+        "selection_provider_audit": {},
+        "selection_provider_outputs": {},
+        "selection_warnings_structured": [],
+        "selection_warnings": [],
+        "high_score_success_rate": 0.0,
+        "high_score_threshold": 80.0,
+        "performance": {"candidate_count": 1},
+        "run_id": "fallback-run",
+        "source_run_id": "fallback-run",
+        "source": "candidate_daily_research_report",
+        "snapshot_name": "candidate_research_report",
+    }
+
+
+def test_candidate_research_report_payload_prefers_snapshot(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    snapshot_data = dict(_candidate_research_fallback_payload())
+    snapshot_data.update({"run_id": "snapshot-run", "source_run_id": "snapshot-run", "candidate_count": 2})
+    _write_dashboard_snapshot(state_dir, "candidate_research_report", snapshot_data)
+    monkeypatch.setattr(
+        dashboard,
+        "_candidate_research_report_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("candidate research fallback should not run")),
+    )
+
+    payload = dashboard._candidate_research_report_payload()
+
+    assert payload["run_id"] == "snapshot-run"
+    assert payload["source_run_id"] == "snapshot-run"
+    assert payload["candidate_count"] == 2
+
+
+def test_candidate_research_report_payload_falls_back_for_missing_and_invalid_snapshots(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    monkeypatch.setattr(dashboard, "_candidate_research_report_snapshot", _candidate_research_fallback_payload)
+
+    assert dashboard._candidate_research_report_payload()["run_id"] == "fallback-run"
+
+    snapshot_dir = state_dir / "dashboard_snapshots"
+    snapshot_dir.mkdir(parents=True)
+    invalid_cases = {
+        "broken": "{",
+        "top_list": "[]",
+        "missing_data": json.dumps({"generated_at": "2026-08-02T10:00:00+00:00"}),
+        "list_data": json.dumps({"data": []}),
+    }
+    for content in invalid_cases.values():
+        (snapshot_dir / "candidate_research_report.json").write_text(content, encoding="utf-8")
+        assert dashboard._candidate_research_report_payload()["run_id"] == "fallback-run"
+
+
+def test_candidate_research_snapshot_and_fallback_share_key_schema(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    fallback = _candidate_research_fallback_payload()
+    _write_dashboard_snapshot(state_dir, "candidate_research_report", dict(fallback))
+    monkeypatch.setattr(dashboard, "_candidate_research_report_snapshot", lambda: dict(fallback))
+
+    snapshot_payload = dashboard._candidate_research_report_payload()
+    (state_dir / "dashboard_snapshots" / "candidate_research_report.json").unlink()
+    fallback_payload = dashboard._candidate_research_report_payload()
+
+    key_subset = {
+        "available",
+        "state",
+        "status_label",
+        "title",
+        "generated_at",
+        "candidate_count",
+        "top_candidates",
+        "failure_analysis",
+        "run_id",
+        "source_run_id",
+        "selection_outcome",
+    }
+    assert key_subset <= set(snapshot_payload)
+    assert key_subset <= set(fallback_payload)
+    for key in key_subset:
+        assert type(snapshot_payload[key]) is type(fallback_payload[key])
+
+
 def _fallback_shadow_snapshot() -> dict[str, object]:
     return {
         "state": "STALE",
@@ -436,6 +550,347 @@ def test_api_status_uses_independent_dashboard_snapshots(monkeypatch, tmp_path):
     assert payload["candidate_model_evaluation"]["title"] == "Snapshot Model"
     assert payload["shadow"]["status_label"] == "SNAPSHOT"
     assert payload["ok"] is True
+
+
+def _write_minimal_selection_bundle(project_dir: Path, *, run_id: str = "run-1", symbol: str = "AAPL") -> dict[str, Path]:
+    bundle_root = project_dir / "state" / "selection_bundles" / run_id / "selection_bundle_v1"
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = project_dir / "state" / "selection_bundle_manifest.json"
+    report_path = bundle_root / "ai_selection_report.json"
+    state_path = bundle_root / "ai_selection_state.json"
+    audit_path = bundle_root / "selection_sync_audit.json"
+    metadata_path = bundle_root / "bundle_metadata.json"
+    manifest = {
+        "bundle_root": str(bundle_root.relative_to(project_dir)),
+        "bundle_version": "selection_bundle_v1",
+        "selection_bundle_hash": "hash-1",
+    }
+    report = {
+        "selection_run_id": run_id,
+        "selection_date": "2026-08-02",
+        "selection_stage": "FINALIZED",
+        "execution_status": "COMPLETED",
+        "result_quality": "COMPLETE",
+        "research_admission": "RESEARCH_READY",
+        "top3": [{"ticker": symbol, "score": 91.0}],
+        "selected_symbols": [symbol],
+        "final_selected_symbols": [symbol],
+        "selected_top_n": 1,
+        "candidate_layers": {"research_candidates": [], "trade_candidates": [], "watchlist_candidates": []},
+    }
+    state = {
+        "et_date": "2026-08-02",
+        "selection_run_id": run_id,
+        "top_sync_run_id": run_id,
+        "selected_symbols": [symbol],
+        "selection_symbols": [symbol],
+        "top_config_symbols": [symbol],
+        "current_top_config_symbols": [symbol],
+        "disabled_slots": [],
+    }
+    for path, payload in (
+        (manifest_path, manifest),
+        (report_path, report),
+        (state_path, state),
+        (audit_path, {"ok": True}),
+        (metadata_path, {"bundle_version": "selection_bundle_v1"}),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    return {
+        "manifest": manifest_path,
+        "report": report_path,
+        "state": state_path,
+        "audit": audit_path,
+        "metadata": metadata_path,
+    }
+
+
+def _write_top_configs(project_dir: Path, *, symbol: str = "AAPL", run_id: str = "run-1") -> list[Path]:
+    paths: list[Path] = []
+    for index, ticker in enumerate([symbol, "MSFT", "NVDA"], start=1):
+        path = project_dir / "configs" / f"TOP{index}.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                [
+                    "enabled: true",
+                    f"ticker: {ticker}",
+                    "mode: paper",
+                    "selection_date: '2026-08-02'",
+                    f"selection_run_id: {run_id}",
+                    f"top_sync_run_id: {run_id}",
+                    "result_quality: COMPLETE",
+                    "research_admission: RESEARCH_READY",
+                    "selection:",
+                    f"  ticker: {ticker}",
+                    "  mode: paper",
+                    "  selection_date: '2026-08-02'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        paths.append(path)
+    return paths
+
+
+def test_api_status_request_scope_cache_dedupes_pure_reads(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    state_dir = project_dir / "state"
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    bundle_paths = _write_minimal_selection_bundle(project_dir)
+    top_paths = _write_top_configs(project_dir)
+
+    monkeypatch.setattr(dashboard, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(dashboard, "_combined_process_count", lambda: 1)
+    monkeypatch.setattr(dashboard, "_load_dashboard_config", lambda: SimpleNamespace(mode="paper", broker=SimpleNamespace(longbridge=SimpleNamespace(enabled=False))))
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "paper", "execution_count": 0})
+    monkeypatch.setattr(dashboard, "load_runtime_config", lambda: SimpleNamespace(top_n=3, allow_fallback_live_entries=False, allow_fallback_paper_entries=True))
+    monkeypatch.setattr(dashboard, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": []})
+    monkeypatch.setattr(dashboard, "_system_status_snapshot", lambda **kwargs: {"mode_key": "paper", "broker_connected": False, "market_open": False})
+    monkeypatch.setattr(dashboard, "_shadow_status_payload", lambda: {"state": "SAFE", "status_label": "SAFE"})
+    monkeypatch.setattr(dashboard, "_candidate_validation_payload", lambda: {"state": "SAFE", "status_label": "SAFE"})
+    monkeypatch.setattr(dashboard, "_candidate_model_evaluation_payload", lambda: {"approval_status": "DRAFT"})
+    monkeypatch.setattr(dashboard, "_research_status_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_candidate_research_report_payload", lambda: _candidate_research_fallback_payload())
+    monkeypatch.setattr(dashboard, "_market_regime_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_regime_shadow_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_universe_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_read_unified_paper_portfolio_state", lambda: {"cash": 10000, "equity": 10000, "buying_power": 20000, "positions": []})
+    monkeypatch.setattr(dashboard, "_paper_position_policy_snapshot", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(dashboard, "verify_selection_state", lambda required_et_date=None, state=None: (True, "ok", state))
+
+    governance_calls = {"count": 0}
+
+    def _governance():
+        governance_calls["count"] += 1
+        return {
+            "champion_version": "baseline_v1",
+            "champion_status": "ACTIVE",
+            "approval_status": "WAITING_FOR_DATA",
+            "human_approval_required": True,
+            "auto_activation_blocked": True,
+        }
+
+    monkeypatch.setattr(dashboard, "_governance_payload", _governance)
+
+    read_counts: dict[Path, int] = {}
+    original_read_text = Path.read_text
+
+    def counted_read_text(path: Path, *args, **kwargs):
+        resolved = path.resolve()
+        if resolved in {*(p.resolve() for p in top_paths), *(p.resolve() for p in bundle_paths.values())}:
+            read_counts[resolved] = read_counts.get(resolved, 0) + 1
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+
+    payload = dashboard._api_status_payload()
+
+    assert payload["ok"] is True
+    assert governance_calls["count"] == 1
+    for path in top_paths:
+        assert read_counts.get(path.resolve(), 0) == 1
+    assert read_counts.get(bundle_paths["manifest"].resolve(), 0) == 1
+    assert read_counts.get(bundle_paths["report"].resolve(), 0) == 1
+    assert read_counts.get(bundle_paths["state"].resolve(), 0) == 1
+    assert read_counts.get(bundle_paths["audit"].resolve(), 0) == 1
+    assert read_counts.get(bundle_paths["metadata"].resolve(), 0) == 1
+
+
+def test_api_status_request_scope_cache_does_not_cross_requests(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    state_dir = project_dir / "state"
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
+    monkeypatch.setattr(dashboard, "STATE_DIR", state_dir)
+    _write_minimal_selection_bundle(project_dir, symbol="AAPL")
+    top_paths = _write_top_configs(project_dir, symbol="AAPL")
+
+    monkeypatch.setattr(dashboard, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(dashboard, "_combined_process_count", lambda: 1)
+    monkeypatch.setattr(dashboard, "_load_dashboard_config", lambda: SimpleNamespace(mode="paper", broker=SimpleNamespace(longbridge=SimpleNamespace(enabled=False))))
+    monkeypatch.setattr(dashboard, "summarize_trade_log", lambda *args, **kwargs: {"execution_mode": "paper", "execution_count": 0})
+    monkeypatch.setattr(dashboard, "load_runtime_config", lambda: SimpleNamespace(top_n=3, allow_fallback_live_entries=False, allow_fallback_paper_entries=True))
+    monkeypatch.setattr(dashboard, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": []})
+    monkeypatch.setattr(dashboard, "_system_status_snapshot", lambda **kwargs: {"mode_key": "paper", "broker_connected": False, "market_open": False})
+    monkeypatch.setattr(dashboard, "_shadow_status_payload", lambda: {"state": "SAFE", "status_label": "SAFE"})
+    monkeypatch.setattr(dashboard, "_candidate_validation_payload", lambda: {"state": "SAFE", "status_label": "SAFE"})
+    monkeypatch.setattr(dashboard, "_candidate_model_evaluation_payload", lambda: {"approval_status": "DRAFT"})
+    monkeypatch.setattr(dashboard, "_research_status_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_candidate_research_report_payload", lambda: _candidate_research_fallback_payload())
+    monkeypatch.setattr(dashboard, "_market_regime_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_regime_shadow_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_universe_payload", lambda: {"available": False})
+    monkeypatch.setattr(dashboard, "_read_unified_paper_portfolio_state", lambda: {"cash": 10000, "equity": 10000, "buying_power": 20000, "positions": []})
+    monkeypatch.setattr(dashboard, "_paper_position_policy_snapshot", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(dashboard, "verify_selection_state", lambda required_et_date=None, state=None: (True, "ok", state))
+    monkeypatch.setattr(dashboard, "_governance_payload", lambda: {"champion_status": "ACTIVE", "human_approval_required": True, "auto_activation_blocked": True})
+
+    first = dashboard._api_status_payload()
+    top_paths[0].write_text(top_paths[0].read_text(encoding="utf-8").replace("mode: paper", "mode: sandbox", 1), encoding="utf-8")
+    second = dashboard._api_status_payload()
+
+    assert first["top_modes"][0] == "paper"
+    assert second["top_modes"][0] == "sandbox"
+
+
+def test_selection_state_explicit_slots_match_default_verify_result(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    state_dir = project_dir / "state"
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(selection_state, "PROJECT_DIR", project_dir)
+    configs_dir = project_dir / "configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    for index, ticker in enumerate(("SOFI", "NVDA", "AAPL"), start=1):
+        (configs_dir / f"TOP{index}.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "enabled": True,
+                    "ticker": ticker,
+                    "mode": "paper",
+                    "reason": "selected",
+                    "selection_run_id": "run-1",
+                    "top_sync_run_id": "run-1",
+                    "selection_date": "2026-07-02",
+                    "generated_at": "2026-07-02T08:30:00-04:00",
+                    "result_quality": "COMPLETE",
+                    "research_admission": "RESEARCH_READY",
+                    "selection": {
+                        "ticker": ticker,
+                        "mode": "paper",
+                        "selection_date": "2026-07-02",
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+    selection_state.write_selection_state(
+        et_date="2026-07-02",
+        generated_at="2026-07-02T08:30:00-04:00",
+        selected_symbols=["SOFI", "NVDA", "AAPL"],
+        report_path="/tmp/ai_selection_latest.json",
+        selection_run_id="run-1",
+        top_sync_run_id="run-1",
+        result_quality="COMPLETE",
+        research_admission="RESEARCH_READY",
+    )
+
+    slots = selection_state.current_top_config_slots(limit=3)
+    default_result = selection_state.verify_selection_state(required_et_date="2026-07-02")
+    explicit_result = selection_state.verify_selection_state(required_et_date="2026-07-02", top_slots=slots)
+
+    assert explicit_result == default_result
+    assert explicit_result[0] is True
+    assert explicit_result[1] == "ok"
+
+
+def test_selection_state_explicit_slots_preserve_mismatch_errors(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    state_dir = project_dir / "state"
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(selection_state, "PROJECT_DIR", project_dir)
+    configs_dir = project_dir / "configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(1, 4):
+        payload = {
+            "enabled": False,
+            "ticker": "",
+            "mode": "paper",
+            "reason": "top_n_not_filled",
+            "selection_run_id": "run-1",
+            "top_sync_run_id": "run-1",
+            "selection_date": "2026-07-02",
+            "generated_at": "2026-07-02T08:30:00-04:00",
+        }
+        if index == 1:
+            payload.update({"enabled": True, "ticker": "NVDA", "reason": "selected"})
+        (configs_dir / f"TOP{index}.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    selection_state.write_selection_state(
+        et_date="2026-07-02",
+        generated_at="2026-07-02T08:30:00-04:00",
+        selected_symbols=["SOFI"],
+        report_path="/tmp/ai_selection_latest.json",
+        selection_run_id="run-1",
+        top_sync_run_id="run-1",
+    )
+
+    slots = selection_state.current_top_config_slots(limit=3)
+    default_result = selection_state.verify_selection_state(required_et_date="2026-07-02")
+    explicit_result = selection_state.verify_selection_state(required_et_date="2026-07-02", top_slots=slots)
+
+    assert explicit_result == default_result
+    assert explicit_result[0] is False
+    assert explicit_result[1] == "top_config_symbols_mismatch"
+
+
+def test_validate_top_config_sync_explicit_slots_preserve_invalid_slot_errors(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    state_dir = project_dir / "state"
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(selection_state, "PROJECT_DIR", project_dir)
+    configs_dir = project_dir / "configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    (configs_dir / "TOP1.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "enabled": True,
+                "ticker": "SOFI",
+                "mode": "paper",
+                "selection_date": "2026-07-02",
+                "selection_run_id": "run-1",
+                "selection": {
+                    "ticker": "SOFI",
+                    "mode": "paper",
+                    "selection_date": "2026-07-02",
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (configs_dir / "TOP2.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "enabled": False,
+                "ticker": "STALE",
+                "mode": "live",
+                "selection_date": "2026-07-02",
+                "selection_run_id": "run-1",
+                "selection": {
+                    "ticker": "STALE",
+                    "mode": "live",
+                    "selection_date": "2026-07-02",
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    slots = selection_state.current_top_config_slots(limit=3)
+    default_result = selection_state.validate_top_config_sync(
+        selected_symbols=["SOFI"],
+        selection_date="2026-07-02",
+        selection_run_id="run-1",
+        limit=3,
+    )
+    explicit_result = selection_state.validate_top_config_sync(
+        selected_symbols=["SOFI"],
+        selection_date="2026-07-02",
+        selection_run_id="run-1",
+        limit=3,
+        slots=slots,
+    )
+
+    assert explicit_result == default_result
+    assert explicit_result["top_sync_status"] == "NOT_OK"
+    assert "TOP2:stale_symbol:STALE" in explicit_result["mismatches"]
+    assert "TOP2:disabled_mode_mismatch:expected=paper:actual=live" in explicit_result["mismatches"]
 
 
 def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inverse_etf", benchmarks=None, strategy_family="range_etf", risk_profile="strict", timeframe="15m", ai_score=91.5, ai_reason="Strong range fit", candidate_score=94.2, liquidity_score=96.0, trend_score=90.0, volatility_score=82.0, risk_score=88.0, strategy_fit_score=97.0, recommended_strategy="trend_following", score_reason="liquidity:strong; trend:strong; volatility:fit; risk:clean; strategy_fit:match", trade_filter_passed=True):

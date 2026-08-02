@@ -26,7 +26,7 @@ from src.broker.paper_portfolio_state import default_paper_portfolio_state_path,
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
 from src.research_report.site import build_research_site
-from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator
+from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator, candidate_research_dashboard_payload
 from src.dashboard.labels_zh import (
     REASON_LABELS_ZH,
     STATUS_LABELS_ZH,
@@ -467,7 +467,98 @@ def _selection_dashboard_view(ai_selection: dict, selection_sync: dict) -> dict[
     }
 
 
-def _selection_dashboard_states(ai_selection: dict | None, selection_sync: dict | None) -> dict[str, dict[str, str] | str]:
+def _top_config_cache_key(path: Path) -> str:
+    return f"top_config:{str(path)}"
+
+
+def _load_top_config_cached(path: Path, request_cache: dict[str, object] | None = None) -> dict[str, object]:
+    def _load() -> dict[str, object]:
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    return _request_cache_get(request_cache, _top_config_cache_key(path), _load)  # type: ignore[return-value]
+
+
+def _current_top_config_slots_cached(limit: int | None = None, request_cache: dict[str, object] | None = None) -> list[dict[str, object]]:
+    if request_cache is None:
+        return current_top_config_slots(limit=limit)
+
+    cache_key = f"top_slots:{limit if limit is not None else 'default'}"
+
+    def _load_slots() -> list[dict[str, object]]:
+        try:
+            slot_limit = max(3, int(limit if limit is not None else configured_top_count()))
+        except Exception:
+            slot_limit = 3
+        slots: list[dict[str, object]] = []
+        for index in range(1, slot_limit + 1):
+            path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
+            exists = path.exists()
+            config = _load_top_config_cached(path, request_cache=request_cache) if exists else {}
+            selection = config.get("selection") if isinstance(config.get("selection"), dict) else {}
+            enabled_raw = config.get("enabled")
+            enabled = bool(True if enabled_raw is None else enabled_raw)
+            ticker = str(config.get("ticker") or "").strip().upper()
+            mode = str(config.get("mode") or "").strip().lower()
+            selection_date = str(config.get("selection_date") or "").strip()
+            nested_selection_date = str(selection.get("selection_date") or "").strip()
+            nested_symbol = str(selection.get("symbol") or selection.get("ticker") or "").strip().upper()
+            nested_mode = str(selection.get("mode") or "").strip().lower()
+            metadata_mismatches: list[str] = []
+            if selection_date and nested_selection_date and selection_date != nested_selection_date:
+                metadata_mismatches.append("nested_selection_date_mismatch")
+            if ticker and nested_symbol and ticker != nested_symbol:
+                metadata_mismatches.append("nested_symbol_mismatch")
+            if mode and nested_mode and mode != nested_mode:
+                metadata_mismatches.append("nested_mode_mismatch")
+            slots.append(
+                {
+                    "slot": index,
+                    "path": path,
+                    "exists": exists,
+                    "enabled": enabled and bool(ticker),
+                    "ticker": ticker,
+                    "mode": mode,
+                    "reason": str(config.get("reason") or "").strip(),
+                    "selection_run_id": str(config.get("selection_run_id") or ""),
+                    "top_sync_run_id": str(config.get("top_sync_run_id") or config.get("selection_run_id") or ""),
+                    "selection_date": selection_date,
+                    "nested_selection_date": nested_selection_date,
+                    "nested_symbol": nested_symbol,
+                    "nested_mode": nested_mode,
+                    "selection_metadata_mismatches": metadata_mismatches,
+                    "generated_at": str(config.get("generated_at") or ""),
+                    "result_quality": str(config.get("result_quality") or ""),
+                    "research_admission": str(config.get("research_admission") or ""),
+                    "top_sync_status": str(config.get("top_sync_status") or ""),
+                    "top_sync_error": str(config.get("top_sync_error") or ""),
+                }
+            )
+        return slots
+
+    return _request_cache_get(request_cache, cache_key, _load_slots)  # type: ignore[return-value]
+
+
+def _current_top_config_symbols_cached(limit: int | None = None, request_cache: dict[str, object] | None = None) -> list[str]:
+    return [
+        str(slot.get("ticker") or "").strip().upper()
+        for slot in _current_top_config_slots_cached(limit=limit, request_cache=request_cache)
+        if slot.get("enabled") and str(slot.get("ticker") or "").strip()
+    ]
+
+
+def _current_top_config_disabled_slots_cached(limit: int | None = None, request_cache: dict[str, object] | None = None) -> list[int]:
+    return [
+        int(slot.get("slot") or 0)
+        for slot in _current_top_config_slots_cached(limit=limit, request_cache=request_cache)
+        if not slot.get("enabled")
+    ]
+
+
+def _selection_dashboard_states(ai_selection: dict | None, selection_sync: dict | None, request_cache: dict[str, object] | None = None) -> dict[str, dict[str, str] | str]:
     ai_selection = ai_selection or {}
     selection_sync = selection_sync or {}
     raw_reason = str(selection_sync.get("mismatch_reason") or selection_sync.get("reason") or "").strip()
@@ -489,16 +580,13 @@ def _selection_dashboard_states(ai_selection: dict | None, selection_sync: dict 
         len(selection_sync.get("current_top_config_symbols") or []),
         1,
     )
-    top_slots = current_top_config_slots(limit=slot_limit)
+    top_slots = _current_top_config_slots_cached(limit=slot_limit, request_cache=request_cache)
     slot_details: list[dict[str, object]] = []
     for slot in top_slots:
         path_value = slot.get("path")
         config: dict[str, object] = {}
         if isinstance(path_value, Path):
-            try:
-                config = yaml.safe_load(path_value.read_text(encoding="utf-8")) or {}
-            except Exception:
-                config = {}
+            config = _load_top_config_cached(path_value, request_cache=request_cache)
         selection_cfg = config.get("selection") if isinstance(config.get("selection"), dict) else {}
         slot_details.append(
             {
@@ -1210,8 +1298,29 @@ def _dashboard_active_symbols(ai_selection: dict | None, selection_sync: dict | 
     return _normalize_symbol_list(symbols)
 
 
-def _load_ai_selection_report():
-    bundle = load_committed_selection_bundle(PROJECT_DIR)
+def _request_cache_get(request_cache: dict[str, object] | None, key: str, builder):
+    if request_cache is None:
+        return builder()
+    if key not in request_cache:
+        request_cache[key] = builder()
+    return request_cache[key]
+
+
+def _call_with_request_cache(fn, request_cache: dict[str, object] | None):
+    try:
+        return fn(request_cache=request_cache)
+    except TypeError as exc:
+        if "request_cache" not in str(exc):
+            raise
+        return fn()
+
+
+def _load_committed_selection_bundle_cached(request_cache: dict[str, object] | None = None):
+    return _request_cache_get(request_cache, "committed_selection_bundle", lambda: load_committed_selection_bundle(PROJECT_DIR))
+
+
+def _load_ai_selection_report(request_cache: dict[str, object] | None = None):
+    bundle = _load_committed_selection_bundle_cached(request_cache)
     if isinstance(bundle, dict):
         bundle_report = bundle.get("report")
         if isinstance(bundle_report, dict):
@@ -2050,43 +2159,7 @@ def _candidate_research_report_snapshot() -> dict[str, object]:
             "actionable_candidate_status": "NO_ACTIONABLE_RESEARCH_CANDIDATE",
             "error": str(exc),
         }
-    performance = report.get("performance") or {}
-    return {
-        "available": True,
-        "state": "SAFE",
-        "status_label": "SAFE",
-        "detail": "daily research report ready",
-        "title": report.get("title") or "AI Candidate Daily Research Report",
-        "display_title": "AI Research Report",
-        "generated_at": report.get("generated_at"),
-        "candidate_count": report.get("candidate_count", 0),
-        "average_score": report.get("average_score"),
-        "score_distribution": report.get("score_distribution") or [],
-        "top_candidates": report.get("top_candidates") or [],
-        "failure_analysis": report.get("failure_analysis") or {"statuses": {}},
-        "market_regime": report.get("market_regime") or {},
-        "strategy_selection": report.get("strategy_selection") or {},
-        "candidate_strategy_matrix": list(report.get("candidate_strategy_matrix") or []),
-        "portfolio_composition": dict(report.get("portfolio_composition") or {}),
-        "final_selected": list(report.get("final_selected") or []),
-        "final_selected_count": int(report.get("final_selected_count") or 0),
-        "selection_outcome": report.get("selection_outcome") or "NO_ACTIONABLE_RESEARCH_CANDIDATE",
-        "actionable_candidate_status": report.get("actionable_candidate_status") or "NO_ACTIONABLE_RESEARCH_CANDIDATE",
-        "selection_execution_status": report.get("selection_execution_status") or "COMPLETED",
-        "selection_result_quality": report.get("selection_result_quality") or "COMPLETE",
-        "selection_research_admission": report.get("selection_research_admission") or "RESEARCH_READY",
-        "selection_stage": report.get("selection_stage") or "FINALIZED",
-        "selection_top_n_complete": bool(report.get("selection_top_n_complete", False)),
-        "selection_top_n_missing_count": int(report.get("selection_top_n_missing_count") or 0),
-        "selection_fallback_used": bool(report.get("selection_fallback_used", False)),
-        "selection_provider_audit": report.get("selection_provider_audit") or {},
-        "selection_provider_outputs": report.get("selection_provider_outputs") or {},
-        "selection_warnings_structured": list(report.get("selection_warnings_structured") or []),
-        "selection_warnings": list(report.get("selection_warnings") or []),
-        "high_score_success_rate": performance.get("high_score_success_rate"),
-        "high_score_threshold": performance.get("high_score_threshold", 80.0),
-        "performance": performance,
-    }
+    return candidate_research_dashboard_payload(report)
 
 
 def _safe_number(value: object) -> float | None:
@@ -2481,6 +2554,9 @@ def _candidate_performance_payload() -> dict[str, object]:
 
 
 def _candidate_research_report_payload() -> dict[str, object]:
+    snapshot = _load_dashboard_snapshot("candidate_research_report")
+    if snapshot is not None:
+        return snapshot
     return _cached_read_snapshot("candidate_research_report", _candidate_research_report_snapshot) or {
         "available": False,
         "state": "STALE",
@@ -2636,7 +2712,7 @@ def _build_wa_strategy_rows(weights: dict[str, Any]) -> list[dict[str, object]]:
     return result
 
 
-def _learning_summary_payload() -> dict[str, object]:
+def _learning_summary_payload(request_cache: dict[str, object] | None = None) -> dict[str, object]:
     """Read outcome_summary.json + suggested_weights.json for 8090 display.
 
     All numeric values are sanitized through _safe_number / _safe_pct_str /
@@ -2751,7 +2827,7 @@ def _learning_summary_payload() -> dict[str, object]:
         })
 
     # ── Governance: read from the governance registry (not raw JSON) ──
-    gov = _governance_payload()
+    gov = _request_cache_get(request_cache, "governance_payload", _governance_payload)
 
     governance: dict[str, str] = {
         "champion": f"{gov.get('champion_version', 'baseline_v1')} (正式模型)"
@@ -3718,10 +3794,10 @@ def _ai_runtime_status() -> dict:
     }
 
 
-def _selection_sync_status() -> dict:
+def _selection_sync_status(request_cache: dict[str, object] | None = None) -> dict:
     now_et = datetime.now(ZoneInfo("America/New_York"))
     session = market_session_context(now_et)
-    latest_report = _load_ai_selection_report() or {}
+    latest_report = _call_with_request_cache(_load_ai_selection_report, request_cache) or {}
     latest_report_date = str(latest_report.get("selection_date") or latest_report.get("date") or "").strip()
     latest_report_stage = str(
         latest_report.get("selection_stage")
@@ -3730,7 +3806,7 @@ def _selection_sync_status() -> dict:
         or ""
     ).strip().upper()
     latest_execution_status = str(latest_report.get("execution_status") or "").strip().upper()
-    committed_bundle = load_committed_selection_bundle(PROJECT_DIR)
+    committed_bundle = _load_committed_selection_bundle_cached(request_cache)
     committed_state = committed_bundle.get("state") if isinstance(committed_bundle, dict) else None
     selection_completed = (
         latest_report_date == session.current_session.isoformat()
@@ -3738,7 +3814,27 @@ def _selection_sync_status() -> dict:
         and latest_report_stage == "FINALIZED"
     )
     required_date = required_selection_date(now_et, selection_completed=selection_completed)
-    ok, reason, state = verify_selection_state(required_et_date=required_date, state=committed_state if isinstance(committed_state, dict) else None)
+    preliminary_state = committed_state if isinstance(committed_state, dict) else None
+    preliminary_symbols = [
+        str(item or "").strip().upper()
+        for item in ((preliminary_state or {}).get("selection_state_symbols") or (preliminary_state or {}).get("selected_symbols") or [])
+        if str(item or "").strip()
+    ]
+    top_limit = max(configured_top_count(), len(preliminary_symbols) or 1)
+    top_slots = _current_top_config_slots_cached(limit=top_limit, request_cache=request_cache)
+    try:
+        ok, reason, state = verify_selection_state(
+            required_et_date=required_date,
+            state=preliminary_state,
+            top_slots=top_slots,
+        )
+    except TypeError as exc:
+        if "top_slots" not in str(exc):
+            raise
+        ok, reason, state = verify_selection_state(
+            required_et_date=required_date,
+            state=preliminary_state,
+        )
     state = state or (committed_state if isinstance(committed_state, dict) else None) or load_selection_state() or {}
     state_date = str(state.get("et_date") or "").strip() or None
     selection_state_symbols = [
@@ -3746,9 +3842,10 @@ def _selection_sync_status() -> dict:
         for item in (state.get("selection_state_symbols") or state.get("selected_symbols") or [])
         if str(item or "").strip()
     ]
+    top_limit = max(configured_top_count(), len(selection_state_symbols) or 1)
     current_top_config_symbols_list = [
         str(item or "").strip().upper()
-        for item in (state.get("current_top_config_symbols") or current_top_config_symbols(limit=max(configured_top_count(), len(selection_state_symbols) or 1)))
+        for item in (state.get("current_top_config_symbols") or _current_top_config_symbols_cached(limit=top_limit, request_cache=request_cache))
         if str(item or "").strip()
     ]
     state_top_config_symbols = [
@@ -3758,7 +3855,7 @@ def _selection_sync_status() -> dict:
     ]
     disabled_slots = [
         int(item)
-        for item in (state.get("disabled_slots") or current_top_config_disabled_slots(limit=max(configured_top_count(), len(selection_state_symbols) or 1)))
+        for item in (state.get("disabled_slots") or _current_top_config_disabled_slots_cached(limit=top_limit, request_cache=request_cache))
         if str(item).strip()
     ]
     selection_run_id = str(state.get("selection_run_id") or "")
@@ -3901,17 +3998,14 @@ def _desired_audit_mode() -> str:
     return value if value in {"live", "paper"} else "live"
 
 
-def _load_top_modes() -> list[str]:
+def _load_top_modes(request_cache: dict[str, object] | None = None) -> list[str]:
     modes: list[str] = []
     for item in TICKERS:
         cfg_path = PROJECT_DIR / "configs" / item["config"]
         if not cfg_path.exists():
             modes.append("disabled")
             continue
-        try:
-            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            data = {}
+        data = _load_top_config_cached(cfg_path, request_cache=request_cache)
         mode = str(data.get("mode", "paper")).strip().lower() or "paper"
         modes.append(mode)
     return modes
@@ -3921,17 +4015,14 @@ def _top_config_exists(config_name: str) -> bool:
     return (PROJECT_DIR / "configs" / config_name).exists()
 
 
-def _load_top_ai_selector_flags() -> tuple[bool | None, bool | None]:
+def _load_top_ai_selector_flags(request_cache: dict[str, object] | None = None) -> tuple[bool | None, bool | None]:
     """Read fallback flags from current TOP configs when available."""
     paper_flags: list[bool] = []
     live_flags: list[bool] = []
     seen_any = False
     for item in TICKERS:
         cfg_path = PROJECT_DIR / "configs" / item["config"]
-        try:
-            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            data = {}
+        data = _load_top_config_cached(cfg_path, request_cache=request_cache)
         ai_selector = data.get("ai_selector") if isinstance(data.get("ai_selector"), dict) else {}
         if "allow_fallback_live_entries" in ai_selector:
             seen_any = True
@@ -7521,7 +7612,7 @@ def _combined_process_count() -> int:
         return 1 if _pid_alive(os.getpid()) else 0
 
 
-def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | None) -> dict:
+def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | None, request_cache: dict[str, object] | None = None) -> dict:
     port = int(item.get("port", 0) or 0)
     config_name = str(item.get("config") or "")
     config_path = PROJECT_DIR / "configs" / config_name if config_name else None
@@ -7531,12 +7622,7 @@ def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | No
         status = {}
     config_data: dict[str, object] = {}
     if config_path is not None and config_path.exists():
-        try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            if isinstance(raw, dict):
-                config_data = raw
-        except Exception:
-            config_data = {}
+        config_data = _load_top_config_cached(config_path, request_cache=request_cache)
     broker_cfg = config_data.get("broker") if isinstance(config_data.get("broker"), dict) else {}
     longbridge_cfg = broker_cfg.get("longbridge") if isinstance(broker_cfg, dict) and isinstance(broker_cfg.get("longbridge"), dict) else {}
     raw_mode = str((status or {}).get("mode") or config_data.get("mode") or mode or ("disabled" if not configured else "paper")).strip().lower() or "unknown"
@@ -7596,33 +7682,34 @@ def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | No
     }
 
 
-def _fallback_runtime_flags() -> tuple[bool, bool]:
+def _fallback_runtime_flags(request_cache: dict[str, object] | None = None) -> tuple[bool, bool]:
     try:
         runtime_config = load_runtime_config()
         live_config_value = getattr(runtime_config, "allow_fallback_live_entries", None)
         paper_config_value = getattr(runtime_config, "allow_fallback_paper_entries", None)
-        top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags()
+        top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags(request_cache=request_cache)
         live_candidates = [bool(value) for value in (live_config_value, top_live_allowed) if value is not None]
         paper_candidates = [bool(value) for value in (paper_config_value, top_paper_allowed) if value is not None]
         live_allowed = any(live_candidates) if live_candidates else False
         paper_allowed = any(paper_candidates) if paper_candidates else False
         return live_allowed, paper_allowed
     except Exception:
-        top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags()
+        top_live_allowed, top_paper_allowed = _load_top_ai_selector_flags(request_cache=request_cache)
         return bool(top_live_allowed), bool(top_paper_allowed)
 
 
 def _api_status_payload() -> dict[str, object]:
+    request_cache: dict[str, object] = {}
     runtime_config = load_runtime_config()
-    ai_selection = _load_ai_selection_report()
+    ai_selection = _call_with_request_cache(_load_ai_selection_report, request_cache)
     if not isinstance(ai_selection, dict):
         ai_selection = {"timestamp": None, "report": [], "top3": [], "top10": [], "settings": {}}
     ai_selection = _selection_report_with_candidate_layers(ai_selection)
-    selection_sync = _selection_sync_status()
-    selection_presentation = _selection_dashboard_states(ai_selection, selection_sync)
+    selection_sync = _call_with_request_cache(_selection_sync_status, request_cache)
+    selection_presentation = _selection_dashboard_states(ai_selection, selection_sync, request_cache=request_cache)
     trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=None, mode=_desired_audit_mode())
-    top_modes = _load_top_modes()
-    top_tickers = list((selection_sync or {}).get("current_top_config_symbols") or current_top_config_symbols(limit=len(TICKERS)))
+    top_modes = _call_with_request_cache(_load_top_modes, request_cache)
+    top_tickers = list((selection_sync or {}).get("current_top_config_symbols") or _current_top_config_symbols_cached(limit=len(TICKERS), request_cache=request_cache))
     dashboard_config = _load_dashboard_config()
     dashboard_mode = str(getattr(dashboard_config, "mode", "") or "paper").strip().lower() if dashboard_config else "paper"
     live_account = _fetch_live_account_summary() if dashboard_mode in {"sandbox", "live"} else None
@@ -7633,6 +7720,7 @@ def _api_status_payload() -> dict[str, object]:
             rank=index + 1,
             ticker=top_tickers[index] if index < len(top_tickers) else None,
             mode=top_modes[index] if index < len(top_modes) else "unknown",
+            request_cache=request_cache,
         )
         for index, item in enumerate(TICKERS)
     ]
@@ -7651,7 +7739,7 @@ def _api_status_payload() -> dict[str, object]:
         system_status={"mode_key": dashboard_mode or "paper"},
         top_engines=top_engines,
     )
-    fallback_live_allowed, fallback_paper_allowed = _fallback_runtime_flags()
+    fallback_live_allowed, fallback_paper_allowed = _call_with_request_cache(_fallback_runtime_flags, request_cache)
     top_daily_pnl = 0.0
     top_unrealized_pnl = 0.0
     top_equity = 0.0
@@ -7749,11 +7837,11 @@ def _api_status_payload() -> dict[str, object]:
         "candidate_validation": candidate_validation,
         "candidate_model_evaluation": _candidate_model_evaluation_payload(),
         "research_status": _research_status_payload(),
-        "learning_summary": _learning_summary_payload(),
+        "learning_summary": _call_with_request_cache(_learning_summary_payload, request_cache),
         "market_regime": _market_regime_payload(),
         "regime_shadow": _regime_shadow_payload(),
         "universe": _universe_payload(),
-        "governance": _governance_payload(),
+        "governance": _request_cache_get(request_cache, "governance_payload", _governance_payload),
         "research_report": _candidate_research_report_payload(),
         "ai_selection": {
             "price_band": _ai_selection_price_band(ai_selection),

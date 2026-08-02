@@ -189,6 +189,7 @@ def validate_top_config_sync(
     top_items: list[dict[str, Any]] | None = None,
     state: dict[str, Any] | None = None,
     limit: int | None = None,
+    slots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     state_payload = dict(state or {}) if isinstance(state, dict) else {}
     expected_symbols = [
@@ -207,7 +208,7 @@ def validate_top_config_sync(
     for item in items:
         expected_modes.append(str(item.get("mode") or "").strip().lower())
     slot_limit = _top_slot_limit(limit or max(configured_top_count(), len(expected_symbols), len(items)))
-    slots = current_top_config_slots(limit=slot_limit)
+    slots = list(slots) if slots is not None else current_top_config_slots(limit=slot_limit)
     mismatches: list[str] = []
 
     for slot in slots:
@@ -392,6 +393,7 @@ def verify_selection_state(
     required_et_date: str | None = None,
     *,
     state: dict[str, Any] | None = None,
+    top_slots: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
     state = dict(state) if isinstance(state, dict) else load_selection_state()
     if not state:
@@ -400,6 +402,7 @@ def verify_selection_state(
     state = dict(state)
     state_date = str(state.get("et_date") or "").strip()
     if required_et_date and state_date != required_et_date:
+        slots_for_mismatch = list(top_slots) if top_slots is not None else None
         state["required_et_date"] = required_et_date
         state["selection_state_symbols"] = [
             str(item or "").strip().upper()
@@ -411,10 +414,22 @@ def verify_selection_state(
             for item in state.get("top_config_symbols") or state.get("configured_top_symbols") or []
             if str(item or "").strip()
         ]
-        state["current_top_config_symbols"] = current_top_config_symbols(
-            limit=max(configured_top_count(), len(state.get("selected_symbols") or state.get("selection_symbols") or []))
-        )
-        state["disabled_slots"] = list(state.get("disabled_slots") or current_top_config_disabled_slots())
+        if slots_for_mismatch is None:
+            state["current_top_config_symbols"] = current_top_config_symbols(
+                limit=max(configured_top_count(), len(state.get("selected_symbols") or state.get("selection_symbols") or []))
+            )
+            state["disabled_slots"] = list(state.get("disabled_slots") or current_top_config_disabled_slots())
+        else:
+            state["current_top_config_symbols"] = [
+                str(slot.get("ticker") or "").strip().upper()
+                for slot in slots_for_mismatch
+                if slot.get("enabled") and str(slot.get("ticker") or "").strip()
+            ]
+            state["disabled_slots"] = [
+                int(slot.get("slot") or 0)
+                for slot in slots_for_mismatch
+                if not slot.get("enabled")
+            ]
         state["selection_run_id"] = str(state.get("selection_run_id") or "")
         state["top_sync_run_id"] = str(state.get("top_sync_run_id") or "")
         return False, f"selection_state_date_mismatch:{state_date or 'missing'}", state
@@ -429,11 +444,12 @@ def verify_selection_state(
         for item in state.get("top_config_symbols") or state.get("configured_top_symbols") or []
         if str(item or "").strip()
     ]
-    slots = current_top_config_slots(limit=max(configured_top_count(), len(expected_selected), len(expected_top_configs)))
+    slots = list(top_slots) if top_slots is not None else current_top_config_slots(limit=max(configured_top_count(), len(expected_selected), len(expected_top_configs)))
     actual = [str(slot.get("ticker") or "").strip().upper() for slot in slots if slot.get("enabled") and slot.get("ticker")]
     missing_slots = [int(slot["slot"]) for slot in slots if not slot.get("exists")]
     disabled_slots = [int(slot["slot"]) for slot in slots if slot.get("exists") and not slot.get("enabled")]
-    actual_run_id = current_top_config_run_id(limit=len(slots))
+    run_ids = [str(slot.get("selection_run_id") or "") for slot in slots if str(slot.get("selection_run_id") or "").strip()]
+    actual_run_id = run_ids[0] if run_ids and all(run_id == run_ids[0] for run_id in run_ids) else None
     state["selection_state_symbols"] = expected_selected
     state["state_top_config_symbols"] = expected_top_configs
     state["current_top_config_symbols"] = actual
@@ -442,9 +458,11 @@ def verify_selection_state(
     state["top_sync_run_id"] = str(state.get("top_sync_run_id") or "")
     state["selection_symbols"] = expected_selected
     state["configured_top_symbols"] = expected_top_configs or actual
-    state["current_top_config_run_id"] = current_top_config_run_id(limit=len(slots))
-    state["current_top_config_result_quality"] = current_top_config_result_quality(limit=len(slots)) or ""
-    state["current_top_config_research_admission"] = current_top_config_research_admission(limit=len(slots)) or ""
+    state["current_top_config_run_id"] = actual_run_id
+    result_qualities = [str(slot.get("result_quality") or "").strip().upper() for slot in slots if str(slot.get("result_quality") or "").strip()]
+    research_admissions = [str(slot.get("research_admission") or "").strip().upper() for slot in slots if str(slot.get("research_admission") or "").strip()]
+    state["current_top_config_result_quality"] = result_qualities[0] if result_qualities and all(item == result_qualities[0] for item in result_qualities) else ""
+    state["current_top_config_research_admission"] = research_admissions[0] if research_admissions and all(item == research_admissions[0] for item in research_admissions) else ""
     state_disabled_slots = [
         int(item)
         for item in state.get("disabled_slots") or []
@@ -474,6 +492,7 @@ def verify_selection_state(
         selection_run_id=str(state.get("selection_run_id") or ""),
         state=state,
         limit=len(slots),
+        slots=slots,
     )
     state["top_sync_validation"] = {
         "top_sync_status": str(sync_result.get("top_sync_status") or ""),
