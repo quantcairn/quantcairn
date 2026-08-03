@@ -145,7 +145,7 @@ def test_health_check_prints_selection_and_top_symbols(monkeypatch):
 
         env = os.environ.copy()
         env["SOXS_PROJECT_DIR"] = str(project_dir)
-        env["SOXS_PYTHON_BIN"] = str(Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python")
+        env["SOXS_PYTHON_BIN"] = sys.executable
         proc = subprocess.run(
             ["bash", str(Path(__file__).resolve().parents[1] / "health_check.sh")],
             cwd=Path(__file__).resolve().parents[1],

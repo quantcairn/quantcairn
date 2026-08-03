@@ -688,7 +688,10 @@ def _append_csv(rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
     LEARNING_DIR.mkdir(parents=True, exist_ok=True)
-    write_header = not OUTCOME_CSV_PATH.exists()
+    try:
+        write_header = not OUTCOME_CSV_PATH.exists()
+    except OSError:
+        return 0
     fd, tmp = tempfile.mkstemp(prefix=".outcome_csv.", suffix=".tmp", dir=str(LEARNING_DIR))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:

@@ -1982,6 +1982,7 @@ def notify_ai_selection_result(selection_report: dict, top_configs: list | None 
 
     lock_path = ledger_path.with_suffix(ledger_path.suffix + ".notify.lock")
     with _ai_selection_notification_lock:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "a+", encoding="utf-8") as lock_handle:
             try:
                 import fcntl

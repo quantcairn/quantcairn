@@ -255,6 +255,17 @@ def _print_safety_section() -> None:
     print("╚═══════════════════════════════════════════════════════════╝")
 
 
+def _configure_demo_selector(selector, demo_symbols: list[str]) -> str:
+    """Wire deterministic demo inputs while tolerating missing optional deps."""
+    selector.selection_size = 5
+    selector.universe._load_local_snapshot = lambda: list(demo_symbols)
+    news = getattr(selector, "news", None)
+    if news is not None and hasattr(news, "collect_for_symbols"):
+        news.collect_for_symbols = lambda symbols: {s: [] for s in symbols}
+        return "stubbed_empty"
+    return "unavailable"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -280,6 +291,8 @@ def main() -> None:
     print(f"  Data:      {252} rows per symbol (seeded random walk, deterministic)")
     print(f"  Network:   DISABLED")
     print(f"  API Keys:  NOT REQUIRED")
+    # The demo path may run in core-only environments where the news collector
+    # optional dependency is intentionally absent.
 
     # ── Monkey-patch preflight to return DEMO mode ───────────────────────
     import src.openalpha.preflight as preflight_module
@@ -335,9 +348,8 @@ def main() -> None:
     from src.openalpha.selector import AIStrategySelector
 
     selector = AIStrategySelector()
-    selector.selection_size = 5
-    selector.universe._load_local_snapshot = lambda: list(demo_symbols)
-    selector.news.collect_for_symbols = lambda symbols: {s: [] for s in symbols}
+    news_status = _configure_demo_selector(selector, demo_symbols)
+    print(f"  News:      {news_status}")
 
     # Patch scorer to use demo data
     import pandas as pd

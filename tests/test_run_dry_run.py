@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +38,7 @@ range:
         env.pop("SOXS_CONFIG", None)
 
         result = subprocess.run(
-            [str(repo_root / ".venv/bin/python"), "run.py", "--dry-run", "--config", str(config_path)],
+            [sys.executable, "run.py", "--dry-run", "--config", str(config_path)],
             cwd=repo_root,
             env=env,
             capture_output=True,

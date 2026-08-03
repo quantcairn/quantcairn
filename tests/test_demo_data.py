@@ -296,6 +296,24 @@ class TestDemoSelectorEndToEnd:
         df = provider.get_ohlcv("MSFT")
         assert len(df) == 252
 
+    def test_demo_selector_configuration_tolerates_missing_news_collector(self):
+        """Core-only demo wiring should not assume selector.news exists."""
+        from types import SimpleNamespace
+
+        import scripts.run_demo_selector as demo_selector_script
+
+        selector = SimpleNamespace(
+            selection_size=0,
+            universe=SimpleNamespace(),
+            news=None,
+        )
+
+        status = demo_selector_script._configure_demo_selector(selector, ["AAPL", "MSFT"])
+
+        assert status == "unavailable"
+        assert selector.selection_size == 5
+        assert selector.universe._load_local_snapshot() == ["AAPL", "MSFT"]
+
     def test_demo_symbols_match_expected_list(self):
         provider = DemoDataProvider()
         assert provider.symbols == ["AAPL", "MSFT", "NVDA", "SPY", "TSLA"]

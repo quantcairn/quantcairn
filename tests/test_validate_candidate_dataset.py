@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import json
 import subprocess
 import sys
@@ -313,8 +314,14 @@ def test_validate_candidate_dataset_cli_runs_on_known_files(tmp_path):
         strategy_family="range_etf",
         risk_profile="strict",
     )
+    project_dir = tmp_path / "project"
+    data_root = project_dir / "data" / "market" / "longbridge"
+    _write_ohlcv_csv(data_root / "SOXS_US_15m.csv", _two_bar_csv_rows("SOXS.US"))
+    _write_ohlcv_csv(data_root / "SOXX_US_15m.csv", _two_bar_csv_rows("SOXX.US"))
     output_dir = tmp_path / "out"
     script = Path(__file__).resolve().parents[1] / "scripts" / "validate_candidate_dataset.py"
+    env = os.environ.copy()
+    env["SOXS_PROJECT_DIR"] = str(project_dir)
     completed = subprocess.run(
         [
             sys.executable,
@@ -330,6 +337,7 @@ def test_validate_candidate_dataset_cli_runs_on_known_files(tmp_path):
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
 
     assert completed.returncode == 0

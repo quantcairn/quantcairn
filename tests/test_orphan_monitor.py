@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 import json
 import math
+import time
 
 import pytest
 
@@ -403,7 +404,7 @@ def test_offline_assigned_process_becomes_orphan_after_three_failures():
     pos = _position("PLTR", 2, 100.0, 92.0)
     broker = FakeBroker(positions=[pos])
     monitor = OrphanPositionMonitor(broker=broker)
-    monitor._startup_at = 0
+    monitor._startup_at = time.monotonic() - 121.0
     # Mock the status fetch to always return None (simulate offline process)
     monitor._fetch_engine_status = lambda _port: None
     import src.engine.orphan_monitor as module
@@ -512,7 +513,7 @@ def test_identity_single_failure_does_not_takeover():
     pos = _position("SOXS", 5, 100.0, 105.0)
     broker = FakeBroker(positions=[pos])
     monitor = OrphanPositionMonitor(broker=broker)
-    monitor._startup_at = 0
+    monitor._startup_at = time.monotonic() - 121.0
     monitor._fetch_engine_status = lambda _port: None
     import src.engine.orphan_monitor as module
 
@@ -538,7 +539,7 @@ def test_identity_three_consecutive_failures_confirms_orphan():
     pos = _position("SOXS", 5, 100.0, 105.0)
     broker = FakeBroker(positions=[pos])
     monitor = OrphanPositionMonitor(broker=broker)
-    monitor._startup_at = 0
+    monitor._startup_at = time.monotonic() - 121.0
     monitor._fetch_engine_status = lambda _port: None
     import src.engine.orphan_monitor as module
 
@@ -565,7 +566,7 @@ def test_identity_owner_recovery_resets_failure_count():
     pos = _position("SOXS", 5, 100.0, 105.0)
     broker = FakeBroker(positions=[pos])
     monitor = OrphanPositionMonitor(broker=broker)
-    monitor._startup_at = 0
+    monitor._startup_at = time.monotonic() - 121.0
 
     # Start with the engine offline (no fetch)
     monitor._fetch_engine_status = lambda _port: None

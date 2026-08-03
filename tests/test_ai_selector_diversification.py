@@ -45,9 +45,26 @@ def test_top5_selection_spreads_across_sectors():
 def test_selector_falls_back_when_live_scoring_returns_too_few(monkeypatch):
     selector = AIStrategySelector()
     monkeypatch.setenv("OPENALPHA_LIVE_DATA", "1")
+    monkeypatch.setenv("OPENALPHA_UNIVERSE", "sample")
     monkeypatch.setenv("OPENALPHA_TOP_K", "3")
     selector.selection_size = 3
     monkeypatch.setattr("src.openalpha.config_writer.write_top_configs", lambda top_items: None)
+    def _passthrough_quality_filters(candidates, **_kwargs):
+        candidate_list = list(candidates)
+        return candidate_list, {
+            "generated_at": "2026-08-03T00:00:00",
+            "total_candidates_before_filters": len(candidate_list),
+            "removed_by_volume_filter": 0,
+            "removed_by_spread_filter": 0,
+            "removed_by_volatility_filter": 0,
+            "removed_due_to_missing_data": 0,
+            "final_selected_symbols": [item.get("ticker") for item in candidate_list],
+            "existing_real_positions_preserved": [],
+            "timed_out": False,
+            "rows": [],
+        }
+
+    monkeypatch.setattr("src.openalpha.selector._apply_quality_filters_with_report", _passthrough_quality_filters)
 
     selector.universe._load_local_snapshot = lambda: ["AAA", "BBB", "CCC"]
     selector.news.collect_for_symbols = lambda symbols: {symbol: [] for symbol in symbols}

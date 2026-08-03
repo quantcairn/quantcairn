@@ -101,6 +101,7 @@ def test_openbb_provider_analyze_returns_dict():
             analyst_estimates={"pegRatio": 1.4},
         ),
     )
+    provider._is_available = lambda: True
 
     result = provider.analyze(["NVDA"])
 
@@ -147,6 +148,7 @@ def test_openbb_client_estimates_disabled_by_default():
         config=_config(),
         client=client,
     )
+    provider._is_available = lambda: True
 
     result = provider.analyze(["NVDA"])
 
@@ -164,6 +166,7 @@ def test_openbb_client_statements_disabled_by_default():
             config=_config(),
             client=client,
         )
+        provider._is_available = lambda: True
 
         result = provider.analyze(["NVDA"])
 

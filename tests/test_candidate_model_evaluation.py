@@ -18,8 +18,15 @@ from src.candidate_validation import (
 from src.dashboard import combined as dashboard
 
 
-def test_candidate_outcome_dataset_builder_produces_leakage_safe_samples():
-    dataset = CandidateOutcomeDatasetBuilder().build()
+def test_candidate_outcome_dataset_builder_produces_leakage_safe_samples(tmp_path):
+    backtest_root = tmp_path / "backtests"
+    artifact_dir = backtest_root / "sample-run"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "comparison_summary.json").write_text(
+        json.dumps({"generated_at": "2026-08-01T00:00:00Z", "summary": {}}),
+        encoding="utf-8",
+    )
+    dataset = CandidateOutcomeDatasetBuilder(backtest_root=backtest_root).build()
 
     assert dataset.sample_count > 0
     assert dataset.warnings == []

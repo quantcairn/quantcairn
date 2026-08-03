@@ -20,6 +20,25 @@ def _ignore_real_paper_portfolio_state(monkeypatch):
     monkeypatch.setattr(combined, "read_paper_portfolio_state", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_dashboard_runtime_caches():
+    combined._LIVE_ACCOUNT_CACHE = None
+    combined._LIVE_ACCOUNT_CACHE_AT = 0.0
+    combined._STATUS_CACHE.clear()
+    combined._READ_SNAPSHOT_CACHE.clear()
+    combined._PAPER_PORTFOLIO_STATE_CACHE.clear()
+    if hasattr(combined, "_CHART_CACHE"):
+        combined._CHART_CACHE.clear()
+    yield
+    combined._LIVE_ACCOUNT_CACHE = None
+    combined._LIVE_ACCOUNT_CACHE_AT = 0.0
+    combined._STATUS_CACHE.clear()
+    combined._READ_SNAPSHOT_CACHE.clear()
+    combined._PAPER_PORTFOLIO_STATE_CACHE.clear()
+    if hasattr(combined, "_CHART_CACHE"):
+        combined._CHART_CACHE.clear()
+
+
 def test_dashboard_read_snapshot_cache_avoids_rebuilding(monkeypatch):
     calls = []
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -868,6 +887,22 @@ def test_combined_dashboard_does_not_use_submit_order_from_page(monkeypatch):
     monkeypatch.setattr(combined, "_load_active_orders_summary", lambda tickers: {"available": False, "count": 0, "orders": [], "sources": [], "status_label": "no data", "detail": "no data"})
     monkeypatch.setattr(combined, "_load_lifecycle_summary", lambda kind: {"available": False, "status_label": "unavailable", "detail": "no data", "generated_at": None})
     monkeypatch.setattr(combined, "LongBridgeBroker", ForbiddenBroker, raising=False)
+    monkeypatch.setattr(
+        combined,
+        "_load_latest_research_digest",
+        lambda: {
+            "available": True,
+            "date": "2026-07-09",
+            "generated_at": "2026-07-09T21:35:00",
+            "mode": "research",
+            "top_line": "AAPL / SOFI / DRIP",
+            "top_symbols": ["AAPL", "SOFI", "DRIP"],
+            "entry_ready": 1,
+            "observation_only": 2,
+            "strategy_summary": "read-only research brief",
+            "research_url": "#",
+        },
+    )
     monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
         "execution_mode": "paper",
         "reduce_only": False,
