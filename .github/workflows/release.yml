@@ -22,6 +22,9 @@ jobs:
       - name: Run release smoke gate
         run: python scripts/release_smoke_test.py --mode fast_preliminary --universe-source sample
 
+      - name: Verify release version consistency
+        run: python scripts/check_release_version.py --tag "${GITHUB_REF_NAME}"
+
       - name: Verify clean checkout before build
         run: |
           if [ -n "$(git status --short)" ]; then
@@ -36,18 +39,23 @@ jobs:
       - name: Verify package metadata
         run: |
           python -c "
+          import os
           import glob, zipfile, email.parser
           wheels = sorted(glob.glob('dist/quantcairn-*.whl'))
           assert wheels, 'No wheel found in dist/ (expected dist/quantcairn-*.whl)'
           assert len(wheels) == 1, f'Expected exactly 1 wheel, found {len(wheels)}: {wheels}'
           wheel = wheels[0]
+          expected_version = os.environ['GITHUB_REF_NAME']
+          if expected_version.startswith('v'):
+              expected_version = expected_version[1:]
+          expected_version = expected_version.split('-', 1)[0]
           with zipfile.ZipFile(wheel) as z:
               names = [n for n in z.namelist() if n.endswith('METADATA')]
               assert names, 'No METADATA found in wheel'
               with z.open(names[0]) as f:
                   meta = email.parser.BytesParser().parse(f)
               assert meta['Name'] == 'quantcairn', f\"Name mismatch: {meta['Name']}\"
-              assert meta['Version'].startswith('0.'), f\"Version mismatch: {meta['Version']}\"
+              assert meta['Version'] == expected_version, f\"Version mismatch: {meta['Version']} != {expected_version}\"
               print(f'Package: {meta[\"Name\"]} {meta[\"Version\"]}')
               print(f'License: {meta[\"License\"]}')
               print('Metadata OK')

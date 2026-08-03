@@ -21,7 +21,7 @@ considered unstable and may change without notice.
 
 import importlib as _importlib
 
-__version__ = "0.12.5"
+__version__ = "0.12.13"
 
 # ── Public API ───────────────────────────────────────────────────────────────
 # These symbols form the stable public surface.  Use them from top-level or
