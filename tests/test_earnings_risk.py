@@ -140,6 +140,7 @@ def test_selector_earnings_metadata_does_not_change_selection_output(tmp_path, m
                 {
                     "ticker": ticker,
                     "score": score,
+                    "base_score": score,
                     "final_score": score,
                     "candidate_score": score,
                     "ai_score": score,
@@ -148,6 +149,8 @@ def test_selector_earnings_metadata_does_not_change_selection_output(tmp_path, m
                     "trend_fit_score": 75.0 if ticker == "NVDA" else 73.0,
                     "repeatability_score": 65.0 if ticker == "NVDA" else 64.0,
                     "drawdown_safety_score": 60.0 if ticker == "NVDA" else 59.0,
+                    "range_low": 100.0 if ticker == "NVDA" else 300.0,
+                    "range_high": 120.0 if ticker == "NVDA" else 330.0,
                     "sector": "Technology" if ticker == "NVDA" else "Software",
                     "series": {"returns": [0.01, 0.02, 0.015, 0.013, 0.018, 0.02]},
                     "data_status": "COMPLETE",
@@ -171,6 +174,17 @@ def test_selector_earnings_metadata_does_not_change_selection_output(tmp_path, m
     monkeypatch.setattr(selector_module, "score_candidate", lambda item: dict(item))
     monkeypatch.setattr("src.openalpha.data_diagnostics.check_data_availability", lambda symbols: (list(symbols), []))
     monkeypatch.setattr("src.openalpha.preflight.run_preflight", _fake_preflight)
+
+    # Wire the deterministic fake scorer into the method that run_selection()
+    # actually calls (line ~730: _score_with_live_flag).
+    # The helper accepts (self, symbols, news_map) but the real method also
+    # receives live_enabled — accept it and ignore it so both runs get
+    # identical data.
+    monkeypatch.setattr(
+        selector_module.AIStrategySelector,
+        "_score_with_live_flag",
+        lambda self, symbols, news_map, live_enabled: _fake_score_universe(self, symbols, news_map),
+    )
 
     class StaticEarningsProvider:
         def __init__(self):
@@ -235,6 +249,20 @@ def test_selector_earnings_metadata_does_not_change_selection_output(tmp_path, m
             }
             for item in rows
         ]
+
+    # ── Input consistency: earnings metadata must not change the base selection ──
+    for i, (with_row, without_row) in enumerate(zip(with_provider["top3"], without_provider["top3"])):
+        assert with_row["ticker"] == without_row["ticker"], f"top3[{i}] ticker mismatch"
+        assert with_row["score"] == without_row["score"], f"top3[{i}] score changed"
+        assert with_row["base_score"] == without_row["base_score"], f"top3[{i}] base_score changed"
+        assert with_row["range_low"] == without_row["range_low"], f"top3[{i}] range_low changed"
+        assert with_row["range_high"] == without_row["range_high"], f"top3[{i}] range_high changed"
+        assert with_row["volatility_score"] == without_row["volatility_score"], f"top3[{i}] volatility_score changed"
+
+    for i, (with_row, without_row) in enumerate(zip(with_provider["top5"], without_provider["top5"])):
+        assert with_row["ticker"] == without_row["ticker"], f"top5[{i}] ticker mismatch"
+        assert with_row["score"] == without_row["score"], f"top5[{i}] score changed"
+        assert with_row["base_score"] == without_row["base_score"], f"top5[{i}] base_score changed"
 
     assert [item["ticker"] for item in with_provider["top3"]] == [item["ticker"] for item in without_provider["top3"]]
     assert [item["ticker"] for item in with_provider["top5"]] == [item["ticker"] for item in without_provider["top5"]]
