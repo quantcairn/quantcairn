@@ -86,7 +86,7 @@ def check_release_version(*, tag: str | None = None, project_root: Path | None =
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check QuantCairn release version consistency.")
-    parser.add_argument("--tag", default=None, help="Release tag name to validate (e.g. v0.12.13-demo).")
+    parser.add_argument("--tag", default=None, help="Release tag name to validate (e.g. vX.Y.Z-demo).")
     parser.add_argument(
         "--project-root",
         default=None,
