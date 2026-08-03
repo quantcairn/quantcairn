@@ -180,6 +180,17 @@ def test_combined_dashboard_renders_live_account_summary(monkeypatch):
 
 
 def test_combined_dashboard_marks_stale_live_account(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="live",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=True,
+                environment="prod",
+                account_type="live",
+                allow_live_order=False,
+            )
+        ),
+    ))
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
         "cash": 25.0,
         "equity": 700.0,
@@ -207,6 +218,17 @@ def test_combined_dashboard_marks_stale_live_account(monkeypatch):
 
 
 def test_combined_dashboard_shows_live_account_error_without_cache(monkeypatch):
+    monkeypatch.setattr(combined, "_load_dashboard_config", lambda: SimpleNamespace(
+        mode="live",
+        broker=SimpleNamespace(
+            longbridge=SimpleNamespace(
+                enabled=True,
+                environment="prod",
+                account_type="live",
+                allow_live_order=False,
+            )
+        ),
+    ))
     monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: {
         "cash": None,
         "equity": None,
