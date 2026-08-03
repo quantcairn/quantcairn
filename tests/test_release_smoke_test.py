@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -90,3 +93,88 @@ def test_release_smoke_fails_fast(monkeypatch, tmp_path):
         raise AssertionError("release smoke should fail fast when selector fails")
 
     assert calls == ["selector"]
+
+
+def test_verify_telegram_mock_uses_workspace_subprocess(monkeypatch, tmp_path):
+    module = _load_module()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run_python_json(received_workspace_root, code, *, timeout_seconds=240):
+        captured["workspace_root"] = received_workspace_root
+        captured["code"] = code
+        ledger_path = received_workspace_root / "state" / "notifications" / "notification_ledger.jsonl"
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "status": "SENT",
+                    "final_status": "SENT",
+                    "public_channel_ok": True,
+                    "admin_channel_ok": True,
+                    "telegram_attempted": True,
+                    "ledger_entries": 1,
+                    "ledger_path": "state/notifications/notification_ledger.jsonl",
+                    "elapsed_seconds": 0.123,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "SENT",
+            "final_status": "SENT",
+            "public_channel_ok": True,
+            "admin_channel_ok": True,
+            "telegram_attempted": True,
+            "ledger_entries": 1,
+            "ledger_path": "state/notifications/notification_ledger.jsonl",
+            "elapsed_seconds": 0.123,
+        }
+
+    monkeypatch.setattr(module, "_run_python_json", fake_run_python_json)
+
+    result = module._verify_telegram_mock(
+        workspace_root,
+        selection_report={"selection_run_id": "run-1", "selection_bundle_hash": "bundle-1", "selection_stage": "FINALIZED"},
+        top_configs=[{"ticker": "SOXS"}],
+    )
+
+    assert captured["workspace_root"] == workspace_root
+    assert "from src.notifier import alerts" in str(captured["code"])
+    assert "notify_ai_selection_result" in str(captured["code"])
+    assert "Path.cwd()" in str(captured["code"])
+    assert result["status"] == "SENT"
+    assert result["final_status"] == "SENT"
+    assert result["ledger_entries"] == 1
+    assert result["telegram_attempted"] is True
+
+
+def test_verify_telegram_mock_fails_when_ledger_missing(monkeypatch, tmp_path):
+    module = _load_module()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    monkeypatch.setattr(
+        module,
+        "_run_python_json",
+        lambda *args, **kwargs: {
+            "status": "SENT",
+            "final_status": "SENT",
+            "public_channel_ok": True,
+            "admin_channel_ok": True,
+            "telegram_attempted": True,
+            "ledger_entries": 0,
+            "ledger_path": "state/notifications/notification_ledger.jsonl",
+            "elapsed_seconds": 0.123,
+        },
+    )
+
+    with pytest.raises(module.ReleaseSmokeError, match="telegram smoke did not produce notification ledger"):
+        module._verify_telegram_mock(
+            workspace_root,
+            selection_report={"selection_run_id": "run-1", "selection_bundle_hash": "bundle-1", "selection_stage": "FINALIZED"},
+            top_configs=[{"ticker": "SOXS"}],
+        )

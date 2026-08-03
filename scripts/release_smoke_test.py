@@ -635,58 +635,90 @@ def _verify_telegram_mock(
     selection_report: dict[str, Any],
     top_configs: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    from src.notifier import alerts
-
     ledger_path = workspace_root / "state" / "notifications" / "notification_ledger.jsonl"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    old_ledger = os.environ.get("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH")
-    os.environ["SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH"] = str(ledger_path)
+    summary = _run_python_json(
+        workspace_root,
+        f"""
+        import json
+        import os
+        import time
+        from pathlib import Path
 
-    old_loader = alerts._load_ai_selector_notification_config
-    old_send = alerts.Notifier._telegram_send
-    try:
-        alerts._load_ai_selector_notification_config = lambda: {
+        from src.notifier import alerts
+
+        selection_report = json.loads({json.dumps(selection_report, ensure_ascii=False, sort_keys=True, default=str)!r})
+        top_configs = json.loads({json.dumps(top_configs, ensure_ascii=False, sort_keys=True, default=str)!r})
+        notification_cfg = {{
             "ai_selector_telegram_bot_token": "release-smoke-token",
             "ai_selector_telegram_chat_id": "release-public-chat",
             "ai_selector_admin_chat_id": "release-admin-chat",
             "trade_summary_interval": 5,
-        }
+        }}
 
-        def _fake_send(self, *args, **kwargs):
-            return alerts.TelegramDeliveryResult(
-                configured=True,
-                attempted=True,
-                success=True,
-                chunks_total=1,
-                chunks_successful=1,
-            )
+        workspace_root = Path.cwd()
+        ledger_path = workspace_root / "state" / "notifications" / "notification_ledger.jsonl"
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        old_ledger = os.environ.get("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH")
+        os.environ["SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH"] = str(ledger_path)
 
-        alerts.Notifier._telegram_send = _fake_send
-        started = time.perf_counter()
-        alerts.notify_ai_selection_result(selection_report, top_configs=top_configs)
-        elapsed = time.perf_counter() - started
-        ledger_lines = [
-            json.loads(line)
-            for line in ledger_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        latest = ledger_lines[-1] if ledger_lines else {}
-        return {
-            "elapsed_seconds": round(elapsed, 3),
-            "ledger_path": str(ledger_path.relative_to(workspace_root)),
-            "ledger_entries": len(ledger_lines),
-            "status": latest.get("status"),
-            "final_status": latest.get("final_status"),
-            "public_channel_ok": latest.get("public_channel_ok"),
-            "admin_channel_ok": latest.get("admin_channel_ok"),
-        }
-    finally:
-        alerts._load_ai_selector_notification_config = old_loader
-        alerts.Notifier._telegram_send = old_send
-        if old_ledger is None:
-            os.environ.pop("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", None)
-        else:
-            os.environ["SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH"] = old_ledger
+        old_loader = alerts._load_ai_selector_notification_config
+        old_send = alerts.Notifier._telegram_send
+        try:
+            alerts._load_ai_selector_notification_config = lambda: dict(notification_cfg)
+
+            def _fake_send(self, *args, **kwargs):
+                return alerts.TelegramDeliveryResult(
+                    configured=True,
+                    attempted=True,
+                    success=True,
+                    chunks_total=1,
+                    chunks_successful=1,
+                )
+
+            alerts.Notifier._telegram_send = _fake_send
+            started = time.perf_counter()
+            alerts.notify_ai_selection_result(selection_report, top_configs=top_configs)
+            elapsed = time.perf_counter() - started
+            if not ledger_path.exists():
+                raise RuntimeError("telegram smoke did not produce notification ledger")
+            ledger_lines = [
+                json.loads(line)
+                for line in ledger_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            latest = ledger_lines[-1] if ledger_lines else {{}}
+            print(json.dumps({{
+                "elapsed_seconds": round(elapsed, 3),
+                "ledger_path": str(ledger_path.relative_to(workspace_root)),
+                "ledger_entries": len(ledger_lines),
+                "status": latest.get("status"),
+                "final_status": latest.get("final_status"),
+                "public_channel_ok": latest.get("public_channel_ok"),
+                "admin_channel_ok": latest.get("admin_channel_ok"),
+                "telegram_attempted": latest.get("telegram_attempted"),
+            }}, ensure_ascii=False))
+        finally:
+            alerts._load_ai_selector_notification_config = old_loader
+            alerts.Notifier._telegram_send = old_send
+            if old_ledger is None:
+                os.environ.pop("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH", None)
+            else:
+                os.environ["SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH"] = old_ledger
+        """,
+    )
+    ledger_entries = int(summary.get("ledger_entries") or 0)
+    if ledger_entries <= 0:
+        raise ReleaseSmokeError("telegram smoke did not produce notification ledger")
+    return {
+        "elapsed_seconds": round(float(summary.get("elapsed_seconds") or 0.0), 3),
+        "ledger_path": str((workspace_root / str(summary.get("ledger_path") or "")).relative_to(workspace_root)),
+        "ledger_entries": ledger_entries,
+        "status": summary.get("status"),
+        "final_status": summary.get("final_status"),
+        "public_channel_ok": summary.get("public_channel_ok"),
+        "admin_channel_ok": summary.get("admin_channel_ok"),
+        "telegram_attempted": summary.get("telegram_attempted"),
+    }
 
 
 def _verify_paper_broker(workspace_root: Path) -> dict[str, Any]:
