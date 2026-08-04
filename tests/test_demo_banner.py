@@ -1,7 +1,7 @@
-"""Semantic tests for the demo banner ASCII art.
+"""Semantic tests for the demo banner — modern typography edition.
 
-The banner must spell "QUANTCAIRN" (QUANT + CAIRN), NOT the buggy
-"QUANTCCAIRN" variant that had a doubled C between the two blocks.
+The banner uses clean letter-spaced text, not heavy FIGlet blocks.
+The Q is the literal letter Q — no Q/O ambiguity.
 """
 
 import importlib.util
@@ -16,34 +16,90 @@ def _load_banner() -> str:
     return getattr(mod, "DEMO_BANNER", "")
 
 
-def test_banner_is_not_empty():
-    """Banner loads and is non-trivial."""
+# ── Brand identity ──────────────────────────────────────────────────────────
+
+
+def test_brand_name_present():
+    """Brand name must appear as clean, letter-spaced text."""
     banner = _load_banner()
-    assert len(banner) > 200, f"banner too short ({len(banner)} chars)"
-    assert "QuantCairn" in banner or "AI Research Pipeline" in banner
+    assert "Q U A N T C A I R N" in banner, (
+        "Brand name 'Q U A N T C A I R N' not found."
+    )
 
 
-def test_banner_has_no_doubled_c():
-    """The old bug had C's top bar (██████╗) glued directly after
-    T's top bar (████████╗) on the same row, producing QUANTC+C=QUANTCCAIRN.
-    That adjacency must never appear."""
+def test_tagline_present():
+    """Tagline must appear."""
+    banner = _load_banner()
+    assert "AI Research Platform" in banner, (
+        "Tagline 'AI Research Platform' not found."
+    )
+
+
+def test_horizontal_rule_present():
+    """A heavy double-line rule (══) must separate brand from tagline."""
+    banner = _load_banner()
+    # Find interior lines (║ ... ║) whose content is entirely ═ chars
+    rule_rows = [
+        ln for ln in banner.split("\n")
+        if ln.startswith("║") and ln.endswith("║")
+        and ln[1:-1].strip()  # non-empty content
+        and all(c in "═ " for c in ln[1:-1])
+    ]
+    assert len(rule_rows) >= 1, (
+        f"Horizontal double-line rule not found. "
+        f"Expected a row of ═ inside the box."
+    )
+
+
+def test_no_figlet_blocks_remaining():
+    """The old FIGlet art used heavy block chars that are gone now.
+    Neither the heavy Q/O blocks nor the doubled-C pattern may exist."""
     banner = _load_banner()
     assert "████████╗ ██████╗" not in banner, (
-        "Banner contains doubled-C pattern (QUANTCCAIRN). "
-        "Block 1 still has a trailing C glued after T."
+        "Old FIGlet doubled-C pattern still present."
     )
+    # No heavy filled blocks >= 6 chars in a row (was FIGlet "standard" font)
+    for ln in banner.split("\n"):
+        block_runs = ln.count("█")
+        assert block_runs < 5, (
+            f"Line still has heavy FIGlet blocks ({block_runs}): {ln.strip()[:40]}..."
+        )
 
 
-def test_banner_contains_both_blocks():
-    """Both FIGlet blocks must be present: the first (QUANT) starts with
-    Q's top bar, the second (CAIRN) starts with C's top bar indented."""
+# ── Box integrity ────────────────────────────────────────────────────────────
+
+
+def test_top_and_bottom_borders_equal_length():
+    """Top and bottom borders must have identical width."""
     banner = _load_banner()
     lines = banner.split("\n")
-    figlet_lines = [ln for ln in lines if "║" in ln and "══" not in ln and "AI Research" not in ln and "█" in ln]
-    # We need at least two FIGlet rows: one from QUANT, one from CAIRN
-    assert len(figlet_lines) >= 2, (
-        f"Expected ≥2 FIGlet rows (QUANT + CAIRN blocks), got {len(figlet_lines)}"
+    top_line, bot_line = lines[0], lines[-1]
+    assert top_line.startswith("╔") and top_line.endswith("╗")
+    assert bot_line.startswith("╚") and bot_line.endswith("╝")
+    assert len(top_line) == len(bot_line), (
+        f"border width mismatch: top={len(top_line)} bottom={len(bot_line)}"
     )
-    # Every FIGlet row in the full banner must contain at least one box-drawing char
-    for i, ln in enumerate(figlet_lines):
-        assert "█" in ln, f"FIGlet row {i} has no block characters"
+
+
+def test_every_row_has_both_border_chars():
+    """Every interior row starts and ends with ║."""
+    banner = _load_banner()
+    for i, ln in enumerate(banner.split("\n")[1:-1], start=2):
+        stripped = ln.rstrip()
+        assert stripped.startswith("║"), f"row {i}: missing left border"
+        assert stripped.endswith("║"), f"row {i}: missing right border"
+
+
+def test_all_rows_same_width():
+    """All banner rows must have identical character width."""
+    banner = _load_banner()
+    widths = {len(ln) for ln in banner.split("\n")}
+    assert len(widths) == 1, (
+        f"Inconsistent row widths: {sorted(widths)}"
+    )
+
+
+def test_demo_mode_mentioned():
+    """The informational line must mention demo mode."""
+    banner = _load_banner()
+    assert "demo" in banner.lower(), "Demo mode indicator missing"

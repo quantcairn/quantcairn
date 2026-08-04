@@ -27,26 +27,40 @@ if str(PROJECT_DIR) not in sys.path:
 # Banner
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DEMO_BANNER = r"""
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║   ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗       ║
-║  ██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝       ║
-║  ██║   ██║██║   ██║███████║██╔██╗ ██║   ██║            ║
-║  ██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║            ║
-║  ╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║       ║
-║   ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ║
-║                                                               ║
-║      ██████╗ █████╗ ██╗██████╗ ███╗   ██╗                     ║
-║     ██╔════╝██╔══██╗██║██╔══██╗████╗  ██║                     ║
-║     ██║     ███████║██║██████╔╝██╔██╗ ██║                     ║
-║     ██║     ██╔══██║██║██╔══██╗██║╚██╗██║                     ║
-║     ╚██████╗██║  ██║██║██║  ██║██║ ╚████║                     ║
-║      ╚═════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝                     ║
-║                                                               ║
-║               AI Research Pipeline — DEMO MODE                 ║
-╚═══════════════════════════════════════════════════════════════╝
-"""
+def _build_demo_banner() -> str:
+    """Return a dynamically-sized ASCII box with modern CLI aesthetic.
+
+    Clean typography for the brand name — no FIGlet blocks, no Q/O
+    ambiguity. A thin horizontal rule provides visual structure.
+    """
+
+    BRAND   = "Q U A N T C A I R N"
+    TAGLINE = "AI Research Platform"
+    MODE    = "demo  ·  offline  ·  deterministic  ·  zero api keys required"
+
+    # Heavy double-line rule matching brand width for visual hierarchy
+    rule = "═" * len(BRAND)
+
+    content = [
+        "",
+        "",
+        BRAND,
+        rule,
+        "",
+        "",
+        TAGLINE,
+        "",
+        MODE,
+        "",
+    ]
+    width = max((len(ln) for ln in content), default=60)
+    top = "╔" + "═" * width + "╗"
+    mid = "\n".join("║" + ln.center(width) + "║" for ln in content)
+    bot = "╚" + "═" * width + "╝"
+    return "\n".join([top, mid, bot])
+
+
+DEMO_BANNER = _build_demo_banner()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
