@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantcairn"
-version = "0.12.14"
+version = "0.12.16"
 description = "AI-driven quantitative research platform for US stock selection"
 readme = "README.md"
 license = {text = "Apache-2.0"}
