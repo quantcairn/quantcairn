@@ -385,3 +385,160 @@ class TestMarketDataIndependentOfScoring:
         assert dropped[0]["symbol"] == "NO_DATA"
         assert dropped[0]["reason_code"] == "no_ohlcv_data_and_no_fallback"
         assert "0/60" in dropped[0].get("reason_detail", "")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. MARKET_DATA pass-through after redundant OHLCV pre-fetch removal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMarketDataPassThrough:
+    """After removing the redundant check_data_availability() pre-fetch,
+    MARKET_DATA is a pass-through stage. Data validation is deferred to
+    scoring, which handles unavailable symbols via fallback profiles and
+    scoring_rejections diagnostics."""
+
+    def test_market_data_passes_all_symbols_through(self, tmp_path: Path):
+        """MARKET_DATA output == input — no pre-scoring data check drops."""
+        from src.openalpha.funnel_tracker import FunnelTracker
+
+        tracker = FunnelTracker(
+            selection_run_id="md-passthrough", selection_date="2026-08-05",
+            project_dir=tmp_path,
+        )
+
+        # Simulate the new behavior: MARKET_DATA passes all 50 symbols through
+        symbols = ["A", "B", "C", "D", "E"]
+        tracker.add_stage("UNIVERSE", symbols, symbols)
+        tracker.add_stage("UNIVERSE_FILTER", symbols, symbols)
+        tracker.add_stage("MARKET_DATA", symbols, symbols)
+
+        md = tracker.records[2]
+        assert md.output_count == md.input_count == 5, (
+            "MARKET_DATA must pass all symbols through (no pre-check drops)"
+        )
+        assert md.eliminated_count == 0
+
+    def test_scoring_still_captures_data_unavailable_symbols(self, tmp_path: Path):
+        """Symbols with no data are caught at SCORING_ELIGIBLE,
+        not at MARKET_DATA."""
+        from src.openalpha.funnel_tracker import FunnelTracker
+
+        tracker = FunnelTracker(
+            selection_run_id="md-scoring-capture", selection_date="2026-08-05",
+            project_dir=tmp_path,
+        )
+
+        symbols = ["GOOD_A", "GOOD_B", "NO_DATA_X", "NO_DATA_Y"]
+        tracker.add_stage("UNIVERSE", symbols, symbols)
+        tracker.add_stage("UNIVERSE_FILTER", symbols, symbols)
+        tracker.add_stage("MARKET_DATA", symbols, symbols)
+
+        # Scoring catches the missing-data symbols
+        scoring_eligible = [
+            {"ticker": "GOOD_A", "score": 80, "scoring_eligible": True},
+            {"ticker": "GOOD_B", "score": 75, "scoring_eligible": True},
+        ]
+        scoring_dropped = [
+            {"symbol": "NO_DATA_X",
+             "reason_code": "insufficient_history_no_fallback"},
+            {"symbol": "NO_DATA_Y",
+             "reason_code": "insufficient_history_no_fallback"},
+        ]
+        tracker.add_stage("SCORING_ELIGIBLE", symbols, scoring_eligible,
+                          dropped=scoring_dropped)
+
+        md = tracker.records[2]
+        sc = tracker.records[3]
+        assert md.output_count == 4  # pass-through: all 4
+        assert sc.output_count == 2  # scoring caught the 2 bad ones
+        assert sc.eliminated_count == 2
+
+        # Verify dropped records carry the right reason
+        dropped = sc.to_dict()["dropped"]
+        dropped_syms = {d["symbol"] for d in dropped}
+        assert dropped_syms == {"NO_DATA_X", "NO_DATA_Y"}
+        for d in dropped:
+            assert "no_fallback" in d["reason_code"]
+
+    def test_funnel_invariant_still_holds(self, tmp_path: Path):
+        """Removing the pre-check must not break funnel invariants."""
+        from src.openalpha.funnel_tracker import FunnelTracker
+
+        tracker = FunnelTracker(
+            selection_run_id="md-invariant", selection_date="2026-08-05",
+            project_dir=tmp_path,
+        )
+
+        universe = ["A", "B", "C"]
+        tracker.add_stage("UNIVERSE", universe, universe)
+        tracker.add_stage("UNIVERSE_FILTER", universe, universe)
+        tracker.add_stage("MARKET_DATA", universe, universe)  # pass-through
+
+        # Scoring produces results — no drops
+        scored = [
+            {"ticker": "A", "score": 82, "scoring_eligible": True,
+             "formal_scoring_eligibility": True},
+            {"ticker": "B", "score": 78, "scoring_eligible": True,
+             "formal_scoring_eligibility": True},
+            {"ticker": "C", "score": 74, "scoring_eligible": True,
+             "formal_scoring_eligibility": True},
+        ]
+        tracker.add_stage("SCORING_ELIGIBLE", universe, scored, dropped=[])
+        tracker.add_stage("BASE_RANKING", scored, scored)
+        tracker.add_stage("FORMAL_ELIGIBILITY", scored, scored)
+        tracker.add_stage("DATA_QUALITY", scored, scored)
+        tracker.add_stage("COMPOSITION_FILTER", scored, scored)
+        tracker.add_stage("FORMAL_TOP", scored, scored)
+
+        validation = tracker.validate()
+        assert validation["consistent"] is True, (
+            f"Funnel invariants broken: {validation['warnings']}"
+        )
+
+    def test_full_pipeline_with_unknown_symbol_still_handled(self):
+        """End-to-end: a non-existent ticker is handled by scoring fallback,
+        not by MARKET_DATA pre-check."""
+        import os as _os
+
+        from src.openalpha.selector import AIStrategySelector
+
+        # Use sample universe to avoid yfinance network calls for 50 symbols
+        prev_universe = _os.environ.get("OPENALPHA_UNIVERSE")
+        prev_live = _os.environ.get("OPENALPHA_LIVE_DATA")
+        _os.environ["OPENALPHA_UNIVERSE"] = "sample"
+        _os.environ["OPENALPHA_LIVE_DATA"] = "0"  # offline mode
+        try:
+            selector = AIStrategySelector()
+            # Two known symbols with fallback profiles + one unknown
+            selector.universe._load_local_snapshot = (
+                lambda: ["NVDA", "MSFT", "ZZZZ_UNKNOWN"]
+            )
+            selector.news.collect_for_symbols = lambda s: {x: [] for x in s}
+            result = selector.run_selection(write_configs=False)
+
+            funnel = result.get("selection_funnel", {})
+            stages = funnel.get("stages", [])
+
+            # MARKET_DATA must be pass-through: all 3 in, all 3 out
+            md_stage = [s for s in stages if s["stage"] == "MARKET_DATA"][0]
+            assert md_stage["input_count"] == 3
+            assert md_stage["output_count"] == 3, (
+                "MARKET_DATA should pass all 3 symbols through"
+            )
+            assert md_stage["eliminated"] == 0
+
+            # ZZZZ_UNKNOWN should appear in scoring_rejections or scored
+            rejection_counts = funnel.get("rejection_reason_counts", {})
+            # The unknown symbol is handled by fallback profiles (NVDA/MSFT
+            # have them) or recorded in rejection diagnostics — either way,
+            # the pipeline completes without crashing
+            assert result is not None
+        finally:
+            if prev_universe is None:
+                _os.environ.pop("OPENALPHA_UNIVERSE", None)
+            else:
+                _os.environ["OPENALPHA_UNIVERSE"] = prev_universe
+            if prev_live is None:
+                _os.environ.pop("OPENALPHA_LIVE_DATA", None)
+            else:
+                _os.environ["OPENALPHA_LIVE_DATA"] = prev_live

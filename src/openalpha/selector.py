@@ -706,31 +706,23 @@ class AIStrategySelector:
         # ── Execution mode: LIVE / PAPER / RESEARCH ─────────────────────
         _execution_mode = _resolve_execution_mode(_run_mode)
 
-        # 2. Market data: validate OHLCV availability independently of scoring.
-        #    MARKET_DATA output = symbols with >= 60 rows of OHLCV data,
-        #    regardless of whether scoring succeeds.
-        #    SCORING_ELIGIBLE then tracks which of those symbols produce a score.
+        # 2. Market data: pass-through stage. Data availability validation is
+        #    deferred to scoring — Scorer._load_history() handles unavailable
+        #    symbols via fallback profiles and scoring_rejections diagnostics.
+        #    The redundant OHLCV pre-fetch was removed to avoid budget
+        #    exhaustion that blocked DATA_QUALITY from running.
         if self.news and os.environ.get("OPENALPHA_FETCH_NEWS", "0") == "1":
             news_map = self.news.collect_for_symbols(symbols)
         else:
             news_map = {symbol: [] for symbol in symbols}
 
-        # Determine data availability per symbol (pre-scoring check)
-        try:
-            from src.openalpha.data_diagnostics import check_data_availability
-            _data_available, _market_data_dropped = check_data_availability(symbols)
-        except Exception:
-            _data_available = list(symbols)
-            _market_data_dropped = []
-        # Never let data availability reduce the pool to zero — that prevents
-        # scoring from running at all.  Scoring will still reject bad symbols.
-        if not _data_available:
-            _data_available = list(symbols)
-        tracker.add_stage("MARKET_DATA", symbols, _data_available, dropped=_market_data_dropped)
+        # All symbols proceed to scoring. Symbols with insufficient data are
+        # caught by fallback profiles and recorded in scoring_rejections.
+        tracker.add_stage("MARKET_DATA", symbols, symbols)
 
-        # 3. score only data-available symbols
+        # 3. score all symbols
         live_requested = self._live_data_requested()
-        scored = self._score_with_live_flag(_data_available, news_map, live_enabled=live_requested)
+        scored = self._score_with_live_flag(symbols, news_map, live_enabled=live_requested)
         scored = [score_candidate(item) for item in scored]
         scored = self._attach_earnings_info(scored)
 
@@ -739,7 +731,7 @@ class AIStrategySelector:
 
         # ── Fallback scoring (live→EOD) run BEFORE pipeline stages so chain stays consistent ──
         if live_requested and len(scored) < self.selection_size:
-            fallback_scored = self._score_with_live_flag(_data_available, news_map, live_enabled=False)
+            fallback_scored = self._score_with_live_flag(symbols, news_map, live_enabled=False)
             if fallback_scored:
                 fallback_used = True
                 existing = {item.get("ticker") for item in scored}
@@ -762,7 +754,7 @@ class AIStrategySelector:
             getattr(self.scorer, "scoring_rejections", {}))
         scored_set = {_normalize_ticker(item.get("ticker")) for item in scored}
         existing_dropped = {item["symbol"] for item in scoring_dropped}
-        for sym in _data_available:
+        for sym in symbols:
             norm = _normalize_ticker(sym)
             if norm in scored_set or norm in existing_dropped:
                 continue
@@ -777,7 +769,7 @@ class AIStrategySelector:
             if not any(d["symbol"] == norm for d in scoring_dropped):
                 scoring_dropped.append({"symbol": norm, "reason_code": reason})
 
-        tracker.add_stage("SCORING_ELIGIBLE", _data_available, scoring_eligible, dropped=scoring_dropped)
+        tracker.add_stage("SCORING_ELIGIBLE", symbols, scoring_eligible, dropped=scoring_dropped)
         tracker.add_stage("BASE_RANKING", scoring_eligible, scoring_eligible)
 
         # Track formal eligibility
