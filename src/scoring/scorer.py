@@ -433,6 +433,8 @@ class Scorer:
         self.min_spread_pct = self._env_float("OPENALPHA_MIN_SPREAD_PCT", self.DEFAULT_MIN_SPREAD_PCT)
         self.allow_proxy_market = os.environ.get("OPENALPHA_ALLOW_PROXY_MARKET", "0") == "1"
         self._market_cap_cache: dict[str, float | None] = {}
+        # Per-run diagnostics: symbol → rejection_reason  (reset in score_universe)
+        self.scoring_rejections: dict[str, str] = {}
 
     def _env_float(self, name: str, default: float) -> float:
         raw = os.environ.get(name)
@@ -790,6 +792,7 @@ class Scorer:
         return dynamic
 
     def score_universe(self, symbols: List[str], news_map: Dict[str, List[str]]):
+        self.scoring_rejections = {}
         scored = []
         if len(symbols) <= 1:
             for symbol in symbols:
@@ -821,13 +824,23 @@ class Scorer:
             if df.empty or len(df) < self.MIN_HISTORY_ROWS:
                 fallback = self._fallback_profile_for_symbol(symbol)
                 if fallback:
-                    return self._fallback_scored_item(symbol, fallback, news_items)
+                    result = self._fallback_scored_item(symbol, fallback, news_items)
+                    if result is None:
+                        self.scoring_rejections.setdefault(symbol,
+                            self.scoring_rejections.get(symbol, "fallback_rejected"))
+                    return result
+                self.scoring_rejections[symbol] = "insufficient_history_no_fallback"
                 return None
             return self.score_frame(symbol=symbol, df=df, news_items=list(news_items))
         except Exception:
             fallback = self._fallback_profile_for_symbol(symbol)
             if fallback:
-                return self._fallback_scored_item(symbol, fallback, news_items)
+                result = self._fallback_scored_item(symbol, fallback, news_items)
+                if result is None:
+                    self.scoring_rejections.setdefault(symbol,
+                        self.scoring_rejections.get(symbol, "fallback_rejected"))
+                return result
+            self.scoring_rejections[symbol] = "scoring_error_no_fallback"
             return None
 
     def score_frame(
@@ -839,6 +852,7 @@ class Scorer:
     ) -> Optional[dict]:
         df = self._standardize_history(df)
         if df.empty or len(df) < self.MIN_HISTORY_ROWS:
+            self.scoring_rejections.setdefault(symbol, "insufficient_history_data")
             return None
 
         news_items = news_items or []
@@ -880,6 +894,9 @@ class Scorer:
             }
         )
         if universe_eval.rejected:
+            self.scoring_rejections[symbol] = (
+                "universe_validation:" + ",".join(universe_eval.rejection_reason)
+            )
             return None
 
         returns = close.pct_change().dropna()
@@ -914,6 +931,7 @@ class Scorer:
             reject_reasons.append("insufficient movement")
 
         if reject_reasons:
+            self.scoring_rejections[symbol] = ";".join(reject_reasons)
             return None
 
         volatility_score = self._volatility_score(atr_pct, return_vol_pct, range_width_pct)
@@ -931,6 +949,7 @@ class Scorer:
 
         support, resistance, support_meta, resistance_meta = self._estimate_range(df, atr)
         if ((resistance - support) / support * 100.0) < self.min_spread_pct:
+            self.scoring_rejections[symbol] = "spread_too_narrow"
             return None
         price_mid = (support + resistance) / 2.0 if resistance > support else last_close
 
@@ -1006,8 +1025,11 @@ class Scorer:
             skip_atr_validation=True,
         )
         if universe_eval.rejected:
+            self.scoring_rejections.setdefault(symbol,
+                "fallback_universe_validation:" + ",".join(universe_eval.rejection_reason))
             return None
         if ((resistance - support) / support * 100.0) < self.min_spread_pct:
+            self.scoring_rejections.setdefault(symbol, "fallback_spread_too_narrow")
             return None
         news_score = self._news_score(list(news_items))
         volume_score = min(100.0, 35.0 + math.log10(max(float(profile["volume"]), 1.0) / 1_000_000.0 + 1.0) * 20.0)

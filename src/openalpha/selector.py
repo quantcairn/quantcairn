@@ -608,6 +608,9 @@ class AIStrategySelector:
                 os.environ.pop("OPENALPHA_LIVE_DATA", None)
             else:
                 os.environ["OPENALPHA_LIVE_DATA"] = previous
+            # Preserve diagnostics before replacing the scorer instance.
+            self._last_scoring_rejections: dict[str, str] = getattr(
+                self.scorer, "scoring_rejections", {})
             self.scorer = Scorer()
 
     def _attach_earnings_info(self, rows: List[dict]) -> List[dict]:
@@ -752,6 +755,28 @@ class AIStrategySelector:
              "reason_code": item.get("scoring_block_reason") or "scoring_ineligible"}
             for item in scored if not bool(item.get("scoring_eligible", True))
         ]
+
+        # ── Enrich SCORING_ELIGIBLE drops with scorer-level rejection reasons ──
+        scorer_rejections: dict[str, str] = getattr(
+            self, "_last_scoring_rejections",
+            getattr(self.scorer, "scoring_rejections", {}))
+        scored_set = {_normalize_ticker(item.get("ticker")) for item in scored}
+        existing_dropped = {item["symbol"] for item in scoring_dropped}
+        for sym in _data_available:
+            norm = _normalize_ticker(sym)
+            if norm in scored_set or norm in existing_dropped:
+                continue
+            reason = scorer_rejections.get(sym) or scorer_rejections.get(norm)
+            if reason:
+                scoring_dropped.append({"symbol": norm, "reason_code": reason})
+        for sym, reason in scorer_rejections.items():
+            norm = _normalize_ticker(sym)
+            if norm in scored_set or norm in existing_dropped:
+                continue
+            # Avoid duplicates: only add if not already present
+            if not any(d["symbol"] == norm for d in scoring_dropped):
+                scoring_dropped.append({"symbol": norm, "reason_code": reason})
+
         tracker.add_stage("SCORING_ELIGIBLE", _data_available, scoring_eligible, dropped=scoring_dropped)
         tracker.add_stage("BASE_RANKING", scoring_eligible, scoring_eligible)
 

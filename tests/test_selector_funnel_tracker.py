@@ -80,3 +80,36 @@ def test_funnel_tracker_writes_run_isolated_reports(tmp_path, monkeypatch):
     assert second_path.exists()
     assert json.loads(first_path.read_text(encoding="utf-8"))["selection_run_id"] == "run-a"
     assert json.loads(second_path.read_text(encoding="utf-8"))["selection_run_id"] == "run-b"
+
+
+def test_data_quality_drop_records_have_reason_codes():
+    """DATA_QUALITY dropped items must include reason_code from quality filter."""
+    from src.openalpha.selector import _apply_quality_filters_with_report
+    from unittest.mock import patch, MagicMock
+
+    # Build a mock quality context that returns valid quote metrics
+    with patch("src.openalpha.selector._QualityFilterContext") as MockCtx:
+        ctx_instance = MagicMock()
+        ctx_instance.history_metrics.return_value = (1_000_000, 0.5, 50.0)
+        ctx_instance.quote_metrics.return_value = (50.0, 49.8, 50.2, True)
+        MockCtx.return_value = ctx_instance
+
+        candidates = [
+            {"ticker": "TEST_A", "score": 90, "data_source": "live",
+             "avg_daily_volume_hint": 2_000_000, "price_midpoint_hint": 50},
+            {"ticker": "TEST_B", "score": 85, "data_source": "live",
+             "avg_daily_volume_hint": 300_000, "price_midpoint_hint": 50},
+        ]
+        filtered, report = _apply_quality_filters_with_report(
+            candidates, run_mode="FULL"
+        )
+
+    # TEST_B should be dropped by volume_filter
+    removed = [r for r in report["rows"] if r.get("removed")]
+    assert len(removed) >= 1, "Expected at least one dropped candidate"
+    for r in removed:
+        assert "reason" in r, f"Missing 'reason' in dropped row: {r}"
+        assert r["reason"] != "passed", f"Dropped row should not have reason='passed'"
+        assert r["reason"] != "unknown", (
+            f"Dropped row has unknown reason — quality filter should set a specific reason"
+        )
