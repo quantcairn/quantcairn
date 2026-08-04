@@ -921,7 +921,7 @@ class Scorer:
             reject_reasons.append("volatility too low")
         if atr_pct > self.MAX_ATR_PCT:
             reject_reasons.append("volatility too high")
-        if gap_rate > 0.20 or max_gap_pct > self.GAP_LIMIT_PCT:
+        if gap_rate > 0.20:
             reject_reasons.append("frequent gap risk")
         if news_score >= self.EVENT_NEWS_SCORE:
             reject_reasons.append("event/news driven")
