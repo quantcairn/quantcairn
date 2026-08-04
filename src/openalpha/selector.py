@@ -806,6 +806,12 @@ class AIStrategySelector:
 
         if quality_budget <= 0 or os.environ.get("OPENALPHA_FAST_START_ONLY", "0") == "1":
             filtered_candidates = []
+            fast_rows = [
+                {"symbol": _normalize_ticker(item.get("ticker") or ""),
+                 "removed": True,
+                 "reason": "fast_preliminary_bypass"}
+                for item in candidates_for_filter
+            ]
             filter_report = {
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
                 "total_candidates_before_filters": len(list(candidates_for_filter)),
@@ -816,7 +822,7 @@ class AIStrategySelector:
                 "final_selected_symbols": [],
                 "existing_real_positions_preserved": [],
                 "timed_out": True,
-                "rows": [],
+                "rows": fast_rows,
             }
             selection_stage = "fast_preliminary"
         else:
@@ -827,7 +833,9 @@ class AIStrategySelector:
             )
 
         quality_dropped = [
-            row for row in (filter_report.get("rows") or [])
+            {"symbol": row.get("symbol"), "reason_code": row.get("reason") or "unknown",
+             "removed": row.get("removed")}
+            for row in (filter_report.get("rows") or [])
             if row.get("removed")
         ]
         # Save pre-quality pool for fallback before recording the stage
@@ -858,12 +866,13 @@ class AIStrategySelector:
                 item["reduce_only"] = default_reduce_only
                 item["selection_penalty_reason"] = "quality_fallback_preview"
                 item["data_source"] = item.get("data_source", "fallback")
+            topk_dropped = [{"symbol": _normalize_ticker(item.get("ticker")),
+                              "reason_code": "quality_fallback_preview"}
+                             for item in _pre_quality_pool
+                             if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
+                                        for t in topk)]
             tracker.add_stage("COMPOSITION_FILTER", _pre_quality_pool, _pre_quality_pool,
-                              dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
-                                        "reason_code": "quality_fallback_preview"}
-                                       for item in _pre_quality_pool
-                                       if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
-                                                  for t in topk)])
+                              dropped=topk_dropped)
             selection_stage = "fast_preliminary"
             quality_fallback_active = True
         elif not filtered_candidates and _pre_quality_pool:
@@ -879,12 +888,13 @@ class AIStrategySelector:
             topk = self._select_diversified_top_k(topk_input, self.selection_size)
             for item in topk:
                 item["reduce_only"] = default_reduce_only
+            topk_dropped = [{"symbol": _normalize_ticker(item.get("ticker")),
+                              "reason_code": "composition_limit"}
+                             for item in topk_input
+                             if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
+                                        for t in topk)]
             tracker.add_stage("COMPOSITION_FILTER", topk_input, topk,
-                              dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
-                                        "reason_code": "composition_limit"}
-                                       for item in topk_input
-                                       if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
-                                                  for t in topk)])
+                              dropped=topk_dropped)
             selection_stage = "eod_quality_relaxed"
         else:
             quality_passed = list(filtered_candidates)
@@ -908,12 +918,13 @@ class AIStrategySelector:
             for item in topk:
                 item["reduce_only"] = default_reduce_only
 
+            topk_dropped = [{"symbol": _normalize_ticker(item.get("ticker")),
+                              "reason_code": "composition_limit"}
+                             for item in topk_input
+                             if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
+                                        for t in topk)]
             tracker.add_stage("COMPOSITION_FILTER", topk_input, topk,
-                              dropped=[{"symbol": _normalize_ticker(item.get("ticker")),
-                                        "reason_code": "composition_limit"}
-                                       for item in topk_input
-                                       if not any(_normalize_ticker(item.get("ticker")) == _normalize_ticker(t.get("ticker"))
-                                                  for t in topk)])
+                              dropped=topk_dropped)
 
         backfilled_symbols: list[str] = []
         filter_report["final_selected_symbols"] = [_normalize_ticker(item.get("ticker")) for item in topk]
@@ -922,11 +933,13 @@ class AIStrategySelector:
         write_selection_filter_log(filter_report)
 
         # ── FORMAL_TOP: output depends on execution_mode ──
+        # All FORMAL_TOP calls reuse the composition_filter's dropped list
+        # so rejection reason metadata (e.g. "composition_limit") is preserved.
         preview_symbols: list[str] = []
         formal_symbols: list[str] = []
         if quality_fallback_active:
             # LIVE mode only: strict quality gate rejected all → preview only
-            tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
+            tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk, dropped=topk_dropped)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             formal_symbols: list[str] = []
             tracker.mark_quality_fallback(
@@ -935,33 +948,33 @@ class AIStrategySelector:
             )
         elif _is_paper and not filtered_candidates:
             # PAPER mode: all quality-rejected → pre-quality pool becomes paper-eligible
-            tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
+            tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk, dropped=topk_dropped)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             tracker.set_formal_candidates(formal_symbols)
             tracker.mark_quality_relaxed()
         elif _is_paper:
             # PAPER mode with quality-passed candidates → paper-eligible formal
-            tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+            tracker.add_stage("FORMAL_TOP", quality_passed, topk, dropped=topk_dropped)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             tracker.set_formal_candidates(formal_symbols)
         elif _is_live:
             # LIVE mode (FULL run_mode): strict quality → live-tradable formal
-            tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+            tracker.add_stage("FORMAL_TOP", quality_passed, topk, dropped=topk_dropped)
             preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
             formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
             tracker.set_formal_candidates(formal_symbols)
         else:
             # RESEARCH mode: relaxed quality → research-only formal
             if not quality_mode_is_strict and not filtered_candidates:
-                tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk)
+                tracker.add_stage("FORMAL_TOP", _pre_quality_pool, topk, dropped=topk_dropped)
                 preview_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
                 formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
                 tracker.set_formal_candidates(formal_symbols)
                 tracker.mark_quality_relaxed()
             elif not quality_mode_is_strict:
-                tracker.add_stage("FORMAL_TOP", quality_passed, topk)
+                tracker.add_stage("FORMAL_TOP", quality_passed, topk, dropped=topk_dropped)
                 preview_symbols = [_normalize_ticker(item.get("ticker")) for item in quality_passed]
                 formal_symbols = [_normalize_ticker(item.get("ticker")) for item in topk]
                 tracker.set_formal_candidates(formal_symbols)
