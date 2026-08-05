@@ -365,6 +365,7 @@
 | 19 | Gap Risk One-Strike Fix | 2026-08-04 | `scorer.py` |
 | 20 | Redundant Market Data Fetch Removal | 2026-08-05 | `selector.py` |
 | 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
+| 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
 
 ---
 
@@ -423,6 +424,25 @@
 
 **Impact**: +5 source modules (+1,733 lines), +5 test modules (+2,897 lines), +83 lines in dashboard. 239 tests pass. Zero protected module modifications. Storage under `artifacts/learning/` (selection_ledger, selection_outcomes, dataset, analytics).
 
+---
+
+## 22. Walk-Forward Validation Framework (Phase 3B)
+
+**Decision**: Add a research-only walk-forward evaluation framework that analyzes selection performance stability across rolling time periods. Reads the Phase 2B dataset, splits into configurable train/validation/forward windows, computes per-period metrics, feature stability, sector stability, and generates robustness flags (observations only — never blocks trading or triggers automatic parameter changes).
+
+**Date**: 2026-08-05
+
+**Background**: With phases 1–3A complete, the system can measure selection performance and serve analytics via the dashboard. But there is no framework for detecting whether that performance is STABLE across different market regimes. Aggregate metrics can hide period-dependent variation — a strategy that appears strong overall might only work in specific conditions.
+
+**Reason**: (a) Walk-forward is the standard methodology for validating time-series strategies without look-ahead bias: train on past data, validate on intermediate data, test on future data. (b) Rolling windows reveal performance stability and degradation patterns. (c) Feature drift detection warns when the characteristics of selected candidates change over time — an early signal of regime shift. (d) Configurable window sizes (train/validation/forward months, step size) support different research questions. (e) Robustness flags (LOW_SAMPLE_SIZE, PERIOD_DEGRADATION, FEATURE_DRIFT) are observations that can inform human review — they never feed back into production automatically.
+
+**Alternatives considered**:
+- Single aggregate performance report — rejected because it hides period-dependent performance variation
+- Live monitoring in the selector — rejected because walk-forward is an offline analysis; embedding it would add latency and coupling risk
+- Backtesting framework integration — rejected because the existing backtester operates on strategy variants, not selection outcomes
+
+**Impact**: +654 lines in `walk_forward.py`, +532 lines in tests. 22 tests, zero production module modifications. Single import dependency: `learning_dataset`. Output stored in `artifacts/learning/walk_forward/`. No imports from selector, scorer, engine, broker, risk, or safety modules.
+
 ## Decision Index (continued)
 
 | # | Decision | Date | Key File |
@@ -431,6 +451,7 @@
 | 19 | Gap risk one-strike fix | 2026-08-04 | `scorer.py` |
 | 20 | Redundant market data fetch removal | 2026-08-05 | `selector.py` |
 | 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
+| 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
 
 ## 2026-07-28 — TOP Config Empty-Selection Sync Safety
 
