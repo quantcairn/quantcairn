@@ -362,6 +362,75 @@
 | 16 | Public Beta Feature Release v0.12.1 | 2026-07-25 | `alerts.py`, `release.yml` |
 | 17 | Public Hardening Release v0.12.2 | 2026-07-26 | `.ai/CLAUDE.md`, `.gitignore` |
 | 18 | Repository Boundary Formalization v0.12.3 | 2026-07-26 | `.ai/REPOSITORY_BOUNDARY.md` |
+| 19 | Gap Risk One-Strike Fix | 2026-08-04 | `scorer.py` |
+| 20 | Redundant Market Data Fetch Removal | 2026-08-05 | `selector.py` |
+| 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
+
+---
+
+## 19. Gap Risk One-Strike Fix
+
+**Decision**: Remove the `max_gap_pct > 5.0%` leg from the gap risk rejection check, keeping only `gap_rate > 0.20` for structural frequent-gap detection. The `max_gap_pct` check was a one-strike rule that permanently disqualified any symbol that had ever had a single overnight gap exceeding 5% in its entire 252-day history window.
+
+**Date**: 2026-08-04
+
+**Background**: An audit of 15 consecutive days of NO_SELECTION (1,900+ pipeline runs, zero formal candidates) revealed that the dominant rejection was "frequent gap risk: 25". Investigation showed ZERO symbols actually triggered on `gap_rate > 0.20`. All 25 rejections were caused by `max_gap_pct > 5.0%` — a single earnings gap (normal quarterly events) permanently disqualified symbols like AAPL (one 8.58% gap, otherwise 0.39% median daily gap).
+
+**Reason**: (a) A single earnings gap is normal market behavior, not a structural disqualifier for range trading. (b) The gap_rate check already catches genuinely frequent gappers (>20% of sessions with >5% gaps). (c) The max_gap_pct check was redundant when gap_rate fires (if >20% of days gap >5%, max_gap will always be >5%). (d) After removal, SCORING_ELIGIBLE went from 0 to 31 output — restoring the pipeline.
+
+**Alternatives considered**:
+- Raise max_gap_pct threshold to 10% — rejected because it still catches earnings gaps (AAPL's 8.58% would pass but many earnings gaps exceed 10%)
+- Add earnings-aware exception — rejected as over-engineered; the gap_rate check is sufficient
+- Keep unchanged — rejected because 15 days of zero output proves the rule is broken
+
+**Impact**: `scorer.py:924` changed from `if gap_rate > 0.20 or max_gap_pct > self.GAP_LIMIT_PCT` to `if gap_rate > 0.20`. +6 regression tests. max_gap_pct still computed and reported in metrics for downstream diagnostics.
+
+---
+
+## 20. Redundant Market Data Fetch Removal
+
+**Decision**: Remove the `check_data_availability()` OHLCV pre-fetch from the MARKET_DATA pipeline stage. This function fetched full OHLCV data for all 50 symbols just to count rows, then discarded the result. SCORING_ELIGIBLE then fetched the same data again via `_load_history()`. MARKET_DATA becomes a pass-through stage.
+
+**Date**: 2026-08-05
+
+**Background**: After the gap risk fix restored SCORING_ELIGIBLE output to 31, a new bottleneck appeared: DATA_QUALITY was rejecting all 12 candidates with `fast_preliminary_bypass` (budget timeout). Instrumentation revealed ~132 OHLCV HTTP round-trips consuming ~289s of fetch time, exhausting the 15s total budget before quality checks could run.
+
+**Reason**: (a) Double-fetching was pure waste — the same data fetched twice per symbol per run. (b) The scoring pipeline already handles data-unavailable symbols gracefully via fallback profiles and `scoring_rejections`. (c) The "safe bottom" logic (never empty the pool to zero) was already in place to prevent scoring starvation.
+
+**Alternatives considered**:
+- Add in-memory OHLCV cache — rejected as more complex; removing the redundant fetch is simpler and sufficient
+- Raise budget defaults — rejected as masking the root cause without fixing it
+- Keep the pre-check — rejected because it's redundant with scoring-level handling
+
+**Impact**: MARKET_DATA is now pass-through (50→50). ~50 HTTP round-trips eliminated per run. Wall-clock reduced ~41% (252s → 149s). DATA_QUALITY budget exhaustion resolved. 5 formal candidates produced instead of 0. +4 regression tests.
+
+---
+
+## 21. Research Platform v0.13.0
+
+**Decision**: Ship a complete selection-to-outcome measurement pipeline (Phases 1–3A) as v0.13.0-research-platform. The pipeline captures every formal candidate at selection time, backfills forward returns/risk metrics, joins into an ML-ready dataset, produces analytics reports, and exposes them via the dashboard API. All phases are read-only consumers — zero modifications to selection, scoring, ranking, or trading logic.
+
+**Date**: 2026-08-05
+
+**Background**: The system had 302 historical selection bundles with zero outcome tracking in RESEARCH mode. The outcome collector (`src/outcome/collector.py`) had a production-ready v3 schema but zero populated data because it depends on FillEvents from broker audit logs. No infrastructure existed to answer "are our selections any good?"
+
+**Reason**: (a) Measuring selection quality is a prerequisite for any future scoring model improvements — you cannot optimize what you don't measure. (b) The ledger/backfill/dataset/analytics pipeline is intentionally decoupled from trading — it runs offline, never blocks selection, and never affects live behavior. (c) The dashboard integration is read-only JSON consumption, following existing patterns exactly.
+
+**Alternatives considered**:
+- Use broker audit logs for outcomes — rejected because RESEARCH mode produces zero trades
+- Integrate measurement into the real-time selection path — rejected because it would add latency and risk
+- Wait for paper trading to be active — rejected because measurement is valuable even without trades
+
+**Impact**: +5 source modules (+1,733 lines), +5 test modules (+2,897 lines), +83 lines in dashboard. 239 tests pass. Zero protected module modifications. Storage under `artifacts/learning/` (selection_ledger, selection_outcomes, dataset, analytics).
+
+## Decision Index (continued)
+
+| # | Decision | Date | Key File |
+|---|---|---|---|
+| 1–18 | (see above) | | |
+| 19 | Gap risk one-strike fix | 2026-08-04 | `scorer.py` |
+| 20 | Redundant market data fetch removal | 2026-08-05 | `selector.py` |
+| 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
 
 ## 2026-07-28 — TOP Config Empty-Selection Sync Safety
 
