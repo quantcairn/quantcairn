@@ -2969,6 +2969,190 @@ def _research_analytics_payload() -> dict[str, object]:
     }
 
 
+def _walk_forward_payload() -> dict[str, object]:
+    """Read Phase 3B walk-forward reports.  Never recalculates."""
+    wf_dir = PROJECT_DIR / "artifacts" / "learning" / "walk_forward"
+
+    try:
+        summary_path = wf_dir / "walk_forward_summary.json"
+        periods_path = wf_dir / "period_results.json"
+
+        if not summary_path.exists():
+            return {"available": False, "reason": "no walk-forward data"}
+
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if not isinstance(summary, dict):
+            return {"available": False, "reason": "invalid summary format"}
+
+        periods_data: list[dict[str, object]] = []
+        if periods_path.exists():
+            try:
+                pd = json.loads(periods_path.read_text(encoding="utf-8"))
+                if isinstance(pd, dict) and isinstance(pd.get("periods"), list):
+                    periods_data = [
+                        {
+                            "period_id": str(p.get("period_id") or ""),
+                            "train_samples": int(_safe_number(p.get("train_samples")) or 0),
+                            "validation_samples": int(_safe_number(p.get("validation_samples")) or 0),
+                            "forward_samples": int(_safe_number(p.get("forward_samples")) or 0),
+                            "forward_win_rate": _safe_number(p.get("forward_win_rate")),
+                            "forward_avg_return_21d": _safe_number(p.get("forward_avg_return_21d")),
+                        }
+                        for p in pd["periods"] if isinstance(p, dict)
+                    ]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        flags = summary.get("flags") or []
+        fwd_range = summary.get("forward_win_rate_range") or {}
+
+        return {
+            "available": True,
+            "summary": {
+                "overall_stability": summary.get("overall_stability"),
+                "total_periods": int(_safe_number(summary.get("total_periods")) or 0),
+                "total_rows": int(_safe_number(summary.get("total_rows")) or 0),
+                "forward_win_rate_mean": _safe_number(fwd_range.get("mean")),
+                "forward_win_rate_range": {
+                    "min": _safe_number(fwd_range.get("min")),
+                    "max": _safe_number(fwd_range.get("max")),
+                },
+            },
+            "flags": [
+                {
+                    "type": str(f.get("type") or ""),
+                    "period": str(f.get("period") or ""),
+                    "message": str(f.get("message") or ""),
+                }
+                for f in flags if isinstance(f, dict)
+            ],
+            "periods": periods_data,
+            "generated_at": str(summary.get("generated_at") or ""),
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
+def _research_registry_payload() -> dict[str, object]:
+    """Read Phase 4A registry data.  Never recalculates."""
+    hist_dir = PROJECT_DIR / "artifacts" / "learning" / "research_history"
+
+    try:
+        run_path = hist_dir / "run_index.json"
+        tracker_path = hist_dir / "dataset_tracker.json"
+        regime_path = hist_dir / "regime_tags.json"
+
+        if not run_path.exists():
+            return {"available": False, "reason": "no registry data"}
+
+        runs = json.loads(run_path.read_text(encoding="utf-8"))
+        if not isinstance(runs, list):
+            return {"available": False, "reason": "invalid run_index format"}
+
+        total_runs = len(runs)
+        dates = sorted({str(r.get("selection_date") or "") for r in runs if r.get("selection_date")})
+        modes: dict[str, int] = {}
+        for r in runs:
+            m = str(r.get("execution_mode") or "RESEARCH")
+            modes[m] = modes.get(m, 0) + 1
+
+        # Dataset growth from tracker
+        growth: dict[str, object] = {}
+        if tracker_path.exists():
+            try:
+                tracker = json.loads(tracker_path.read_text(encoding="utf-8"))
+                if isinstance(tracker, dict):
+                    growth = {
+                        "ledger_runs": int(_safe_number((tracker.get("ledger") or {}).get("runs")) or 0),
+                        "ledger_candidates": int(_safe_number((tracker.get("ledger") or {}).get("candidates")) or 0),
+                        "outcome_runs": int(_safe_number((tracker.get("outcomes") or {}).get("runs")) or 0),
+                        "outcome_success": int(_safe_number((tracker.get("outcomes") or {}).get("success")) or 0),
+                        "dataset_rows": int(_safe_number((tracker.get("dataset") or {}).get("rows")) or 0),
+                        "snapshot_date": str((tracker.get("snapshot_date") or "")),
+                    }
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Regime distribution
+        regimes: dict[str, int] = {}
+        if regime_path.exists():
+            try:
+                regime_data = json.loads(regime_path.read_text(encoding="utf-8"))
+                for t in (regime_data.get("tags") or []) if isinstance(regime_data, dict) else []:
+                    if isinstance(t, dict):
+                        r = str(t.get("regime") or "unknown")
+                        regimes[r] = regimes.get(r, 0) + 1
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        return {
+            "available": True,
+            "total_runs": total_runs,
+            "date_range": {
+                "earliest": dates[0] if dates else None,
+                "latest": dates[-1] if dates else None,
+            },
+            "run_modes": modes,
+            "dataset_growth": growth,
+            "regimes": regimes,
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
+def _research_quality_payload() -> dict[str, object]:
+    """Read Phase 4A quality report and ML readiness.  Never recalculates."""
+    hist_dir = PROJECT_DIR / "artifacts" / "learning" / "research_history"
+
+    try:
+        q_path = hist_dir / "research_quality_report.json"
+        ml_path = hist_dir / "ml_readiness.json"
+
+        quality: dict[str, object] = {}
+        if q_path.exists():
+            try:
+                qdata = json.loads(q_path.read_text(encoding="utf-8"))
+                if isinstance(qdata, dict):
+                    quality = {
+                        "total_runs_recorded": int(_safe_number(qdata.get("total_runs_recorded")) or 0),
+                        "total_dataset_rows": int(_safe_number(qdata.get("total_dataset_rows")) or 0),
+                        "missing_outcome_ratio": _safe_number(qdata.get("missing_outcome_ratio")),
+                        "average_sample_age_days": _safe_number(qdata.get("average_sample_age_days")),
+                        "unique_sectors": int(_safe_number(qdata.get("unique_sectors")) or 0),
+                        "regimes_represented": qdata.get("regimes_represented") or [],
+                        "feature_availability": qdata.get("feature_availability") or {},
+                        "date_coverage_start": str(qdata.get("date_coverage_start") or ""),
+                        "date_coverage_end": str(qdata.get("date_coverage_end") or ""),
+                    }
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        ml_readiness: dict[str, object] = {}
+        if ml_path.exists():
+            try:
+                mldata = json.loads(ml_path.read_text(encoding="utf-8"))
+                if isinstance(mldata, dict):
+                    ml_readiness = {
+                        "status": str(mldata.get("status") or "NOT_READY"),
+                        "reasons": mldata.get("reasons") or [],
+                        "recommendation": str(mldata.get("recommendation") or ""),
+                        "thresholds": mldata.get("thresholds") or {},
+                    }
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if not quality and not ml_readiness:
+            return {"available": False, "reason": "no quality data"}
+
+        return {
+            "available": True,
+            "quality": quality,
+            "ml_readiness": ml_readiness,
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
 def _shadow_artifact_root() -> Path:
     configured = str(_env("SOXS_SHADOW_OUTPUT_DIR", "") or "").strip()
     if configured:
@@ -7921,6 +8105,9 @@ def _api_status_payload() -> dict[str, object]:
         "research_status": _research_status_payload(),
         "learning_summary": _call_with_request_cache(_learning_summary_payload, request_cache),
         "research_analytics": _call_with_request_cache(_research_analytics_payload, request_cache),
+        "research_walk_forward": _call_with_request_cache(_walk_forward_payload, request_cache),
+        "research_registry": _call_with_request_cache(_research_registry_payload, request_cache),
+        "research_quality": _call_with_request_cache(_research_quality_payload, request_cache),
         "market_regime": _market_regime_payload(),
         "regime_shadow": _regime_shadow_payload(),
         "universe": _universe_payload(),
@@ -8065,6 +8252,22 @@ def api_research_status():
         return jsonify(_research_status_payload()), 200
     except Exception as exc:
         return jsonify({"ok": False, "state": "STALE", "status_label": "unavailable", "detail": "data_invalid", "error": str(exc)}), 200
+
+
+@app.route("/api/research/observability")
+def api_research_observability():
+    """Aggregate all research observability data in one lightweight endpoint."""
+    try:
+        return jsonify({
+            "ok": True,
+            "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "analytics": _research_analytics_payload(),
+            "walk_forward": _walk_forward_payload(),
+            "registry": _research_registry_payload(),
+            "quality": _research_quality_payload(),
+        }), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 200
 
 
 @app.route("/api/shadow/status")

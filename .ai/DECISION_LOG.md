@@ -367,6 +367,7 @@
 | 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
 | 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
 | 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
+| 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
 
 ---
 
@@ -464,6 +465,25 @@
 
 **Impact**: +497 lines in `research_registry.py`, +527 lines in tests, +35 lines in selector.py (fire-and-forget hook). 22 tests. Zero production module modifications. Output stored in `artifacts/learning/research_history/` (5 JSON files: `run_index.json`, `dataset_tracker.json`, `regime_tags.json`, `research_quality_report.json`, `ml_readiness.json`). ML readiness thresholds are configurable via function parameters — never hardcoded. No imports from selector, scorer, engine, broker, risk, or safety modules.
 
+---
+
+## 24. Research Dashboard Observability (Phase 4B)
+
+**Decision**: Expose all research observability data (walk-forward validation, research registry, quality/ML readiness) through the dashboard API as read-only JSON consumers. Three new payload functions in `combined.py` read pre-computed JSON files and serve them via `/api/status` (extended) and a new `/api/research/observability` endpoint.
+
+**Date**: 2026-08-05
+
+**Background**: Phases 2C–4A produce rich research data (analytics reports, walk-forward results, run history, dataset growth tracker, regime tags, quality report, ML readiness assessment) — but none of it was accessible through the dashboard. The data existed on disk but required manual inspection. The Phase 3A `research_analytics` payload proved the pattern works. Phase 4B extends it to cover all remaining research data.
+
+**Reason**: (a) Research data that cannot be viewed is research data that will not be used. Dashboard integration makes selection quality trends, walk-forward stability, and accumulation progress visible. (b) Following the existing Phase 3A pattern exactly (read JSON, return `{available: True/False}`) keeps the implementation minimal and safe. (c) The new `/api/research/observability` endpoint provides a single lightweight aggregation for external consumers. (d) All three new payload functions are read-only consumers — no computation, no network, no yfinance, no risk.
+
+**Alternatives considered**:
+- Build dedicated HTML dashboard page — deferred to Phase 4C; Phase 4B delivers the API payloads that any frontend can consume
+- Merge all research data into a single mega-payload — rejected because it couples unrelated concerns; separate payloads allow independent availability
+- Skip dashboard integration — rejected because the data already exists and the integration cost is minimal (+130 lines in an existing file)
+
+**Impact**: +130 lines in `combined.py` (3 payload functions + 1 route + 3 API status keys). +328 lines in tests (17 tests). No new source modules. No modifications to selector, scorer, engine, broker, risk, or safety. All payloads follow the `{available: True/False}` fallback pattern — missing or corrupt files never crash the dashboard. Uses existing `_call_with_request_cache()` pattern to avoid re-reading files within a single HTTP request.
+
 ## Decision Index (continued)
 
 | # | Decision | Date | Key File |
@@ -474,6 +494,7 @@
 | 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
 | 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
 | 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
+| 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
 
 ## 2026-07-28 — TOP Config Empty-Selection Sync Safety
 
