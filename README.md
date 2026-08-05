@@ -2,9 +2,86 @@
 
 [![test](https://github.com/quantcairn/quantcairn/actions/workflows/test.yml/badge.svg)](https://github.com/quantcairn/quantcairn/actions/workflows/test.yml)
 
-**AI-driven quantitative research platform for US equity selection.**
+AI-powered quantitative research platform for US equity selection.
 
-QuantCairn runs a 9-stage analytical pipeline that screens a managed universe of 35 stocks and ETFs, scores them with a multi-factor model, and produces daily candidate selections. Designed for research, paper trading, and transparency.
+QuantCairn builds a transparent research pipeline that evaluates US stocks and ETFs through a multi-stage selection framework, multi-factor scoring model, portfolio composition analysis, and historical outcome evaluation.
+
+The platform is designed for:
+
+- quantitative research
+- paper trading simulation
+- strategy evaluation
+- model transparency
+- research-driven iteration
+
+
+## Research Pipeline
+
+QuantCairn follows a complete research loop:
+
+Universe
+↓
+Market Data Validation
+↓
+Multi-factor Scoring
+↓
+Candidate Selection
+↓
+Portfolio Composition
+↓
+Selection Ledger
+↓
+Historical Outcome Backfill
+↓
+Learning Dataset
+↓
+Research Analytics
+
+
+## Core Capabilities
+
+### AI Selection Engine
+
+- multi-factor scoring
+- volatility analysis
+- liquidity evaluation
+- trend analysis
+- drawdown safety
+- gap risk analysis
+- portfolio diversification
+
+
+### Research Infrastructure
+
+- immutable selection ledger
+- forward outcome evaluation
+- MFE / MAE analysis
+- range-trading success measurement
+- feature-performance analysis
+- sector performance analytics
+
+
+### Transparency
+
+Every selection can be traced:
+
+- why it was selected
+- why candidates were rejected
+- how selections performed afterwards
+
+
+## Current Scope
+
+QuantCairn currently supports:
+
+- US equities and ETFs
+- research mode
+- paper trading workflows
+- historical evaluation pipelines
+
+
+QuantCairn is intended for research and simulation purposes only.
+It does not provide financial advice or guarantee investment results.
 
 > *Formerly developed under the internal project name OpenAlpha.*
 
@@ -18,7 +95,7 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/python scripts/run_demo_selector.py
 ```
 
-The demo uses **deterministic synthetic data** — 5 symbols, 252 trading days each, no network required. You'll see the full 9-stage pipeline run and produce research candidates.
+The demo uses **deterministic synthetic data** — 5 symbols, 252 trading days each, no network required. You'll see the full research pipeline run and produce research candidates.
 
 ---
 
@@ -26,7 +103,7 @@ The demo uses **deterministic synthetic data** — 5 symbols, 252 trading days e
 
 | Category | Capabilities |
 |---|---|
-| **Selection Pipeline** | 9-stage pipeline: Universe → Scoring → Quality → Diversity → TOP K. Funnel invariant enforced per stage. |
+| **Selection Pipeline** | Multi-stage research pipeline: Universe → Scoring → Quality → Diversity → TOP K. Funnel invariant enforced per stage. |
 | **Scoring Model** | Multi-factor (30/20/20/15/10): volatility, volume, trend, repeatability, drawdown. 37 fallback profiles. |
 | **Quality Filtering** | Mode-aware: strict spread checks during market hours, relaxed with EOD data otherwise. |
 | **Paper Trading** | End-to-end verified: selector → config → simulated fills → portfolio persistence → dashboard. |
@@ -41,7 +118,7 @@ The demo uses **deterministic synthetic data** — 5 symbols, 252 trading days e
 ## Architecture
 
 ```
-Market Data ──→ Preflight ──→ 9-Stage Pipeline ──→ FunnelTracker (audit)
+Market Data ──→ Preflight ──→ Research Pipeline ──→ FunnelTracker (audit)
   (Yahoo/                                 │
   LongBridge)              ┌───────────────┼───────────────┐
                            ▼               ▼               ▼
@@ -112,7 +189,7 @@ quantcairn/
 ├── src/
 │   ├── openalpha/          Core: selection pipeline, diagnostics, preflight
 │   ├── scoring/            Multi-factor scoring model
-│   ├── universe/           Managed symbol universe (35 symbols)
+│   ├── universe/           Managed symbol universe (US equities and ETFs)
 │   ├── broker/             Paper broker, portfolio state, LongBridge integration
 │   ├── engine/             Trading engine (selector-independent)
 │   ├── risk/, safety/      Risk management, LiveGuard, environment guard
@@ -150,11 +227,11 @@ quantcairn/
 
 ## Roadmap
 
-**Completed (v0.12.0)**:
-- [x] 9-stage pipeline, mode-aware quality filtering, paper trading, demo mode, diagnostics, Telegram, dashboard, CI, packaging, AI context layer, open-source foundation
+**Completed (v0.13.0)**:
+- [x] Multi-stage research pipeline, mode-aware quality filtering, paper trading, demo mode, diagnostics, Telegram, dashboard, CI, packaging, AI context layer, open-source foundation, scoring rejection reason propagation, outcome collector, selection ledger with historical backfill
 
-**Next (v0.13.0)**:
-- [ ] Scoring rejection reason propagation, outcome collector auto-trigger, dashboard mode consistency, multi-provider data fallback
+**Next (v0.14.0)**:
+- [ ] Multi-provider data fallback, dashboard mode consistency, research analytics dashboard
 
 See [ROADMAP.md](ROADMAP.md) for the full plan.
 
