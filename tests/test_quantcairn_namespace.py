@@ -57,7 +57,7 @@ class TestQuantcairnNamespace:
 
     def test_version(self):
         import quantcairn
-        assert quantcairn.__version__ == "0.13.0"
+        assert quantcairn.__version__ == "0.14.0"
 
     def test_lazy_top_level_import(self):
         import quantcairn
