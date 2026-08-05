@@ -1022,6 +1022,41 @@ class AIStrategySelector:
             except Exception:
                 pass
 
+        # ── Research registry: fire-and-forget run record ───────────────────
+        # Records every selection run for long-term accumulation tracking.
+        # Never blocks the pipeline.
+        try:
+            from src.openalpha.research_registry import record_selection_run
+
+            # Resolve market state from preflight
+            _market_state = str(_preflight_report.get("market_state") or "")
+            # Count scoring eligible from funnel stages
+            _scoring_eligible_count = 0
+            for _stage in (funnel_summary.get("stages") or []):
+                if _stage.get("stage") == "SCORING_ELIGIBLE":
+                    _scoring_eligible_count = int(_stage.get("output_count") or 0)
+                    break
+
+            record_selection_run(
+                run_id=selection_run_id,
+                date_str=selection_date,
+                execution_mode=_execution_mode,
+                run_mode=_run_mode,
+                market_state=_market_state,
+                universe_size=len(symbols),
+                max_symbols=self.max_symbols,
+                formal_candidates=formal_symbols,
+                formal_count=len(formal_symbols),
+                preview_count=len(preview_symbols),
+                quality_fallback_active=quality_fallback_active,
+                selection_stage=selection_stage,
+                data_mode=str(data_mode),
+                fallback_used=bool(fallback_used),
+                scoring_eligible_count=_scoring_eligible_count,
+            )
+        except Exception:
+            pass
+
         report_rows = self._format_report_rows(topk)
         # Determine candidate type based on execution_mode + quality fallback
         _candidate_type = _type_label if not quality_fallback_active else "RESEARCH_ONLY"

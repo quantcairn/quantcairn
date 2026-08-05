@@ -366,6 +366,7 @@
 | 20 | Redundant Market Data Fetch Removal | 2026-08-05 | `selector.py` |
 | 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
 | 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
+| 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
 
 ---
 
@@ -443,6 +444,26 @@
 
 **Impact**: +654 lines in `walk_forward.py`, +532 lines in tests. 22 tests, zero production module modifications. Single import dependency: `learning_dataset`. Output stored in `artifacts/learning/walk_forward/`. No imports from selector, scorer, engine, broker, risk, or safety modules.
 
+---
+
+## 23. Research History Registry (Phase 4A)
+
+**Decision**: Add a research-only registry layer that records every selection run, tracks dataset growth over time, classifies market regimes from bundle benchmark data, evaluates research quality (coverage, age, feature availability), and produces an ML readiness assessment. All outputs are observation reports — never modify production configuration or trigger automatic training.
+
+**Date**: 2026-08-05
+
+**Background**: Phases 1–3 established the selection → outcome → dataset → analytics → walk-forward pipeline. But the system has no infrastructure for tracking long-term accumulation — how many runs have been recorded, how many outcomes backfilled, what market regimes are represented, or whether the dataset is large and diverse enough for ML research. The existing 100 selection bundles + 2,302 funnel reports represent significant historical data with no aggregated registry.
+
+**Reason**: (a) Long-term research requires tracking data volume and quality trends. (b) ML readiness assessment prevents premature training on insufficient data. (c) Market regime tagging enables regime-aware analysis. (d) The fire-and-forget hook adds minimal risk (identical pattern to Phase 1 ledger hook). (e) All analysis functions read existing artifact directories — no new data collection infrastructure needed.
+
+**Alternatives considered**:
+- Combine with the Phase 1 selection ledger — rejected because the ledger captures per-candidate snapshots, not run-level metadata or aggregate growth stats
+- Build a database-backed registry — rejected as over-engineered for the current data volume; JSON files in `artifacts/learning/research_history/` are sufficient and follow existing conventions
+- Skip regime tagging — rejected because regime awareness is critical for evaluating whether selection strategy performance is regime-dependent
+- Make ML readiness trigger automatic training — rejected as a safety violation; the report is an observation, never an action
+
+**Impact**: +497 lines in `research_registry.py`, +527 lines in tests, +35 lines in selector.py (fire-and-forget hook). 22 tests. Zero production module modifications. Output stored in `artifacts/learning/research_history/` (5 JSON files: `run_index.json`, `dataset_tracker.json`, `regime_tags.json`, `research_quality_report.json`, `ml_readiness.json`). ML readiness thresholds are configurable via function parameters — never hardcoded. No imports from selector, scorer, engine, broker, risk, or safety modules.
+
 ## Decision Index (continued)
 
 | # | Decision | Date | Key File |
@@ -452,6 +473,7 @@
 | 20 | Redundant market data fetch removal | 2026-08-05 | `selector.py` |
 | 21 | Research Platform v0.13.0 | 2026-08-05 | `selection_ledger.py`, `selection_backfill.py`, `learning_dataset.py`, `research_analytics.py`, `combined.py` |
 | 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
+| 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
 
 ## 2026-07-28 — TOP Config Empty-Selection Sync Safety
 
