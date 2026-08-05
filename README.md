@@ -227,11 +227,11 @@ quantcairn/
 
 ## Roadmap
 
-**Completed (v0.13.0)**:
-- [x] Multi-stage research pipeline, mode-aware quality filtering, paper trading, demo mode, diagnostics, Telegram, dashboard, CI, packaging, AI context layer, open-source foundation, scoring rejection reason propagation, outcome collector, selection ledger with historical backfill
+**Completed (v0.15.0)**:
+- [x] Multi-stage research pipeline, mode-aware quality filtering, paper trading, demo mode, diagnostics, Telegram, dashboard, CI, packaging, AI context layer, open-source foundation, scoring rejection reason propagation, outcome collector, selection ledger with historical backfill, walk-forward validation, research analytics dashboard, research history registry, research observability APIs
 
-**Next (v0.14.0)**:
-- [ ] Multi-provider data fallback, dashboard mode consistency, research analytics dashboard
+**Next**:
+- [ ] Multi-provider data fallback, dashboard mode consistency, ML readiness evaluation
 
 See [ROADMAP.md](ROADMAP.md) for the full plan.
 
