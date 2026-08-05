@@ -368,6 +368,7 @@
 | 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
 | 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
 | 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
+| 25 | Paper Research Platform (Phase 5A–5D) | 2026-08-05 | `paper_research.py`, `paper_tracker.py`, `paper_analytics.py`, `combined.py` |
 
 ---
 
@@ -484,6 +485,31 @@
 
 **Impact**: +130 lines in `combined.py` (3 payload functions + 1 route + 3 API status keys). +328 lines in tests (17 tests). No new source modules. No modifications to selector, scorer, engine, broker, risk, or safety. All payloads follow the `{available: True/False}` fallback pattern — missing or corrupt files never crash the dashboard. Uses existing `_call_with_request_cache()` pattern to avoid re-reading files within a single HTTP request.
 
+---
+
+## 25. Paper Research Platform (Phase 5A–5D)
+
+**Decision**: Build a complete paper trading research bridge that converts selection records into simulated paper trades, tracks their market positions with current prices and path-based risk metrics, computes aggregate analytics (performance, factor correlation, sector breakdown), and exposes all data through dashboard API endpoints. All phases are research-only — zero impact on production trading.
+
+**Date**: 2026-08-05
+
+**Phases**:
+- **5A — Paper Research Bridge** (`paper_research.py`): Converts selection ledger records into `PaperTradeRecord` objects (OPEN/CLOSED/FAILED states). Supports creation, persistence, loading with filters, and updates. Atomic writes.
+- **5B — Paper Position Tracker** (`paper_tracker.py`): Computes `PositionSnapshot` for each OPEN trade: current price, unrealized return, holding days, path-based MFE/MAE since entry, range evaluation. EXIT SIGNALS ARE OBSERVATIONS ONLY — `exit_signal` and `exit_recommendation` fields never modify Phase 5A trade status.
+- **5C — Paper Analytics** (`paper_analytics.py`): Joins trades + snapshots to compute aggregate reports: overall summary (win rate, avg return, MFE capture rate), per-trade performance, factor correlation with outcomes, sector breakdown.
+- **5D — Dashboard Integration** (`combined.py`): Three new `/api/status` keys (`paper_research`, `paper_tracking`, `paper_analytics`) plus `/api/research/paper` endpoint. All payloads read pre-computed JSON — no computation during requests.
+
+**Background**: Phases 1–4 established measurement (selection → outcome → dataset → analytics → walk-forward → registry). But there was no bridge from "research selection" to "what if we had traded this?" Phase 5 fills that gap with a simulated paper trading layer that evaluates selections as if they were actual positions — without ever touching the real trading engine.
+
+**Reason**: (a) Paper trading is the standard next step after selection validation — it answers "if we had entered at selection time, how would the trade have performed?" (b) Separating trade creation (5A), position tracking (5B), analytics (5C), and dashboard (5D) into distinct layers keeps each module focused and independently testable. (c) The observation-only design of Phase 5B (exit signals are observations, never state transitions) is a critical safety boundary — the tracker observes but never acts. (d) All data flows through `artifacts/learning/paper_*` directories — clean separation from production state.
+
+**Alternatives considered**:
+- Integrate with the real PaperBroker — rejected because that would require importing `src/broker/` (safety violation) and would couple research to the live trading execution path
+- Skip paper tracking and go straight to analytics — rejected because position snapshots provide the path-based MFE/MAE that simple entry/exit comparison cannot
+- Auto-close trades on exit signals — rejected as a safety violation; the boundary is explicit and enforced by test `test_trade_stays_open_after_tracking`
+
+**Impact**: +374 lines (5A), +582 lines (5B), +476 lines (5C), +177 lines (5D). +16 tests (5A), +18 tests (5B), +16 tests (5C), +10 tests (5D). Total: +1,609 source, +60 tests. Zero production module modifications. No imports from selector, scorer, engine, broker, risk, or safety.
+
 ## Decision Index (continued)
 
 | # | Decision | Date | Key File |
@@ -495,6 +521,7 @@
 | 22 | Walk-Forward Validation (Phase 3B) | 2026-08-05 | `walk_forward.py` |
 | 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
 | 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
+| 25 | Paper Research Platform (Phase 5A–5D) | 2026-08-05 | `paper_research.py`, `paper_tracker.py`, `paper_analytics.py`, `combined.py` |
 
 ## 2026-07-28 — TOP Config Empty-Selection Sync Safety
 

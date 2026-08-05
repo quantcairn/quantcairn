@@ -3153,6 +3153,165 @@ def _research_quality_payload() -> dict[str, object]:
         return {"available": False, "reason": "data read error"}
 
 
+def _paper_research_payload() -> dict[str, object]:
+    """Read Phase 5A paper trades summary. Never recalculates."""
+    try:
+        from src.openalpha.paper_research import load_paper_trades
+
+        trades = load_paper_trades()
+        if not trades:
+            return {"available": True, "total_trades": 0, "trades": []}
+
+        open_count = sum(1 for t in trades if t.status == "OPEN")
+        closed_count = sum(1 for t in trades if t.status == "CLOSED")
+        failed_count = sum(1 for t in trades if t.status == "FAILED")
+
+        trade_list = [
+            {
+                "paper_trade_id": t.paper_trade_id[:12],
+                "symbol": t.symbol,
+                "sector": t.sector,
+                "status": t.status,
+                "entry_price": t.entry_price,
+                "entry_date": t.entry_date,
+                "range_low": t.range_low,
+                "range_high": t.range_high,
+                "score": t.score,
+            }
+            for t in trades[:50]  # limit to 50 most recent
+        ]
+
+        return {
+            "available": True,
+            "total_trades": len(trades),
+            "open_trades": open_count,
+            "closed_trades": closed_count,
+            "failed_trades": failed_count,
+            "trades": trade_list,
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
+def _paper_tracking_payload() -> dict[str, object]:
+    """Read Phase 5B position snapshots. Never recalculates."""
+    try:
+        from src.openalpha.paper_tracker import load_snapshots, load_daily_summaries
+
+        snapshots = load_snapshots()
+        summaries = load_daily_summaries()
+
+        # Most recent snapshot per trade
+        latest: dict[str, dict[str, object]] = {}
+        for s in snapshots:
+            tid = s.paper_trade_id
+            existing = latest.get(tid)
+            if existing is None or s.snapshot_date > str(existing.get("snapshot_date", "")):
+                latest[tid] = {
+                    "paper_trade_id": tid[:12],
+                    "symbol": s.symbol,
+                    "snapshot_date": s.snapshot_date,
+                    "current_price": s.current_price,
+                    "unrealized_return_pct": s.unrealized_return_pct,
+                    "holding_days": s.holding_days,
+                    "mfe_since_entry_pct": s.mfe_since_entry_pct,
+                    "mae_since_entry_pct": s.mae_since_entry_pct,
+                    "exit_signal": s.exit_signal,
+                    "exit_recommendation": s.exit_recommendation,
+                    "range_breakdown": s.range_breakdown,
+                    "range_breakout": s.range_breakout,
+                }
+
+        latest_summary: dict[str, object] = {}
+        if summaries:
+            s = summaries[-1]  # most recent summary
+            latest_summary = {
+                "snapshot_date": s.snapshot_date,
+                "total_open_trades": s.total_open_trades,
+                "avg_unrealized_return_pct": s.avg_unrealized_return_pct,
+                "avg_holding_days": s.avg_holding_days,
+                "avg_mfe_pct": s.avg_mfe_pct,
+                "avg_mae_pct": s.avg_mae_pct,
+                "review_exit_count": s.review_exit_count,
+            }
+
+        return {
+            "available": True,
+            "total_snapshots": len(snapshots),
+            "tracked_trades": len(latest),
+            "positions": list(latest.values()),
+            "latest_summary": latest_summary,
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
+def _paper_analytics_payload() -> dict[str, object]:
+    """Read Phase 5C analytics reports. Never recalculates."""
+    analytics_dir = PROJECT_DIR / "artifacts" / "learning" / "paper_analytics"
+
+    try:
+        summary_path = analytics_dir / "summary.json"
+        factor_path = analytics_dir / "factor_analysis.json"
+        sector_path = analytics_dir / "sector_analysis.json"
+
+        summary_data: dict[str, object] = {}
+        if summary_path.exists():
+            try:
+                data = json.loads(summary_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    summary_data = data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        factor_data: dict[str, object] = {}
+        if factor_path.exists():
+            try:
+                data = json.loads(factor_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    factor_data = data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        sector_data: dict[str, object] = {}
+        if sector_path.exists():
+            try:
+                data = json.loads(sector_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    sector_data = data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if not summary_data and not factor_data and not sector_data:
+            return {"available": False, "reason": "no paper analytics data"}
+
+        # Extract top-line metrics
+        totals = summary_data.get("totals") or {}
+        perf = summary_data.get("performance") or {}
+        range_analysis = summary_data.get("range_analysis") or {}
+
+        # Top factors by correlation
+        factors = (factor_data.get("factors") or {}) if isinstance(factor_data.get("factors"), dict) else {}
+        top_factors = sorted(
+            [{"name": k, "correlation": _safe_number((v if isinstance(v, dict) else {}).get("correlation_with_return_21d", 0) if isinstance(v, dict) else 0) or 0.0}
+             for k, v in factors.items()],
+            key=lambda x: abs(float(x["correlation"] or 0)),
+            reverse=True,
+        )[:5]
+
+        return {
+            "available": True,
+            "totals": dict(totals),
+            "performance": dict(perf),
+            "range_analysis": dict(range_analysis),
+            "top_factors": top_factors,
+            "generated_at": str(summary_data.get("generated_at") or ""),
+            "analytics_version": str(summary_data.get("analytics_version") or ""),
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
 def _shadow_artifact_root() -> Path:
     configured = str(_env("SOXS_SHADOW_OUTPUT_DIR", "") or "").strip()
     if configured:
@@ -8108,6 +8267,9 @@ def _api_status_payload() -> dict[str, object]:
         "research_walk_forward": _call_with_request_cache(_walk_forward_payload, request_cache),
         "research_registry": _call_with_request_cache(_research_registry_payload, request_cache),
         "research_quality": _call_with_request_cache(_research_quality_payload, request_cache),
+        "paper_research": _call_with_request_cache(_paper_research_payload, request_cache),
+        "paper_tracking": _call_with_request_cache(_paper_tracking_payload, request_cache),
+        "paper_analytics": _call_with_request_cache(_paper_analytics_payload, request_cache),
         "market_regime": _market_regime_payload(),
         "regime_shadow": _regime_shadow_payload(),
         "universe": _universe_payload(),
@@ -8265,6 +8427,21 @@ def api_research_observability():
             "walk_forward": _walk_forward_payload(),
             "registry": _research_registry_payload(),
             "quality": _research_quality_payload(),
+        }), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+
+@app.route("/api/research/paper")
+def api_research_paper():
+    """Aggregate all Phase 5 paper research data in one endpoint."""
+    try:
+        return jsonify({
+            "ok": True,
+            "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "trades": _paper_research_payload(),
+            "tracking": _paper_tracking_payload(),
+            "analytics": _paper_analytics_payload(),
         }), 200
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 200
