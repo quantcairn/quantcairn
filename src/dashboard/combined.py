@@ -9745,6 +9745,203 @@ def daily_report():
     return jsonify(payload), status
 
 
+PAPER_RESEARCH_PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuantCairn — Paper Research</title>
+<style>
+  :root{--bg:#0d1117;--card-bg:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--green:#3fb950;--red:#f85149;--blue:#58a6ff;--yellow:#d2991d}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);padding:24px;max-width:1200px;margin:0 auto}
+  h1{font-size:22px;margin-bottom:4px}
+  h2{font-size:16px;margin:24px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  .subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+  .card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:14px}
+  .card .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .value{font-size:24px;font-weight:700;margin-top:4px}
+  .card .green{color:var(--green)}.card .red{color:var(--red)}.card .blue{color:var(--blue)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px}
+  th{text-align:left;padding:8px 10px;background:var(--card-bg);border-bottom:2px solid var(--border);font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.3px}
+  td{padding:8px 10px;border-bottom:1px solid var(--border)}
+  tr:hover{background:rgba(88,166,255,.04)}
+  .pos{color:var(--green)}.neg{color:var(--red)}
+  .bar-wrap{background:var(--border);border-radius:4px;height:8px;overflow:hidden;min-width:60px}
+  .bar-fill{height:100%;border-radius:4px;transition:width .3s}
+  .bar-green{background:var(--green)}.bar-red{background:var(--red)}
+  .warning{background:rgba(210,153,29,.1);border:1px solid var(--yellow);border-radius:8px;padding:14px;margin-bottom:16px}
+  .loading{color:var(--muted);text-align:center;padding:40px;font-size:15px}
+  .error{color:var(--red);text-align:center;padding:40px}
+  .nav{display:flex;gap:16px;margin-bottom:24px;font-size:14px}
+  .nav a{color:var(--blue);text-decoration:none}
+  .nav a:hover{text-decoration:underline}
+  .nav span{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="nav">
+  <a href="/">Dashboard</a>
+  <span>Paper Research</span>
+  <a href="/research">Research Report</a>
+</div>
+<h1>Paper Research</h1>
+<div class="subtitle" id="subtitle">Loading...</div>
+
+<div id="loading" class="loading">Loading paper research data...</div>
+
+<div id="content" style="display:none">
+
+  <!-- Module 1: Overview -->
+  <h2>Portfolio Overview</h2>
+  <div class="cards" id="overview-cards"></div>
+
+  <!-- Module 2: Current Positions -->
+  <h2>Current Paper Positions</h2>
+  <div id="positions-empty" class="warning" style="display:none">No open paper positions.</div>
+  <table id="positions-table" style="display:none">
+    <thead><tr>
+      <th>Symbol</th><th>Entry Price</th><th>Current</th><th>Return %</th>
+      <th>Days</th><th>MFE %</th><th>MAE %</th><th>Exit Signal</th><th>Rec</th>
+    </tr></thead>
+    <tbody id="positions-body"></tbody>
+  </table>
+
+  <!-- Module 3: Performance -->
+  <h2>Performance Analytics</h2>
+  <div class="cards" id="perf-cards"></div>
+
+  <!-- Module 4: Factor Analysis -->
+  <h2>Factor Analysis</h2>
+  <div id="factors-empty" class="warning" style="display:none">No factor data available.</div>
+  <table id="factors-table" style="display:none">
+    <thead><tr><th>Factor</th><th>Correlation</th><th>Direction</th><th>Strength</th></tr></thead>
+    <tbody id="factors-body"></tbody>
+  </table>
+
+  <!-- Module 5: Sector Performance -->
+  <h2>Sector Performance</h2>
+  <div id="sectors-empty" class="warning" style="display:none">No sector data available.</div>
+  <table id="sectors-table" style="display:none">
+    <thead><tr><th>Sector</th><th>Trades</th><th>Win Rate</th><th>Avg Return %</th><th>Avg MFE %</th><th>Avg MAE %</th></tr></thead>
+    <tbody id="sectors-body"></tbody>
+  </table>
+</div>
+
+<div id="error" class="error" style="display:none"></div>
+
+<script>
+function fmt(v, d){return v!=null?Number(v).toFixed(d):'—'}
+function pct(v){if(v==null)return'<span class="pos">—</span>';var s=v>0?'pos':'neg';return'<span class="'+s+'">'+(v>0?'+':'')+v.toFixed(2)+'%</span>'}
+function bar(v,max,c){var p=Math.min(100,Math.abs(v)/max*100);return'<div class="bar-wrap"><div class="bar-fill bar-'+c+'" style="width:'+p+'%"></div></div>'}
+function buildOverview(data){
+  var a=data.analytics||{},t=a.totals||{},p=a.performance||{},r=a.range_analysis||{},tr=data.trades||{};
+  document.getElementById('subtitle').textContent='Last updated: '+(a.generated_at||'—');
+  var c=document.getElementById('overview-cards');
+  c.innerHTML='';
+  [
+    ['Total Trades',t.total_trades||0,'blue'],
+    ['Open Trades',t.open_trades||0,'blue'],
+    ['Closed Trades',t.closed_trades||0,'blue'],
+    ['Win Rate',((p.win_rate||0)*100).toFixed(1)+'%','green'],
+    ['Avg Return',fmt(p.avg_return_pct,2)+'%',''],
+    ['Avg Holdings Days',fmt(p.avg_holding_days,1),''],
+    ['Avg MFE',fmt(p.avg_mfe_pct,2)+'%','green'],
+    ['Avg MAE',fmt(p.avg_mae_pct,2)+'%','red'],
+  ].forEach(function(d){
+    var cl=d[2]?' class="'+d[2]+'"':'';
+    c.innerHTML+='<div class="card"><div class="label">'+d[0]+'</div><div class="value'+cl+'">'+d[1]+'</div></div>';
+  });
+}
+function buildPositions(data){
+  var track=data.tracking||{},pos=track.positions||[];
+  if(!pos.length){document.getElementById('positions-empty').style.display='block';return}
+  document.getElementById('positions-table').style.display='';
+  var tb=document.getElementById('positions-body'),html='';
+  pos.forEach(function(p){
+    html+='<tr><td>'+p.symbol+'</td><td>$'+fmt(p.entry_price||p.entry_reference_price,2)+'</td><td>$'+fmt(p.current_price,2)+'</td>'
+      +'<td>'+pct(p.unrealized_return_pct)+'</td><td>'+fmt(p.holding_days,0)+'</td>'
+      +'<td>'+fmt(p.mfe_since_entry_pct,2)+'%</td><td>'+fmt(p.mae_since_entry_pct,2)+'%</td>'
+      +'<td>'+(p.exit_signal||'—')+'</td><td>'+(p.exit_recommendation||'HOLD')+'</td></tr>';
+  });
+  tb.innerHTML=html;
+}
+function buildPerformance(data){
+  var a=data.analytics||{},p=a.performance||{},r=a.range_analysis||{},tot=a.totals||{};
+  var c=document.getElementById('perf-cards');
+  c.innerHTML='';
+  [
+    ['Positive Returns',p.wins||0,'green'],
+    ['Negative Returns',p.losses||0,'red'],
+    ['MFE Capture Rate',fmt((p.mfe_capture_rate||0)*100,1)+'%','blue'],
+    ['Breakdown Count',r.breakdown_count||0,'red'],
+    ['Breakout Count',r.breakout_count||0,'red'],
+    ['Review Exit Count',r.review_exit_count||0,''],
+    ['Trades w/ Snapshots',tot.trades_with_snapshots||0,'blue'],
+    ['Review Exit Rate',fmt((r.review_exit_rate||0)*100,1)+'%',''],
+  ].forEach(function(d){
+    var cl=d[2]?' class="'+d[2]+'"':'';
+    c.innerHTML+='<div class="card"><div class="label">'+d[0]+'</div><div class="value'+cl+'">'+d[1]+'</div></div>';
+  });
+}
+function buildFactors(data){
+  var a=data.analytics||{},tf=a.top_factors||[];
+  if(!tf.length){document.getElementById('factors-empty').style.display='block';return}
+  document.getElementById('factors-table').style.display='';
+  var tb=document.getElementById('factors-body'),html='',maxAbs=0;
+  tf.forEach(function(f){maxAbs=Math.max(maxAbs,Math.abs(f.correlation||0))});
+  tf.forEach(function(f){
+    var r=f.correlation||0,abs=Math.abs(r),dir=r>0?'Positive':r<0?'Negative':'None',c=r>0?'green':'red';
+    html+='<tr><td>'+f.name+'</td><td>'+r.toFixed(4)+'</td><td>'+dir+'</td><td>'+bar(r,maxAbs,c)+'</td></tr>';
+  });
+  tb.innerHTML=html;
+}
+function buildSectors(data){
+  var a=data.analytics||{},sectors=a.sectors||a.sector_summary||[];
+  if(!sectors.length){document.getElementById('sectors-empty').style.display='block';return}
+  document.getElementById('sectors-table').style.display='';
+  var tb=document.getElementById('sectors-body'),html='';
+  sectors.forEach(function(s){
+    html+='<tr><td>'+s.sector+'</td><td>'+s.trades+'</td>'
+      +'<td>'+fmt((s.win_rate||0)*100,1)+'%</td><td>'+fmt(s.avg_return_pct,2)+'%</td>'
+      +'<td>'+fmt(s.avg_mfe_pct,2)+'%</td><td>'+fmt(s.avg_mae_pct,2)+'%</td></tr>';
+  });
+  tb.innerHTML=html;
+}
+function render(data){
+  document.getElementById('loading').style.display='none';
+  document.getElementById('content').style.display='';
+  if(data.trades&&data.trades.available){
+    buildOverview(data);
+    buildPositions(data);
+    buildPerformance(data);
+    buildFactors(data);
+    buildSectors(data);
+  }else{
+    document.getElementById('error').style.display='';
+    document.getElementById('error').textContent='Paper research data is not yet available. Run Phase 5A, 5B, and 5C pipelines to generate data.';
+  }
+}
+fetch('/api/research/paper').then(function(r){return r.json()}).then(render).catch(function(e){
+  document.getElementById('loading').style.display='none';
+  document.getElementById('error').style.display='';
+  document.getElementById('error').textContent='Failed to load paper research data: '+e.message;
+});
+</script>
+</body>
+</html>"""
+
+
+@app.route("/paper-research")
+def paper_research_page():
+    """Serve the Paper Research dashboard page."""
+    try:
+        return render_template_string(PAPER_RESEARCH_PAGE), 200
+    except Exception:
+        return ("paper research page unavailable", 500)
+
+
 @app.route("/research")
 @app.route("/research/")
 def research_report_home():

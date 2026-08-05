@@ -369,6 +369,7 @@
 | 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
 | 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
 | 25 | Paper Research Platform (Phase 5A–5D) | 2026-08-05 | `paper_research.py`, `paper_tracker.py`, `paper_analytics.py`, `combined.py` |
+| 26 | Paper Research Dashboard UI (Phase 5E) | 2026-08-05 | `combined.py` |
 
 ---
 
@@ -522,6 +523,7 @@
 | 23 | Research History Registry (Phase 4A) | 2026-08-05 | `research_registry.py` |
 | 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
 | 25 | Paper Research Platform (Phase 5A–5D) | 2026-08-05 | `paper_research.py`, `paper_tracker.py`, `paper_analytics.py`, `combined.py` |
+| 26 | Paper Research Dashboard UI (Phase 5E) | 2026-08-05 | `combined.py` |
 
 ## 2026-07-28 — TOP Config Empty-Selection Sync Safety
 
