@@ -41,7 +41,7 @@ class TestPublicApiAll:
         assert self.q.DEMO_SYMBOLS == ["AAPL", "MSFT", "NVDA", "SPY", "TSLA"]
 
     def test_version(self):
-        assert self.q.__version__ == "0.12.16"
+        assert self.q.__version__ == "0.13.0"
 
 
 class TestTopLevelVsSubModule:

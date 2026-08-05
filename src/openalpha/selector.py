@@ -1005,6 +1005,23 @@ class AIStrategySelector:
             from src.openalpha.config_writer import write_top_configs
             write_top_configs(topk)
 
+        # ── Selection ledger: fire-and-forget research snapshot ─────────────
+        # Written after selection completes.  Never blocks the pipeline.
+        if formal_symbols:
+            try:
+                from src.openalpha.selection_ledger import write_selection_snapshot
+                write_selection_snapshot(
+                    run_id=selection_run_id,
+                    date=selection_date,
+                    topk=topk,
+                    formal_candidates=formal_symbols,
+                    run_mode=_run_mode,
+                    execution_mode=_execution_mode,
+                    candidate_type=_candidate_type,
+                )
+            except Exception:
+                pass
+
         report_rows = self._format_report_rows(topk)
         # Determine candidate type based on execution_mode + quality fallback
         _candidate_type = _type_label if not quality_fallback_active else "RESEARCH_ONLY"

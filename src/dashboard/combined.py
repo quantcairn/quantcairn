@@ -2887,6 +2887,88 @@ def _learning_summary_payload(request_cache: dict[str, object] | None = None) ->
     }
 
 
+def _research_analytics_payload() -> dict[str, object]:
+    """Read Phase 2C analytics reports from artifacts/learning/analytics/.
+
+    Returns pre-computed JSON as-is.  Never recalculates, never fetches
+    yfinance, never rebuilds datasets.  If files are missing or corrupt,
+    returns {"available": False} without crashing.
+    """
+    analytics_dir = PROJECT_DIR / "artifacts" / "learning" / "analytics"
+
+    def _read(name: str) -> dict[str, object] | None:
+        path = analytics_dir / name
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return dict(data) if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    perf = _read("performance_summary.json")
+    feat = _read("feature_analysis.json")
+    sect = _read("sector_analysis.json")
+
+    if perf is None and feat is None and sect is None:
+        return {"available": False, "reason": "no analytics data found"}
+
+    # ── Summary (safe extraction from performance report) ──
+    summary: dict[str, object] = {}
+    if isinstance(perf, dict):
+        summary = {
+            "total_selections": int(_safe_number(perf.get("total_selections")) or 0),
+            "win_rate": _safe_number(perf.get("win_rate")) or 0.0,
+            "average_return_21d_pct": _safe_number(perf.get("average_return_21d_pct")) or 0.0,
+            "range_success_rate": _safe_number(perf.get("range_success_rate")) or 0.0,
+        }
+
+    # ── Top features by absolute correlation ──
+    top_features: list[dict[str, object]] = []
+    if isinstance(feat, dict) and isinstance(feat.get("features"), dict):
+        feats = feat["features"]
+        sorted_feats = sorted(
+            feats.items(),
+            key=lambda kv: abs(float(_safe_number((kv[1] if isinstance(kv[1], dict) else {}).get("correlation_with_return_21d")) or 0.0)),
+            reverse=True,
+        )
+        for name, finfo in sorted_feats[:5]:
+            if isinstance(finfo, dict):
+                top_features.append({
+                    "name": name,
+                    "correlation": _safe_number(finfo.get("correlation_with_return_21d")) or 0.0,
+                    "direction": str(finfo.get("correlation_direction") or ""),
+                })
+
+    # ── Sector summary ──
+    sector_summary: list[dict[str, object]] = []
+    if isinstance(sect, dict) and isinstance(sect.get("sectors"), dict):
+        for sec_name, sinfo in sorted(
+            sect["sectors"].items(),
+            key=lambda kv: int(_safe_number((kv[1] if isinstance(kv[1], dict) else {}).get("samples")) or 0),
+            reverse=True,
+        ):
+            if isinstance(sinfo, dict):
+                sector_summary.append({
+                    "sector": sec_name,
+                    "samples": int(_safe_number(sinfo.get("samples")) or 0),
+                    "success_rate": _safe_number(sinfo.get("success_rate")) or 0.0,
+                    "avg_return_21d_pct": _safe_number(sinfo.get("avg_return_21d_pct")) or 0.0,
+                })
+
+    generated_at = str(perf.get("generated_at") or "") if isinstance(perf, dict) else ""
+    analytics_version = str(perf.get("analytics_version") or "") if isinstance(perf, dict) else ""
+
+    return {
+        "available": True,
+        "summary": summary,
+        "top_features": top_features,
+        "sector_summary": sector_summary,
+        "generated_at": generated_at,
+        "analytics_version": analytics_version,
+    }
+
+
 def _shadow_artifact_root() -> Path:
     configured = str(_env("SOXS_SHADOW_OUTPUT_DIR", "") or "").strip()
     if configured:
@@ -7838,6 +7920,7 @@ def _api_status_payload() -> dict[str, object]:
         "candidate_model_evaluation": _candidate_model_evaluation_payload(),
         "research_status": _research_status_payload(),
         "learning_summary": _call_with_request_cache(_learning_summary_payload, request_cache),
+        "research_analytics": _call_with_request_cache(_research_analytics_payload, request_cache),
         "market_regime": _market_regime_payload(),
         "regime_shadow": _regime_shadow_payload(),
         "universe": _universe_payload(),
