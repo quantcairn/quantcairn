@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  QuantCairn — TOP Trading Engines
+
+  Starts all 3 paper trading engines (TOP1/TOP2/TOP3 on ports 8080/8081/8082)
+  via scripts/start_top_engines.sh. Each engine runs as a subprocess with its
+  own synthetic market data and range-based paper trading logic.
+
+  The engines maintain paper portfolio state at state/paper/ and publish
+  runtime status at http://127.0.0.1:{8080-8082}/api/status, consumed by
+  the combined dashboard (port 8090).
+
+  Prerequisites:
+    - AI selector has been run at least once to produce configs/TOP{1,2,3}.yaml
+    - Dashboard (com.quantcairn.combined) is running for status display
+
+  Installation:
+      cp deploy/launchd/com.quantcairn.top-engines.plist.template \
+         ~/Library/LaunchAgents/com.quantcairn.top-engines.plist
+
+  Edit the copied file and replace all REPLACE_WITH_* values.
+  See deploy/launchd/README.md for full instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quantcairn.top-engines</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>REPLACE_WITH_PROJECT_ROOT/scripts/start_top_engines.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_PROJECT_ROOT</string>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/top-engines.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_PROJECT_ROOT/logs/top-engines.err.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>QUANTCAIRN_HOME</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_PROJECT_DIR</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>YF_DISABLE_CURL_CFFI</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
