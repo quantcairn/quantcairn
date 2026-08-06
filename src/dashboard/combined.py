@@ -3312,6 +3312,280 @@ def _paper_analytics_payload() -> dict[str, object]:
         return {"available": False, "reason": "data read error"}
 
 
+def _research_report_payload() -> dict[str, object]:
+    """Read Phase 6C research report. Never recalculates."""
+    try:
+        path = PROJECT_DIR / "artifacts" / "learning" / "research_report" / "research_report.json"
+        if not path.exists():
+            return {"available": False, "reason": "no research report"}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"available": False, "reason": "invalid report format"}
+
+        es = data.get("executive_summary") or {}
+        return {
+            "available": True,
+            "research_status": str(es.get("research_status") or "INSUFFICIENT_DATA"),
+            "composite_grade": str(es.get("composite_grade") or ""),
+            "sources_available": int(_safe_number(es.get("sources_available")) or 0),
+            "key_findings": list(es.get("key_findings") or []),
+            "risks": [
+                {"type": str(r.get("type") or ""), "severity": str(r.get("severity") or ""),
+                 "description": str(r.get("description") or "")}
+                for r in (data.get("risks") or []) if isinstance(r, dict)
+            ],
+            "recommendations": list(data.get("recommendations") or []),
+            "generated_at": str(data.get("generated_at") or ""),
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
+def _research_benchmark_payload() -> dict[str, object]:
+    """Read Phase 6A benchmark snapshot. Never recalculates."""
+    try:
+        path = PROJECT_DIR / "artifacts" / "learning" / "research_benchmark" / "benchmark_summary.json"
+        if not path.exists():
+            return {"available": False, "reason": "no benchmark data"}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"available": False, "reason": "invalid benchmark format"}
+
+        snap = data.get("latest_snapshot") or {}
+        history = data.get("history") or []
+        return {
+            "available": True,
+            "composite_grade": str(snap.get("composite_grade") or ""),
+            "composite_score": _safe_number(snap.get("composite_score")),
+            "coverage_score": _safe_number(snap.get("coverage_score")),
+            "selection_win_rate": _safe_number(snap.get("selection_win_rate")),
+            "stability_score": _safe_number(snap.get("stability_score")),
+            "paper_win_rate": _safe_number(snap.get("paper_win_rate")),
+            "generated_at": str(snap.get("generated_at") or str(data.get("updated_at") or "")),
+            "history": [
+                {"date": str(h.get("benchmark_date") or ""),
+                 "grade": str(h.get("composite_grade") or ""),
+                 "score": _safe_number(h.get("composite_score"))}
+                for h in (history or []) if isinstance(h, dict)
+            ][-30:],
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
+def _research_center_regime_payload() -> dict[str, object]:
+    """Read Phase 6B regime analysis. Never recalculates."""
+    try:
+        path = PROJECT_DIR / "artifacts" / "learning" / "regime_analysis" / "regime_summary.json"
+        if not path.exists():
+            return {"available": False, "reason": "no regime data"}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"available": False, "reason": "invalid regime format"}
+
+        regimes = data.get("regimes") or {}
+        regime_list = []
+        for rname, rd in (regimes.items() if isinstance(regimes, dict) else []):
+            if isinstance(rd, dict):
+                regime_list.append({
+                    "regime": rname,
+                    "tag_count": int(_safe_number(rd.get("tag_count")) or 0),
+                    "selection_win_rate": _safe_number(rd.get("selection_win_rate")),
+                    "paper_win_rate": _safe_number(rd.get("paper_win_rate")),
+                    "paper_avg_return": _safe_number(rd.get("paper_avg_return")),
+                })
+
+        return {
+            "available": True,
+            "regimes": regime_list,
+            "best_regime": str(data.get("best_regime") or ""),
+            "worst_regime": str(data.get("worst_regime") or ""),
+            "regime_robustness": str(data.get("regime_robustness") or "UNKNOWN"),
+            "generated_at": str(data.get("generated_at") or ""),
+        }
+    except Exception:
+        return {"available": False, "reason": "data read error"}
+
+
+RESEARCH_CENTER_PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>QuantCairn — Research Center</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--green:#3fb950;--red:#f85149;--blue:#58a6ff;--yellow:#d2991d;--purple:#a371f7}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);padding:24px;max-width:1200px;margin:0 auto}
+h1{font-size:22px;margin-bottom:4px}
+h2{font-size:16px;margin:24px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px}
+.card .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.card .value{font-size:22px;font-weight:700;margin-top:4px}
+.green{color:var(--green)}.red{color:var(--red)}.blue{color:var(--blue)}.yellow{color:var(--yellow)}.purple{color:var(--purple)}
+.nav{display:flex;gap:16px;margin-bottom:24px;font-size:14px}
+.nav a{color:var(--blue);text-decoration:none}.nav a:hover{text-decoration:underline}
+.nav span{color:var(--muted)}
+.warning{background:rgba(210,153,29,.1);border:1px solid var(--yellow);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px}
+.risk-high{border-left:3px solid var(--red)}.risk-medium{border-left:3px solid var(--yellow)}.risk-low{border-left:3px solid var(--muted)}
+.risk-item{padding:8px 12px;margin-bottom:6px;background:var(--card);border-radius:4px;font-size:13px}
+.risk-item .sev{font-size:11px;text-transform:uppercase;margin-right:6px}
+.findings{list-style:disc;padding-left:20px;font-size:13px;color:var(--text)}
+.findings li{margin-bottom:4px}
+.loading{color:var(--muted);text-align:center;padding:40px;font-size:15px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px}
+th{text-align:left;padding:8px 10px;background:var(--card);border-bottom:2px solid var(--border);font-size:11px;text-transform:uppercase;color:var(--muted)}
+td{padding:8px 10px;border-bottom:1px solid var(--border)}
+.pos{color:var(--green)}.neg{color:var(--red)}
+</style>
+</head>
+<body>
+<div class="nav"><a href="/">Dashboard</a><span>Research Center</span><a href="/paper-research">Paper Research</a><a href="/research">Reports</a></div>
+<h1>Research Center</h1>
+<div id="loading" class="loading">Loading research data...</div>
+<div id="content" style="display:none">
+
+<h2>Executive Summary</h2>
+<div class="cards" id="exec-cards"></div>
+<div id="findings-section" style="display:none"><h3 style="font-size:13px;color:var(--muted);margin:8px 0 4px">Key Findings</h3><ul class="findings" id="findings-list"></ul></div>
+
+<h2>Research Benchmark</h2>
+<div class="cards" id="bench-cards"></div>
+<div id="bench-history" style="display:none"><h3 style="font-size:13px;color:var(--muted);margin:8px 0 4px">Benchmark History</h3><table><thead><tr><th>Date</th><th>Grade</th><th>Score</th></tr></thead><tbody id="bench-history-body"></tbody></table></div>
+
+<h2>Validation</h2>
+<div class="cards" id="wf-cards"></div>
+
+<h2>Regime Analysis</h2>
+<div id="regime-table-wrap" style="display:none"><table><thead><tr><th>Regime</th><th>Days</th><th>Selection Win%</th><th>Paper Win%</th><th>Paper Return%</th></tr></thead><tbody id="regime-body"></tbody></table></div>
+<div id="regime-empty" class="warning" style="display:none">No regime analysis data available.</div>
+
+<h2>Paper Research</h2>
+<div class="cards" id="paper-cards"></div>
+
+<h2>Risks & Recommendations</h2>
+<div id="risks-section"></div>
+<div id="recs-section" style="display:none"><h3 style="font-size:13px;color:var(--muted);margin:8px 0 4px">Recommendations</h3><ul class="findings" id="recs-list"></ul></div>
+</div>
+<script>
+function fmt(v,d){return v!=null?Number(v).toFixed(d):'—'}
+function pct(v){return v!=null?(v>0?'+':'')+(v*100).toFixed(1)+'%':'—'}
+function sevClass(s){return s==='HIGH'?'red':s==='MEDIUM'?'yellow':'muted'}
+function card(cls,l,v){return'<div class="card"><div class="label">'+l+'</div><div class="value '+cls+'">'+v+'</div></div>'}
+
+fetch('/api/research/center').then(r=>r.json()).then(d=>{
+document.getElementById('loading').style.display='none';
+document.getElementById('content').style.display='';
+
+var rp=d.research_report||{},bm=d.benchmark||{},wf=d.walk_forward||{},
+    rm=d.regime||{},pp=d.paper_research||{},pt=d.paper_tracking||{};
+
+// Executive Summary
+if(rp.available){
+var c=document.getElementById('exec-cards');
+var cls=rp.research_status==='READY'?'green':rp.research_status==='DEVELOPING'?'yellow':'red';
+c.innerHTML=card(cls,'Research Status',rp.research_status)
+  +card('purple','Composite Grade',rp.composite_grade||'—')
+  +card('blue','Sources Available',rp.sources_available);
+if(rp.key_findings&&rp.key_findings.length){
+  document.getElementById('findings-section').style.display='';
+  document.getElementById('findings-list').innerHTML=rp.key_findings.map(function(f){return'<li>'+f+'</li>'}).join('');
+}
+}
+
+// Benchmark
+if(bm.available){
+var bc=document.getElementById('bench-cards');
+bc.innerHTML=card('purple','Composite Grade',bm.composite_grade||'—')
+  +card('blue','Composite Score',fmt(bm.composite_score,2))
+  +card('blue','Coverage',fmt(bm.coverage_score*100,0)+'%')
+  +card('green','Selection Win Rate',pct(bm.selection_win_rate))
+  +card('blue','Stability',fmt(bm.stability_score,2))
+  +card('green','Paper Win Rate',pct(bm.paper_win_rate));
+if(bm.history&&bm.history.length>1){
+  document.getElementById('bench-history').style.display='';
+  document.getElementById('bench-history-body').innerHTML=bm.history.slice(-10).map(function(h){
+    var c=h.grade==='A'?'green':h.grade==='B'?'blue':h.grade==='C'?'yellow':'red';
+    return'<tr><td>'+h.date+'</td><td class="'+c+'">'+h.grade+'</td><td>'+fmt(h.score,2)+'</td></tr>';
+  }).join('');
+}
+}
+
+// Walk Forward
+if(wf.available){
+var wc=document.getElementById('wf-cards');
+wc.innerHTML=card('blue','Stability Score',fmt(wf.overall_stability,2))
+  +card('blue','Total Periods',wf.total_periods||0)
+  +(wf.forward_win_rate_mean!=null?card('green','Avg Forward Win Rate',pct(wf.forward_win_rate_mean)):'')
+  +(wf.flags&&wf.flags.length?card('yellow','Warnings',wf.flags.length):card('green','Warnings','0'));
+}
+
+// Regime
+if(rm.available&&rm.regimes&&rm.regimes.length){
+document.getElementById('regime-table-wrap').style.display='';
+document.getElementById('regime-body').innerHTML=rm.regimes.map(function(r){
+  return'<tr><td>'+r.regime+'</td><td>'+r.tag_count+'</td><td>'+pct(r.selection_win_rate)+'</td><td>'+pct(r.paper_win_rate)+'</td><td>'+fmt(r.paper_avg_return,2)+'%</td></tr>';
+}).join('')+'<tr><td colspan="5" style="color:var(--muted);font-size:11px">Best: '+rm.best_regime+' | Worst: '+rm.worst_regime+' | Robustness: '+rm.regime_robustness+'</td></tr>';
+}else{document.getElementById('regime-empty').style.display='block'}
+
+// Paper Research
+if(pp.available){
+var pc=document.getElementById('paper-cards');
+pc.innerHTML=card('blue','Total Trades',pp.total_trades||0)
+  +card('green','Win Rate',pct(pp.performance?.win_rate))
+  +card('blue','Avg Return',fmt(pp.performance?.avg_return_pct,2)+'%')
+  +card('blue','Avg Holding Days',fmt(pp.performance?.avg_holding_days,1));
+}
+
+// Risks
+if(rp.available&&rp.risks&&rp.risks.length){
+document.getElementById('risks-section').innerHTML='<h2>Risks</h2>'+rp.risks.map(function(r){
+  return'<div class="risk-item risk-'+r.severity.toLowerCase()+'"><span class="sev '+sevClass(r.severity)+'">'+r.severity+'</span> '+r.description+'</div>';
+}).join('');
+}
+
+// Recommendations
+if(rp.available&&rp.recommendations&&rp.recommendations.length){
+document.getElementById('recs-section').style.display='';
+document.getElementById('recs-list').innerHTML=rp.recommendations.map(function(r){return'<li>'+r+'</li>'}).join('');
+}
+}).catch(function(e){
+document.getElementById('loading').style.display='none';
+document.getElementById('content').innerHTML='<div class="warning">Failed to load research data: '+e.message+'</div>';
+document.getElementById('content').style.display='';
+});
+</script>
+</body>
+</html>"""
+
+
+@app.route("/research-center")
+def research_center_page():
+    """Serve the Research Center dashboard page."""
+    try:
+        return render_template_string(RESEARCH_CENTER_PAGE), 200
+    except Exception:
+        return ("research center page unavailable", 500)
+
+
+@app.route("/api/research/center")
+def api_research_center():
+    """Aggregate all research center data in one endpoint."""
+    try:
+        return jsonify({
+            "ok": True,
+            "timestamp": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "research_report": _research_report_payload(),
+            "benchmark": _research_benchmark_payload(),
+            "walk_forward": _walk_forward_payload(),
+            "regime": _research_center_regime_payload(),
+            "paper_research": _paper_research_payload(),
+            "paper_tracking": _paper_tracking_payload(),
+        }), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+
 def _shadow_artifact_root() -> Path:
     configured = str(_env("SOXS_SHADOW_OUTPUT_DIR", "") or "").strip()
     if configured:
@@ -8270,6 +8544,9 @@ def _api_status_payload() -> dict[str, object]:
         "paper_research": _call_with_request_cache(_paper_research_payload, request_cache),
         "paper_tracking": _call_with_request_cache(_paper_tracking_payload, request_cache),
         "paper_analytics": _call_with_request_cache(_paper_analytics_payload, request_cache),
+        "research_report": _call_with_request_cache(_research_report_payload, request_cache),
+        "research_benchmark": _call_with_request_cache(_research_benchmark_payload, request_cache),
+        "research_center_regime": _call_with_request_cache(_research_center_regime_payload, request_cache),
         "market_regime": _market_regime_payload(),
         "regime_shadow": _regime_shadow_payload(),
         "universe": _universe_payload(),
