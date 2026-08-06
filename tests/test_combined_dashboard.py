@@ -1179,6 +1179,193 @@ def test_combined_dashboard_renders_ai_selection_report(tmp_path, monkeypatch):
     assert "$118.00 - $154.00" in html
 
 
+def test_research_digest_freshness_current_shows_no_warning(monkeypatch):
+    """A CURRENT research digest renders normally without staleness warnings."""
+    _setup_research_digest_test_defaults(monkeypatch)
+    monkeypatch.setattr(combined, "_load_latest_research_digest", lambda: {
+        "available": True,
+        "freshness": "CURRENT",
+        "status_reason": "OK",
+        "latest_report_date": "2026-08-06",
+        "age_days": 0,
+        "date": "2026-08-06",
+        "generated_at": "2026-08-06T18:00:00-04:00",
+        "top_line": "AAPL / NVDA / SOFI",
+        "strategy_summary": "成功 2 / 观察正确 1 / 失败 0",
+        "entry_ready": 2,
+        "observation_only": 1,
+        "research_url": "/research",
+    })
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "只读研究简报" in html
+    assert "策略评分复盘" in html
+    assert "成功 2 / 观察正确 1 / 失败 0" in html
+    assert "最新 2026-08-06" in html
+    # No staleness warning (element not rendered, CSS class in stylesheet is OK)
+    assert "数据过期" not in html
+    assert 'class="research-stale-banner"' not in html
+    # No empty placeholder
+    assert "暂无研究简报" not in html
+
+
+def test_research_digest_freshness_stale_shows_warning(monkeypatch):
+    """A STALE research digest renders data but shows a staleness warning banner."""
+    _setup_research_digest_test_defaults(monkeypatch)
+    monkeypatch.setattr(combined, "_load_latest_research_digest", lambda: {
+        "available": True,
+        "freshness": "STALE",
+        "status_reason": "REPORT_GENERATOR_NOT_RUN",
+        "latest_report_date": "2026-07-10",
+        "age_days": 27,
+        "date": "2026-07-10",
+        "generated_at": "2026-07-11T03:11:52-04:00",
+        "top_line": "SOXS / YINN / DRIP",
+        "strategy_summary": "成功 3 / 观察正确 0 / 失败 0",
+        "entry_ready": 1,
+        "observation_only": 2,
+        "research_url": "/research",
+    })
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "只读研究简报" in html
+    assert "策略评分复盘" in html
+    assert "成功 3 / 观察正确 0 / 失败 0" in html
+    assert "最新 2026-07-10" in html
+    # Staleness warning present
+    assert "数据过期" in html
+    assert "27 天前" in html
+    assert "REPORT_GENERATOR_NOT_RUN" in html
+    assert "research-stale-banner" in html
+    # Still shows the link
+    assert "打开研究简报" in html
+
+
+def test_research_digest_freshness_no_data_shows_placeholder(monkeypatch):
+    """When no report exists, the dashboard shows a no-data placeholder."""
+    _setup_research_digest_test_defaults(monkeypatch)
+    monkeypatch.setattr(combined, "_load_latest_research_digest", lambda: {
+        "available": False,
+        "freshness": "NO_DATA",
+        "status_reason": "NO_REPORT_FILES_FOUND",
+        "latest_report_date": None,
+        "age_days": None,
+    })
+
+    with combined.app.test_request_context("/"):
+        html = combined.index()
+
+    assert "只读研究简报" in html
+    assert "暂无研究简报" in html
+    assert "暂无数据" in html
+    assert "NO_REPORT_FILES_FOUND" in html
+    # No stale banner HTML element (it's not STALE; it's NO_DATA; CSS in stylesheet is OK)
+    assert 'class="research-stale-banner"' not in html
+    # The full brief content is not rendered
+    assert "策略评分复盘" not in html
+
+
+def _setup_research_digest_test_defaults(monkeypatch):
+    """Set up common monkeypatches needed by all research digest tests."""
+    monkeypatch.setattr(combined, "_fetch_live_account_summary", lambda: None)
+    monkeypatch.setattr(combined, "load_runtime_settings", lambda: {
+        "min_price": 10.0, "max_price": 200.0, "auto_refresh_minutes": 5,
+    })
+    monkeypatch.setattr(combined, "_fetch_status", lambda port: None)
+    monkeypatch.setattr(combined, "get_runtime_env", lambda name, default="": {
+        "SOXS_OPENALPHA_ENABLED": "1",
+        "SOXS_TRADINGAGENTS_PATH": "/tmp/TradingAgents",
+        "SOXS_FINROBOT_PATH": "/tmp/FinRobot",
+        "OPENAI_API_KEY": "",
+        "FMP_API_KEY": "",
+    }.get(name, default))
+    monkeypatch.setattr(combined, "_selection_sync_status", lambda: {
+        "ok": True,
+        "level": "green",
+        "label": "已对齐",
+        "detail": "当天配置已对齐",
+        "required_date": "2026-08-06",
+        "state_date": "2026-08-06",
+    })
+    monkeypatch.setattr(combined, "_load_config_defaults", lambda name: {
+        "ticker": name.replace(".yaml", ""),
+        "initial_capital": 1000.0,
+        "support": 100.0,
+        "resistance": 110.0,
+    })
+    monkeypatch.setattr(combined, "_load_ai_selection_report", lambda: {
+        "selection_run_id": "run-001",
+        "selection_date": "2026-08-06",
+        "market_state": "MARKET_OPEN",
+        "run_mode": "FULL",
+        "data_mode": "INTRADAY",
+        "timestamp": "2026-08-06T09:29:00",
+        "settings": {"min_price": 10.0, "max_price": 200.0},
+        "top3": [],
+        "selected_top_n": 0,
+        "requested_top_n": 3,
+        "candidate_layers": {},
+        "protected_positions": [],
+        "refinement_status": "idle",
+        "refinement_selection_stage": "idle",
+    })
+    monkeypatch.setattr(combined, "summarize_trade_log", lambda log_dir, day=None, mode=None: {
+        "execution_mode": "paper", "reduce_only": False, "new_entries_allowed": True,
+        "risk_pause_reason": "", "decision_count": 0, "execution_count": 0,
+        "buy_count": 0, "sell_count": 0, "order_qty": 0, "tickers": [], "latest_line": "",
+    })
+    monkeypatch.setattr(combined, "has_live_top_configs", lambda: False)
+    monkeypatch.setattr(combined, "_load_top_modes", lambda: ["paper", "paper", "paper"])
+    monkeypatch.setattr(combined, "current_top_config_symbols", lambda limit=5: [])
+    monkeypatch.setattr(combined, "configured_top_count", lambda: 3)
+    monkeypatch.setattr(combined, "current_top_config_slots", lambda limit=None: [])
+    monkeypatch.setattr(combined, "current_top_config_disabled_slots", lambda: [])
+    monkeypatch.setattr(combined, "_fallback_runtime_flags", lambda: (False, False))
+    monkeypatch.setattr(combined, "_call_with_request_cache", lambda fn, cache: fn())
+
+
+def test_research_digest_classify_freshness():
+    """Unit-test the freshness classification logic."""
+    from src.dashboard.combined import _classify_digest_freshness, _RESEARCH_DIGEST_MAX_AGE_DAYS
+
+    # CURRENT: within threshold
+    fresh_age = _RESEARCH_DIGEST_MAX_AGE_DAYS
+    f, r = _classify_digest_freshness(fresh_age)
+    assert f == "CURRENT"
+    assert r == "OK"
+
+    fresh_age = 0
+    f, r = _classify_digest_freshness(fresh_age)
+    assert f == "CURRENT"
+    assert r == "OK"
+
+    # STALE: beyond threshold
+    stale_age = _RESEARCH_DIGEST_MAX_AGE_DAYS + 1
+    f, r = _classify_digest_freshness(stale_age)
+    assert f == "STALE"
+    assert r == "REPORT_GENERATOR_NOT_RUN"
+
+    # STALE: unparseable date
+    f, r = _classify_digest_freshness(None)
+    assert f == "STALE"
+    assert r == "REPORT_DATE_UNPARSEABLE"
+
+
+def test_research_digest_compute_age_days():
+    """Unit-test age computation from report date string."""
+    from src.dashboard.combined import _compute_digest_age_days
+
+    today_str = __import__("datetime").date.today().isoformat()
+    assert _compute_digest_age_days(today_str) == 0
+
+    assert _compute_digest_age_days("") is None
+    assert _compute_digest_age_days("not-a-date") is None
+
+
 def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
     ticker_map = {
         "TOP1.yaml": "NVDA",

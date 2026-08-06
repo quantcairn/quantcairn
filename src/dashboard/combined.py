@@ -1341,10 +1341,30 @@ def _load_ai_selection_report(request_cache: dict[str, object] | None = None):
     return load_latest_ai_selection_state(PROJECT_DIR)
 
 
+_RESEARCH_DIGEST_MAX_AGE_DAYS = 2
+
+
+def _compute_digest_age_days(report_date_str: str) -> int | None:
+    if not report_date_str:
+        return None
+    try:
+        from datetime import date as date_cls
+        report_date = date_cls.fromisoformat(report_date_str[:10])
+        return (date_cls.today() - report_date).days
+    except (ValueError, TypeError):
+        return None
+
+
 def _load_latest_research_digest() -> dict[str, object]:
     reports_dir = PROJECT_DIR / "reports" / "research"
     if not reports_dir.exists():
-        return {"available": False}
+        return {
+            "available": False,
+            "freshness": "NO_DATA",
+            "status_reason": "REPORT_DIRECTORY_MISSING",
+            "latest_report_date": None,
+            "age_days": None,
+        }
     for path in sorted(reports_dir.glob("daily-paper-report-*.json"), reverse=True):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -1363,9 +1383,16 @@ def _load_latest_research_digest() -> dict[str, object]:
         strategy_success_count = int(strategy.get("success_count", 0) or 0)
         strategy_observation_correct_count = int(strategy.get("observation_correct_count", 0) or 0)
         strategy_failure_count = int(strategy.get("failure_count", 0) or 0)
+        report_date_str = str(data.get("date") or "")
+        age_days = _compute_digest_age_days(report_date_str)
+        freshness, status_reason = _classify_digest_freshness(age_days)
         return {
             "available": True,
-            "date": str(data.get("date") or ""),
+            "freshness": freshness,
+            "status_reason": status_reason,
+            "latest_report_date": report_date_str or None,
+            "age_days": age_days,
+            "date": report_date_str,
             "generated_at": str(data.get("generated_at") or ""),
             "mode": str(data.get("mode") or "unknown"),
             "top_line": " / ".join(top_symbols) if top_symbols else "暂无",
@@ -1383,7 +1410,21 @@ def _load_latest_research_digest() -> dict[str, object]:
             "research_url": "/research",
             "report_path": str(path),
         }
-    return {"available": False}
+    return {
+        "available": False,
+        "freshness": "NO_DATA",
+        "status_reason": "NO_REPORT_FILES_FOUND",
+        "latest_report_date": None,
+        "age_days": None,
+    }
+
+
+def _classify_digest_freshness(age_days: int | None) -> tuple[str, str]:
+    if age_days is None:
+        return ("STALE", "REPORT_DATE_UNPARSEABLE")
+    if age_days <= _RESEARCH_DIGEST_MAX_AGE_DAYS:
+        return ("CURRENT", "OK")
+    return ("STALE", "REPORT_GENERATOR_NOT_RUN")
 
 
 def _dashboard_order_status_summary(active_orders_summary: dict | None) -> dict[str, int]:
@@ -5248,6 +5289,17 @@ HTML = """<!DOCTYPE html>
         color:#bfdbfe;text-decoration:none;font-size:12px;font-weight:700
     }
     .research-brief-link:hover{text-decoration:underline}
+    .research-stale-banner{
+        display:flex;align-items:center;gap:8px;margin-bottom:10px;
+        padding:8px 11px;border-radius:10px;
+        background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.28)
+    }
+    .research-stale-icon{color:#fbbf24;font-size:15px;flex-shrink:0}
+    .research-stale-text{color:#fde68a;font-size:12px;line-height:1.5}
+    .research-brief-empty{
+        background:linear-gradient(180deg, rgba(148,163,184,.06), rgba(148,163,184,.03));
+        border:1px solid rgba(148,163,184,.14)
+    }
     .system-status{
         margin-top:12px;
         padding:12px;
@@ -6964,6 +7016,12 @@ HTML = """<!DOCTYPE html>
                         {% endif %}
                         {% if research_digest and research_digest.available %}
                         <div class="research-brief">
+                            {% if research_digest.freshness == 'STALE' %}
+                            <div class="research-stale-banner">
+                                <span class="research-stale-icon">⚠</span>
+                                <span class="research-stale-text">数据过期 · 最新报告 {{ research_digest.age_days }} 天前 ({{ research_digest.latest_report_date }}) · 原因：{{ research_digest.status_reason or 'UNKNOWN' }}</span>
+                            </div>
+                            {% endif %}
                             <div class="research-brief-head">
                                 <span class="research-tag">只读研究简报</span>
                                 <span class="research-meta">最新 {{ research_digest.date or '暂无' }}{% if research_digest.generated_at %} · {{ research_digest.generated_at }}{% endif %}</span>
@@ -6982,6 +7040,19 @@ HTML = """<!DOCTYPE html>
                                     <span>观察级：{{ research_digest.observation_only }}</span>
                                 </div>
                                 <a class="research-brief-link" href="{{ research_digest.research_url }}" target="_blank" rel="noopener">打开研究简报</a>
+                            </div>
+                        </div>
+                        {% else %}
+                        <div class="research-brief research-brief-empty">
+                            <div class="research-brief-head">
+                                <span class="research-tag" style="opacity:0.7">只读研究简报</span>
+                                <span class="research-meta">暂无数据</span>
+                            </div>
+                            <div class="research-brief-body">
+                                <div class="research-brief-title" style="color:var(--muted)">暂无研究简报</div>
+                                <div class="research-brief-summary" style="color:var(--muted);font-size:12px">
+                                    原因：{{ research_digest.status_reason if research_digest and research_digest.status_reason else 'REPORT_DIRECTORY_MISSING' }}
+                                </div>
                             </div>
                         </div>
                         {% endif %}
