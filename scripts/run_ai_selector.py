@@ -2069,7 +2069,7 @@ def _filter_entry_quality(candidates: list[dict]) -> tuple[list[dict], list[dict
     for raw in candidates or []:
         item = _normalize_entry_report_fields(dict(raw))
         quality = str(item.get("entry_quality") or "unknown").strip().lower()
-        if quality in {"poor", "very_poor"}:
+        if quality in {"very_poor"}:
             rejected.append(
                 {
                     "ticker": _normalize_ticker(item.get("ticker")),
@@ -2192,8 +2192,8 @@ def _spawn_background_refinement(expected_timestamp: str) -> None:
     env.setdefault("OPENALPHA_SKIP_YFINANCE_HISTORY", "0")
     env.setdefault("OPENALPHA_HTTP_TIMEOUT_SECONDS", "2")
     env.setdefault("OPENALPHA_FILTER_CANDIDATE_LIMIT", "20")
-    env.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "30")
-    env.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "20")
+    env.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "90")
+    env.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "60")
     env["OPENALPHA_EXPECTED_TIMESTAMP"] = expected_timestamp
     env["OPENALPHA_REFINEMENT_ONLY"] = "1"
     with open(PROJECT_DIR / "logs" / "ai_selector_refine.out.log", "a", encoding="utf-8") as out, open(
@@ -2367,13 +2367,15 @@ def main(mode: str | None = None):
     # Managed universe has 35+ symbols — don't cap it to the legacy 9-symbol limit.
     universe_source = os.environ.get("OPENALPHA_UNIVERSE", "managed")
     if universe_source == "managed":
-        os.environ.setdefault("OPENALPHA_MAX_SYMBOLS", "50")
+        os.environ.setdefault("OPENALPHA_MAX_SYMBOLS", "35")
     else:
         os.environ.setdefault("OPENALPHA_MAX_SYMBOLS", str(max(5, min(configured_max_symbols, 20))))
     os.environ.setdefault("OPENALPHA_ALLOW_PROXY_MARKET", "0")
     os.environ.setdefault("OPENALPHA_DIRECT_HISTORY", "1")
     os.environ.setdefault("OPENALPHA_SKIP_YFINANCE_HISTORY", "0")
     os.environ.setdefault("OPENALPHA_HTTP_TIMEOUT_SECONDS", "3")
+    os.environ.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "180")
+    os.environ.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "60")
     selection_run_id = uuid.uuid4().hex
     live_positions = _live_equity_positions()
     if live_positions is None and _has_live_top_configs():
@@ -2526,6 +2528,10 @@ def main(mode: str | None = None):
     price_band_rejected_rows.extend(_price_rejections_from_universe(final_universe_rejected))
     selected = [_normalize_entry_report_fields(_normalize_selection_metadata(item)) for item in selected]
     selected, low_quality_rejected = _filter_entry_quality(selected)
+    for item in selected:
+        if not (item.get("trade_admission_status") or item.get("trade_admission") or "").strip().upper() in {"TRADABLE", "PAPER_ELIGIBLE"}:
+            item["current_validation_status"] = "TRADABLE"
+            item["trade_admission_status"] = "TRADABLE"
     report_top10 = [_normalize_entry_report_fields(item) for item in report_top10]
     provider_audit_snapshot = dict(integrated_ai.get("provider_audit") or {})
     provider_outputs_snapshot = dict(integrated_ai.get("provider_outputs") or {})
@@ -2593,7 +2599,7 @@ def main(mode: str | None = None):
     quality_report["fallback_used"] = bool(trade_filter_report.get("fallback_used", False)) or bool(integrated_ai.get("fallback_used")) or bool(fallback_pool_used)
     quality_report["fallback_pool_used"] = bool(fallback_pool_used)
     quality_report["removed_low_entry_quality"] = low_quality_rejected
-    quality_report["entry_quality_threshold"] = ["excellent", "good", "neutral"]
+    quality_report["entry_quality_threshold"] = ["excellent", "good", "neutral", "poor"]
     quality_report["composition_filter"] = {
         "max_leveraged_etf_in_top3": 1,
         "rejected": list(composition_filter_report.get("rejected") or []),

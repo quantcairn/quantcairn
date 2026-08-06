@@ -45,6 +45,7 @@ def test_rejects_extreme_five_day_move():
 
 
 def test_rejects_low_volume():
+    """Share volume < 5M with no dollar volume: fallback rejects."""
     result = TradeEligibilityFilter().filter(
         [_candidate("SOXS")],
         {"SOXS": {"earnings_within_days": 10, "avg_volume": 4_999_999, "bid_ask_spread_pct": 0.1, "regime": "NORMAL", "data_age_seconds": 10, "price_change_5d": 2}},
@@ -52,6 +53,56 @@ def test_rejects_low_volume():
 
     assert result["rejected"][0]["reason"] == "low_volume"
     assert result["accepted"][0]["fallback_used"] is True
+
+
+def test_accepts_low_share_count_high_dollar_volume():
+    """AIG-like: 2.97M shares but $257M dollar volume → accepted."""
+    result = TradeEligibilityFilter().filter(
+        [_candidate("AIG", 83.0, 83.0)],
+        {"AIG": {"earnings_within_days": 10, "average_dollar_volume_20d": 257_000_000, "avg_volume": 2_966_000, "bid_ask_spread_pct": 0.05, "regime": "NORMAL", "data_age_seconds": 10, "price_change_5d": 2, "current_price": 80.12}},
+    )
+
+    assert len(result["accepted"]) == 1
+    assert result["accepted"][0]["ticker"] == "AIG"
+    assert result["accepted"][0]["trade_filter_passed"] is True
+    assert result["fallback_used"] is False
+
+
+def test_rejects_truly_low_dollar_volume():
+    """$10M daily dollar volume → still rejected."""
+    result = TradeEligibilityFilter().filter(
+        [_candidate("TINY", 75.0, 75.0)],
+        {"TINY": {"earnings_within_days": 10, "average_dollar_volume_20d": 10_000_000, "avg_volume": 200_000, "bid_ask_spread_pct": 0.1, "regime": "NORMAL", "data_age_seconds": 10, "price_change_5d": 2, "current_price": 50.0}},
+    )
+
+    assert result["rejected"][0]["reason"] == "low_volume"
+    assert len(result["accepted"]) == 1
+    assert result["accepted"][0]["fallback_used"] is True
+
+
+def test_dollar_volume_fallback_estimation():
+    """When average_dollar_volume_20d is missing, estimate from price × avg_volume."""
+    result = TradeEligibilityFilter().filter(
+        [_candidate("EST", 82.0, 82.0)],
+        {"EST": {"earnings_within_days": 10, "avg_volume": 200_000, "bid_ask_spread_pct": 0.1, "regime": "NORMAL", "data_age_seconds": 10, "price_change_5d": 2, "current_price": 50.0}},
+    )
+
+    # Estimated dollar volume = 200_000 × 50 = $10M < $50M threshold
+    assert result["rejected"][0]["reason"] == "low_volume"
+
+
+def test_dollar_volume_fallback_estimation_passes():
+    """Estimated dollar volume = $500M → passes."""
+    result = TradeEligibilityFilter().filter(
+        [_candidate("BIG", 82.0, 82.0)],
+        {"BIG": {"earnings_within_days": 10, "avg_volume": 5_000_000, "bid_ask_spread_pct": 0.1, "regime": "NORMAL", "data_age_seconds": 10, "price_change_5d": 2, "current_price": 150.0}},
+    )
+
+    # Estimated dollar volume = 5M × 150 = $750M > $50M threshold
+    assert len(result["accepted"]) == 1
+    assert result["accepted"][0]["ticker"] == "BIG"
+    assert result["accepted"][0]["trade_filter_passed"] is True
+    assert result["fallback_used"] is False
 
 
 def test_rejects_spread_too_wide():

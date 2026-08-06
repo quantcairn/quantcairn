@@ -226,8 +226,8 @@ def main() -> None:
     os.environ.setdefault("OPENALPHA_SKIP_YFINANCE_HISTORY", "1")
     os.environ.setdefault("OPENALPHA_HTTP_TIMEOUT_SECONDS", "2")
     os.environ.setdefault("OPENALPHA_FILTER_CANDIDATE_LIMIT", "20")
-    os.environ.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "30")
-    os.environ.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "20")
+    os.environ.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "60")
+    os.environ.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "30")
     os.environ.pop("OPENALPHA_FAST_START_ONLY", None)
 
     selector = AIStrategySelector()

@@ -150,7 +150,9 @@ def _run_selection_if_due():
     env = os.environ.copy()
     env.setdefault("OPENALPHA_LIVE_DATA", "1")
     env.setdefault("OPENALPHA_FETCH_NEWS", "0")
-    env.setdefault("OPENALPHA_MAX_SYMBOLS", "50")
+    env.setdefault("OPENALPHA_MAX_SYMBOLS", "35")
+    env.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "180")
+    env.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "60")
     # Disable curl_cffi to avoid TLS library conflicts with Surge proxy.
     # curl_cffi bundles its own libcurl/TLS which can't validate Surge's
     # MITM certificates, producing:

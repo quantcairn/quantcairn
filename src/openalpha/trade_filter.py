@@ -115,6 +115,7 @@ class TradeEligibilityFilter:
             "earnings_within_days",
             "price_change_5d",
             "avg_volume",
+            "average_dollar_volume_20d",
             "bid_ask_spread_pct",
             "regime",
             "data_age_seconds",
@@ -125,6 +126,11 @@ class TradeEligibilityFilter:
                 ctx[key] = candidate.get(key)
         if ctx.get("avg_volume") is None:
             ctx["avg_volume"] = candidate.get("avg_10d_volume") or candidate.get("volume")
+        if ctx.get("average_dollar_volume_20d") is None:
+            price = _safe_float(candidate.get("current_price"))
+            volume = _safe_float(ctx.get("avg_volume"))
+            if price is not None and volume is not None:
+                ctx["average_dollar_volume_20d"] = price * volume
         if ctx.get("bid_ask_spread_pct") is None:
             ctx["bid_ask_spread_pct"] = candidate.get("spread_pct") or candidate.get("spread_pct_live")
         if ctx.get("price_change_5d") is None:
@@ -158,7 +164,10 @@ class TradeEligibilityFilter:
             return "extreme_5d_move"
 
         avg_volume = _safe_float(ctx.get("avg_volume"))
-        if avg_volume is not None and avg_volume < 5_000_000:
+        avg_dollar_volume = _safe_float(ctx.get("average_dollar_volume_20d"))
+        if avg_dollar_volume is not None and avg_dollar_volume < 50_000_000:
+            return "low_volume"
+        if avg_dollar_volume is None and avg_volume is not None and avg_volume < 5_000_000:
             return "low_volume"
 
         spread_pct = _safe_float(ctx.get("bid_ask_spread_pct"))
