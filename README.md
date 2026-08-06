@@ -166,6 +166,26 @@ All dashboards are read-only — zero recomputation during requests, zero networ
 
 ---
 
+## Video DevLog
+
+### Episode 001 — Building QuantCairn v0.17.0
+
+[![QuantCairn v0.17.0 — Research Intelligence Platform](https://img.youtube.com/vi/8MLKDTAsiT8/0.jpg)](https://youtu.be/8MLKDTAsiT8)
+
+I built an AI-powered quantitative research platform with AI.
+
+This episode introduces:
+
+- QuantCairn architecture and 6-phase research stack
+- Research-first safety design
+- Research Center Dashboard
+- Paper Research workflow
+- AI-assisted development approach
+
+📺 **[Watch on YouTube](https://youtu.be/8MLKDTAsiT8)**
+
+---
+
 ## Safety
 
 QuantCairn is a **research tool, not a trading bot**. Key safety invariants:
