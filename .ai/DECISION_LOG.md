@@ -370,6 +370,9 @@
 | 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
 | 25 | Paper Research Platform (Phase 5A–5D) | 2026-08-05 | `paper_research.py`, `paper_tracker.py`, `paper_analytics.py`, `combined.py` |
 | 26 | Paper Research Dashboard UI (Phase 5E) | 2026-08-05 | `combined.py` |
+| 27 | Research Benchmark Framework (Phase 6A) | 2026-08-06 | `research_benchmark.py` |
+| 28 | Regime Performance Analysis (Phase 6B) | 2026-08-06 | `regime_analysis.py` |
+| 29 | Research Intelligence Platform (Phase 6C/6D) | 2026-08-06 | `research_report.py`, `combined.py` |
 
 ---
 
@@ -511,6 +514,60 @@
 
 **Impact**: +374 lines (5A), +582 lines (5B), +476 lines (5C), +177 lines (5D). +16 tests (5A), +18 tests (5B), +16 tests (5C), +10 tests (5D). Total: +1,609 source, +60 tests. Zero production module modifications. No imports from selector, scorer, engine, broker, risk, or safety.
 
+---
+
+## 27. Research Benchmark Framework (Phase 6A)
+
+**Decision**: Add a unified research benchmark layer that synthesizes data from four existing pipelines (Phase 2C analytics, 3B walk-forward, 5C paper analytics, 4A registry) into a single standardized snapshot with a composite A-F grade.
+
+**Date**: 2026-08-06
+
+**Background**: Phases 1-5 produce rich research data across isolated pipelines, but there is no unified view. An operator must manually inspect 4+ JSON files across different directories to understand "how is the strategy performing?" The benchmark provides a single answer to that question.
+
+**Reason**: (a) A composite score normalizes heterogeneous metrics (win rates, stability, data quality) into a single grade. (b) Coverage scoring tracks data availability — if walk-forward data is missing, the composite adjusts weights rather than breaking. (c) Historical snapshots enable trend analysis. (d) Direct file I/O (no module imports) prevents accidental recalculation during benchmark runs.
+
+**Alternatives considered**:
+- Live composite in dashboard — rejected because the benchmark should be an offline snapshot, not a per-request computation
+- Weight optimization via ML — rejected as premature; the fixed weights (0.35/0.25/0.25/0.15) are documented but not yet learned
+
+**Impact**: +464 lines in `research_benchmark.py`. +19 tests. Zero production module modifications. All reads are direct `json.loads(path.read_text())`. No imports from other research modules. Output: `artifacts/learning/research_benchmark/` (snapshots + summary with 90-day history).
+
+---
+
+## 28. Regime Performance Analysis (Phase 6B)
+
+**Decision**: Add market regime-aware performance analysis that joins regime tags (Phase 4A) with selection and paper metrics to evaluate whether the strategy performs differently in bull, bear, and sideways markets.
+
+**Date**: 2026-08-06
+
+**Background**: The selection strategy may perform well in aggregate but poorly in specific regimes. Without regime breakdown, a strategy that wins in bull markets and loses in bear markets appears "average" — hiding its regime dependency.
+
+**Reason**: (a) Regime tagging data already exists from Phase 4A — Phase 6B uses it. (b) Per-regime metrics (win rate, avg return, holding days) enable operators to understand when the strategy works and when it doesn't. (c) Regime robustness scoring (STRONG/MODERATE/WEAK) quantifies regime sensitivity.
+
+**Alternatives considered**:
+- Real-time regime detection in selector — rejected because that would change selection behavior; Phase 6B is analysis-only
+- Per-regime backtest — rejected because it requires re-running the entire pipeline per regime, which is expensive
+
+**Impact**: +339 lines in `regime_analysis.py`. +14 tests. Zero production module modifications. All reads are direct file I/O. Valid regimes are explicitly constrained to {bull, bear, sideways} — unknown regime tags are ignored. Output: `artifacts/learning/regime_analysis/`.
+
+---
+
+## 29. Research Intelligence Platform (Phase 6C/6D)
+
+**Decision**: Add a research report generator (6C) that synthesizes all Phase 1-6 data into a structured JSON report with risk detection and recommendations, and a Research Center dashboard (6D) that visualizes the entire research stack.
+
+**Date**: 2026-08-06
+
+**Background**: With 6 phases of research infrastructure, the data exists but is scattered across 10+ JSON files in 8 directories. The report generator provides a single entry point, and the dashboard makes it visible.
+
+**Reason**: (a) A structured report enables programmatic consumption by CI/CD or external monitoring. (b) Risk detection (LOW_SAMPLE_SIZE, REGIME_DEPENDENCY, PERFORMANCE_DEGRADATION, INSUFFICIENT_PAPER_HISTORY) flags issues automatically. (c) Research status (READY/DEVELOPING/INSUFFICIENT_DATA) indicates whether the dataset is mature enough for decision-making. (d) The Research Center dashboard follows the Phase 5E pattern exactly — inline HTML with JS fetch, zero recomputation, graceful fallback on missing data.
+
+**Alternatives considered**:
+- Markdown report — rejected because JSON is machine-readable and enables future dashboard integration
+- Auto-generated trading recommendations — rejected as a safety violation; recommendations are research observations only
+
+**Impact**: +397 lines (6C `research_report.py`), +277 lines (6D dashboard). +16 tests (6C), +12 tests (6D). All payloads read pre-computed JSON. Dashboard adds 3 new `/api/status` keys and 2 new routes (`/research-center`, `/api/research/center`). Zero production module modifications.
+
 ## Decision Index (continued)
 
 | # | Decision | Date | Key File |
@@ -524,6 +581,9 @@
 | 24 | Research Dashboard Observability (Phase 4B) | 2026-08-05 | `combined.py` |
 | 25 | Paper Research Platform (Phase 5A–5D) | 2026-08-05 | `paper_research.py`, `paper_tracker.py`, `paper_analytics.py`, `combined.py` |
 | 26 | Paper Research Dashboard UI (Phase 5E) | 2026-08-05 | `combined.py` |
+| 27 | Research Benchmark Framework (Phase 6A) | 2026-08-06 | `research_benchmark.py` |
+| 28 | Regime Performance Analysis (Phase 6B) | 2026-08-06 | `regime_analysis.py` |
+| 29 | Research Intelligence Platform (Phase 6C/6D) | 2026-08-06 | `research_report.py`, `combined.py` |
 
 ## 2026-07-28 — TOP Config Empty-Selection Sync Safety
 
