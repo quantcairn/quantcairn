@@ -3448,6 +3448,204 @@ def _research_center_regime_payload() -> dict[str, object]:
         return {"available": False, "reason": "data read error"}
 
 
+RESEARCH_REPORT_PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuantCairn — Research Report</title>
+<style>
+  :root{--bg:#0d1117;--card-bg:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--green:#3fb950;--red:#f85149;--blue:#58a6ff;--yellow:#d2991d;--purple:#bc8cff}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);padding:24px;max-width:1200px;margin:0 auto}
+  h1{font-size:22px;margin-bottom:4px}
+  h2{font-size:16px;margin:24px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  .subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+  .card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:14px}
+  .card .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .value{font-size:24px;font-weight:700;margin-top:4px}
+  .card .green{color:var(--green)}.card .red{color:var(--red)}.card .blue{color:var(--blue)}.card .purple{color:var(--purple)}.card .yellow{color:var(--yellow)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px}
+  th{text-align:left;padding:8px 10px;background:var(--card-bg);border-bottom:2px solid var(--border);font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.3px}
+  td{padding:8px 10px;border-bottom:1px solid var(--border)}
+  tr:hover{background:rgba(88,166,255,.04)}
+  .pos{color:var(--green)}.neg{color:var(--red)}
+  .warning{background:rgba(210,153,29,.1);border:1px solid var(--yellow);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px}
+  .info{background:rgba(88,166,255,.08);border:1px solid var(--blue);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px}
+  .risk-high{border-left:3px solid var(--red)}.risk-medium{border-left:3px solid var(--yellow)}.risk-low{border-left:3px solid var(--muted)}
+  .risk-item{padding:8px 12px;margin-bottom:6px;background:var(--card-bg);border-radius:4px;font-size:13px}
+  .risk-item .sev{font-size:11px;text-transform:uppercase;margin-right:6px;font-weight:700}
+  .sev-red{color:var(--red)}.sev-yellow{color:var(--yellow)}.sev-muted{color:var(--muted)}
+  .findings{list-style:disc;padding-left:20px;font-size:13px;color:var(--text)}
+  .findings li{margin-bottom:4px}
+  .loading{color:var(--muted);text-align:center;padding:40px;font-size:15px}
+  .nav{display:flex;gap:16px;margin-bottom:24px;font-size:14px}
+  .nav a{color:var(--blue);text-decoration:none}
+  .nav a:hover{text-decoration:underline}
+  .nav span{color:var(--muted)}
+  .grade-badge{display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:50%;font-size:36px;font-weight:900}
+  .grade-A{background:rgba(63,185,80,.15);color:var(--green);border:3px solid var(--green)}
+  .grade-B{background:rgba(88,166,255,.15);color:var(--blue);border:3px solid var(--blue)}
+  .grade-C{background:rgba(210,153,29,.15);color:var(--yellow);border:3px solid var(--yellow)}
+  .grade-D,.grade-F{background:rgba(248,81,73,.15);color:var(--red);border:3px solid var(--red)}
+  .grade-row{display:flex;align-items:center;gap:16px;margin-bottom:16px}
+  .grade-meta{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="nav">
+  <a href="/">Dashboard</a>
+  <a href="/paper-research">Paper Research</a>
+  <a href="/research-center">Research Center</a>
+  <span>Research Report</span>
+</div>
+<h1>Research Report</h1>
+<div class="subtitle" id="subtitle">Loading...</div>
+
+<div id="loading" class="loading">Loading research report...</div>
+
+<div id="content" style="display:none">
+
+  <h2>Executive Summary</h2>
+  <div id="grade-display"></div>
+  <div class="cards" id="exec-cards"></div>
+  <div id="findings-section" style="display:none">
+    <h3 style="font-size:13px;color:var(--muted);margin:8px 0 4px">Key Findings</h3>
+    <ul class="findings" id="findings-list"></ul>
+  </div>
+
+  <h2>Research Benchmark</h2>
+  <div class="cards" id="bench-cards"></div>
+
+  <h2>Regime Analysis</h2>
+  <div id="regime-table-wrap" style="display:none">
+    <table><thead><tr><th>Regime</th><th>Days</th><th>Selection Win%</th><th>Paper Win%</th><th>Paper Return%</th></tr></thead><tbody id="regime-body"></tbody></table>
+  </div>
+  <div id="regime-empty" class="warning" style="display:none">No regime analysis data available.</div>
+
+  <h2>Paper Research Summary</h2>
+  <div class="cards" id="paper-cards"></div>
+
+  <h2>Risks</h2>
+  <div id="risks-section"></div>
+
+  <div id="recs-section" style="display:none">
+    <h2>Recommendations</h2>
+    <ul class="findings" id="recs-list"></ul>
+  </div>
+
+</div>
+
+<script>
+function fmt(v,d){return v!=null?Number(v).toFixed(d):'—'}
+function pct(v){return v!=null?(v>0?'+':'')+(v*100).toFixed(1)+'%':'—'}
+function sevClass(s){return s==='HIGH'?'red':s==='MEDIUM'?'yellow':'muted'}
+function card(cls,l,v){return'<div class="card"><div class="label">'+l+'</div><div class="value '+cls+'">'+v+'</div></div>'}
+
+fetch('/api/research/center').then(function(r){return r.json()}).then(function(d){
+document.getElementById('loading').style.display='none';
+document.getElementById('content').style.display='';
+
+var rp=d.research_report||{},bm=d.benchmark||{},
+    rm=d.regime||{},pp=d.paper_research||{},pt=d.paper_tracking||{};
+
+// Subtitle with generation info
+var sub=[];
+if(rp.generated_at) sub.push('Generated: '+rp.generated_at);
+if(bm.generated_at && bm.generated_at!==rp.generated_at) sub.push('Benchmark: '+bm.generated_at);
+document.getElementById('subtitle').textContent=sub.join(' · ')||'Report data loaded';
+
+// Grade display
+if(rp.available && rp.composite_grade){
+  var g=rp.composite_grade[0]||'?';
+  var gc='grade-'+g;
+  document.getElementById('grade-display').innerHTML=
+    '<div class="grade-row">'
+    +'<div class="grade-badge '+gc+'">'+g+'</div>'
+    +'<div class="grade-meta">Composite Research Grade<br>Status: '+ (rp.research_status||'UNKNOWN')+'<br>Sources: '+(rp.sources_available||0)+'</div>'
+    +'</div>';
+}else if(!rp.available){
+  document.getElementById('grade-display').innerHTML='<div class="info">Research report data not yet available. Run Phase 6C report generation.</div>';
+}
+
+// Executive Summary
+if(rp.available){
+  var c=document.getElementById('exec-cards');
+  var cls=rp.research_status==='READY'?'green':rp.research_status==='DEVELOPING'?'yellow':'red';
+  c.innerHTML=card(cls,'Research Status',rp.research_status)
+    +card('purple','Composite Grade',rp.composite_grade||'—')
+    +card('blue','Sources Available',rp.sources_available||0);
+  if(rp.key_findings&&rp.key_findings.length){
+    document.getElementById('findings-section').style.display='';
+    document.getElementById('findings-list').innerHTML=rp.key_findings.map(function(f){return'<li>'+f+'</li>'}).join('');
+  }
+}
+
+// Benchmark
+if(bm.available){
+  var bc=document.getElementById('bench-cards');
+  bc.innerHTML=card('purple','Composite Grade',bm.composite_grade||'—')
+    +card('blue','Score',fmt(bm.composite_score,2))
+    +card('green','Selection Win Rate',pct(bm.selection_win_rate))
+    +card('blue','Stability',fmt(bm.stability_score,2))
+    +card('green','Paper Win Rate',pct(bm.paper_win_rate))
+    +card('blue','Coverage',fmt((bm.coverage_score||0)*100,0)+'%');
+}else{
+  document.getElementById('bench-cards').innerHTML='<div class="warning">Benchmark data not available. Run Phase 6A benchmark generation.</div>';
+}
+
+// Regime Analysis
+if(rm.available&&rm.regimes&&rm.regimes.length){
+  document.getElementById('regime-table-wrap').style.display='';
+  document.getElementById('regime-body').innerHTML=rm.regimes.map(function(r){
+    return'<tr><td>'+r.regime+'</td><td>'+r.tag_count+'</td><td>'+pct(r.selection_win_rate)+'</td><td>'+pct(r.paper_win_rate)+'</td><td>'+fmt(r.paper_avg_return,2)+'%</td></tr>';
+  }).join('')
+  +'<tr><td colspan="5" style="color:var(--muted);font-size:11px;padding-top:8px">'
+  +'Best Regime: '+(rm.best_regime||'—')+' · '
+  +'Worst Regime: '+(rm.worst_regime||'—')+' · '
+  +'Robustness: '+(rm.regime_robustness||'—')
+  +'</td></tr>';
+}else{document.getElementById('regime-empty').style.display='block'}
+
+// Paper Research Summary
+if(pp.available){
+  var pc=document.getElementById('paper-cards');
+  pc.innerHTML=card('blue','Total Trades',pp.total_trades||0)
+    +card('green','Win Rate',pp.performance&&pp.performance.win_rate!=null?pct(pp.performance.win_rate):'—')
+    +card('blue','Avg Return',pp.performance&&pp.performance.avg_return_pct!=null?fmt(pp.performance.avg_return_pct,2)+'%':'—')
+    +card('blue','Avg Holding Days',pp.performance&&pp.performance.avg_holding_days!=null?fmt(pp.performance.avg_holding_days,1):'—');
+}else{
+  document.getElementById('paper-cards').innerHTML='<div class="info">Paper research data not yet available. Generate paper trades via Phase 5A.</div>';
+}
+
+// Risks
+if(rp.available&&rp.risks&&rp.risks.length){
+  document.getElementById('risks-section').innerHTML=rp.risks.map(function(r){
+    return'<div class="risk-item risk-'+(r.severity||'low').toLowerCase()+'"><span class="sev sev-'+sevClass(r.severity||'LOW')+'">'+(r.severity||'LOW')+'</span> '+(r.description||'')+'</div>';
+  }).join('');
+}else if(rp.available){
+  document.getElementById('risks-section').innerHTML='<div class="info">No risks detected. Research data quality is within acceptable thresholds.</div>';
+}else{
+  document.getElementById('risks-section').innerHTML='<div class="warning">Risk assessment unavailable. Research report data is missing.</div>';
+}
+
+// Recommendations
+if(rp.available&&rp.recommendations&&rp.recommendations.length){
+  document.getElementById('recs-section').style.display='';
+  document.getElementById('recs-list').innerHTML=rp.recommendations.map(function(r){return'<li>'+r+'</li>'}).join('');
+}
+
+}).catch(function(e){
+document.getElementById('loading').style.display='none';
+document.getElementById('content').innerHTML='<div class="warning">Failed to load research report: '+e.message+'</div>';
+document.getElementById('content').style.display='';
+});
+</script>
+</body>
+</html>"""
+
+
 RESEARCH_CENTER_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3481,7 +3679,7 @@ td{padding:8px 10px;border-bottom:1px solid var(--border)}
 </style>
 </head>
 <body>
-<div class="nav"><a href="/">Dashboard</a><span>Research Center</span><a href="/paper-research">Paper Research</a><a href="/research">Reports</a></div>
+<div class="nav"><a href="/">Dashboard</a><span>Research Center</span><a href="/paper-research">Paper Research</a><a href="/research-report">Research Report</a><a href="/research">Reports</a></div>
 <h1>Research Center</h1>
 <div id="loading" class="loading">Loading research data...</div>
 <div id="content" style="display:none">
@@ -3598,6 +3796,15 @@ document.getElementById('content').style.display='';
 </script>
 </body>
 </html>"""
+
+
+@app.route("/research-report")
+def research_report_page():
+    """Serve the Research Report dashboard page."""
+    try:
+        return render_template_string(RESEARCH_REPORT_PAGE), 200
+    except Exception:
+        return ("research report page unavailable", 500)
 
 
 @app.route("/research-center")
@@ -4975,6 +5182,9 @@ HTML = """<!DOCTYPE html>
     }
     .brand{display:flex;flex-direction:column;gap:10px}
     .brand h1{font-size:34px;line-height:1.04;letter-spacing:.02em;font-weight:860}
+    .topnav{display:flex;gap:10px;margin:10px 0 6px}
+    .topnav a{display:inline-flex;align-items:center;padding:6px 14px;border-radius:999px;background:rgba(125,211,252,.10);color:var(--accent2);text-decoration:none;font-size:12px;font-weight:600;transition:background .2s}
+    .topnav a:hover{background:rgba(125,211,252,.20)}
     .brand p{color:#aab7cc;font-size:14px;line-height:1.5;max-width:920px}
     .headline-stats{
         display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;min-width:1140px
@@ -5694,6 +5904,7 @@ HTML = """<!DOCTYPE html>
     <div class="topbar">
         <div class="brand">
             <h1>QuantCairn Research Dashboard</h1>
+            <div class="topnav"><a href="/">Dashboard</a><a href="/paper-research">Paper Research</a><a href="/research-center">Research Center</a><a href="/research-report">Research Report</a></div>
             <p>AI-powered quantitative research platform. Research signals, paper trading validation and portfolio monitoring.</p>
             <div class="headline-stats">
                 <div class="headline-stat">
@@ -10132,7 +10343,8 @@ PAPER_RESEARCH_PAGE = r"""<!DOCTYPE html>
 <div class="nav">
   <a href="/">Dashboard</a>
   <span>Paper Research</span>
-  <a href="/research">Research Report</a>
+  <a href="/research-center">Research Center</a>
+  <a href="/research-report">Research Report</a>
 </div>
 <h1>Paper Research</h1>
 <div class="subtitle" id="subtitle">Loading...</div>
