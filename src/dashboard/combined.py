@@ -60,9 +60,9 @@ COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
 SHADOW_OBSERVER_DIR = default_shadow_output_directory("SOXS.US", "15m")
 
 TICKERS = [
-    {"name": "TOP1", "desc": "AI优选第1名",    "port": 8091, "config": "TOP1.yaml"},
-    {"name": "TOP2", "desc": "AI优选第2名",    "port": 8092, "config": "TOP2.yaml"},
-    {"name": "TOP3", "desc": "AI优选第3名",    "port": 8093, "config": "TOP3.yaml"},
+    {"name": "TOP1", "desc": "AI优选第1名",    "port": 8080, "config": "TOP1.yaml"},
+    {"name": "TOP2", "desc": "AI优选第2名",    "port": 8081, "config": "TOP2.yaml"},
+    {"name": "TOP3", "desc": "AI优选第3名",    "port": 8082, "config": "TOP3.yaml"},
 ]
 
 IGNORED_AUDIT_ACTIONS = {"get_account", "get_positions", "get_realtime_quote"}
@@ -8625,6 +8625,25 @@ def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | No
     signal = str((status or {}).get("last_signal") or (status or {}).get("signal") or ("OFFLINE" if not online else "HOLD")).strip().upper()
     price = (status or {}).get("price") if online else None
     halted = bool((status or {}).get("halted", False)) if online else False
+
+    # Range resolution: engine API first, then YAML config fallback.
+    engine_support = (status or {}).get("support") if online else None
+    engine_resistance = (status or {}).get("resistance") if online else None
+    engine_range_ready = bool((status or {}).get("range_ready", False)) if online else False
+    engine_range_source = (status or {}).get("range_source") if online else None
+    yaml_range = config_data.get("range") if isinstance(config_data.get("range"), dict) else {}
+    yaml_support = yaml_range.get("support_price")
+    yaml_resistance = yaml_range.get("resistance_price")
+    yaml_range_ready = bool(
+        yaml_support is not None
+        and yaml_resistance is not None
+        and float(yaml_support or 0) > 0
+        and float(yaml_resistance or 0) > float(yaml_support or 0)
+    )
+    resolved_support = engine_support if engine_support is not None else yaml_support
+    resolved_resistance = engine_resistance if engine_resistance is not None else yaml_resistance
+    resolved_range_ready = engine_range_ready or (not online and yaml_range_ready)
+    resolved_range_source = engine_range_source or ("yaml_config" if yaml_range_ready else None)
     return {
         "rank": rank,
         "ticker": ticker if ticker else None,
@@ -8651,10 +8670,10 @@ def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | No
         "unrealized_pnl": (status or {}).get("unrealized_pnl"),
         "unrealized_pnl_pct": (status or {}).get("unrealized_pnl_pct"),
         "trade_in_progress": bool((status or {}).get("trade_in_progress", False)) if online else False,
-        "range_ready": bool((status or {}).get("range_ready", False)) if online else False,
-        "range_source": (status or {}).get("range_source"),
-        "support": (status or {}).get("support"),
-        "resistance": (status or {}).get("resistance"),
+        "range_ready": resolved_range_ready,
+        "range_source": resolved_range_source,
+        "support": resolved_support,
+        "resistance": resolved_resistance,
         "spread_pct": (status or {}).get("spread_pct"),
         "bid": (status or {}).get("bid"),
         "ask": (status or {}).get("ask"),
@@ -9684,9 +9703,11 @@ def index():
         d = dashboard_status_by_symbol.get(str(defaults["ticker"]).strip().upper()) or _fetch_status(t["port"])
 
         if d:
-            supp = d.get("support", 0)
-            res = d.get("resistance", 0)
+            supp = d.get("support") or defaults.get("support", 0)
+            res = d.get("resistance") or defaults.get("resistance", 0)
             price = d.get("price", 0)
+            range_ready = bool(d.get("range_ready")) or bool(supp and res and float(res or 0) > float(supp or 0))
+            range_source = d.get("range_source") or ("yaml_config" if not d.get("range_ready") else "unknown")
             entry_price = float(d.get("entry_price", 0.0) or 0.0)
             position_shares = int(d.get("position_shares", 0) or 0)
             unrealized_pnl = float(d.get("unrealized_pnl", 0.0) or 0.0)
@@ -9749,8 +9770,8 @@ def index():
                 "support": supp,
                 "resistance": res,
                 "spread_pct": d.get("spread_pct", 0),
-                "range_ready": bool(d.get("range_ready")),
-                "range_source": d.get("range_source", "unknown"),
+                "range_ready": range_ready,
+                "range_source": range_source,
                 "pos_pct": pos_pct,
                 "sparkline": sparkline,
                 "signal": d.get("last_signal", "N/A"),
