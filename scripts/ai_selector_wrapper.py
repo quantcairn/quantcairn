@@ -170,6 +170,24 @@ def _run_selection_if_due():
     mark_ran_today(now_et)
     print(f'AI selector completed and TOP engines refreshed for ET date {now_et.date().isoformat()}.')
 
+    # Fire-and-forget: generate daily research report after successful selection.
+    # The research report is a non-critical artifact consumed by the dashboard.
+    # A failure here is logged but never blocks the wrapper or affects trading.
+    try:
+        _verbose('[SCHEDULER] triggering daily research report generation')
+        report_script = os.path.join(PROJECT_DIR, 'scripts', 'generate_daily_research_report.py')
+        report_env = os.environ.copy()
+        report_env.setdefault("YF_DISABLE_CURL_CFFI", "1")
+        subprocess.run(
+            [py, report_script, '--no-site'],
+            cwd=PROJECT_DIR,
+            env=report_env,
+            capture_output=True,
+            timeout=120,
+        )
+    except Exception:
+        pass  # fire-and-forget — research report generation is best-effort
+
 
 def main():
     load_local_ai_env()
