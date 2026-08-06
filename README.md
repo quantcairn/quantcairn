@@ -4,7 +4,9 @@
 
 AI-powered quantitative research platform for US equity selection.
 
-QuantCairn builds a transparent research pipeline that evaluates US stocks and ETFs through a multi-stage selection framework, multi-factor scoring model, portfolio composition analysis, and historical outcome evaluation.
+[![release](https://img.shields.io/badge/release-v0.17.0-blue)](https://github.com/quantcairn/quantcairn/releases)
+
+QuantCairn builds a comprehensive research stack: selection → validation → paper trading simulation → research intelligence. Every selection is traceable, every outcome is measurable, and every analysis is reproducible.
 
 The platform is designed for:
 
@@ -17,25 +19,27 @@ The platform is designed for:
 
 ## Research Pipeline
 
-QuantCairn follows a complete research loop:
+QuantCairn's research stack spans 6 phases across 8+ research modules:
 
-Universe
+Selection
 ↓
-Market Data Validation
+Selection Ledger *(Phase 1)*
 ↓
-Multi-factor Scoring
-↓
-Candidate Selection
-↓
-Portfolio Composition
-↓
-Selection Ledger
-↓
-Historical Outcome Backfill
+Historical Outcome Backfill *(Phase 2)*
 ↓
 Learning Dataset
 ↓
 Research Analytics
+↓
+Walk Forward Validation *(Phase 3)*
+↓
+Research Registry *(Phase 4)*
+↓
+Paper Trading Research *(Phase 5)*
+↓
+Benchmark · Regime · Report *(Phase 6)*
+↓
+Research Center Dashboard
 
 
 ## Core Capabilities
@@ -147,6 +151,21 @@ The paper broker simulates fills with realistic slippage and commissions. Positi
 
 ---
 
+## Dashboard
+
+QuantCairn includes research visualization dashboards (port 8090):
+
+| Page | URL | Purpose |
+|---|---|---|
+| Main Dashboard | `/` | Selection status, engine health, position summary |
+| Research Center | `/research-center` | Benchmark, regime analysis, validation, report |
+| Paper Research | `/paper-research` | Paper trades, position tracking, performance analytics |
+| Research Report | `/research` | Daily research digest |
+
+All dashboards are read-only — zero recomputation during requests, zero network calls. Pre-computed JSON artifacts power every page.
+
+---
+
 ## Safety
 
 QuantCairn is a **research tool, not a trading bot**. Key safety invariants:
@@ -225,13 +244,27 @@ quantcairn/
 
 ---
 
+## Release History
+
+| Version | Name | Highlights |
+|---|---|---|
+| **v0.17.0** | Research Intelligence | Benchmark framework, regime analysis, research report, research center dashboard |
+| **v0.16.0** | Paper Research | Paper trading bridge, position tracker, paper analytics, paper dashboard |
+| **v0.15.0** | Research Observability | Research history registry, observability dashboard, dataset quality tracking |
+| **v0.14.0** | Validation Platform | Walk-forward validation, research analytics API |
+| **v0.13.0** | Research Platform | Selection ledger, outcome backfill, learning dataset, analytics engine |
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
+
+---
+
 ## Roadmap
 
 **Completed (v0.17.0)**:
-- [x] Multi-stage research pipeline, mode-aware quality filtering, paper trading, demo mode, diagnostics, Telegram, dashboard, CI, packaging, AI context layer, open-source foundation, scoring rejection reason propagation, outcome collector, selection ledger with historical backfill, walk-forward validation, research analytics dashboard, research history registry, research observability APIs, paper research bridge, paper position tracking, paper analytics, paper research dashboard UI, research benchmark framework, regime performance analysis, research report generator, research center dashboard
+- [x] Selection pipeline, demo mode, diagnostics, Telegram, dashboard, CI, packaging, open-source foundation, selection ledger with backfill, walk-forward validation, research analytics, research registry, observability APIs, paper research bridge, position tracking, paper analytics, research benchmark, regime analysis, research report, research center dashboard
 
-**Next**:
-- [ ] Multi-provider data fallback, dashboard mode consistency, ML readiness evaluation
+**Next (Phase 7)**:
+- [ ] ML research sandbox — feature analysis experiments, model comparison, validation only. No auto-training, no production model replacement.
 
 See [ROADMAP.md](ROADMAP.md) for the full plan.
 
