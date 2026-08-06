@@ -168,9 +168,13 @@ All dashboards are read-only — zero recomputation during requests, zero networ
 
 ## Video DevLog
 
+Follow the QuantCairn development journey on YouTube.
+
+📺 **[YouTube Channel — @QuantCairn](https://www.youtube.com/@QuantCairn)**
+
 ### Episode 001 — Building QuantCairn v0.17.0
 
-[![QuantCairn v0.17.0 — Research Intelligence Platform](https://img.youtube.com/vi/8MLKDTAsiT8/0.jpg)](https://youtu.be/8MLKDTAsiT8)
+[![QuantCairn v0.17.0](https://img.youtube.com/vi/8MLKDTAsiT8/0.jpg)](https://www.youtube.com/watch?v=8MLKDTAsiT8)
 
 I built an AI-powered quantitative research platform with AI.
 
@@ -181,8 +185,6 @@ This episode introduces:
 - Research Center Dashboard
 - Paper Research workflow
 - AI-assisted development approach
-
-📺 **[Watch on YouTube](https://youtu.be/8MLKDTAsiT8)**
 
 ---
 
