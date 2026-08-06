@@ -2,7 +2,8 @@
 # QuantCairn — TOP Trading Engines Launcher
 #
 # Starts all 3 TOP trading engines on their designated ports using the
-# existing run_top_engine.sh script.
+# existing run_top_engine.sh script.  Stays in the foreground (waits for
+# child engines) so that launchd KeepAlive does not restart-loop.
 #
 # This script is designed to be invoked directly (for manual testing) or
 # via launchd (com.quantcairn.top-engines.plist) for automatic startup.
@@ -32,6 +33,16 @@ ENGINES=(
   "configs/TOP3.yaml 8082 top3"
 )
 
+PIDS=()
+
+cleanup() {
+    for pid in "${PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait "${PIDS[@]}" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
 started=0
 
 for engine in "${ENGINES[@]}"; do
@@ -43,7 +54,13 @@ for engine in "${ENGINES[@]}"; do
   echo "[top-engines] START $name: $cfg port=$port"
   SOXS_TOP_ENGINE_REDIRECT_STDIO="$REDIRECT" \
     bash "$LAUNCHER" "$cfg" "$port" "$name" &>/dev/null &
+  PIDS+=($!)
   started=$((started + 1))
 done
 
-echo "[top-engines] Launched $started TOP engines"
+echo "[top-engines] Launched $started TOP engines (supervisor PID $$ waiting)"
+
+# Keep the supervisor alive so launchd KeepAlive does not restart-loop.
+# If any child exits early, the remaining children continue running.
+# The trap above ensures clean shutdown on SIGTERM.
+wait "${PIDS[@]}" 2>/dev/null || true
