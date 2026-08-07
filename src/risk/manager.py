@@ -81,6 +81,7 @@ class RiskManager:
         self._halt_reason: str = ""
         self._halt_until: Optional[datetime] = None
         self._last_state_save_at = 0.0
+        self._last_trading_day: str = ""  # tracks trading date for cross-day reset
 
         # Instrument profile tracking
         self._ticker: str = ""
@@ -89,6 +90,25 @@ class RiskManager:
         self._load_state()
 
     # ---- Public API ----
+
+    def _reset_on_new_trading_day(self) -> None:
+        """If the ET trading date has changed, reset per-day risk state."""
+        today = self._trading_date()
+        if self._last_trading_day and self._last_trading_day != today:
+            logger.info(
+                "New trading day: %s (was %s) — resetting consecutive_losses",
+                today, self._last_trading_day,
+            )
+            self._consecutive_losses = 0
+            # Clear a time-based halt that was triggered on the previous day.
+            # The halt_until timestamp (30 min) has already expired by now.
+            if self._halted and self._halt_reason.startswith(
+                str(self.max_consecutive_losses)
+            ):
+                self._halted = False
+                self._halt_reason = ""
+                self._halt_until = None
+        self._last_trading_day = today
 
     def set_ticker(self, ticker: str) -> None:
         """Set the ticker for instrument-profile lookups."""
@@ -112,6 +132,9 @@ class RiskManager:
         Returns:
             RiskCheckResult with allowed=True/False
         """
+        # 0. Reset daily state if we've crossed into a new trading day.
+        self._reset_on_new_trading_day()
+
         # 1. Check if trading is halted
         if self._halted:
             if self._halt_until and datetime.now() < self._halt_until:
@@ -363,6 +386,7 @@ class RiskManager:
                 for k, v in (data.get("daily_peak_equity") or {}).items()
             }
             self._current_equity = float(data.get("current_equity", 0.0) or 0.0)
+            self._last_trading_day = str(data.get("last_trading_day", "") or "")
             self._halted = bool(data.get("halted", False))
             self._halt_reason = str(data.get("halt_reason", "") or "")
             if data.get("halt_until"):
@@ -395,6 +419,7 @@ class RiskManager:
         if not force and (now - self._last_state_save_at) < 30.0:
             return
         payload = {
+            "last_trading_day": self._last_trading_day,
             "consecutive_losses": self._consecutive_losses,
             "daily_pnl": self._daily_pnl,
             "daily_peak_equity": self._daily_peak_equity,
