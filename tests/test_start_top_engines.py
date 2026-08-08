@@ -340,6 +340,139 @@ def test_plist_has_log_paths():
 
 
 # ---------------------------------------------------------------------------
+# 7. Restart mode (used by AI selector after config update)
+# ---------------------------------------------------------------------------
+
+def test_launcher_supports_restart_mode():
+    """The script must accept 'restart' as a first argument."""
+    content = LAUNCHER.read_text(encoding="utf-8")
+    assert 'MODE="${1:-start}"' in content or 'MODE="${1' in content, (
+        "Launcher must support restart mode via first argument"
+    )
+    assert 'restart' in content, "Launcher must handle restart mode"
+
+
+def test_restart_mode_kills_old_engines_and_starts_new(tmp_path: Path):
+    """Restart stops existing engines on ports, then launches fresh processes."""
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+
+    for i in 1, 2, 3:
+        (cfg_dir / f"TOP{i}.yaml").write_text(
+            f"ticker: TEST{i}\nmode: paper\nrange:\n  mode: auto\nposition:\n  initial_capital: 700.0\n",
+            encoding="utf-8",
+        )
+
+    # run_top_engine.sh: echo its PID and args, then exit quickly
+    (scripts_dir / "run_top_engine.sh").write_text(
+        '#!/bin/bash\necho "ENGINE: $1 port=$2 pid=$$" && exit 0',
+        encoding="utf-8",
+    )
+    os.chmod(scripts_dir / "run_top_engine.sh", 0o755)
+
+    launcher_copy = scripts_dir / "start_top_engines.sh"
+    launcher_copy.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(launcher_copy, 0o755)
+
+    result = subprocess.run(
+        ["bash", str(launcher_copy), "restart"],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, f"Restart should succeed: {result.stderr}"
+    assert "RESTART" in result.stdout or "Restart" in result.stdout, (
+        f"Restart output should mention restart: {result.stdout}"
+    )
+    assert "Launched" in result.stdout or "launched" in result.stdout.lower()
+
+
+def test_restart_mode_does_not_wait_foreground(tmp_path: Path):
+    """In restart mode the script must exit quickly (no wait for children)."""
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+
+    for i in 1, 2, 3:
+        (cfg_dir / f"TOP{i}.yaml").write_text(
+            f"ticker: TEST{i}\nmode: paper\nrange:\n  mode: auto\nposition:\n  initial_capital: 700.0\n",
+            encoding="utf-8",
+        )
+
+    # run_top_engine.sh exits quickly (real engine would run forever)
+    (scripts_dir / "run_top_engine.sh").write_text(
+        '#!/bin/bash\necho "RUNNING $1" && exit 0',
+        encoding="utf-8",
+    )
+    os.chmod(scripts_dir / "run_top_engine.sh", 0o755)
+
+    launcher_copy = scripts_dir / "start_top_engines.sh"
+    launcher_copy.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(launcher_copy, 0o755)
+
+    start = time.time()
+    result = subprocess.run(
+        ["bash", str(launcher_copy), "restart"],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=10,
+    )
+    elapsed = time.time() - start
+
+    assert result.returncode == 0
+    assert elapsed < 8, (
+        f"Restart should exit quickly (<8s), took {elapsed:.1f}s"
+    )
+
+
+def test_restart_mode_exits_zero_on_success(tmp_path: Path):
+    """Successful restart returns exit code 0."""
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+
+    for i in 1, 2, 3:
+        (cfg_dir / f"TOP{i}.yaml").write_text(
+            f"ticker: TEST{i}\nmode: paper\nrange:\n  mode: auto\nposition:\n  initial_capital: 700.0\n",
+            encoding="utf-8",
+        )
+
+    (scripts_dir / "run_top_engine.sh").write_text(
+        '#!/bin/bash\necho "OK" && exit 0',
+        encoding="utf-8",
+    )
+    os.chmod(scripts_dir / "run_top_engine.sh", 0o755)
+
+    launcher_copy = scripts_dir / "start_top_engines.sh"
+    launcher_copy.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(launcher_copy, 0o755)
+
+    result = subprocess.run(
+        ["bash", str(launcher_copy), "restart"],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0
+
+
+def test_selector_restart_uses_start_top_engines_script():
+    """_restart_top_engines() calls start_top_engines.sh restart, not multi_launch.sh."""
+    # Use same PROJECT_DIR as LAUNCHER (already tested to exist)
+    selector_path = LAUNCHER.parent / "run_ai_selector.py"
+    content = selector_path.read_text(encoding="utf-8")
+    assert "start_top_engines.sh" in content, (
+        "_restart_top_engines() must reference start_top_engines.sh"
+    )
+    assert '"restart"' in content, (
+        "_restart_top_engines() must pass 'restart' as a subcommand"
+    )
+    # Should NOT reference the old multi_launch.sh in the restart function
+    func_body = content.split("def _restart_top_engines")[1].split("def _spawn_background")[0]
+    assert "multi_launch.sh" not in func_body, (
+        "_restart_top_engines() must NOT reference multi_launch.sh"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 5. Plist references match start_top_engines.sh
 # ---------------------------------------------------------------------------
 

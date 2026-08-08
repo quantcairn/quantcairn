@@ -2168,12 +2168,12 @@ def _restart_top_engines() -> int:
     if os.environ.get("OPENALPHA_RESTART_TOP", "1") == "0":
         print("OPENALPHA_RESTART_TOP=0; skipping TOP engine restart.")
         return 0
-    multi_launch = PROJECT_DIR / "multi_launch.sh"
-    if not multi_launch.exists():
-        print(f"Missing launcher: {multi_launch}")
+    launcher = PROJECT_DIR / "scripts" / "start_top_engines.sh"
+    if not launcher.exists():
+        print(f"Missing launcher: {launcher}")
         return 1
     return subprocess.run(
-        ["/bin/bash", str(multi_launch), "restart-top"],
+        ["/bin/bash", str(launcher), "restart"],
         cwd=PROJECT_DIR,
         check=False,
     ).returncode
