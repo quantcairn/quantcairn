@@ -135,6 +135,8 @@ def candidate_research_dashboard_payload(report: dict[str, Any]) -> dict[str, ob
 class CandidateDailyResearchReportGenerator:
     root_dir: Path = RESEARCH_ROOT
     candidate_root: Path | None = None
+    selection_report: dict[str, Any] | None = None
+    selection_metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         self.root_dir = Path(self.root_dir)
@@ -230,7 +232,7 @@ class CandidateDailyResearchReportGenerator:
         candidate_model_evaluation = load_candidate_model_evaluation_snapshot(
             candidate_root=self.candidate_root if self.candidate_root is not None else None,
         )
-        ai_report = _load_ai_selection_report()
+        ai_report = dict(self.selection_report or _load_ai_selection_report())
         top_candidates = self._top_candidates(candidates)
         failure_analysis = self._failure_analysis(candidates)
         score_distribution = performance.get("score_bucket_distribution") or []
@@ -286,6 +288,14 @@ class CandidateDailyResearchReportGenerator:
                 "performance_store": str((CandidatePerformanceTracker(self.candidate_root).performance_path) if self.candidate_root is not None else CandidatePerformanceTracker().performance_path),
             },
         }
+        if self.selection_metadata:
+            report.update(
+                {
+                    key: value
+                    for key, value in self.selection_metadata.items()
+                    if value not in (None, "")
+                }
+            )
         return report
 
     def _render_markdown(self, report: dict[str, Any]) -> str:

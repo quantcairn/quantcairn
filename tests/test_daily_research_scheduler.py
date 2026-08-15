@@ -192,3 +192,153 @@ def test_daily_research_scheduler_status_api_reads_latest_run(monkeypatch, tmp_p
     assert api_status["research_status"]["candidate_count"] == 2
     assert api_status["research_status"]["report_status"] == "completed"
     assert "AI 研究调度" in client.get("/").data.decode("utf-8")
+
+
+def _committed_bundle_for_test(tmp_path: Path) -> dict[str, object]:
+    return {
+        "manifest": {
+            "selection_run_id": "selection-independent-1",
+            "selection_date": "2026-07-13",
+            "selection_bundle_hash": "bundle-hash-1",
+            "bundle_root": str(tmp_path / "state" / "selection_bundles" / "selection-independent-1"),
+            "paths": {"manifest": str(tmp_path / "state" / "selection_bundle_manifest.json")},
+        },
+        "report": {
+            "selection_run_id": "selection-independent-1",
+            "selection_date": "2026-07-13",
+            "selection_bundle_hash": "bundle-hash-1",
+            "research_top_candidates": [],
+        },
+        "state": {},
+        "audit": {},
+        "metadata": {},
+        "bundle_root": tmp_path / "state" / "selection_bundles" / "selection-independent-1",
+    }
+
+
+def _isolated_research_scheduler(tmp_path: Path, monkeypatch, *, bundle):
+    import src.candidate_validation.research_scheduler as research_scheduler
+
+    project_dir = tmp_path / "project"
+    candidate_root = tmp_path / "runtime" / "artifacts" / "candidates"
+    research_root = tmp_path / "runtime" / "artifacts" / "research" / "daily"
+    candidate_root.mkdir(parents=True, exist_ok=True)
+    _seed_candidates(candidate_root)
+    monkeypatch.setattr(research_scheduler, "load_committed_selection_bundle", lambda _project: bundle)
+    called = {"selector": 0}
+
+    def selector(_project_dir: Path) -> dict[str, object]:
+        called["selector"] += 1
+        raise AssertionError("independent research invoked selector")
+
+    return (
+        research_scheduler.DailyResearchScheduler(
+            project_dir=project_dir,
+            research_root=research_root,
+            candidate_root=candidate_root,
+            selector_runner=selector,
+        ),
+        called,
+        research_root,
+    )
+
+
+def test_independent_research_consumes_committed_bundle_without_selector(tmp_path, monkeypatch):
+    bundle = _committed_bundle_for_test(tmp_path)
+    scheduler, called, research_root = _isolated_research_scheduler(tmp_path, monkeypatch, bundle=bundle)
+
+    result = scheduler.run(date(2026, 7, 13), mode="independent", dry_run=False)
+
+    assert result["status"] == "completed"
+    assert result["mode"] == "independent"
+    assert result["selector_invoked"] is False
+    assert called["selector"] == 0
+    assert result["selection_run_id"] == "selection-independent-1"
+    assert result["selection_date"] == "2026-07-13"
+    assert result["selection_bundle_hash"] == "bundle-hash-1"
+    assert result["bundle_source"] == "committed_bundle"
+
+    audit = json.loads(
+        (research_root / "2026-07-13" / "research_run_audit.json").read_text(encoding="utf-8")
+    )
+    report = json.loads(
+        (research_root / "2026-07-13" / "daily_candidate_report.json").read_text(encoding="utf-8")
+    )
+    assert audit["mode"] == "independent"
+    assert audit["selector_invoked"] is False
+    assert audit["selection_run_id"] == "selection-independent-1"
+    assert audit["selection_bundle_hash"] == "bundle-hash-1"
+    assert report["selection_run_id"] == "selection-independent-1"
+    assert report["selection_bundle_hash"] == "bundle-hash-1"
+    assert not (tmp_path / "project" / "state").exists()
+
+    repeated = scheduler.run(date(2026, 7, 13), mode="independent", dry_run=False)
+    assert repeated["status"] == "already_completed"
+    assert repeated["selection_run_id"] == "selection-independent-1"
+    assert called["selector"] == 0
+
+
+def test_independent_research_accepts_legacy_bundle_without_hash(tmp_path, monkeypatch):
+    bundle = _committed_bundle_for_test(tmp_path)
+    bundle["manifest"] = dict(bundle["manifest"])
+    bundle["report"] = dict(bundle["report"])
+    bundle["manifest"].pop("selection_bundle_hash", None)
+    bundle["report"].pop("selection_bundle_hash", None)
+    scheduler, called, _ = _isolated_research_scheduler(tmp_path, monkeypatch, bundle=bundle)
+
+    result = scheduler.run(date(2026, 7, 13), mode="independent", dry_run=False)
+
+    assert result["status"] == "completed"
+    assert result["selection_run_id"] == "selection-independent-1"
+    assert result["selection_bundle_hash"] is None
+    assert result["bundle_source"] == "legacy_committed_bundle"
+    assert called["selector"] == 0
+
+
+def test_independent_research_dry_run_does_not_write_or_invoke_selector(tmp_path, monkeypatch):
+    scheduler, called, research_root = _isolated_research_scheduler(
+        tmp_path, monkeypatch, bundle=_committed_bundle_for_test(tmp_path)
+    )
+
+    result = scheduler.run(date(2026, 7, 13), mode="independent", dry_run=True)
+
+    assert result["status"] == "dry_run"
+    assert result["selector_invoked"] is False
+    assert result["selection_run_id"] == "selection-independent-1"
+    assert called["selector"] == 0
+    assert not research_root.exists()
+
+
+def test_independent_research_missing_bundle_fails_closed(tmp_path, monkeypatch):
+    scheduler, called, research_root = _isolated_research_scheduler(tmp_path, monkeypatch, bundle=None)
+
+    result = scheduler.run(date(2026, 7, 13), mode="independent", dry_run=True)
+
+    assert result["status"] == "blocked_missing_bundle"
+    assert result["selector_invoked"] is False
+    assert called["selector"] == 0
+    assert not research_root.exists()
+
+
+def test_independent_research_invalid_bundle_fails_closed(tmp_path, monkeypatch):
+    scheduler, called, research_root = _isolated_research_scheduler(
+        tmp_path,
+        monkeypatch,
+        bundle={"manifest": {}, "report": {}, "bundle_root": tmp_path / "state"},
+    )
+
+    result = scheduler.run(date(2026, 7, 13), mode="independent", dry_run=True)
+
+    assert result["status"] == "blocked_invalid_bundle"
+    assert result["selector_invoked"] is False
+    assert called["selector"] == 0
+    assert not research_root.exists()
+
+
+def test_research_cli_modes_preserve_legacy_default():
+    import scripts.run_daily_research as cli
+
+    parser = cli._build_parser()
+    assert parser.parse_args([]).mode == "legacy"
+    assert parser.parse_args(["--mode", "legacy"]).mode == "legacy"
+    assert parser.parse_args(["--mode", "independent"]).mode == "independent"

@@ -5,7 +5,8 @@ import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Callable
@@ -13,7 +14,9 @@ from zoneinfo import ZoneInfo
 
 from src.candidate_validation.performance_tracker import CandidatePerformanceTracker
 from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator
+from src.candidate_validation.orchestrator import _selection_bundle_identity
 from src.candidate_validation.store import CandidateValidationStore
+from src.openalpha.selection_bundle import load_committed_selection_bundle
 from src.config.runtime_paths import resolve_artifacts_dir
 from src.utils.market_calendar import (
     US_EASTERN,
@@ -237,6 +240,8 @@ class DailyResearchScheduler:
     selector_runner: Callable[[Path], dict[str, Any]] = _default_selector_runner
     performance_refresher: Callable[[Path], dict[str, Any]] = _refresh_candidate_performance
     report_generator: Callable[[date, Path, Path], dict[str, Any]] | None = None
+    _selection_report_for_run: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _selection_metadata_for_run: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.project_dir = Path(self.project_dir)
@@ -249,8 +254,78 @@ class DailyResearchScheduler:
         generator = CandidateDailyResearchReportGenerator(
             root_dir=output_dir,
             candidate_root=self.candidate_root,
+            selection_report=self._selection_report_for_run,
+            selection_metadata=self._selection_metadata_for_run,
         )
         return generator.write()
+
+    @staticmethod
+    def _new_research_run_id() -> str:
+        return f"research_{datetime.now(ZoneInfo('UTC')).strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _bundle_identity(bundle: dict[str, Any] | None) -> dict[str, Any]:
+        identity = _selection_bundle_identity(bundle, source_hint="committed_bundle")
+        return {
+            "selection_run_id": identity.get("selection_run_id"),
+            "selection_date": identity.get("selection_date"),
+            "selection_bundle_hash": identity.get("bundle_hash"),
+            "bundle_source": identity.get("bundle_source"),
+            "bundle_root": identity.get("bundle_root"),
+            "bundle_manifest_path": identity.get("bundle_manifest_path"),
+        }
+
+    def _failure_result(
+        self,
+        *,
+        status: str,
+        reason: str,
+        mode: str,
+        dry_run: bool,
+        force: bool,
+        effective_date: date,
+        calendar: dict[str, Any],
+        day_dir: Path,
+        audit_path: Path,
+        identity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        identity = dict(identity or {})
+        result = {
+            "status": status,
+            "report_status": "blocked" if status.startswith("blocked_") else "failed",
+            "applied": False,
+            "dry_run": dry_run,
+            "force": force,
+            "mode": mode,
+            "execution_mode": mode,
+            "research_run_id": self._new_research_run_id(),
+            "selector_invoked": False,
+            "research_date": effective_date.isoformat(),
+            "research_dir": _relative_path(day_dir, self.project_dir),
+            "candidate_count": 0,
+            "calendar": calendar,
+            "error": reason,
+            "failure_reason": reason,
+            "steps": [
+                {"name": "market_calendar_check", "status": "completed"},
+                {"name": "committed_selection_bundle", "status": "failed", "reason": reason},
+            ],
+            "audit_path": _relative_path(audit_path, self.project_dir),
+        }
+        result.update(identity)
+        if not dry_run:
+            day_dir.mkdir(parents=True, exist_ok=True)
+            audit = dict(result)
+            audit["started_at"] = _utc_now_iso()
+            audit["completed_at"] = _utc_now_iso()
+            audit["created_at"] = audit["started_at"]
+            audit["all_trading_flags_false"] = True
+            audit["trade_api_used"] = False
+            audit["broker_used"] = False
+            audit["trade_context_initialized"] = False
+            _atomic_write_json(audit_path, audit)
+            result["audit"] = audit
+        return result
 
     def _load_existing_audit(self, report_date: date) -> dict[str, Any] | None:
         audit_path = _research_day_dir(self.research_root, report_date) / "research_run_audit.json"
@@ -260,9 +335,13 @@ class DailyResearchScheduler:
         self,
         report_date: date | None = None,
         *,
+        mode: str = "legacy",
         dry_run: bool = False,
         force: bool = False,
     ) -> dict[str, Any]:
+        mode = _safe_text(mode).lower() or "legacy"
+        if mode not in {"legacy", "independent"}:
+            raise ValueError(f"unsupported_research_mode:{mode}")
         calendar = market_calendar_check(report_date)
         effective_date = _safe_date(calendar["requested_date"]) or datetime.now(US_EASTERN).date()
         day_dir = _research_day_dir(self.research_root, effective_date)
@@ -276,6 +355,9 @@ class DailyResearchScheduler:
                 "report_status": "skipped_market_closed",
                 "applied": False,
                 "dry_run": dry_run,
+                "mode": mode,
+                "execution_mode": mode,
+                "selector_invoked": False,
                 "force": force,
                 "research_date": effective_date.isoformat(),
                 "research_dir": _relative_path(day_dir, self.project_dir),
@@ -287,14 +369,56 @@ class DailyResearchScheduler:
                 ],
             }
 
+        committed_bundle: dict[str, Any] | None = None
+        bundle_identity: dict[str, Any] = {}
+        if mode == "independent":
+            committed_bundle = load_committed_selection_bundle(self.project_dir)
+            bundle_identity = self._bundle_identity(committed_bundle)
+            if not committed_bundle:
+                return self._failure_result(
+                    status="blocked_missing_bundle" if dry_run else "failed",
+                    reason="committed_selection_bundle_missing",
+                    mode=mode,
+                    dry_run=dry_run,
+                    force=force,
+                    effective_date=effective_date,
+                    calendar=calendar,
+                    day_dir=day_dir,
+                    audit_path=audit_path,
+                    identity=bundle_identity,
+                )
+            if not bundle_identity.get("selection_run_id") or not bundle_identity.get("selection_date"):
+                return self._failure_result(
+                    status="blocked_invalid_bundle" if dry_run else "failed",
+                    reason="committed_selection_bundle_identity_incomplete",
+                    mode=mode,
+                    dry_run=dry_run,
+                    force=force,
+                    effective_date=effective_date,
+                    calendar=calendar,
+                    day_dir=day_dir,
+                    audit_path=audit_path,
+                    identity=bundle_identity,
+                )
+
         existing_audit = self._load_existing_audit(effective_date)
         existing_status = _safe_text((existing_audit or {}).get("status") or (existing_audit or {}).get("report_status") or "").lower()
-        if existing_audit and existing_status in {"completed", "already_completed"} and not force:
+        existing_mode = _safe_text((existing_audit or {}).get("mode") or (existing_audit or {}).get("execution_mode") or "legacy").lower()
+        same_independent_input = mode != "independent" or (
+            existing_mode == "independent"
+            and (existing_audit or {}).get("selection_run_id") == bundle_identity.get("selection_run_id")
+            and (existing_audit or {}).get("selection_bundle_hash") == bundle_identity.get("selection_bundle_hash")
+        )
+        if existing_audit and existing_status in {"completed", "already_completed"} and not force and same_independent_input:
             return {
+                "research_run_id": existing_audit.get("research_run_id"),
                 "status": "already_completed",
                 "report_status": existing_audit.get("report_status") or "completed",
                 "applied": False,
                 "dry_run": dry_run,
+                "mode": mode,
+                "execution_mode": mode,
+                "selector_invoked": False,
                 "force": force,
                 "research_date": effective_date.isoformat(),
                 "research_dir": _relative_path(day_dir, self.project_dir),
@@ -313,11 +437,16 @@ class DailyResearchScheduler:
                     {"name": "generate_report", "status": "skipped", "reason": "already_completed"},
                 ],
                 "audit": existing_audit,
+                **bundle_identity,
             }
 
         plan_steps = [
             {"name": "market_calendar_check", "status": "completed"},
-            {"name": "run_ai_selector", "status": "planned"},
+            {
+                "name": "run_ai_selector",
+                "status": "skipped" if mode == "independent" else "planned",
+                "reason": "independent_mode" if mode == "independent" else "",
+            },
             {"name": "candidate_performance_refresh", "status": "planned"},
             {"name": "generate_daily_research_report", "status": "planned"},
         ]
@@ -327,6 +456,9 @@ class DailyResearchScheduler:
                 "report_status": "planned",
                 "applied": False,
                 "dry_run": True,
+                "mode": mode,
+                "execution_mode": mode,
+                "selector_invoked": False,
                 "force": force,
                 "research_date": effective_date.isoformat(),
                 "research_dir": _relative_path(day_dir, self.project_dir),
@@ -334,6 +466,7 @@ class DailyResearchScheduler:
                 "last_research_run": existing_audit.get("completed_at") if existing_audit else None,
                 "calendar": calendar,
                 "steps": plan_steps,
+                **bundle_identity,
                 "output_paths": {
                     "json": _relative_path(report_json_path, self.project_dir),
                     "markdown": _relative_path(report_md_path, self.project_dir),
@@ -343,10 +476,25 @@ class DailyResearchScheduler:
 
         day_dir.mkdir(parents=True, exist_ok=True)
         started_at = _utc_now_iso()
+        research_run_id = self._new_research_run_id()
+        self._selection_report_for_run = (
+            committed_bundle.get("report") if isinstance(committed_bundle, dict) else None
+        )
+        self._selection_metadata_for_run = dict(bundle_identity)
         steps: list[dict[str, Any]] = [{"name": "market_calendar_check", "status": "completed"}]
         try:
-            selector_result = self.selector_runner(self.project_dir) or {}
-            steps.append({"name": "run_ai_selector", "status": "completed", "returncode": selector_result.get("returncode", 0)})
+            selector_invoked = mode == "legacy"
+            if selector_invoked:
+                selector_result = self.selector_runner(self.project_dir) or {}
+                steps.append({"name": "run_ai_selector", "status": "completed", "returncode": selector_result.get("returncode", 0)})
+                committed_bundle = load_committed_selection_bundle(self.project_dir)
+                bundle_identity = self._bundle_identity(committed_bundle)
+                # Legacy keeps its existing latest-report input behavior; the
+                # committed bundle read here is audit-only traceability.
+                self._selection_report_for_run = None
+                self._selection_metadata_for_run = {}
+            else:
+                steps.append({"name": "run_ai_selector", "status": "skipped", "reason": "independent_mode"})
             performance = self.performance_refresher(self.candidate_root) or {}
             steps.append(
                 {
@@ -365,6 +513,10 @@ class DailyResearchScheduler:
             )
             report_status = "completed"
             audit = {
+                "research_run_id": research_run_id,
+                "mode": mode,
+                "execution_mode": mode,
+                "selector_invoked": selector_invoked,
                 "status": "completed",
                 "report_status": report_status,
                 "applied": True,
@@ -393,8 +545,13 @@ class DailyResearchScheduler:
                 "research_dir": _relative_path(day_dir, self.project_dir),
                 "created_at": started_at,
             }
+            audit.update(bundle_identity)
             _atomic_write_json(audit_path, audit)
             return {
+                "research_run_id": research_run_id,
+                "mode": mode,
+                "execution_mode": mode,
+                "selector_invoked": selector_invoked,
                 "status": "completed",
                 "report_status": report_status,
                 "applied": True,
@@ -410,9 +567,14 @@ class DailyResearchScheduler:
                 "steps": steps,
                 "report": report,
                 "audit": audit,
+                **bundle_identity,
             }
         except Exception as exc:
             failure = {
+                "research_run_id": research_run_id,
+                "mode": mode,
+                "execution_mode": mode,
+                "selector_invoked": mode == "legacy",
                 "status": "failed",
                 "report_status": "failed",
                 "applied": True,
@@ -438,11 +600,16 @@ class DailyResearchScheduler:
                 },
                 "created_at": started_at,
             }
+            failure.update(bundle_identity)
             try:
                 _atomic_write_json(audit_path, failure)
             except Exception:
                 pass
             return {
+                "research_run_id": research_run_id,
+                "mode": mode,
+                "execution_mode": mode,
+                "selector_invoked": mode == "legacy",
                 "status": "failed",
                 "report_status": "failed",
                 "applied": True,
@@ -457,4 +624,8 @@ class DailyResearchScheduler:
                 "steps": failure["steps"],
                 "error": failure["error"],
                 "failure_reason": failure["failure_reason"],
+                **bundle_identity,
             }
+        finally:
+            self._selection_report_for_run = None
+            self._selection_metadata_for_run = None
