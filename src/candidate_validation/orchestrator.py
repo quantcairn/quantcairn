@@ -75,6 +75,58 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _selection_bundle_identity(
+    bundle: dict[str, Any] | None,
+    *,
+    source_hint: str,
+) -> dict[str, Any]:
+    """Extract traceability from committed bundle metadata without inventing it."""
+    if not isinstance(bundle, dict):
+        return {
+            "selection_run_id": None,
+            "selection_date": None,
+            "bundle_hash": None,
+            "bundle_source": "missing_bundle",
+            "bundle_root": None,
+            "bundle_manifest_path": None,
+        }
+
+    manifest = bundle.get("manifest") if isinstance(bundle.get("manifest"), dict) else {}
+    report = bundle.get("report") if isinstance(bundle.get("report"), dict) else {}
+    state = bundle.get("state") if isinstance(bundle.get("state"), dict) else {}
+    metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
+
+    def first(key: str) -> Any:
+        for payload in (manifest, report, state, metadata):
+            value = payload.get(key)
+            if value not in (None, ""):
+                return value
+        return None
+
+    selection_run_id = first("selection_run_id")
+    selection_date = first("selection_date")
+    bundle_hash = first("selection_bundle_hash") or first("bundle_hash")
+    bundle_root = bundle.get("bundle_root") or first("bundle_root")
+    manifest_path = first("selection_bundle_manifest_path")
+    manifest_paths = manifest.get("paths")
+    if not manifest_path and isinstance(manifest_paths, dict):
+        manifest_path = manifest_paths.get("manifest")
+    if source_hint == "committed_bundle":
+        source = "committed_bundle" if all(
+            value not in (None, "") for value in (selection_run_id, selection_date, bundle_hash)
+        ) else "legacy_committed_bundle"
+    else:
+        source = source_hint
+    return {
+        "selection_run_id": selection_run_id,
+        "selection_date": selection_date,
+        "bundle_hash": bundle_hash,
+        "bundle_source": source,
+        "bundle_root": _jsonable(bundle_root),
+        "bundle_manifest_path": _jsonable(manifest_path),
+    }
+
+
 def _atomic_write_jsonl(path: Path, row: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = ""
@@ -345,6 +397,11 @@ class CandidateValidationOrchestrator:
         started_at = _utc_now_iso()
         rep: dict[str, Any] = {
             "run_id": rid, "started_at": started_at, "dry_run": dry_run,
+            "validation_run_id": rid,
+            "selection_run_id": None, "selection_date": None,
+            "bundle_hash": None, "bundle_source": "missing_bundle",
+            "bundle_root": None, "bundle_manifest_path": None,
+            "candidate_input_count": 0,
             "candidates_processed": 0, "candidates_advanced": 0,
             "candidates_skipped": 0, "candidates_failed": 0,
             "phases_executed": [], "candidate_results": [], "errors": [],
@@ -357,8 +414,11 @@ class CandidateValidationOrchestrator:
             rep["errors"].append("orchestrator_lock_active")
             return rep
         try:
+            source_hint = "provided_bundle" if selection_bundle is not None else "committed_bundle"
             bundle = selection_bundle or load_committed_selection_bundle(self.project_dir)
+            rep.update(_selection_bundle_identity(bundle, source_hint=source_hint))
             candidates = self._extract(bundle or {})
+            rep["candidate_input_count"] = len(candidates)
             if not candidates:
                 rep["status"] = "NO_CANDIDATES"
                 return rep

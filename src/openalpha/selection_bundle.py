@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 from src.utils.market_calendar import required_selection_date
+from src.config.runtime_paths import resolve_state_dir
 
 
 def _project_dir() -> Path:
@@ -574,12 +575,13 @@ def build_selection_bundle(
 
 def load_selection_bundle_manifest(project_dir: Path | None = None) -> dict[str, Any] | None:
     root = Path(project_dir) if project_dir is not None else _project_dir()
-    manifest = _load_json(root / "state" / "selection_bundle_manifest.json")
+    manifest = _load_json(resolve_state_dir(root) / "selection_bundle_manifest.json")
     return manifest if isinstance(manifest, dict) else None
 
 
 def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str, Any] | None:
     root = Path(project_dir) if project_dir is not None else _project_dir()
+    state_root = resolve_state_dir(root)
     manifest = load_selection_bundle_manifest(root)
     if not isinstance(manifest, dict):
         return None
@@ -592,7 +594,12 @@ def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str
     ).strip()
     bundle_root = Path(bundle_root_raw)
     if bundle_root_raw and not bundle_root.is_absolute():
-        bundle_root = root / bundle_root_raw
+        # Published manifests historically used project-relative state/... paths;
+        # newer deployments may keep state outside the code root.
+        if bundle_root.parts and bundle_root.parts[0] == state_root.name:
+            bundle_root = state_root.parent / bundle_root_raw
+        else:
+            bundle_root = state_root / bundle_root_raw
 
     report_candidates = [bundle_root / "ai_selection_report.json"]
     state_candidates = [bundle_root / "ai_selection_state.json"]
@@ -608,7 +615,7 @@ def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str
         return None
 
     bundle_root_rel = _relative_path(bundle_root)
-    manifest_rel = _relative_path(root / "state" / "selection_bundle_manifest.json")
+    manifest_rel = _relative_path(state_root / "selection_bundle_manifest.json")
     report = dict(report)
     report.setdefault("selection_bundle_manifest_path", manifest_rel)
     report.setdefault("selection_bundle_root_path", bundle_root_rel)
