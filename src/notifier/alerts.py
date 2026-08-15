@@ -21,6 +21,7 @@ import yaml
 from src.openalpha.selection_bundle import load_committed_selection_bundle
 from src.openalpha.selection_report import provider_audit_sections
 from src.broker.paper_portfolio_state import read_paper_portfolio_state
+from src.config.runtime_paths import resolve_state_dir
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -95,20 +96,14 @@ def default_trade_notification_state_path() -> Path:
     override = os.environ.get("SOXS_TRADE_NOTIFICATION_STATE_PATH")
     if override:
         return Path(override).expanduser().resolve()
-    state_dir = os.environ.get("SOXS_STATE_DIR")
-    if state_dir:
-        return (Path(state_dir).expanduser().resolve() / "trade_notification_state.json")
-    return PROJECT_DIR / "state" / "trade_notification_state.json"
+    return resolve_state_dir(PROJECT_DIR) / "trade_notification_state.json"
 
 
 def default_ai_selection_notification_ledger_path() -> Path:
     override = os.environ.get("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH")
     if override:
         return Path(override).expanduser().resolve()
-    state_dir = os.environ.get("SOXS_STATE_DIR")
-    if state_dir:
-        return Path(state_dir).expanduser().resolve() / "notifications" / "notification_ledger.jsonl"
-    return PROJECT_DIR / "state" / "notifications" / "notification_ledger.jsonl"
+    return resolve_state_dir(PROJECT_DIR) / "notifications" / "notification_ledger.jsonl"
 
 
 def _load_trade_notification_state(path: Path) -> dict:

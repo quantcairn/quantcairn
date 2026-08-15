@@ -28,14 +28,15 @@ from .models import (
     default_candidate_for_symbol,
 )
 from .store import CandidateValidationStore
+from src.config.runtime_paths import resolve_artifacts_dir
 from ..openalpha.selection_bundle import load_committed_selection_bundle
 
 
 PROJECT_DIR = Path(
     os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2]))
 ).resolve()
-CANDIDATE_ROOT = PROJECT_DIR / "artifacts" / "candidates"
-VALIDATION_ROOT = PROJECT_DIR / "artifacts" / "candidates" / "validation"
+CANDIDATE_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "candidates"
+VALIDATION_ROOT = CANDIDATE_ROOT / "validation"
 ORCHESTRATOR_LOCK_PATH = CANDIDATE_ROOT / ".orchestrator.lock"
 ORCHESTRATOR_AUDIT_PATH = CANDIDATE_ROOT / "orchestrator_run_audit.jsonl"
 

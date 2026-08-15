@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from src.config.runtime_paths import resolve_artifacts_dir
+
 FUNNEL_STAGES = [
     "UNIVERSE",
     "UNIVERSE_FILTER",
@@ -405,7 +407,7 @@ class FunnelTracker:
     def write_debug_artifact(self) -> Path | None:
         """Write pipeline debug JSON to artifacts/selection/funnel_debug.json."""
         try:
-            path = self.project_dir / "artifacts" / "selection" / "funnel_debug.json"
+            path = resolve_artifacts_dir(self.project_dir) / "selection" / "funnel_debug.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             validation = self.validate()
             first = self.records[0] if self.records else None
@@ -468,7 +470,13 @@ class FunnelTracker:
         }
 
     def write_report(self) -> Path:
-        path = self.project_dir / "artifacts" / "selector_funnel" / self.selection_date / self.selection_run_id / "funnel_report.json"
+        path = (
+            resolve_artifacts_dir(self.project_dir)
+            / "selector_funnel"
+            / self.selection_date
+            / self.selection_run_id
+            / "funnel_report.json"
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f"{path.name}.tmp-{os.getpid()}")
         tmp_path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

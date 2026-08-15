@@ -11,6 +11,7 @@ from src.openalpha.selection_bundle import (
     load_selection_bundle_manifest,
 )
 from src.openalpha.selection_state import load_selection_state
+from src.config.runtime_paths import resolve_reports_dir, resolve_state_dir
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
 
@@ -403,7 +404,9 @@ def _report_from_data(data: dict[str, Any], *, source_path: Path) -> dict[str, A
 
 
 def load_latest_ai_selection_state(project_dir: Path | None = None) -> dict[str, Any]:
-    root = Path(project_dir) if project_dir is not None else PROJECT_DIR
+    root = Path(project_dir).resolve() if project_dir is not None else PROJECT_DIR
+    state_root = resolve_state_dir(root)
+    reports_root = resolve_reports_dir(root)
     manifest = load_selection_bundle_manifest(root)
     if isinstance(manifest, dict):
         committed_bundle = load_committed_selection_bundle(root)
@@ -411,16 +414,16 @@ def load_latest_ai_selection_state(project_dir: Path | None = None) -> dict[str,
             report = committed_bundle.get("report")
             bundle_root = committed_bundle.get("bundle_root")
             if isinstance(report, dict):
-                source_path = Path(bundle_root) / "ai_selection_report.json" if isinstance(bundle_root, Path) else root / "reports" / "ai_selection_latest.json"
+                source_path = Path(bundle_root) / "ai_selection_report.json" if isinstance(bundle_root, Path) else reports_root / "ai_selection_latest.json"
                 return _report_from_data(report, source_path=source_path)
         return {}
 
     candidates: list[Path] = []
-    latest_path = root / "reports" / "ai_selection_latest.json"
+    latest_path = reports_root / "ai_selection_latest.json"
     if latest_path.exists():
         candidates.append(latest_path)
 
-    local_state_path = root / "state" / "ai_selection_state.json"
+    local_state_path = state_root / "ai_selection_state.json"
     local_state = _load_json(local_state_path) if local_state_path.exists() else {}
     if isinstance(local_state, dict):
         report_path = str(local_state.get("report_path") or "").strip()
@@ -446,7 +449,7 @@ def load_latest_ai_selection_state(project_dir: Path | None = None) -> dict[str,
                 if candidate.exists():
                     candidates.append(candidate)
 
-    reports_dir = root / "reports"
+    reports_dir = reports_root
     if reports_dir.exists():
         for path in reports_dir.glob("ai_selection_*.json"):
             if path.name != "ai_selection_latest.json":

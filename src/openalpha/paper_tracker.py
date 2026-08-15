@@ -28,6 +28,7 @@ from collections import defaultdict
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any
 
 from src.openalpha.paper_research import (
@@ -41,8 +42,8 @@ from src.openalpha.paper_research import (
 
 PAPER_TRACKER_VERSION = "paper_tracker.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-PAPER_TRADING_ROOT = PROJECT_DIR / "artifacts" / "learning" / "paper_trading"
-TRACKING_ROOT = PROJECT_DIR / "artifacts" / "learning" / "paper_tracking"
+PAPER_TRADING_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "paper_trading"
+TRACKING_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "paper_tracking"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

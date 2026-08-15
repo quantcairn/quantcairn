@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from src.config.runtime_paths import resolve_state_dir
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
+STATE_DIR = resolve_state_dir(PROJECT_DIR)
 SETTINGS_PATH = STATE_DIR / "ai_selector_settings.json"
 DEFAULT_MIN_PRICE = 5.0
 DEFAULT_MAX_PRICE = 300.0

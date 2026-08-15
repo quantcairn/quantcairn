@@ -19,9 +19,10 @@ from zoneinfo import ZoneInfo
 
 from src.utils.market_calendar import market_session_context, required_selection_date
 from src.data.fetcher import PriceFetcher
+from src.config.runtime_paths import resolve_artifacts_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-PREFLIGHT_ARTIFACT_DIR = PROJECT_DIR / "artifacts" / "selection"
+PREFLIGHT_ARTIFACT_DIR = resolve_artifacts_dir(PROJECT_DIR) / "selection"
 
 
 def _utc_now_iso() -> str:

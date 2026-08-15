@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from src.candidate_validation.performance_tracker import CandidatePerformanceTracker
 from src.candidate_validation.research_report import CandidateDailyResearchReportGenerator
 from src.candidate_validation.store import CandidateValidationStore
+from src.config.runtime_paths import resolve_artifacts_dir
 from src.utils.market_calendar import (
     US_EASTERN,
     is_us_market_holiday,
@@ -22,8 +23,8 @@ from src.utils.market_calendar import (
 )
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_RESEARCH_ROOT = PROJECT_DIR / "artifacts" / "research" / "daily"
-DEFAULT_CANDIDATE_ROOT = PROJECT_DIR / "artifacts" / "candidates"
+DEFAULT_RESEARCH_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "research" / "daily"
+DEFAULT_CANDIDATE_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "candidates"
 
 
 def _utc_now_iso() -> str:

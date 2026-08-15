@@ -21,9 +21,10 @@ from .models import (
     default_candidate_for_symbol,
 )
 from .performance_tracker import CandidatePerformanceTracker
+from src.config.runtime_paths import resolve_artifacts_dir
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
-CANDIDATE_ROOT = PROJECT_DIR / "artifacts" / "candidates"
+CANDIDATE_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "candidates"
 
 
 def _utc_now_iso() -> str:

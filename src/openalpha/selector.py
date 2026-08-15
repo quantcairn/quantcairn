@@ -5,6 +5,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from src.config.runtime_paths import resolve_logs_dir
 from typing import Dict, List, Sequence, Any
 
 import numpy as np
@@ -25,7 +26,7 @@ from src.openalpha.candidate_ranking import score_candidate
 from src.openalpha.funnel_tracker import FunnelTracker, FunnelStageRecord
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LOG_DIR = PROJECT_DIR / "logs"
+LOG_DIR = resolve_logs_dir(PROJECT_DIR)
 
 
 def _load_managed_universe() -> list[str] | None:

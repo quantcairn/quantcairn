@@ -15,9 +15,10 @@ from .model_evaluation import load_candidate_model_evaluation_snapshot
 from src.openalpha.selection_report import load_latest_ai_selection_state
 from .store import CandidateValidationStore
 from src.dashboard.snapshots import write_dashboard_snapshot
+from src.config.runtime_paths import resolve_artifacts_dir
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
-RESEARCH_ROOT = PROJECT_DIR / "artifacts" / "research" / "daily"
+RESEARCH_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "research" / "daily"
 LOGGER = logging.getLogger(__name__)
 
 

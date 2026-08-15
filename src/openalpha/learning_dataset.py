@@ -23,6 +23,7 @@ from collections import Counter
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -31,9 +32,9 @@ from typing import Any
 
 DATASET_VERSION = "learning_dataset.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LEDGER_ROOT = PROJECT_DIR / "artifacts" / "learning" / "selection_ledger"
-OUTCOMES_ROOT = PROJECT_DIR / "artifacts" / "learning" / "selection_outcomes"
-DATASET_ROOT = PROJECT_DIR / "artifacts" / "learning" / "dataset"
+LEDGER_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "selection_ledger"
+OUTCOMES_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "selection_outcomes"
+DATASET_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "dataset"
 
 # ── Feature names (from SelectionRecord) ──
 FEATURE_KEYS = [

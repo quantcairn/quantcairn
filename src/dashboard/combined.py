@@ -22,6 +22,7 @@ from src.openalpha.universe_filter import load_universe_rules
 from src.openalpha.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_state_dir
 from src.broker.paper_portfolio_state import default_paper_portfolio_state_path, read_paper_portfolio_state
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
@@ -50,12 +51,26 @@ from src.utils.market_calendar import market_session_context, required_selection
 app = Flask(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
+STATE_DIR = resolve_state_dir(PROJECT_DIR)
 TRADING_FLAGS_PATH = STATE_DIR / "trading_flags.json"
 LIFECYCLE_DIR = STATE_DIR / "lifecycle"
 WEEKEND_PAPER_LIFECYCLE_PATH = LIFECYCLE_DIR / "weekend_paper_lifecycle.json"
 LONGBRIDGE_SANDBOX_LIFECYCLE_PATH = LIFECYCLE_DIR / "longbridge_sandbox_lifecycle.json"
 RUNTIME_DIR = Path(os.environ.get("SOXS_RUNTIME_DIR", "").strip() or (PROJECT_DIR / "runtime"))
+
+
+def _reports_dir() -> Path:
+    return resolve_reports_dir(PROJECT_DIR)
+
+
+def _artifacts_dir() -> Path:
+    return resolve_artifacts_dir(PROJECT_DIR)
+
+
+def _logs_dir() -> Path:
+    return resolve_logs_dir(PROJECT_DIR)
+
+
 COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
 SHADOW_OBSERVER_DIR = default_shadow_output_directory("SOXS.US", "15m")
 
@@ -1255,10 +1270,10 @@ def _normalize_symbol_list(values) -> list[str]:
 
 def _load_orphan_monitor_symbols() -> list[str]:
     try:
-        day = latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode()) or latest_trade_log_day(PROJECT_DIR / "logs")
+        day = latest_trade_activity_day(_logs_dir(), mode=_desired_audit_mode()) or latest_trade_log_day(_logs_dir())
         if not day:
             return []
-        records = load_trade_records(PROJECT_DIR / "logs", day=day)
+        records = load_trade_records(_logs_dir(), day=day)
     except Exception:
         return []
 
@@ -1356,7 +1371,7 @@ def _compute_digest_age_days(report_date_str: str) -> int | None:
 
 
 def _load_latest_research_digest() -> dict[str, object]:
-    reports_dir = PROJECT_DIR / "reports" / "research"
+    reports_dir = _reports_dir() / "research"
     if not reports_dir.exists():
         return {
             "available": False,
@@ -2110,7 +2125,7 @@ def _shadow_artifact_path(name: str) -> Path:
 
 
 def _candidate_artifact_root() -> Path:
-    return PROJECT_DIR / "artifacts" / "candidates"
+    return _artifacts_dir() / "candidates"
 
 
 def _candidate_artifact_path(name: str) -> Path:
@@ -2118,7 +2133,7 @@ def _candidate_artifact_path(name: str) -> Path:
 
 
 def _research_artifact_root() -> Path:
-    return PROJECT_DIR / "artifacts" / "research" / "daily"
+    return _artifacts_dir() / "research" / "daily"
 
 
 def _research_status_snapshot() -> dict[str, object]:
@@ -2173,7 +2188,7 @@ def _candidate_performance_snapshot() -> dict[str, object]:
 def _candidate_research_report_snapshot() -> dict[str, object]:
     try:
         report = CandidateDailyResearchReportGenerator(
-            root_dir=PROJECT_DIR / "artifacts" / "research" / "daily",
+            root_dir=_artifacts_dir() / "research" / "daily",
             candidate_root=_candidate_artifact_root(),
         ).build()
     except Exception as exc:
@@ -2265,7 +2280,7 @@ def _governance_payload() -> dict[str, object]:
 def _load_weight_advisor_data() -> dict[str, object]:
     """Load the latest Weight Advisor report from artifacts/learning/."""
     try:
-        path = PROJECT_DIR / "artifacts" / "learning" / "suggested_weights.json"
+        path = _artifacts_dir() / "learning" / "suggested_weights.json"
         if not path.exists():
             return {"available": False}
         import json
@@ -2278,7 +2293,7 @@ def _load_weight_advisor_data() -> dict[str, object]:
 def _load_outcome_summary() -> dict[str, object]:
     """Load the latest outcome summary from artifacts/learning/."""
     try:
-        path = PROJECT_DIR / "artifacts" / "learning" / "outcome_summary.json"
+        path = _artifacts_dir() / "learning" / "outcome_summary.json"
         if not path.exists():
             return {"available": False}
         import json
@@ -2292,7 +2307,7 @@ def _candidate_model_evaluation_snapshot() -> dict[str, object]:
     try:
         base = load_candidate_model_evaluation_snapshot(
             candidate_root=_candidate_artifact_root(),
-            backtest_root=PROJECT_DIR / "artifacts" / "backtests",
+            backtest_root=_artifacts_dir() / "backtests",
             model_root=PROJECT_DIR / "config" / "candidate_models",
         )
         # Merge Weight Advisor data
@@ -2935,7 +2950,7 @@ def _research_analytics_payload() -> dict[str, object]:
     yfinance, never rebuilds datasets.  If files are missing or corrupt,
     returns {"available": False} without crashing.
     """
-    analytics_dir = PROJECT_DIR / "artifacts" / "learning" / "analytics"
+    analytics_dir = _artifacts_dir() / "learning" / "analytics"
 
     def _read(name: str) -> dict[str, object] | None:
         path = analytics_dir / name
@@ -3012,7 +3027,7 @@ def _research_analytics_payload() -> dict[str, object]:
 
 def _walk_forward_payload() -> dict[str, object]:
     """Read Phase 3B walk-forward reports.  Never recalculates."""
-    wf_dir = PROJECT_DIR / "artifacts" / "learning" / "walk_forward"
+    wf_dir = _artifacts_dir() / "learning" / "walk_forward"
 
     try:
         summary_path = wf_dir / "walk_forward_summary.json"
@@ -3076,7 +3091,7 @@ def _walk_forward_payload() -> dict[str, object]:
 
 def _research_registry_payload() -> dict[str, object]:
     """Read Phase 4A registry data.  Never recalculates."""
-    hist_dir = PROJECT_DIR / "artifacts" / "learning" / "research_history"
+    hist_dir = _artifacts_dir() / "learning" / "research_history"
 
     try:
         run_path = hist_dir / "run_index.json"
@@ -3143,7 +3158,7 @@ def _research_registry_payload() -> dict[str, object]:
 
 def _research_quality_payload() -> dict[str, object]:
     """Read Phase 4A quality report and ML readiness.  Never recalculates."""
-    hist_dir = PROJECT_DIR / "artifacts" / "learning" / "research_history"
+    hist_dir = _artifacts_dir() / "learning" / "research_history"
 
     try:
         q_path = hist_dir / "research_quality_report.json"
@@ -3289,7 +3304,7 @@ def _paper_tracking_payload() -> dict[str, object]:
 
 def _paper_analytics_payload() -> dict[str, object]:
     """Read Phase 5C analytics reports. Never recalculates."""
-    analytics_dir = PROJECT_DIR / "artifacts" / "learning" / "paper_analytics"
+    analytics_dir = _artifacts_dir() / "learning" / "paper_analytics"
 
     try:
         summary_path = analytics_dir / "summary.json"
@@ -3356,7 +3371,7 @@ def _paper_analytics_payload() -> dict[str, object]:
 def _research_report_payload() -> dict[str, object]:
     """Read Phase 6C research report. Never recalculates."""
     try:
-        path = PROJECT_DIR / "artifacts" / "learning" / "research_report" / "research_report.json"
+        path = _artifacts_dir() / "learning" / "research_report" / "research_report.json"
         if not path.exists():
             return {"available": False, "reason": "no research report"}
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -3385,7 +3400,7 @@ def _research_report_payload() -> dict[str, object]:
 def _research_benchmark_payload() -> dict[str, object]:
     """Read Phase 6A benchmark snapshot. Never recalculates."""
     try:
-        path = PROJECT_DIR / "artifacts" / "learning" / "research_benchmark" / "benchmark_summary.json"
+        path = _artifacts_dir() / "learning" / "research_benchmark" / "benchmark_summary.json"
         if not path.exists():
             return {"available": False, "reason": "no benchmark data"}
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -3417,7 +3432,7 @@ def _research_benchmark_payload() -> dict[str, object]:
 def _research_center_regime_payload() -> dict[str, object]:
     """Read Phase 6B regime analysis. Never recalculates."""
     try:
-        path = PROJECT_DIR / "artifacts" / "learning" / "regime_analysis" / "regime_summary.json"
+        path = _artifacts_dir() / "learning" / "regime_analysis" / "regime_summary.json"
         if not path.exists():
             return {"available": False, "reason": "no regime data"}
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -4244,7 +4259,7 @@ def _shadow_status_payload() -> dict[str, object]:
 def _detect_selector_universe_source() -> str:
     """Read the latest AI selection report and return the universe source."""
     try:
-        path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
+        path = _reports_dir() / "ai_selection_latest.json"
         if not path.exists():
             return "unknown"
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -4288,7 +4303,7 @@ def _universe_payload() -> dict[str, object]:
 def _market_regime_payload() -> dict[str, object]:
     """Read current_regime.json from the Market Regime Engine."""
     try:
-        path = PROJECT_DIR / "artifacts" / "regime" / "current_regime.json"
+        path = _artifacts_dir() / "regime" / "current_regime.json"
         if not path.exists():
             return {"available": False}
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -4328,7 +4343,7 @@ def _market_regime_payload() -> dict[str, object]:
 def _regime_shadow_payload() -> dict[str, object]:
     """Read the latest shadow regime evaluation report."""
     try:
-        latest = PROJECT_DIR / "artifacts" / "research" / "regime_shadow"
+        latest = _artifacts_dir() / "research" / "regime_shadow"
         if not latest.exists():
             return {"available": False}
         # Find most recent selection_date dir
@@ -8707,7 +8722,7 @@ def _api_status_payload() -> dict[str, object]:
     ai_selection = _selection_report_with_candidate_layers(ai_selection)
     selection_sync = _call_with_request_cache(_selection_sync_status, request_cache)
     selection_presentation = _selection_dashboard_states(ai_selection, selection_sync, request_cache=request_cache)
-    trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=None, mode=_desired_audit_mode())
+    trade_audit = summarize_trade_log(_logs_dir(), day=None, mode=_desired_audit_mode())
     top_modes = _call_with_request_cache(_load_top_modes, request_cache)
     top_tickers = list((selection_sync or {}).get("current_top_config_symbols") or _current_top_config_symbols_cached(limit=len(TICKERS), request_cache=request_cache))
     dashboard_config = _load_dashboard_config()
@@ -9302,7 +9317,7 @@ def _chart_snapshot_for_ticker(ticker: str, *, refresh: bool = True) -> dict[str
 
 def _chart_trade_day() -> str | None:
     today = datetime.now(_CHART_TZ).strftime("%Y%m%d")
-    today_path = PROJECT_DIR / "logs" / f"trades-{today}.jsonl"
+    today_path = _logs_dir() / f"trades-{today}.jsonl"
     if today_path.exists():
         return today
     return None
@@ -9324,7 +9339,7 @@ def _chart_trades_for_ticker(ticker: str) -> list[dict[str, object]]:
     day = _chart_trade_day()
     if not day:
         return []
-    records = load_trade_records(PROJECT_DIR / "logs", day=day)
+    records = load_trade_records(_logs_dir(), day=day)
     trades: list[dict[str, object]] = []
     seen_order_ids: set[str] = set()
     seen_trade_keys: set[tuple[object, ...]] = set()
@@ -9566,8 +9581,8 @@ def index():
     ai_runtime = _ai_runtime_status()
     selection_sync = _selection_sync_status()
     audit_scope = str(request.args.get("audit_scope", "today") or "today").strip().lower()
-    audit_day = None if audit_scope == "today" else latest_trade_activity_day(PROJECT_DIR / "logs", mode=_desired_audit_mode())
-    trade_audit = summarize_trade_log(PROJECT_DIR / "logs", day=audit_day, mode=_desired_audit_mode())
+    audit_day = None if audit_scope == "today" else latest_trade_activity_day(_logs_dir(), mode=_desired_audit_mode())
+    trade_audit = summarize_trade_log(_logs_dir(), day=audit_day, mode=_desired_audit_mode())
     try:
         guard_params = inspect.signature(_startup_guard_status).parameters
         if len(guard_params) >= 2:

@@ -19,6 +19,7 @@ import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any
 
 from src.openalpha.learning_dataset import (
@@ -36,7 +37,7 @@ from src.openalpha.learning_dataset import (
 
 ANALYTICS_VERSION = "research_analytics.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-ANALYTICS_ROOT = PROJECT_DIR / "artifacts" / "learning" / "analytics"
+ANALYTICS_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "analytics"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

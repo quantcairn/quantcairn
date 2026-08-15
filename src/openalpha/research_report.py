@@ -29,6 +29,7 @@ import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -37,7 +38,7 @@ from typing import Any
 
 REPORT_VERSION = "research_report.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LEARNING_ROOT = PROJECT_DIR / "artifacts" / "learning"
+LEARNING_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning"
 REPORT_ROOT = LEARNING_ROOT / "research_report"
 
 # ── Research status thresholds ──

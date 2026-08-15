@@ -26,6 +26,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.candidate_validation.orchestrator import CandidateValidationOrchestrator
+from src.config.runtime_paths import resolve_artifacts_dir
 
 
 def _utc_now_iso() -> str:
@@ -79,7 +80,7 @@ def _append_jsonl(path: Path, row: dict[str, Any]) -> Path:
 
 
 def _audit_path() -> Path:
-    return PROJECT_DIR / "artifacts" / "candidates" / "validation_scheduler_runs.jsonl"
+    return resolve_artifacts_dir(PROJECT_DIR) / "candidates" / "validation_scheduler_runs.jsonl"
 
 
 def _write_run_audit(result: dict[str, Any], *, dry_run: bool) -> None:

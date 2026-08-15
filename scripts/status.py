@@ -16,10 +16,23 @@ from pathlib import Path
 from typing import Any
 
 from src.openalpha.selection_bundle import load_committed_selection_bundle
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_state_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", str(PROJECT_DIR / "state")))
-ARTIFACTS_SEL = PROJECT_DIR / "artifacts" / "selection"
+STATE_DIR = resolve_state_dir(PROJECT_DIR)
+ARTIFACTS_SEL = resolve_artifacts_dir(PROJECT_DIR) / "selection"
+
+
+def _reports_dir() -> Path:
+    return resolve_reports_dir(PROJECT_DIR)
+
+
+def _logs_dir() -> Path:
+    return resolve_logs_dir(PROJECT_DIR)
+
+
+def _artifacts_dir() -> Path:
+    return resolve_artifacts_dir(PROJECT_DIR)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -72,7 +85,7 @@ def _display_text(value: Any, default: str = "UNKNOWN") -> str:
 
 
 def _load_latest_report_fallback() -> dict[str, Any] | None:
-    latest_path = PROJECT_DIR / "reports" / "ai_selection_latest.json"
+    latest_path = _reports_dir() / "ai_selection_latest.json"
     latest = _read_json(latest_path)
     return latest if isinstance(latest, dict) else None
 
@@ -272,7 +285,7 @@ def _section_recent_trades() -> None:
 
     # Portfolio state v2 doesn't store trade history inline — check for
     # recent fills in the selection log
-    sel_log = PROJECT_DIR / "logs" / f"selection_{datetime.now():%Y-%m-%d}.log"
+    sel_log = _logs_dir() / f"selection_{datetime.now():%Y-%m-%d}.log"
     log_trades = []
     if sel_log.exists():
         for line in sel_log.read_text(encoding="utf-8").strip().split("\n"):
@@ -327,7 +340,7 @@ def _section_recent_trades() -> None:
 
 
 def _section_outcome_records() -> None:
-    outcome_dir = PROJECT_DIR / "artifacts" / "learning"
+    outcome_dir = _artifacts_dir() / "learning"
     if not outcome_dir.exists():
         return
 
