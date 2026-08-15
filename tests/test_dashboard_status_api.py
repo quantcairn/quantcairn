@@ -1220,7 +1220,7 @@ def test_api_status_does_not_poll_disabled_top_slots(monkeypatch, tmp_path):
 
     def _fake_fetch_status(port: int):
         calls.append(port)
-        return {"mode": "paper", "price": 18.52, "last_signal": "HOLD", "halted": False} if port == 8091 else None
+        return {"mode": "paper", "price": 18.52, "last_signal": "HOLD", "halted": False} if port == 8080 else None
 
     monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
     monkeypatch.setattr(dashboard, "_fetch_status", _fake_fetch_status)
@@ -1255,7 +1255,7 @@ def test_api_status_does_not_poll_disabled_top_slots(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert calls == [8091]
+    assert calls == [8080]
     assert payload["top_engines"][0]["configured"] is True
     assert payload["top_engines"][1]["configured"] is False
     assert payload["top_engines"][2]["configured"] is False
@@ -1354,6 +1354,7 @@ def test_api_status_shows_sandbox_snapshot_without_paper_fallback(monkeypatch):
             "mismatch_reason": "",
         },
         ai_selection={"fallback_used": False, "top3": [], "settings": {"min_price": 4.0, "max_price": 50.0}},
+        top_modes=["sandbox", "sandbox", "sandbox"],
         live_account={
             "cash": 1000.0,
             "equity": 1000.0,

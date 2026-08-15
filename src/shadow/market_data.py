@@ -189,6 +189,7 @@ class ShadowMarketDataSource:
         end_dt: datetime | None = None,
     ) -> ShadowMarketBundle:
         end_time = _coerce_datetime(end_dt or datetime.now(timezone.utc))
+        start_time = end_time - timedelta(days=max(1, int(lookback_days or 1)))
         symbol_bars = self.fetch_bars(symbol=symbol, frequency=frequency, lookback_days=lookback_days, end_dt=end_time)
         benchmark_bars: dict[str, list[Bar]] = {}
         benchmark_validation: dict[str, dict[str, Any]] = {}
@@ -212,4 +213,3 @@ class ShadowMarketDataSource:
             benchmark_validation=benchmark_validation,
             source="longbridge_quote_api",
         )
-

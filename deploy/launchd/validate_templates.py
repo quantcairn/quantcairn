@@ -80,6 +80,21 @@ def get_dict_value(elt: ET.Element, key: str) -> str | None:
     return None
 
 
+def get_program_arguments(elt: ET.Element) -> list[str]:
+    """Return ProgramArguments as individual strings for entrypoint checks."""
+    children = list(elt)
+    for i, child in enumerate(children):
+        if child.tag == "key" and (child.text or "").strip() == "ProgramArguments":
+            if i + 1 >= len(children) or children[i + 1].tag != "array":
+                return []
+            return [
+                (item.text or "").strip()
+                for item in children[i + 1]
+                if item.tag == "string"
+            ]
+    return []
+
+
 def check_forbidden_patterns(path: Path) -> list[str]:
     """Return list of violations."""
     violations = []
@@ -141,9 +156,15 @@ def validate_template(path: Path) -> tuple[bool, list[str]]:
         label = get_dict_value(root, "Label")
         msgs.append(f"  OK: Label = {label}")
 
-    # 4. Placeholder presence
+    # 4. Placeholder presence. Shell supervisors legitimately provide their
+    # own interpreter, so only Python entrypoints require the Python token.
     placeholders = collect_placeholders(root)
-    missing = REQUIRED_PLACEHOLDERS - placeholders
+    program_args_list = get_program_arguments(root)
+    entrypoint = program_args_list[0] if program_args_list else ""
+    required_placeholders = {"REPLACE_WITH_PROJECT_ROOT"}
+    if entrypoint not in {"/bin/bash", "/bin/sh"}:
+        required_placeholders.add("REPLACE_WITH_PYTHON_PATH")
+    missing = required_placeholders - placeholders
     if missing:
         msgs.append(f"  FAIL: Missing required placeholders: {', '.join(sorted(missing))}")
         ok = False
@@ -151,12 +172,14 @@ def validate_template(path: Path) -> tuple[bool, list[str]]:
         msgs.append(f"  OK: All required placeholders present ({', '.join(sorted(placeholders))})")
 
     # 5. ProgramArguments
-    program_args = get_dict_value(root, "ProgramArguments")
-    if program_args:
-        if "scripts/" in program_args:
+    program_args = " ".join(program_args_list)
+    if program_args_list and len(program_args_list) >= 2:
+        script_arg = program_args_list[1]
+        if "scripts/" in script_arg and "REPLACE_WITH_PROJECT_ROOT" in script_arg:
             msgs.append(f"  OK: ProgramArguments points to scripts/: {program_args}")
         else:
-            msgs.append(f"  WARN: ProgramArguments does not reference scripts/: {program_args}")
+            msgs.append(f"  FAIL: ProgramArguments does not reference a project script: {program_args}")
+            ok = False
     else:
         msgs.append("  FAIL: Missing ProgramArguments")
         ok = False

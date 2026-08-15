@@ -12,6 +12,7 @@ from src.backtest.models import Bar
 from src.shadow import ShadowMarketDataSource, ShadowObserver, ShadowObservationError, ShadowRuntimeConfig, ShadowRuntimeStateStore, ShadowSafetyConfig
 import src.shadow.observer as shadow_observer_module
 import src.shadow.universe as shadow_universe
+import src.shadow.market_data as shadow_market_data_module
 
 
 def _bar(symbol: str, ts: datetime, base: float, index: int) -> Bar:
@@ -125,6 +126,8 @@ def _shadow_sandbox_root(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _disable_dashboard_shadow_snapshot(monkeypatch):
     monkeypatch.setattr(shadow_observer_module, "write_dashboard_snapshot", lambda *args, **kwargs: None)
+    fixed_end = datetime(2026, 7, 7, 15, 45, tzinfo=timezone.utc)
+    monkeypatch.setattr(shadow_market_data_module, "_coerce_datetime", lambda _value: fixed_end)
 
 
 def test_shadow_safety_config_fail_closed(monkeypatch):

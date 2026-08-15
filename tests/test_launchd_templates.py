@@ -7,6 +7,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_LAUNCHD = PROJECT_ROOT / "deploy" / "launchd"
 
 
+def _write_template(path: Path, program_arguments: list[str]) -> None:
+    arguments = "\n".join(f"        <string>{value}</string>" for value in program_arguments)
+    path.write_text(
+        """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<plist version=\"1.0\"><dict>
+    <key>Label</key><string>com.quantcairn.test</string>
+    <key>ProgramArguments</key><array>
+""" + arguments + """
+    </array>
+    <key>WorkingDirectory</key><string>REPLACE_WITH_PROJECT_ROOT</string>
+</dict></plist>
+""",
+        encoding="utf-8",
+    )
+
+
 def test_validate_templates_script_present():
     assert (DEPLOY_LAUNCHD / "validate_templates.py").exists()
 
@@ -25,6 +41,25 @@ def test_validate_templates_passes():
         cwd=str(PROJECT_ROOT),
     )
     assert result.returncode == 0, f"Validator failed:\n{result.stdout}\n{result.stderr}"
+
+
+def test_validator_accepts_shell_supervisor_without_python_placeholder(tmp_path):
+    from deploy.launchd.validate_templates import validate_template
+
+    path = tmp_path / "shell.plist.template"
+    _write_template(path, ["/bin/bash", "REPLACE_WITH_PROJECT_ROOT/scripts/start_top_engines.sh"])
+    ok, messages = validate_template(path)
+    assert ok, messages
+
+
+def test_validator_rejects_missing_python_entrypoint(tmp_path):
+    from deploy.launchd.validate_templates import validate_template
+
+    path = tmp_path / "python.plist.template"
+    _write_template(path, ["REPLACE_WITH_PYTHON_PATH"])
+    ok, messages = validate_template(path)
+    assert not ok
+    assert any("ProgramArguments" in message or "placeholder" in message for message in messages)
 
 
 def test_all_templates_have_readme():
