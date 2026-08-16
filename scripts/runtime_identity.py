@@ -23,6 +23,9 @@ REQUIRED_SCRIPTS = (
     "scripts/status.py",
     "scripts/start_combined.py",
     "scripts/run_candidate_validation_scheduler.py",
+    "scripts/run_daily_research.py",
+    "scripts/start_top_engines.sh",
+    "scripts/start_orphan_monitor.py",
 )
 
 
@@ -51,8 +54,8 @@ def _secret_status(*names: str) -> bool:
     return any(str(os.environ.get(name, "") or "").strip() for name in names)
 
 
-def collect_identity() -> dict[str, object]:
-    paths = runtime_paths()
+def collect_identity(project_dir: Path | None = None) -> dict[str, object]:
+    paths = runtime_paths(project_dir)
     project_dir = paths.project_dir
     return {
         "code_root": str(project_dir),
@@ -79,6 +82,44 @@ def collect_identity() -> dict[str, object]:
                 "QUANTCAIRN_ADMIN_CHAT_ID", "SOXS_OPENALPHA_ADMIN_CHAT_ID"
             ),
         },
+    }
+
+
+def identity_findings(identity: dict[str, object]) -> dict[str, object]:
+    """Return deterministic, read-only deployment identity findings."""
+    roots = {
+        key: Path(str(identity[key]))
+        for key in ("state_root", "reports_root", "artifacts_root", "logs_root")
+    }
+    code_root = Path(str(identity["code_root"]))
+    configured_roots = {
+        name: bool(str(os.environ.get(name, "") or "").strip())
+        for name in ("SOXS_STATE_DIR", "SOXS_REPORTS_DIR", "SOXS_ARTIFACTS_DIR", "SOXS_LOGS_DIR")
+    }
+    warnings: list[str] = []
+    blockers: list[str] = []
+    if not code_root.is_dir():
+        blockers.append("code_root_missing")
+    for name, path in roots.items():
+        if not configured_roots.get({
+            "state_root": "SOXS_STATE_DIR",
+            "reports_root": "SOXS_REPORTS_DIR",
+            "artifacts_root": "SOXS_ARTIFACTS_DIR",
+            "logs_root": "SOXS_LOGS_DIR",
+        }[name], False) and path == code_root / name.removesuffix("_root"):
+            warnings.append(f"implicit_project_local_{name}")
+    if identity.get("execution_mode") == "LIVE":
+        warnings.append("execution_mode_live_requires_explicit_review")
+    scripts = identity.get("required_operational_scripts", {})
+    missing = sorted(str(key) for key, present in scripts.items() if not present)
+    if missing:
+        warnings.append("missing_operational_scripts")
+    return {
+        "status": "BLOCKED" if blockers else "DEGRADED" if warnings else "HEALTHY",
+        "warnings": warnings,
+        "blockers": blockers,
+        "missing_operational_scripts": missing,
+        "explicit_runtime_roots": configured_roots,
     }
 
 
