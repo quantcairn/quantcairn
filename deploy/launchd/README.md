@@ -9,8 +9,9 @@ Templates for running QuantCairn services under macOS `launchd` (LaunchAgent).
 | `com.quantcairn.combined` | `scripts/start_combined.py` | Unified research dashboard (port 8090) | Long-lived (KeepAlive) |
 | `com.quantcairn.ai-selector` | `scripts/ai_selector_wrapper.py` | AI selection pipeline scheduler | 21:35 / 21:45 / 22:00 / 22:15 / 22:30 Beijing time |
 | `com.quantcairn.candidate-validation` | `scripts/run_candidate_validation_scheduler.py --apply` | Candidate validation scheduler (`com.quantcairn.candidate-validation.plist.template`) | 21:40 / 21:50 / 22:05 / 22:20 / 22:35 Beijing time |
+| `com.quantcairn.research` | `scripts/run_daily_research.py --mode independent` | Committed-bundle Research scheduler | 22:50 Beijing time |
 | `com.quantcairn.top-engines` | `scripts/start_top_engines.sh` | TOP paper trading engines (ports 8080/8081/8082) | Long-lived (KeepAlive) |
-| `com.quantcairn.orphan-monitor` | `scripts/start_orphan_monitor.py` | Broker position safety net | Long-lived (KeepAlive) |
+| `com.quantcairn.orphan-monitor` | `scripts/start_orphan_monitor.py` | Disabled PAPER-safe orphan monitor template | Long-lived (KeepAlive) |
 
 ## Quick Start
 
@@ -27,12 +28,20 @@ Replace the placeholder paths in each `.plist.template` file, then install:
 # Set your paths
 PROJECT_ROOT="/path/to/quantcairn"
 PYTHON_PATH="$PROJECT_ROOT/.venv/bin/python"
+STATE_ROOT="/Users/chenwei/soxs-range-arbitrage/state"
+REPORTS_ROOT="/Users/chenwei/soxs-range-arbitrage/reports"
+ARTIFACTS_ROOT="/Users/chenwei/soxs-range-arbitrage/artifacts"
+LOGS_ROOT="/Users/chenwei/soxs-range-arbitrage/logs"
 
 # Copy and substitute
 for tmpl in deploy/launchd/*.plist.template; do
     name=$(basename "$tmpl" .template)
     sed -e "s|REPLACE_WITH_PYTHON_PATH|$PYTHON_PATH|g" \
         -e "s|REPLACE_WITH_PROJECT_ROOT|$PROJECT_ROOT|g" \
+        -e "s|REPLACE_WITH_STATE_ROOT|$STATE_ROOT|g" \
+        -e "s|REPLACE_WITH_REPORTS_ROOT|$REPORTS_ROOT|g" \
+        -e "s|REPLACE_WITH_ARTIFACTS_ROOT|$ARTIFACTS_ROOT|g" \
+        -e "s|REPLACE_WITH_LOGS_ROOT|$LOGS_ROOT|g" \
         "$tmpl" > ~/Library/LaunchAgents/"$name"
 done
 ```
@@ -50,6 +59,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.ai-select
 
 # Candidate validation scheduler (safe early validation progression)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.candidate-validation.plist
+
+# Independent Research consumes the committed Selection Bundle.
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.research.plist
 
 # Orphan monitor (only if using LongBridge live/sandbox)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantcairn.orphan-monitor.plist
@@ -126,6 +138,10 @@ Follow the Quick Start steps above. The new labels use `com.quantcairn.*` to mat
 |-------------|-------------|---------|
 | `REPLACE_WITH_PYTHON_PATH` | Absolute path to Python interpreter | `/opt/homebrew/bin/python3` or `<PROJECT_ROOT>/.venv/bin/python` |
 | `REPLACE_WITH_PROJECT_ROOT` | Absolute path to the repository root | `/Users/alice/quantcairn` |
+| `REPLACE_WITH_STATE_ROOT` | Persistent authoritative state root | `/Users/chenwei/soxs-range-arbitrage/state` |
+| `REPLACE_WITH_REPORTS_ROOT` | Persistent reports root | `/Users/chenwei/soxs-range-arbitrage/reports` |
+| `REPLACE_WITH_ARTIFACTS_ROOT` | Persistent artifacts root | `/Users/chenwei/soxs-range-arbitrage/artifacts` |
+| `REPLACE_WITH_LOGS_ROOT` | Persistent logs root | `/Users/chenwei/soxs-range-arbitrage/logs` |
 
 ### Common Python Paths
 
@@ -149,9 +165,15 @@ Set in the plist `EnvironmentVariables` dict:
 | `QUANTCAIRN_EXECUTION_MODE` | `PAPER` / `RESEARCH` / `LIVE` | `PAPER` |
 | `QUANTCAIRN_HOME` | Absolute project root used by launchd/wrapper | `<PROJECT_ROOT>` |
 | `YF_DISABLE_CURL_CFFI` | Use `requests` instead of `curl_cffi` (proxy compat) | `1` |
-| `SOXS_TELEGRAM_BOT_TOKEN` | Telegram bot token for notifications | (none) |
-| `SOXS_TELEGRAM_CHAT_ID` | Telegram chat/channel ID | (none) |
-| `SOXS_STATE_DIR` | Override state directory | `<PROJECT_ROOT>/state` |
+| `SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN` | Telegram bot token loaded from the local secrets file | (none) |
+| `SOXS_OPENALPHA_TELEGRAM_CHAT_ID` | Telegram chat/channel ID loaded from the local secrets file | (none) |
+| `QUANTCAIRN_ADMIN_CHAT_ID` | Optional admin chat ID loaded from the local secrets file | (none) |
+| `SOXS_PROJECT_DIR` | Code/source root | `<PROJECT_ROOT>` |
+| `SOXS_STATE_DIR` | Override state directory | `<STATE_ROOT>` |
+| `SOXS_REPORTS_DIR` | Override reports directory | `<REPORTS_ROOT>` |
+| `SOXS_ARTIFACTS_DIR` | Override artifacts directory | `<ARTIFACTS_ROOT>` |
+| `SOXS_LOGS_DIR` | Override logs directory | `<LOGS_ROOT>` |
+| `SOXS_DISABLE_ORPHAN_MONITOR` | Keep the default PAPER orphan template disabled | `1` |
 | `OPENALPHA_WRAPPER_VERBOSE` | Enable scheduler decision logging | `1` |
 
 ## Troubleshooting
@@ -200,6 +222,7 @@ deploy/
     ├── com.quantcairn.combined.plist.template        # Combined dashboard
     ├── com.quantcairn.ai-selector.plist.template     # AI selector scheduler
     ├── com.quantcairn.candidate-validation.plist.template  # Candidate validation scheduler
+    ├── com.quantcairn.research.plist.template      # Independent Research scheduler
     ├── com.quantcairn.top-engines.plist.template    # TOP paper trading engines
     └── com.quantcairn.orphan-monitor.plist.template  # Orphan position monitor
 ```

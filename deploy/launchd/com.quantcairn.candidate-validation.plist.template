@@ -31,10 +31,10 @@
     <string>REPLACE_WITH_PROJECT_ROOT</string>
 
     <key>StandardOutPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/candidate-validation.out.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/candidate-validation.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/candidate-validation.err.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/candidate-validation.err.log</string>
 
     <key>StartCalendarInterval</key>
     <array>
@@ -79,6 +79,16 @@
         <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>SOXS_PROJECT_DIR</key>
         <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_STATE_DIR</key>
+        <string>REPLACE_WITH_STATE_ROOT</string>
+        <key>SOXS_REPORTS_DIR</key>
+        <string>REPLACE_WITH_REPORTS_ROOT</string>
+        <key>SOXS_ARTIFACTS_DIR</key>
+        <string>REPLACE_WITH_ARTIFACTS_ROOT</string>
+        <key>SOXS_LOGS_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
+        <key>QUANTCAIRN_EXECUTION_MODE</key>
+        <string>PAPER</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
     </dict>
