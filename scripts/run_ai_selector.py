@@ -66,6 +66,7 @@ from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
 from src.dashboard.snapshots import write_dashboard_snapshot
 from src.openalpha.selection_bundle import write_selection_bundle_atomic
+from src.openalpha.top_restart import record_restart_status, request_supervisor_restart
 
 PROJECT_DIR = Path(PROJECT_ROOT).resolve()
 LOG_DIR = resolve_logs_dir(PROJECT_DIR)
@@ -2171,15 +2172,7 @@ def _restart_top_engines() -> int:
     if os.environ.get("OPENALPHA_RESTART_TOP", "1") == "0":
         print("OPENALPHA_RESTART_TOP=0; skipping TOP engine restart.")
         return 0
-    launcher = PROJECT_DIR / "scripts" / "start_top_engines.sh"
-    if not launcher.exists():
-        print(f"Missing launcher: {launcher}")
-        return 1
-    return subprocess.run(
-        ["/bin/bash", str(launcher), "restart"],
-        cwd=PROJECT_DIR,
-        check=False,
-    ).returncode
+    return request_supervisor_restart(PROJECT_DIR)
 
 
 def _spawn_background_refinement(expected_timestamp: str) -> None:
@@ -2791,6 +2784,11 @@ def main(mode: str | None = None):
         'top_sync_run_id': selection_run_id,
         'top_sync_status': 'OK',
         'top_sync_error': '',
+        'top_restart_status': (
+            'RESTART_PENDING'
+            if selected and market_stage == 'FINALIZED' and os.environ.get('OPENALPHA_RESTART_TOP', '1') != '0'
+            else 'NOT_REQUESTED'
+        ),
         'market_context': market_context.to_dict(),
         'providers_used': providers_used,
         'providers_disabled': providers_disabled,
@@ -2907,6 +2905,7 @@ def main(mode: str | None = None):
         "top_sync_run_id": selection_run_id,
         "top_sync_status": "OK",
         "top_sync_error": "",
+        "top_restart_status": summary.get("top_restart_status", "NOT_REQUESTED"),
         "selection_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
         "configured_top_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
         "disabled_slots": list(range(len(selected) + 1, TOP_COUNT + 1)),
@@ -2934,10 +2933,27 @@ def main(mode: str | None = None):
     _notify_selection_result(summary, notification_rows)
 
     if selected and market_stage == "FINALIZED":
+        selection_bundle_hash = str(summary.get("selection_bundle_hash") or "")
+        record_restart_status(
+            status="PENDING",
+            selection_run_id=selection_run_id,
+            selection_bundle_hash=selection_bundle_hash,
+        )
         restart_code = _restart_top_engines()
         if restart_code != 0:
+            record_restart_status(
+                status="FAILED",
+                selection_run_id=selection_run_id,
+                selection_bundle_hash=selection_bundle_hash,
+                error=f"restart_exit_{restart_code}",
+            )
             print(f"TOP restart failed with exit code {restart_code}.")
             sys.exit(restart_code)
+        record_restart_status(
+            status="CONFIRMED",
+            selection_run_id=selection_run_id,
+            selection_bundle_hash=selection_bundle_hash,
+        )
 
     if str((summary.get("settings") or {}).get("selection_stage") or "") == "fast_preliminary":
         _spawn_background_refinement(timestamp)

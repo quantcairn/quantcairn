@@ -55,6 +55,9 @@ EXPECTED_ENGINES = [
     ("configs/TOP3.yaml", "8082", "top3"),
 ]
 
+# Never bind or inspect the production TOP ports in isolated tests.
+ISOLATED_ENV = {**os.environ, "SOXS_TOP_PORT_OFFSET": "10000"}
+
 
 def test_launcher_defines_three_engines():
     content = LAUNCHER.read_text(encoding="utf-8")
@@ -124,6 +127,7 @@ def test_supervisor_waits_for_children(tmp_path: Path):
         ["bash", str(launcher_copy)],
         cwd=str(tmp_path),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=ISOLATED_ENV,
     )
 
     # Give the supervisor time to start children and enter wait
@@ -177,6 +181,7 @@ def test_cleanup_trap_kills_children_on_exit(tmp_path: Path):
         ["bash", str(launcher_copy)],
         cwd=str(tmp_path),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=ISOLATED_ENV,
     )
 
     time.sleep(2)
@@ -352,8 +357,7 @@ def test_launcher_supports_restart_mode():
     assert 'restart' in content, "Launcher must handle restart mode"
 
 
-def test_restart_mode_kills_old_engines_and_starts_new(tmp_path: Path):
-    """Restart stops existing engines on ports, then launches fresh processes."""
+def _supervisor_fixture(tmp_path: Path):
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     cfg_dir = tmp_path / "configs"
@@ -365,9 +369,10 @@ def test_restart_mode_kills_old_engines_and_starts_new(tmp_path: Path):
             encoding="utf-8",
         )
 
-    # run_top_engine.sh: echo its PID and args, then exit quickly
+    # The fake engine keeps its supervisor-owned process alive and retains the
+    # config argument used for ownership validation.
     (scripts_dir / "run_top_engine.sh").write_text(
-        '#!/bin/bash\necho "ENGINE: $1 port=$2 pid=$$" && exit 0',
+        '#!/bin/bash\necho "ENGINE: $1 port=$2 pid=$$"; while true; do sleep 1; done',
         encoding="utf-8",
     )
     os.chmod(scripts_dir / "run_top_engine.sh", 0o755)
@@ -375,101 +380,158 @@ def test_restart_mode_kills_old_engines_and_starts_new(tmp_path: Path):
     launcher_copy = scripts_dir / "start_top_engines.sh"
     launcher_copy.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(launcher_copy, 0o755)
-
-    result = subprocess.run(
-        ["bash", str(launcher_copy), "restart"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=10,
+    supervisor = subprocess.Popen(
+        ["bash", str(launcher_copy)],
+        cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=ISOLATED_ENV,
     )
-    assert result.returncode == 0, f"Restart should succeed: {result.stderr}"
-    assert "RESTART" in result.stdout or "Restart" in result.stdout, (
-        f"Restart output should mention restart: {result.stdout}"
-    )
-    assert "Launched" in result.stdout or "launched" in result.stdout.lower()
+    time.sleep(1)
+    assert supervisor.poll() is None
+    return supervisor, launcher_copy
 
 
-def test_restart_mode_does_not_wait_foreground(tmp_path: Path):
-    """In restart mode the script must exit quickly (no wait for children)."""
+def test_restart_requires_existing_supervisor(tmp_path: Path):
+    """The selector control path cannot launch a second supervisor or engines."""
     scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "start_top_engines.sh").write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(scripts_dir / "start_top_engines.sh"), "restart"],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=5, env=ISOLATED_ENV,
+    )
+    assert result.returncode == 3
+    assert "canonical supervisor" in result.stderr
+
+
+def test_restart_mode_requests_existing_supervisor(tmp_path: Path):
+    """Restart is serialized through the existing supervisor control boundary."""
+    supervisor, launcher = _supervisor_fixture(tmp_path)
+    try:
+        result = subprocess.run(
+            ["bash", str(launcher), "restart"],
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=30, env=ISOLATED_ENV,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "restart confirmed" in result.stdout
+        status = (tmp_path / "state" / "top_supervisor" / "status").read_text()
+        assert "state=restart_confirmed" in status
+    finally:
+        supervisor.terminate()
+        supervisor.wait(timeout=10)
+
+
+def test_concurrent_restart_lock_fails_closed(tmp_path: Path):
+    """An active restart lock prevents a second restart request."""
+    supervisor, launcher = _supervisor_fixture(tmp_path)
+    lock_dir = tmp_path / "state" / "top_supervisor" / "restart.lock"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "owner").write_text(f"pid={os.getpid()}\n")
+    try:
+        result = subprocess.run(
+            ["bash", str(launcher), "restart"],
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=5, env=ISOLATED_ENV,
+        )
+        assert result.returncode == 4
+        assert "another restart" in result.stderr
+    finally:
+        supervisor.terminate()
+        supervisor.wait(timeout=10)
+
+
+def test_duplicate_supervisor_start_fails_closed(tmp_path: Path):
+    """A second launchd-style start cannot acquire supervisor ownership."""
+    supervisor, launcher = _supervisor_fixture(tmp_path)
+    try:
+        result = subprocess.run(
+            ["bash", str(launcher)],
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=5, env=ISOLATED_ENV,
+        )
+        assert result.returncode == 8
+        assert "another supervisor" in result.stderr
+    finally:
+        supervisor.terminate()
+        supervisor.wait(timeout=10)
+
+
+def test_unknown_port_owner_fails_closed(tmp_path: Path):
+    """An unknown listener is never killed or treated as a valid TOP engine."""
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "lsof").write_text(
+        '#!/bin/sh\necho 999999\n', encoding="utf-8"
+    )
+    os.chmod(fake_bin / "lsof", 0o755)
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(parents=True)
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-
-    for i in 1, 2, 3:
-        (cfg_dir / f"TOP{i}.yaml").write_text(
-            f"ticker: TEST{i}\nmode: paper\nrange:\n  mode: auto\nposition:\n  initial_capital: 700.0\n",
-            encoding="utf-8",
-        )
-
-    # run_top_engine.sh exits quickly (real engine would run forever)
-    (scripts_dir / "run_top_engine.sh").write_text(
-        '#!/bin/bash\necho "RUNNING $1" && exit 0',
-        encoding="utf-8",
-    )
+    for i in (1, 2, 3):
+        (cfg_dir / f"TOP{i}.yaml").write_text("mode: paper\n", encoding="utf-8")
+    (scripts_dir / "run_top_engine.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     os.chmod(scripts_dir / "run_top_engine.sh", 0o755)
-
-    launcher_copy = scripts_dir / "start_top_engines.sh"
-    launcher_copy.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
-    os.chmod(launcher_copy, 0o755)
-
-    start = time.time()
+    launcher = scripts_dir / "start_top_engines.sh"
+    launcher.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(launcher, 0o755)
     result = subprocess.run(
-        ["bash", str(launcher_copy), "restart"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=10,
+        ["bash", str(launcher)], cwd=str(tmp_path), capture_output=True,
+        text=True, timeout=5, env={**ISOLATED_ENV, "PATH": f"{fake_bin}:/usr/bin:/bin"},
     )
-    elapsed = time.time() - start
-
-    assert result.returncode == 0
-    assert elapsed < 8, (
-        f"Restart should exit quickly (<8s), took {elapsed:.1f}s"
-    )
+    assert result.returncode == 10
+    assert "unknown process" in result.stderr
 
 
-def test_restart_mode_exits_zero_on_success(tmp_path: Path):
-    """Successful restart returns exit code 0."""
+def test_unexpected_child_process_fails_restart_closed(tmp_path: Path):
+    """A changed child command is not killed and cannot be replaced."""
     scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir.mkdir(parents=True)
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-
-    for i in 1, 2, 3:
-        (cfg_dir / f"TOP{i}.yaml").write_text(
-            f"ticker: TEST{i}\nmode: paper\nrange:\n  mode: auto\nposition:\n  initial_capital: 700.0\n",
-            encoding="utf-8",
-        )
-
+    for i in (1, 2, 3):
+        (cfg_dir / f"TOP{i}.yaml").write_text("mode: paper\n", encoding="utf-8")
+    pid_file = tmp_path / "unexpected.pid"
     (scripts_dir / "run_top_engine.sh").write_text(
-        '#!/bin/bash\necho "OK" && exit 0',
-        encoding="utf-8",
+        f"#!/bin/bash\necho $$ > {pid_file}\nexec sleep 60\n", encoding="utf-8"
     )
     os.chmod(scripts_dir / "run_top_engine.sh", 0o755)
-
-    launcher_copy = scripts_dir / "start_top_engines.sh"
-    launcher_copy.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
-    os.chmod(launcher_copy, 0o755)
-
-    result = subprocess.run(
-        ["bash", str(launcher_copy), "restart"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=10,
+    launcher = scripts_dir / "start_top_engines.sh"
+    launcher.write_text(LAUNCHER.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(launcher, 0o755)
+    supervisor = subprocess.Popen(
+        ["bash", str(launcher)], cwd=str(tmp_path), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, env=ISOLATED_ENV,
     )
-    assert result.returncode == 0
+    try:
+        for _ in range(20):
+            if pid_file.exists():
+                break
+            time.sleep(0.1)
+        result = subprocess.run(
+            ["bash", str(launcher), "restart"], cwd=str(tmp_path),
+            capture_output=True, text=True, timeout=30, env=ISOLATED_ENV,
+        )
+        assert result.returncode == 6
+        assert "ownership" in result.stderr
+        assert "state=restart_failed" in (tmp_path / "state" / "top_supervisor" / "status").read_text()
+    finally:
+        supervisor.terminate()
+        supervisor.wait(timeout=10)
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
 
 
 def test_selector_restart_uses_start_top_engines_script():
-    """_restart_top_engines() calls start_top_engines.sh restart, not multi_launch.sh."""
+    """_restart_top_engines() uses the canonical supervisor control client."""
     # Use same PROJECT_DIR as LAUNCHER (already tested to exist)
     selector_path = LAUNCHER.parent / "run_ai_selector.py"
     content = selector_path.read_text(encoding="utf-8")
-    assert "start_top_engines.sh" in content, (
-        "_restart_top_engines() must reference start_top_engines.sh"
-    )
-    assert '"restart"' in content, (
-        "_restart_top_engines() must pass 'restart' as a subcommand"
-    )
+    assert "request_supervisor_restart" in content
     # Should NOT reference the old multi_launch.sh in the restart function
     func_body = content.split("def _restart_top_engines")[1].split("def _spawn_background")[0]
-    assert "multi_launch.sh" not in func_body, (
-        "_restart_top_engines() must NOT reference multi_launch.sh"
-    )
+    assert "multi_launch.sh" not in func_body
+    assert "run_top_engine.sh" not in func_body
 
 
 # ---------------------------------------------------------------------------

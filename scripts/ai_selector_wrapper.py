@@ -44,6 +44,7 @@ if PROJECT_DIR not in sys.path:
 
 from src.config.local_env import load_local_ai_env
 from src.utils.market_calendar import is_us_market_trading_day
+from src.openalpha.top_restart import load_restart_status, record_restart_status, request_supervisor_restart
 
 SELECTOR = os.path.join(PROJECT_DIR, 'scripts', 'run_ai_selector.py')
 OUT_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.out.log')
@@ -85,6 +86,36 @@ def mark_ran_today(now_et: datetime) -> None:
     marker = os.path.join(STATE_DIR, f"ai_selector_{now_et.date().isoformat()}.done")
     with open(marker, "w") as f:
         f.write(datetime.now().isoformat() + "\n")
+
+
+def _compensate_top_restart() -> bool:
+    """Retry only the supervisor restart; never rerun selector work."""
+
+    status = load_restart_status(PROJECT_DIR) or {}
+    if str(status.get("status") or "").upper() not in {"FAILED", "PENDING"}:
+        return False
+    selection_run_id = str(status.get("selection_run_id") or "").strip()
+    if not selection_run_id:
+        return False
+    bundle_hash = str(status.get("selection_bundle_hash") or "")
+    print(f"TOP restart compensation requested for selection {selection_run_id}.")
+    code = request_supervisor_restart(PROJECT_DIR)
+    if code != 0:
+        record_restart_status(
+            status="FAILED",
+            selection_run_id=selection_run_id,
+            selection_bundle_hash=bundle_hash,
+            error=f"compensation_exit_{code}",
+            project_dir=PROJECT_DIR,
+        )
+        return False
+    record_restart_status(
+        status="CONFIRMED",
+        selection_run_id=selection_run_id,
+        selection_bundle_hash=bundle_hash,
+        project_dir=PROJECT_DIR,
+    )
+    return True
 
 
 def _run_selection_if_due():
@@ -166,6 +197,9 @@ def _run_selection_if_due():
         proc = subprocess.Popen(cmd, stdout=out, stderr=err, cwd=PROJECT_DIR, env=env)
         proc.wait()
     if proc.returncode != 0:
+        if _compensate_top_restart():
+            print('TOP restart compensation completed without rerunning selector.')
+            return
         print(f'AI selector failed with exit code {proc.returncode}.')
         sys.exit(proc.returncode)
 

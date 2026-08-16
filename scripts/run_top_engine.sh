@@ -61,37 +61,25 @@ LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
 REDIRECT_STDIO="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-0}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
-kill_listener_on_port() {
-    local target_port="$1"
-    if ! command -v lsof >/dev/null 2>&1; then
-        return 0
-    fi
-    local pids
-    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
-    if [ -z "$pids" ]; then
-        return 0
-    fi
-    kill $pids 2>/dev/null || true
-    sleep 1
-    pids="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
-    if [ -n "$pids" ]; then
-        kill -9 $pids 2>/dev/null || true
-    fi
-}
-
 wait_until_port_free() {
     local target_port="$1"
     local attempts="${2:-50}"
     local sleep_seconds="${3:-0.2}"
     if ! command -v lsof >/dev/null 2>&1; then
-        return 0
+        echo "cannot verify port ownership: lsof is unavailable" >&2
+        return 1
     fi
     local i
     for ((i=0; i<attempts; i++)); do
-        if ! lsof -tiTCP:"$target_port" -sTCP:LISTEN >/dev/null 2>&1; then
+        if lsof -tiTCP:"$target_port" -sTCP:LISTEN >/dev/null 2>&1; then
+            sleep "$sleep_seconds"
+            continue
+        fi
+        local lsof_status=$?
+        if [ "$lsof_status" -eq 1 ]; then
             return 0
         fi
-        sleep "$sleep_seconds"
+        return 1
     done
     echo "port $target_port still busy after waiting" >&2
     return 1
@@ -122,6 +110,5 @@ if [ "$REDIRECT_STDIO" = "1" ]; then
     exec >> "$LOG_DIR/${log_name}.log" 2>&1
 fi
 
-kill_listener_on_port "$port"
 wait_until_port_free "$port"
 run_engine
