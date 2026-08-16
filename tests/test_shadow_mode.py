@@ -147,8 +147,8 @@ def test_shadow_mode_uses_quote_only_and_writes_outputs(monkeypatch, tmp_path):
     pages = _prepare_pages()
     fake_module = _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
-    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
-    runtime_output_dir = Path("artifacts/shadow/test_shadow_runtime")
+    _project_dir, shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
+    runtime_output_dir = shadow_root / "test_shadow_runtime"
     runtime = ShadowRuntimeConfig(
         output_dir=runtime_output_dir,
         symbol="SOXS.US",
@@ -187,7 +187,7 @@ def test_shadow_mode_writes_dashboard_status_snapshot(monkeypatch, tmp_path):
     pages = _prepare_pages()
     _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
-    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
+    _project_dir, shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
     calls = []
 
     def fake_write_dashboard_snapshot(name, data, *, source_run_id=None, generated_at=None, state_dir=None):
@@ -205,7 +205,7 @@ def test_shadow_mode_writes_dashboard_status_snapshot(monkeypatch, tmp_path):
     monkeypatch.setattr(shadow_observer_module, "write_dashboard_snapshot", fake_write_dashboard_snapshot)
 
     runtime = ShadowRuntimeConfig(
-        output_dir=Path("artifacts/shadow") / f"test_shadow_snapshot_{tmp_path.name}",
+        output_dir=shadow_root / f"test_shadow_snapshot_{tmp_path.name}",
         symbol="SOXS.US",
         benchmark_symbols=("SOXX.US", "SMH.US"),
         frequency="15m",
@@ -246,7 +246,7 @@ def test_shadow_dashboard_status_snapshot_failure_does_not_abort(monkeypatch, tm
     pages = _prepare_pages()
     _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
-    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
+    _project_dir, shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
 
     def fail_write_dashboard_snapshot(*args, **kwargs):
         raise RuntimeError("snapshot unavailable")
@@ -254,7 +254,7 @@ def test_shadow_dashboard_status_snapshot_failure_does_not_abort(monkeypatch, tm
     monkeypatch.setattr(shadow_observer_module, "write_dashboard_snapshot", fail_write_dashboard_snapshot)
 
     runtime = ShadowRuntimeConfig(
-        output_dir=Path("artifacts/shadow") / f"test_shadow_snapshot_failure_{tmp_path.name}",
+        output_dir=shadow_root / f"test_shadow_snapshot_failure_{tmp_path.name}",
         symbol="SOXS.US",
         benchmark_symbols=("SOXX.US", "SMH.US"),
         frequency="15m",
@@ -283,9 +283,9 @@ def test_shadow_restart_skips_duplicate_bars(monkeypatch, tmp_path):
     pages = _prepare_pages()
     _install_fake_longbridge(monkeypatch, pages)
     _shadow_env(monkeypatch)
-    _project_dir, _shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
+    _project_dir, shadow_root = _shadow_sandbox_root(monkeypatch, tmp_path)
     runtime = ShadowRuntimeConfig(
-        output_dir=Path("artifacts/shadow/test_shadow_restart"),
+        output_dir=shadow_root / "test_shadow_restart",
         symbol="SOXS.US",
         benchmark_symbols=("SOXX.US", "SMH.US"),
         frequency="15m",

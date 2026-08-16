@@ -344,6 +344,7 @@ def test_price_fetcher_uses_quantcairn_home_for_yfinance_cache_dir(monkeypatch, 
 
     monkeypatch.setenv("QUANTCAIRN_HOME", str(project_home))
     monkeypatch.delenv("SOXS_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("SOXS_STATE_DIR", raising=False)
     monkeypatch.delenv("SOXS_YFINANCE_CACHE_DIR", raising=False)
     monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
     monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_INITIALIZED", False)

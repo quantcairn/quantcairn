@@ -113,11 +113,9 @@ def _is_safe_timeframe(timeframe: str) -> bool:
 
 def is_safe_shadow_output_directory(path: Path | str) -> bool:
     candidate = Path(path)
-    if candidate.is_absolute():
-        return False
-    resolved = (PROJECT_DIR / candidate).resolve(strict=False)
+    resolved = candidate.resolve(strict=False) if candidate.is_absolute() else (PROJECT_DIR / candidate).resolve(strict=False)
     try:
-        resolved.relative_to(SHADOW_ROOT_DIR)
+        resolved.relative_to(SHADOW_ROOT_DIR.resolve())
     except ValueError:
         return False
     return True

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.dashboard.snapshots import write_dashboard_snapshot
+from src.config.runtime_paths import resolve_artifacts_dir
 
 from .calibration import CandidateScoreCalibrator
 from .model_governance import CandidateModelManifest, CandidateModelRegistry, CandidateModelStatus
@@ -83,16 +84,17 @@ def _compare_metrics(baseline: dict[str, Any], challenger: dict[str, Any]) -> di
 
 @dataclass(slots=True)
 class CandidateModelEvaluationService:
-    candidate_root: Path = PROJECT_DIR / "artifacts" / "candidates"
-    backtest_root: Path = PROJECT_DIR / "artifacts" / "backtests"
-    model_root: Path = PROJECT_DIR / "config" / "candidate_models"
-    evaluation_root: Path = DEFAULT_EVALUATION_ROOT
+    candidate_root: Path | None = None
+    backtest_root: Path | None = None
+    model_root: Path | None = None
+    evaluation_root: Path | None = None
 
     def __post_init__(self) -> None:
-        self.candidate_root = Path(self.candidate_root)
-        self.backtest_root = Path(self.backtest_root)
-        self.model_root = Path(self.model_root)
-        self.evaluation_root = Path(self.evaluation_root)
+        artifacts_root = resolve_artifacts_dir(PROJECT_DIR)
+        self.candidate_root = Path(self.candidate_root or artifacts_root / "candidates")
+        self.backtest_root = Path(self.backtest_root or artifacts_root / "backtests")
+        self.model_root = Path(self.model_root or PROJECT_DIR / "config" / "candidate_models")
+        self.evaluation_root = Path(self.evaluation_root or artifacts_root / "candidate_models" / "evaluation")
 
     def _build_dataset(self):
         return CandidateOutcomeDatasetBuilder(
@@ -291,9 +293,9 @@ def load_candidate_model_evaluation_snapshot(
 ) -> dict[str, Any]:
     try:
         return CandidateModelEvaluationService(
-            candidate_root=candidate_root or PROJECT_DIR / "artifacts" / "candidates",
-            backtest_root=backtest_root or PROJECT_DIR / "artifacts" / "backtests",
-            model_root=model_root or PROJECT_DIR / "config" / "candidate_models",
+            candidate_root=candidate_root,
+            backtest_root=backtest_root,
+            model_root=model_root,
         ).evaluate()
     except Exception as exc:
         return {

@@ -44,16 +44,19 @@ from src.config.runtime_paths import runtime_paths
 from src.openalpha.selection_state import selection_state_path
 from src.dashboard.snapshots import dashboard_snapshot_path
 from src.notifier.alerts import default_ai_selection_notification_ledger_path
+from src.candidate_validation.performance_tracker import CandidatePerformanceTracker
 from src.candidate_validation.store import CandidateValidationStore
 
 p = runtime_paths()
 store = CandidateValidationStore()
+tracker = CandidatePerformanceTracker()
 print(json.dumps({
     "paths": {key: str(value) for key, value in p.__dict__.items()},
     "selection_state": str(selection_state_path()),
     "dashboard_snapshot": str(dashboard_snapshot_path("status")),
     "notification_ledger": str(default_ai_selection_notification_ledger_path()),
     "candidate_root": str(store.root_dir),
+    "performance_root": str(tracker.root_dir),
 }))
 """,
         ],
@@ -74,6 +77,7 @@ print(json.dumps({
     assert payload["dashboard_snapshot"].startswith(str(roots["state"]))
     assert payload["notification_ledger"].startswith(str(roots["state"]))
     assert payload["candidate_root"].startswith(str(roots["artifacts"]))
+    assert payload["performance_root"].startswith(str(roots["artifacts"]))
     assert not (roots["project"] / "state").exists()
     assert not (roots["project"] / "reports").exists()
     assert not (roots["project"] / "artifacts").exists()

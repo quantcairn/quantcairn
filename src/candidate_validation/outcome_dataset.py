@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .models import CandidateRecord, ValidationStatus
+from src.config.runtime_paths import resolve_artifacts_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_CANDIDATE_ROOT = PROJECT_DIR / "artifacts" / "candidates"
@@ -333,9 +334,10 @@ class CandidateOutcomeDatasetBuilder:
         backtest_root: Path | None = None,
         dataset_root: Path | None = None,
     ) -> None:
-        self.candidate_root = Path(candidate_root or DEFAULT_CANDIDATE_ROOT)
-        self.backtest_root = Path(backtest_root or DEFAULT_BACKTEST_ROOT)
-        self.dataset_root = Path(dataset_root or DEFAULT_DATASET_ROOT)
+        artifacts_root = resolve_artifacts_dir(PROJECT_DIR)
+        self.candidate_root = Path(candidate_root or artifacts_root / "candidates")
+        self.backtest_root = Path(backtest_root or artifacts_root / "backtests")
+        self.dataset_root = Path(dataset_root or artifacts_root / "candidate_models" / "datasets")
 
     def _label_from_candidate(self, candidate: CandidateRecord, artifact: dict[str, Any] | None) -> tuple[dict[str, Any], str, float | None, float | None, str]:
         metadata = dict(candidate.metadata or {})

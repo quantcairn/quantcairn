@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import src.candidate_validation.model_evaluation as model_evaluation_module
 from src.candidate_validation import (
+    CandidateRecord,
     CandidateModelEvaluationService,
     CandidateModelManifest,
     CandidateModelRegistry,
@@ -13,20 +14,71 @@ from src.candidate_validation import (
     CandidateScoreCalibrator,
     CandidateOutcomeSample,
     CandidateDailyResearchReportGenerator,
+    CandidateValidationStore,
     load_candidate_model_evaluation_snapshot,
 )
 from src.dashboard import combined as dashboard
 
 
-def test_candidate_outcome_dataset_builder_produces_leakage_safe_samples(tmp_path):
-    backtest_root = tmp_path / "backtests"
+def _seed_model_inputs(root):
+    candidate_root = root / "candidates"
+    backtest_root = root / "backtests"
+    store = CandidateValidationStore(candidate_root)
+    store.save_candidates(
+        [
+            CandidateRecord.from_ai_candidate(
+                symbol="AAPL.US",
+                selected_at="2026-07-01T00:00:00+00:00",
+                source="model_evaluation_test",
+                ai_score=90.0,
+                candidate_score=92.0,
+                liquidity_score=90.0,
+                trend_score=85.0,
+                volatility_score=80.0,
+                risk_score=75.0,
+                strategy_fit_score=88.0,
+                recommended_strategy="mean_reversion",
+                data_mode="live",
+                data_freshness="fresh",
+                data_status="VALID",
+                scoring_eligible=True,
+                trade_filter_passed=True,
+                asset_type="common_stock",
+                benchmarks=("QQQ.US", "SPY.US"),
+                strategy_family="equity_mean_reversion",
+                risk_profile="balanced",
+                metadata={"data_as_of": "2026-07-01T00:00:00+00:00"},
+            )
+        ]
+    )
     artifact_dir = backtest_root / "sample-run"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / "comparison_summary.json").write_text(
-        json.dumps({"generated_at": "2026-08-01T00:00:00Z", "summary": {}}),
+        json.dumps(
+            {
+                "symbol": "AAPL.US",
+                "generated_at": "2026-06-30T00:00:00Z",
+                "data_end": "2026-06-30T00:00:00Z",
+                "summary": {"best_version": "baseline", "ranking_status": "PASS"},
+                "metrics": [
+                    {
+                        "version": "baseline",
+                        "reconciliation_status": "OK",
+                        "evidence_status": "ELIGIBLE",
+                        "total_return": 0.05,
+                        "max_drawdown": 0.1,
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
-    dataset = CandidateOutcomeDatasetBuilder(backtest_root=backtest_root).build()
+    return candidate_root, backtest_root
+
+
+def test_candidate_outcome_dataset_builder_produces_leakage_safe_samples(tmp_path):
+    candidate_root, backtest_root = _seed_model_inputs(tmp_path)
+    dataset = CandidateOutcomeDatasetBuilder(candidate_root=candidate_root, backtest_root=backtest_root).build()
 
     assert dataset.sample_count > 0
     assert dataset.warnings == []
@@ -222,7 +274,9 @@ def test_candidate_model_registry_requires_human_approval_for_active(tmp_path):
     assert loaded.status == CandidateModelStatus.ACTIVE.value
 
 
-def test_candidate_model_evaluation_snapshot_is_read_only_and_exposed_in_dashboard(monkeypatch):
+def test_candidate_model_evaluation_snapshot_is_read_only_and_exposed_in_dashboard(monkeypatch, tmp_path):
+    candidate_root, backtest_root = _seed_model_inputs(tmp_path / "artifacts")
+    monkeypatch.setenv("SOXS_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
     monkeypatch.setattr(dashboard, "_fetch_live_account_summary", lambda: (_ for _ in ()).throw(AssertionError("broker should not be called")))
     monkeypatch.setattr(
         dashboard,
@@ -248,7 +302,7 @@ def test_candidate_model_evaluation_snapshot_is_read_only_and_exposed_in_dashboa
     monkeypatch.setattr(dashboard, "_fetch_status", lambda port: None)
     monkeypatch.setattr(dashboard, "has_live_top_configs", lambda: False)
 
-    snapshot = load_candidate_model_evaluation_snapshot()
+    snapshot = load_candidate_model_evaluation_snapshot(candidate_root=candidate_root, backtest_root=backtest_root)
     assert snapshot["title"] == "Candidate Model Evaluation"
     assert snapshot["training_sample_count"] > 0
     assert snapshot["baseline_version"] == "baseline_v1"

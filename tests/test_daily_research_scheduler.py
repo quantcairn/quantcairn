@@ -163,6 +163,11 @@ def test_daily_research_scheduler_runs_and_is_idempotent(tmp_path):
 
 def test_daily_research_scheduler_status_api_reads_latest_run(monkeypatch, tmp_path):
     project_dir = tmp_path / "project"
+    monkeypatch.setenv("SOXS_PROJECT_DIR", str(project_dir))
+    monkeypatch.setenv("SOXS_STATE_DIR", str(project_dir / "state"))
+    monkeypatch.setenv("SOXS_REPORTS_DIR", str(project_dir / "reports"))
+    monkeypatch.setenv("SOXS_ARTIFACTS_DIR", str(project_dir / "artifacts"))
+    monkeypatch.setenv("SOXS_LOGS_DIR", str(project_dir / "logs"))
     candidate_root = project_dir / "artifacts" / "candidates"
     research_root = project_dir / "artifacts" / "research" / "daily"
     candidate_root.mkdir(parents=True, exist_ok=True)

@@ -62,9 +62,11 @@ def _atomic_write_text(path: Path, content: str) -> Path:
 
 @dataclass(slots=True)
 class CandidateValidationStore:
-    root_dir: Path = CANDIDATE_ROOT
+    root_dir: Path | None = None
 
     def __post_init__(self) -> None:
+        if self.root_dir is None:
+            self.root_dir = resolve_artifacts_dir(PROJECT_DIR) / "candidates"
         self.root_dir = Path(self.root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
 

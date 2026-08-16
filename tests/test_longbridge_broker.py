@@ -145,6 +145,7 @@ def test_longbridge_sandbox_requires_explicit_endpoints(monkeypatch=None):
             app_secret="s",
             access_token="t",
             environment="sandbox",
+            audit_dir=tempfile.mkdtemp(prefix="longbridge-audit-"),
         )
 
         assert broker.connect() is False
@@ -880,7 +881,12 @@ def test_get_active_orders_accepts_unhashable_status_objects(monkeypatch=None):
 
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
-    broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        audit_dir=tempfile.mkdtemp(prefix="longbridge-audit-"),
+    )
     assert broker.connect() is True
 
     orders = broker.get_active_orders("PLTR")
@@ -938,7 +944,12 @@ def test_get_active_orders_reuses_cached_snapshot_after_rate_limit(tmp_path, mon
     original_state_dir = os.environ.get("SOXS_STATE_DIR")
     os.environ["SOXS_STATE_DIR"] = str(tmp_path / "state")
     try:
-        broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+        broker = module.LongBridgeBroker(
+            app_key="k",
+            app_secret="s",
+            access_token="t",
+            audit_dir=str(tmp_path / "logs"),
+        )
         assert broker.connect() is True
 
         first = broker.get_active_orders("PLTR")
@@ -1217,7 +1228,12 @@ def test_longbridge_broker_uses_safer_default_cache_and_backoff(monkeypatch=None
         monkeypatch.delenv("LONGBRIDGE_RETRY_BACKOFF_SECONDS", raising=False)
         monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
-        broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+        broker = module.LongBridgeBroker(
+            app_key="k",
+            app_secret="s",
+            access_token="t",
+            audit_dir=tempfile.mkdtemp(prefix="longbridge-audit-"),
+        )
 
         assert broker._account_cache_ttl_seconds == 180.0
         assert broker._positions_cache_ttl_seconds == 180.0
