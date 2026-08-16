@@ -13,14 +13,11 @@ from typing import Any
 
 import yaml
 from src.utils.market_calendar import required_selection_date
-from src.config.runtime_paths import resolve_state_dir
+from src.config.runtime_paths import resolve_project_dir, resolve_reports_dir, resolve_state_dir
 
 
 def _project_dir() -> Path:
-    from src.openalpha.selection_state import PROJECT_DIR
-
-    configured = str(os.environ.get("SOXS_PROJECT_DIR") or "").strip()
-    return Path(configured).expanduser().resolve() if configured else Path(PROJECT_DIR).resolve()
+    return resolve_project_dir()
 
 
 def _state_dir() -> Path:
@@ -252,11 +249,11 @@ class SelectionBundle:
 
     @property
     def report_latest_path(self) -> Path:
-        return _project_dir() / "reports" / "ai_selection_latest.json"
+        return resolve_reports_dir() / "ai_selection_latest.json"
 
     @property
     def report_dated_path(self) -> Path:
-        return _project_dir() / "reports" / f"ai_selection_{self.selection_date}.json"
+        return resolve_reports_dir() / f"ai_selection_{self.selection_date}.json"
 
     @property
     def state_path(self) -> Path:

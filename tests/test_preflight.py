@@ -137,7 +137,7 @@ class TestDataAvailability:
             "src.openalpha.preflight._et_now",
             lambda: __import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")),
         )
-        monkeypatch.setattr("src.openalpha.preflight.PREFLIGHT_ARTIFACT_DIR", tmp_path / "artifacts" / "selection")
+        monkeypatch.setattr("src.openalpha.preflight._artifact_dir", lambda: tmp_path / "artifacts" / "selection")
 
         report = run_preflight(
             symbols=["AAPL", "MSFT"],

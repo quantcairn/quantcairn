@@ -13,6 +13,7 @@ import sys
 import subprocess
 import fcntl
 from datetime import datetime
+from pathlib import Path
 try:
     from zoneinfo import ZoneInfo
 except Exception:
@@ -42,15 +43,32 @@ if (
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
+from src.config.runtime_paths import resolve_logs_dir, resolve_state_dir
 from src.config.local_env import load_local_ai_env
 from src.utils.market_calendar import is_us_market_trading_day
 from src.openalpha.top_restart import load_restart_status, record_restart_status, request_supervisor_restart
 
 SELECTOR = os.path.join(PROJECT_DIR, 'scripts', 'run_ai_selector.py')
-OUT_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.out.log')
-ERR_LOG = os.path.join(PROJECT_DIR, 'logs', 'ai_selector.err.log')
-STATE_DIR = os.environ.get("SOXS_STATE_DIR") or os.path.join(PROJECT_DIR, 'state')
-LOCK_FILE = os.path.join(STATE_DIR, 'ai_selector.lock')
+OUT_LOG = None
+ERR_LOG = None
+STATE_DIR = None
+LOCK_FILE = None
+
+
+def _runtime_state_dir():
+    return Path(STATE_DIR) if STATE_DIR is not None else resolve_state_dir(Path(PROJECT_DIR))
+
+
+def _runtime_log_paths():
+    logs_dir = resolve_logs_dir(Path(PROJECT_DIR))
+    return (
+        Path(OUT_LOG) if OUT_LOG is not None else logs_dir / "ai_selector.out.log",
+        Path(ERR_LOG) if ERR_LOG is not None else logs_dir / "ai_selector.err.log",
+    )
+
+
+def _runtime_lock_file():
+    return Path(LOCK_FILE) if LOCK_FILE is not None else _runtime_state_dir() / "ai_selector.lock"
 
 
 def _verbose(message: str) -> None:
@@ -77,13 +95,14 @@ def is_market_time(now_et: datetime) -> bool:
 
 
 def already_ran_today(now_et: datetime) -> bool:
-    marker = os.path.join(STATE_DIR, f"ai_selector_{now_et.date().isoformat()}.done")
+    marker = _runtime_state_dir() / f"ai_selector_{now_et.date().isoformat()}.done"
     return os.path.exists(marker)
 
 
 def mark_ran_today(now_et: datetime) -> None:
-    os.makedirs(STATE_DIR, exist_ok=True)
-    marker = os.path.join(STATE_DIR, f"ai_selector_{now_et.date().isoformat()}.done")
+    state_dir = _runtime_state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    marker = state_dir / f"ai_selector_{now_et.date().isoformat()}.done"
     with open(marker, "w") as f:
         f.write(datetime.now().isoformat() + "\n")
 
@@ -192,8 +211,9 @@ def _run_selection_if_due():
     # Python's native requests + Homebrew OpenSSL works correctly with Surge.
     # Set YF_DISABLE_CURL_CFFI=0 to override (e.g. when not behind Surge).
     env.setdefault("YF_DISABLE_CURL_CFFI", "1")
-    os.makedirs(os.path.dirname(OUT_LOG), exist_ok=True)
-    with open(OUT_LOG, 'a') as out, open(ERR_LOG, 'a') as err:
+    out_log, err_log = _runtime_log_paths()
+    out_log.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_log, 'a') as out, open(err_log, 'a') as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err, cwd=PROJECT_DIR, env=env)
         proc.wait()
     if proc.returncode != 0:
@@ -227,8 +247,9 @@ def _run_selection_if_due():
 
 def main():
     load_local_ai_env()
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(LOCK_FILE, "w", encoding="utf-8") as lock:
+    lock_file = _runtime_lock_file()
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_file, "w", encoding="utf-8") as lock:
         # The launch job and minute-based wrapper can fire together. Serialize
         # them so trading never starts while configs are half-written.
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)

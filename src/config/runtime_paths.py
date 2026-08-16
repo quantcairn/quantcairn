@@ -36,7 +36,7 @@ def resolve_artifacts_dir(project_dir: Path | None = None) -> Path:
 
 
 def resolve_logs_dir(project_dir: Path | None = None) -> Path:
-    return (_env_path("SOXS_LOGS_DIR") or resolve_project_dir(project_dir) / "logs").resolve()
+    return (_env_path("SOXS_LOG_DIR") or _env_path("SOXS_LOGS_DIR") or resolve_project_dir(project_dir) / "logs").resolve()
 
 
 @dataclass(frozen=True)

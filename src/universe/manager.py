@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.universe.models import UniverseSymbol, UniverseSnapshot, UNIVERSE_ARTIFACT_DIR
+from src.config.runtime_paths import resolve_artifacts_dir
+from src.universe.models import UniverseSymbol, UniverseSnapshot
 from src.universe.profiles import default_universe
 from src.universe.filters import run_all_filters
 
@@ -32,14 +33,8 @@ class UniverseManager:
         snapshot_path: str | Path | None = None,
         universe_path: str | Path | None = None,
     ) -> None:
-        self.snapshot_path = (
-            Path(snapshot_path) if snapshot_path
-            else UNIVERSE_ARTIFACT_DIR / "universe_snapshot.json"
-        )
-        self.universe_path = (
-            Path(universe_path) if universe_path
-            else UNIVERSE_ARTIFACT_DIR / "universe.json"
-        )
+        self._snapshot_path_override = Path(snapshot_path) if snapshot_path else None
+        self._universe_path_override = Path(universe_path) if universe_path else None
         # Filter defaults
         self.min_avg_volume: int = 500_000
         self.min_price: float = 4.0
@@ -47,6 +42,14 @@ class UniverseManager:
         self.max_risk_score: float = 70.0
         self.max_volatility_score: float = 80.0
         self.max_leveraged_inverse: int = 1
+
+    @property
+    def snapshot_path(self) -> Path:
+        return self._snapshot_path_override or resolve_artifacts_dir() / "universe" / "universe_snapshot.json"
+
+    @property
+    def universe_path(self) -> Path:
+        return self._universe_path_override or resolve_artifacts_dir() / "universe" / "universe.json"
 
     # ── Load / save ────────────────────────────────────────────────────
 

@@ -22,7 +22,9 @@ from src.data.fetcher import PriceFetcher
 from src.config.runtime_paths import resolve_artifacts_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-PREFLIGHT_ARTIFACT_DIR = resolve_artifacts_dir(PROJECT_DIR) / "selection"
+
+def _artifact_dir() -> Path:
+    return resolve_artifacts_dir(PROJECT_DIR) / "selection"
 
 
 def _utc_now_iso() -> str:
@@ -223,10 +225,11 @@ def run_preflight(
 
 def _write_report(report: PreflightReport) -> Path | None:
     try:
-        PREFLIGHT_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-        path = PREFLIGHT_ARTIFACT_DIR / "preflight.json"
+        artifact_dir = _artifact_dir()
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        path = artifact_dir / "preflight.json"
         fd, tmp = tempfile.mkstemp(
-            prefix=".preflight.", suffix=".tmp", dir=str(PREFLIGHT_ARTIFACT_DIR)
+            prefix=".preflight.", suffix=".tmp", dir=str(artifact_dir)
         )
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(report.to_dict(), f, ensure_ascii=False, indent=2, sort_keys=True, default=str)
