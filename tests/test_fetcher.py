@@ -960,6 +960,7 @@ class TestSelectorHandlesMissingPriceFetcher:
         from src.scoring.scorer import Scorer
 
         monkeypatch.setattr(fetcher_mod, "_YF_AVAILABLE", False)
+        monkeypatch.setattr(scorer_mod, "_REQUESTS_AVAILABLE", False)
         monkeypatch.setenv("OPENALPHA_ALLOW_YFINANCE_FALLBACK", "0")
         monkeypatch.delenv("OPENALPHA_USE_YFINANCE", raising=False)
 

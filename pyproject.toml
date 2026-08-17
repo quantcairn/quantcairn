@@ -106,6 +106,7 @@ pythonpath = ["."]
 addopts = ["-q", "--tb=short"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "network: tests that intentionally require external network/integration services; excluded from offline deterministic gate",
 ]
 
 # ── mypy / type checking (future) ────────────────────────────────────────

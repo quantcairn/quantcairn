@@ -28,6 +28,21 @@ from src.openalpha.demo_data import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _offline_demo_preflight(monkeypatch):
+    """Demo selector tests use seeded OHLCV, never external market data."""
+    from src.openalpha.preflight import PreflightReport
+
+    monkeypatch.setattr(
+        "src.openalpha.preflight.run_preflight",
+        lambda **kwargs: PreflightReport(
+            selection_run_id=str(kwargs.get("selection_run_id") or "offline-demo"),
+            run_mode="FULL",
+            data_mode="UNAVAILABLE",
+        ),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. Data format and content
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -202,6 +217,11 @@ class TestDemoSelectorEndToEnd:
 
         provider = DemoDataProvider()
 
+        monkeypatch.setattr(
+            "src.scoring.scorer.Scorer._load_history",
+            lambda self, symbol: provider.get_ohlcv(str(symbol).strip().upper()),
+        )
+
         # Patch preflight → DEMO mode
         monkeypatch.setattr(
             "src.openalpha.preflight.run_preflight",
@@ -354,6 +374,14 @@ class TestDemoPipelineWorkflow:
         from src.openalpha.demo_data import DemoDataProvider
 
         provider = DemoDataProvider()
+
+        def _demo_load_history(self, symbol: str):
+            try:
+                return provider.get_ohlcv(str(symbol).strip().upper())
+            except KeyError:
+                return pd.DataFrame()
+
+        monkeypatch.setattr("src.scoring.scorer.Scorer._load_history", _demo_load_history)
 
         monkeypatch.setattr(
             "src.openalpha.preflight.run_preflight",

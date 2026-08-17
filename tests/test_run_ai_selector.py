@@ -8,6 +8,8 @@ import types
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_DIR / "scripts" / "run_ai_selector.py"
@@ -545,6 +547,7 @@ def test_write_selection_filter_log_is_repeatable_without_fd_growth(tmp_path, mo
         assert after_fd_count <= baseline_fd_count + 3
 
 
+@pytest.mark.network
 def test_run_ai_selector_emits_preview_without_writing_configs_when_no_finalized_symbols():
     module = _load_module()
     captured_bundles: list[dict] = []
@@ -624,6 +627,7 @@ def test_run_ai_selector_emits_preview_without_writing_configs_when_no_finalized
     assert captured_bundles[0]["top_items"] == []
 
 
+@pytest.mark.network
 def test_run_ai_selector_rejects_cross_run_identity_mismatch():
     module = _load_module()
     captured_bundles: list[dict] = []
@@ -968,6 +972,7 @@ def test_run_ai_selector_rejects_preflight_mode_mismatch():
     assert not captured_bundles
 
 
+@pytest.mark.network
 def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     module = _load_module()
     captured_bundles: list[dict] = []
@@ -1125,6 +1130,7 @@ def test_run_ai_selector_succeeds_with_openbb_flag_enabled():
     assert spawned_refinement
 
 
+@pytest.mark.network
 def test_run_ai_selector_filters_ineligible_candidates_before_bundle_publish():
     module = _load_module()
     captured_bundles: list[dict] = []
@@ -1380,6 +1386,7 @@ def test_run_ai_selector_filters_ineligible_candidates_before_bundle_publish():
     assert bundle["summary"]["final_selected_symbols"] == ["NVDA"]
 
 
+@pytest.mark.network
 def test_run_ai_selector_backfills_top10_when_selector_top10_empty():
     module = _load_module()
     captured_bundles: list[dict] = []

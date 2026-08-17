@@ -8,11 +8,27 @@ import tempfile
 from pathlib import Path
 
 import yaml
+import pytest
 
 from src.dashboard import combined
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _offline_preflight(monkeypatch):
+    """Price-band tests use synthetic selector data, not external quotes."""
+    from src.openalpha.preflight import PreflightReport
+
+    monkeypatch.setattr(
+        "src.openalpha.preflight.run_preflight",
+        lambda **kwargs: PreflightReport(
+            selection_run_id=str(kwargs.get("selection_run_id") or "offline-test"),
+            run_mode="FULL",
+            data_mode="UNAVAILABLE",
+        ),
+    )
 SCRIPT_PATH = PROJECT_DIR / "scripts" / "run_ai_selector.py"
 
 

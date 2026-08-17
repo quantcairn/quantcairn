@@ -78,7 +78,9 @@ def test_trade_notification_uses_explicit_mode_label(tmp_path, monkeypatch):
     assert "实盘卖出" in calls[0][0][0]
 
 
-def test_only_trade_notifications_reach_macos(tmp_path):
+def test_only_trade_notifications_reach_macos(tmp_path, monkeypatch):
+    monkeypatch.delenv("SOXS_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("SOXS_TELEGRAM_CHAT_ID", raising=False)
     notifier = Notifier(
         console=False, macos_notification=True, webhook_url=None,
         trade_notification_state_path=tmp_path / "trade_notifications.json",

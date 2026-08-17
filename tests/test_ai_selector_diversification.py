@@ -1,4 +1,25 @@
+import pytest
+
 from src.openalpha.selector import AIStrategySelector
+
+
+@pytest.fixture(autouse=True)
+def _offline_preflight(monkeypatch):
+    """Selector diversification tests use synthetic candidates, not Yahoo."""
+    from src.openalpha.preflight import PreflightReport
+
+    monkeypatch.setattr(
+        "src.openalpha.preflight.run_preflight",
+        lambda **kwargs: PreflightReport(
+            selection_run_id=str(kwargs.get("selection_run_id") or "offline-test"),
+            run_mode="FULL",
+            data_mode="UNAVAILABLE",
+        ),
+    )
+    monkeypatch.setattr(
+        "src.openalpha.selector._apply_quality_filters_with_report",
+        lambda candidates, **kwargs: (list(candidates), {"timed_out": False, "rows": []}),
+    )
 
 
 def _candidate(ticker, sector, score, corr_seed):

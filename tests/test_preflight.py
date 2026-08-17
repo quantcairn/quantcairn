@@ -21,7 +21,8 @@ from src.openalpha.preflight import (
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestMarketState:
-    def test_market_open_detected(self):
+    def test_market_open_detected(self, monkeypatch):
+        monkeypatch.setattr("src.openalpha.preflight._scan_data_availability", lambda symbols, max_symbols=20: {"quotes": len(symbols[:max_symbols]), "ohlcv": len(symbols[:max_symbols]), "checked": len(symbols[:max_symbols])})
         with patch("src.openalpha.preflight._et_now", return_value=__import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))):
             # Mock market_session_context to return regular session
             class FakeSession:
@@ -34,7 +35,8 @@ class TestMarketState:
                 assert report.market_state == "MARKET_OPEN"
                 assert report.run_mode in {"FULL", "DEGRADED"}
 
-    def test_after_hours_detected(self):
+    def test_after_hours_detected(self, monkeypatch):
+        monkeypatch.setattr("src.openalpha.preflight._scan_data_availability", lambda symbols, max_symbols=20: {"quotes": len(symbols[:max_symbols]), "ohlcv": len(symbols[:max_symbols]), "checked": len(symbols[:max_symbols])})
         class FakeSession:
             is_market_holiday = False; is_premarket=False; is_regular_session=False
             is_after_hours=True; session_label="AFTER_HOURS"
@@ -46,7 +48,8 @@ class TestMarketState:
             assert report.run_mode == "AFTER_MARKET"
             assert report.data_mode == "EOD_ONLY"
 
-    def test_closed_detected(self):
+    def test_closed_detected(self, monkeypatch):
+        monkeypatch.setattr("src.openalpha.preflight._scan_data_availability", lambda symbols, max_symbols=20: {"quotes": len(symbols[:max_symbols]), "ohlcv": len(symbols[:max_symbols]), "checked": len(symbols[:max_symbols])})
         class FakeSession:
             is_market_holiday = True; is_premarket=False; is_regular_session=False
             is_after_hours=False; session_label="CLOSED"
@@ -63,6 +66,7 @@ class TestMarketState:
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestDataAvailability:
+    @pytest.mark.network
     def test_scan_samples_symbols(self):
         availability = _scan_data_availability(["A", "B", "C", "D", "E", "F"], max_symbols=3)
         assert availability["checked"] == 3
@@ -73,6 +77,7 @@ class TestDataAvailability:
         availability = _scan_data_availability([], max_symbols=10)
         assert availability["checked"] == 0
 
+    @pytest.mark.network
     def test_scan_with_real_symbol_triggers_no_error(self):
         availability = _scan_data_availability(["AAPL"], max_symbols=1)
         assert availability["checked"] == 1

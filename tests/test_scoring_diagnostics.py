@@ -50,6 +50,7 @@ def _make_df(rows=120, base=20.0, trend_strength=0.0) -> pd.DataFrame:
 def test_scoring_rejections_reset_per_run():
     """Every score_universe() call resets scoring_rejections."""
     scorer = _scorer()
+    scorer._load_history = lambda sym: pd.DataFrame()
     # Pre-populate
     scorer.scoring_rejections["TEST"] = "stale"
     # scoring_rejections is reset at start of score_universe
@@ -61,6 +62,7 @@ def test_scoring_rejections_reset_per_run():
 def test_unknown_symbol_without_fallback_is_recorded():
     """Symbol with no OHLCV and no fallback profile → insufficient_history_no_fallback."""
     scorer = _scorer()
+    scorer._load_history = lambda sym: pd.DataFrame()
     scorer.score_universe(["ZZZZ_UNKNOWN"], {"ZZZZ_UNKNOWN": []})
     assert scorer.scoring_rejections.get("ZZZZ_UNKNOWN", "") == "insufficient_history_no_fallback"
 
@@ -139,6 +141,7 @@ def test_score_frame_insufficient_history():
 def test_concurrent_rejections_no_race():
     """Multiple symbols scored in parallel — each gets its own rejection key."""
     scorer = _scorer()
+    scorer._load_history = lambda sym: pd.DataFrame()
     scorer.score_workers = 4
     # All tricky symbols — no data, no fallback
     symbols = [f"BAD_{i:03d}" for i in range(20)]
@@ -157,6 +160,7 @@ def test_known_good_symbol_scores_without_rejection():
     scorer = _scorer()
     df = _make_df(rows=120, base=130.0, trend_strength=2.0)
     scorer._load_history = lambda sym: df
+    scorer._fetch_live_snapshot = lambda sym: None
     scorer.score_universe(["NVDA"], {"NVDA": []})
     # NVDA has a fallback profile AND real data — should either score or
     # have a specific rejection reason (not generic no-fallback)

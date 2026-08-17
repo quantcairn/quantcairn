@@ -114,6 +114,7 @@ class TestFallbackDataDiagnosable:
     """When Yahoo data is missing and fallback is used, the diagnostic module
     must report the correct data_source and reason."""
 
+    @pytest.mark.network
     def test_diagnostic_detects_no_data_with_fallback(self):
         """Non-existent ticker → no OHLCV → diagnostic reports 0 rows."""
         from src.openalpha.data_diagnostics import _diagnose_one
@@ -125,6 +126,7 @@ class TestFallbackDataDiagnosable:
         assert "fallback_profile" in diag["missing_fields"]
         assert diag["has_fallback_profile"] is False
 
+    @pytest.mark.network
     def test_diagnostic_detects_has_fallback(self):
         """AAPL has a fallback profile — diagnostic must report it."""
         from src.openalpha.data_diagnostics import _diagnose_one
@@ -152,6 +154,7 @@ class TestFallbackDataDiagnosable:
         assert diag["has_fallback_profile"] is True
         assert "simulated_network_failure" in (diag["ohlcv_error"] or "")
 
+    @pytest.mark.network
     def test_diagnostic_returns_available_rows_for_data_rich_symbol(self):
         """Symbol with real Yahoo data must show available_rows >= 60."""
         from src.openalpha.data_diagnostics import _diagnose_one
@@ -495,6 +498,7 @@ class TestMarketDataPassThrough:
             f"Funnel invariants broken: {validation['warnings']}"
         )
 
+    @pytest.mark.network
     def test_full_pipeline_with_unknown_symbol_still_handled(self):
         """End-to-end: a non-existent ticker is handled by scoring fallback,
         not by MARKET_DATA pre-check."""

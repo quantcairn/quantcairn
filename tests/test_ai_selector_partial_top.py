@@ -8,12 +8,28 @@ import tempfile
 from pathlib import Path
 
 import yaml
+import pytest
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_DIR / "scripts" / "run_ai_selector.py"
 HEALTH_CHECK = PROJECT_DIR / "health_check.sh"
 HEALTH_CHECK = PROJECT_DIR / "health_check.sh"
+
+
+@pytest.fixture(autouse=True)
+def _offline_preflight(monkeypatch):
+    """These tests provide synthetic selector inputs and must not hit Yahoo."""
+    from src.openalpha.preflight import PreflightReport
+
+    monkeypatch.setattr(
+        "src.openalpha.preflight.run_preflight",
+        lambda **kwargs: PreflightReport(
+            selection_run_id=str(kwargs.get("selection_run_id") or "offline-test"),
+            run_mode="FULL",
+            data_mode="UNAVAILABLE",
+        ),
+    )
 
 
 def _load_module():
