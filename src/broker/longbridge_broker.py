@@ -540,6 +540,14 @@ class LongBridgeBroker(BrokerBase):
     def _is_sandbox_mode(self) -> bool:
         return self._environment == "sandbox"
 
+    def _authorize_mutation(self):
+        """Resolve the final mutation capability without ever failing open."""
+        try:
+            return authorize_mutation(execution_mode=self._execution_mode)
+        except Exception as exc:
+            logger.error("Mutation authorization failed closed: %s", exc)
+            return None
+
     def _sandbox_safety_issues(self) -> list[str]:
         """Return reasons sandbox startup/order flow should be blocked."""
         if not self._is_sandbox_mode():
@@ -875,13 +883,16 @@ class LongBridgeBroker(BrokerBase):
                 status=OrderStatus.REJECTED,
                 notes="Global reduce-only blocks live BUY",
             )
-        if not self._is_sandbox_mode():
-            authorization = authorize_mutation(execution_mode=self._execution_mode)
-            if not authorization.allowed:
-                response = {"status": "rejected", "reason": authorization.reason_code}
-                self._write_audit("place_order", request, response, ok=False, error=authorization.reason_code)
-                return Order(order_id="", ticker=ticker, side=side, order_type=order_type,
-                             quantity=quantity, status=OrderStatus.REJECTED, notes=authorization.reason_code)
+        # Environment/account type selects the endpoint; it never grants mutation
+        # capability. Sandbox and PAPER direct constructions must use the same
+        # final authorization boundary as production brokers.
+        authorization = self._authorize_mutation()
+        reason = authorization.reason_code if authorization is not None else "AUTHORIZATION_ERROR"
+        if authorization is None or not authorization.allowed:
+            response = {"status": "rejected", "reason": reason}
+            self._write_audit("place_order", request, response, ok=False, error=reason)
+            return Order(order_id="", ticker=ticker, side=side, order_type=order_type,
+                         quantity=quantity, status=OrderStatus.REJECTED, notes=reason)
 
         try:
             lb_side = lb.OrderSide.Buy if side == OrderSide.BUY else lb.OrderSide.Sell
@@ -979,11 +990,11 @@ class LongBridgeBroker(BrokerBase):
 
     def cancel_order(self, order_id: str) -> bool:
         request = {"order_id": order_id}
-        if not self._is_sandbox_mode():
-            authorization = authorize_mutation(execution_mode=self._execution_mode)
-            if not authorization.allowed:
-                self._write_audit("cancel_order", request, {"status": "rejected"}, ok=False, error=authorization.reason_code)
-                return False
+        authorization = self._authorize_mutation()
+        reason = authorization.reason_code if authorization is not None else "AUTHORIZATION_ERROR"
+        if authorization is None or not authorization.allowed:
+            self._write_audit("cancel_order", request, {"status": "rejected"}, ok=False, error=reason)
+            return False
         if not self.is_connected():
             self._write_audit("cancel_order", request, {"status": "rejected"}, ok=False, error="Not connected")
             return False

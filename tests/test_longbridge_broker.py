@@ -384,17 +384,17 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     assert broker.confirm_sandbox_first_run("AAPL")["confirmed"] is True
     order = broker.place_order("AAPL", module.OrderSide.SELL, 1)
 
-    assert order.order_id == "LB-12345"
-    assert order.status == module.OrderStatus.PENDING
-    assert broker._trade_ctx.submit_kwargs is not None
+    assert order.order_id == ""
+    assert order.status == module.OrderStatus.REJECTED
+    assert broker._trade_ctx.submit_kwargs is None
     assert log_path.exists()
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) >= 2
     records = [json.loads(line) for line in lines]
     assert records[0]["action"] == "connect"
     assert records[-1]["action"] == "place_order"
-    assert records[-1]["ok"] is True
-    assert records[-1]["response"]["order_id"] == "LB-12345"
+    assert records[-1]["ok"] is False
+    assert records[-1]["response"]["reason"] == "NOT_LIVE_EXECUTION"
 
 
 def test_longbridge_order_query_exposes_limit_price_from_sdk_price_field(tmp_path, monkeypatch=None):
@@ -679,10 +679,9 @@ def test_longbridge_sandbox_buy_is_not_blocked_by_reduce_only(tmp_path, monkeypa
     assert broker.confirm_sandbox_first_run("AAPL")["confirmed"] is True
     order = broker.place_order("AAPL", module.OrderSide.BUY, 1)
 
-    assert order.order_id == "LB-54321"
-    assert order.status == module.OrderStatus.PENDING
-    assert broker._trade_ctx.submit_kwargs is not None
-    assert broker._trade_ctx.submit_kwargs["side"] == module.lb.OrderSide.Buy
+    assert order.order_id == ""
+    assert order.status == module.OrderStatus.REJECTED
+    assert broker._trade_ctx.submit_kwargs is None
 
 
 def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, monkeypatch):
@@ -781,11 +780,11 @@ def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, 
     assert broker.sandbox_first_run_confirmed() is True
     assert (tmp_path / "state" / "broker_cache" / "longbridge_sandbox_bootstrap.json").exists()
 
-    allowed = broker.place_order("AAPL", module.OrderSide.BUY, 1)
-    assert allowed.order_id == "LB-77777"
-    assert allowed.status == module.OrderStatus.PENDING
-    assert broker._trade_ctx.submit_kwargs is not None
-    assert broker._trade_ctx.submit_kwargs["side"] == module.lb.OrderSide.Buy
+    denied = broker.place_order("AAPL", module.OrderSide.BUY, 1)
+    assert denied.order_id == ""
+    assert denied.status == module.OrderStatus.REJECTED
+    assert denied.notes == "NOT_LIVE_EXECUTION"
+    assert broker._trade_ctx.submit_kwargs is None
 
     broker2 = module.LongBridgeBroker(
         app_key="k",
@@ -1242,7 +1241,7 @@ def test_longbridge_broker_uses_safer_default_cache_and_backoff(monkeypatch=None
         monkeypatch.restore()
 
 
-def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_path, monkeypatch=None):
+def test_longbridge_broker_rejects_unauthorized_sandbox_order_before_sdk_response(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
             def setattr(self, target, value):
@@ -1326,14 +1325,14 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
     assert broker.confirm_sandbox_first_run("AAPL")["confirmed"] is True
     order = broker.place_order("AAPL", module.OrderSide.SELL, 1)
 
-    assert order.status == module.OrderStatus.PENDING
-    assert order.order_id == "LB-99999"
+    assert order.status == module.OrderStatus.REJECTED
+    assert order.order_id == ""
     log_path = tmp_path / "logs" / f"trades-{module.datetime.now().strftime('%Y%m%d')}.jsonl"
     assert log_path.exists()
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["action"] == "place_order"
-    assert records[-1]["ok"] is True
-    assert records[-1]["response"]["order_id"] == "LB-99999"
+    assert records[-1]["ok"] is False
+    assert records[-1]["response"]["reason"] == "NOT_LIVE_EXECUTION"
 
 
 def test_positions_failure_marks_snapshot_unreliable(tmp_path):
@@ -1476,6 +1475,6 @@ def run_test_direct():
     test_longbridge_broker_audit_log_records_trade(tmp_root)
     test_longbridge_broker_account_balance_handles_list_response(tmp_root)
     test_longbridge_broker_reuses_cached_positions_and_account(tmp_root)
-    test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_root)
+    test_longbridge_broker_rejects_unauthorized_sandbox_order_before_sdk_response(tmp_root)
     test_primary_live_broker_blocks_buy_in_global_reduce_only(tmp_root)
     test_positions_failure_marks_snapshot_unreliable(tmp_root)
