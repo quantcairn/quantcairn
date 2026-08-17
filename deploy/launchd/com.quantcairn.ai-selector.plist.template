@@ -25,7 +25,7 @@
     <array>
         <string>/bin/zsh</string>
         <string>-lc</string>
-        <string>SECRETS="$HOME/Library/Application Support/QuantCairn/secrets.env"; if [ -f "$SECRETS" ] &amp;&amp; [ "$(stat -f '%Lp' "$SECRETS")" = "600" ]; then set -a; . "$SECRETS"; set +a; fi; exec REPLACE_WITH_PYTHON_PATH REPLACE_WITH_PROJECT_ROOT/scripts/ai_selector_wrapper.py</string>
+        <string>exec /usr/bin/env -u LONGBRIDGE_APP_KEY -u LONGBRIDGE_API_KEY -u LONGBRIDGE_APP_SECRET -u LONGBRIDGE_API_SECRET -u LONGBRIDGE_ACCESS_TOKEN REPLACE_WITH_PYTHON_PATH REPLACE_WITH_PROJECT_ROOT/scripts/ai_selector_wrapper.py</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -92,6 +92,8 @@
         <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>QUANTCAIRN_EXECUTION_MODE</key>
         <string>PAPER</string>
+        <key>SOXS_DISABLE_LIVE_CREDENTIALS</key>
+        <string>1</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
         <!-- Enable verbose scheduler decision logging to stderr -->

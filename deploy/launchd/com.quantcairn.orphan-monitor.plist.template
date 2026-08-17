@@ -63,6 +63,8 @@
         <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>QUANTCAIRN_EXECUTION_MODE</key>
         <string>PAPER</string>
+        <key>SOXS_DISABLE_LIVE_CREDENTIALS</key>
+        <string>1</string>
         <key>SOXS_DISABLE_ORPHAN_MONITOR</key>
         <string>1</string>
         <key>YF_DISABLE_CURL_CFFI</key>

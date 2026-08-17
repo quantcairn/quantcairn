@@ -65,6 +65,8 @@
         <!-- Set execution mode: PAPER | RESEARCH | LIVE -->
         <key>QUANTCAIRN_EXECUTION_MODE</key>
         <string>PAPER</string>
+        <key>SOXS_DISABLE_LIVE_CREDENTIALS</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>

@@ -44,7 +44,7 @@ if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
 from src.config.runtime_paths import resolve_logs_dir, resolve_state_dir
-from src.config.local_env import load_local_ai_env
+from src.config.local_env import load_local_ai_env, sanitize_paper_environment
 from src.utils.market_calendar import is_us_market_trading_day
 from src.openalpha.top_restart import load_restart_status, record_restart_status, request_supervisor_restart
 
@@ -246,6 +246,7 @@ def _run_selection_if_due():
 
 
 def main():
+    sanitize_paper_environment()
     load_local_ai_env()
     lock_file = _runtime_lock_file()
     lock_file.parent.mkdir(parents=True, exist_ok=True)

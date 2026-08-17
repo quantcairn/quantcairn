@@ -27,6 +27,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.candidate_validation.orchestrator import CandidateValidationOrchestrator
 from src.config.runtime_paths import resolve_artifacts_dir
+from src.config.local_env import sanitize_paper_environment
 
 
 def _utc_now_iso() -> str:
@@ -123,6 +124,7 @@ def _write_run_audit(result: dict[str, Any], *, dry_run: bool) -> None:
 
 
 def main() -> int:
+    sanitize_paper_environment()
     parser = argparse.ArgumentParser(
         description="Run the candidate validation orchestrator."
     )

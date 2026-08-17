@@ -24,6 +24,7 @@ if (
 print(f"Using Python: {sys.executable}")
 sys.path.insert(0, str(PROJECT_DIR))
 
+from src.config.local_env import sanitize_paper_environment
 from src.candidate_validation.research_scheduler import DailyResearchScheduler
 
 
@@ -51,6 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    sanitize_paper_environment()
     parser = _build_parser()
     args = parser.parse_args()
 

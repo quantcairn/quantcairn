@@ -46,7 +46,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 import yaml
 
-from src.config.local_env import load_local_ai_env
+from src.config.local_env import load_local_ai_env, sanitize_paper_environment
 from src.config.runtime_paths import resolve_logs_dir, resolve_reports_dir
 from src.openalpha.settings import load_runtime_settings
 from src.openalpha import selector as _selector_module
@@ -2358,6 +2358,7 @@ def _split_selected_and_protected_positions(
 def main(mode: str | None = None):
     run_mode = _selector_run_mode(mode)
     _apply_selector_run_mode(run_mode)
+    sanitize_paper_environment()
     load_local_ai_env()
     runtime_settings = load_runtime_settings()
     min_price, max_price = resolve_price_band(runtime_settings)

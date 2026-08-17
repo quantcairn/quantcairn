@@ -185,11 +185,19 @@ def test_all_templates_route_logs_to_external_logs_root():
         assert "REPLACE_WITH_LOGS_ROOT/" in content, template.name
 
 
-def test_selector_template_loads_local_secrets_without_embedding_values():
+def test_selector_template_does_not_load_execution_secrets():
     content = (DEPLOY_LAUNCHD / "com.quantcairn.ai-selector.plist.template").read_text()
-    assert "Application Support/QuantCairn/secrets.env" in content
+    assert "Application Support/QuantCairn/secrets.env" not in content
+    assert "SOXS_DISABLE_LIVE_CREDENTIALS" in content
+    assert "-u LONGBRIDGE_APP_KEY" in content
     assert "SOXS_OPENALPHA_TELEGRAM_BOT_TOKEN=" not in content
     assert "SOXS_OPENALPHA_TELEGRAM_CHAT_ID=" not in content
+
+
+def test_paper_templates_deny_live_credentials():
+    for tmpl in DEPLOY_LAUNCHD.glob("*.plist.template"):
+        content = tmpl.read_text(encoding="utf-8")
+        assert "<key>SOXS_DISABLE_LIVE_CREDENTIALS</key>" in content, tmpl.name
 
 
 def test_validator_rejects_unsafe_known_service_mode(tmp_path):

@@ -26,6 +26,15 @@ _LONGBRIDGE_KEY_MAP = {
     "LONGBRIDGE_TRADE_WS_URL": "trade_ws_url",
     "LONGBRIDGE_LOG_PATH": "log_path",
 }
+_LIVE_EXECUTION_CREDENTIAL_KEYS = frozenset(
+    {
+        "LONGBRIDGE_APP_KEY",
+        "LONGBRIDGE_API_KEY",
+        "LONGBRIDGE_APP_SECRET",
+        "LONGBRIDGE_API_SECRET",
+        "LONGBRIDGE_ACCESS_TOKEN",
+    }
+)
 
 
 def _candidate_config_paths() -> list[Path]:
@@ -71,6 +80,8 @@ def _launchctl_getenv(name: str) -> str:
 
 
 def get_runtime_env(name: str, default: str = "") -> str:
+    if name in _LIVE_EXECUTION_CREDENTIAL_KEYS and os.getenv("SOXS_DISABLE_LIVE_CREDENTIALS") == "1":
+        return default.strip()
     # Explicit process/launch environment must override private config so a
     # deliberate mode switch cannot be shadowed by a stale local file.
     value = os.getenv(name)

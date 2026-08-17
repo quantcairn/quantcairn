@@ -25,7 +25,9 @@ cd "$PROJECT_DIR"
 
 if [ -f "$LOCAL_AI_ENV" ]; then
     set -a
-    . "$LOCAL_AI_ENV"
+    # Load only non-secret application settings.  PAPER must never source
+    # LongBridge execution credentials, even transiently from this file.
+    . <(grep -Ev '^[[:space:]]*(LONGBRIDGE_|LONGPORT_)' "$LOCAL_AI_ENV")
     set +a
 fi
 
