@@ -1456,9 +1456,10 @@ def test_primary_live_broker_blocks_buy_in_global_reduce_only(tmp_path):
         assert "reduce-only" in order.notes
 
         sell_order = broker.place_order("SOXS.US", module.OrderSide.SELL, 1)
-        assert sell_order.status == module.OrderStatus.PENDING
-        assert sell_order.order_id == "LB-REDUCE-1"
-        assert broker._trade_ctx.calls and broker._trade_ctx.calls[-1]["side"] == module.lb.OrderSide.Sell
+        assert sell_order.status == module.OrderStatus.REJECTED
+        assert sell_order.order_id == ""
+        assert sell_order.notes == "NOT_LIVE_EXECUTION"
+        assert not broker._trade_ctx.calls
         assert all(call["side"] != module.lb.OrderSide.Buy for call in broker._trade_ctx.calls)
     finally:
         if original_env is None:

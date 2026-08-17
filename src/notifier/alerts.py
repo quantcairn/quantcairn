@@ -1124,7 +1124,7 @@ def build_research_admission_notice(
     if admission == "RESEARCH_READY":
         return "候选可进入独立数据验证，不代表具备交易资格。"
     if admission == "LIVE_TRADABLE":
-        return "候选已通过实时数据质量验证，具备实盘交易资格。请确认风控参数后执行。"
+        return "候选已通过实时数据质量验证，不代表真实交易执行已启用。"
     if execution == "FAILED":
         return "本次流程已完成，但执行失败或结果不可用。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
     return "候选可进入独立数据验证，不代表具备交易资格。"
@@ -1671,7 +1671,7 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         "RESEARCH_READY": "已就绪",
         "RESEARCH_ONLY": "仅研究",
         "PAPER_ELIGIBLE": "模拟交易就绪",
-        "LIVE_TRADABLE": "可实盘交易",
+        "LIVE_TRADABLE": "实时数据校验通过",
         "BLOCKED": "已阻止",
     }.get(research_admission, research_admission or "未知")
     notice = build_research_admission_notice(
@@ -1793,7 +1793,7 @@ def _build_public_channel_message(
     # ── Mode label ───────────────────────────────────────────────────────
     mode_emoji = {"LIVE": "🔴", "PAPER": "🟡", "RESEARCH": "🔵"}.get(execution_mode, "⚪")
     mode_text = {"LIVE": "Live", "PAPER": "Paper", "RESEARCH": "Research"}.get(execution_mode, execution_mode)
-    ct_label = {"LIVE_TRADABLE": "Tradable", "PAPER_ELIGIBLE": "Paper Eligible", "RESEARCH_ONLY": "Research Only"}.get(candidate_type, candidate_type)
+    ct_label = {"LIVE_TRADABLE": "Realtime Qualified", "PAPER_ELIGIBLE": "Paper Eligible", "RESEARCH_ONLY": "Research Only"}.get(candidate_type, candidate_type)
 
     # ── Market state ─────────────────────────────────────────────────────
     market_state = _resolve_selection_market_state(report)
@@ -1942,7 +1942,7 @@ def _stage_explanation(selection_stage: str, result_quality: str, research_admis
         "RESEARCH_READY": "可进入下一阶段研究",
         "RESEARCH_ONLY": "仅供研究，不代表交易资格",
         "PAPER_ELIGIBLE": "模拟交易候选，可创建模拟持仓",
-        "LIVE_TRADABLE": "实盘候选，已通过实时数据验证",
+        "LIVE_TRADABLE": "实时数据校验通过",
         "BLOCKED": "阻断后续研究或交易准入",
     }
     parts = [

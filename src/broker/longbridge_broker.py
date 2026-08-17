@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import longbridge.openapi as lb
 
 from ..config.runtime_values import get_runtime_env
+from ..safety.execution_authorizer import authorize_mutation
 from .base import (
     AccountInfo,
     BrokerBase,
@@ -214,6 +215,7 @@ class LongBridgeBroker(BrokerBase):
         log_path: str | None = None,
         audit_dir: str | None = None,
         allow_live_order: bool = False,
+        execution_mode: str | None = None,
     ):
         self._app_key = (
             get_runtime_env("LONGBRIDGE_APP_KEY")
@@ -230,6 +232,7 @@ class LongBridgeBroker(BrokerBase):
         self._region = get_runtime_env("LONGBRIDGE_REGION", region)
         self._environment = get_runtime_env("LONGBRIDGE_ENV", environment).strip().lower()
         self._allow_live_order = bool(allow_live_order)
+        self._execution_mode = str(execution_mode or os.environ.get("QUANTCAIRN_EXECUTION_MODE", "")).strip().upper()
 
         self._http_url = get_runtime_env("LONGBRIDGE_HTTP_URL", http_url or "") or None
         self._quote_ws_url = get_runtime_env("LONGBRIDGE_QUOTE_WS_URL", quote_ws_url or "") or None
@@ -872,6 +875,13 @@ class LongBridgeBroker(BrokerBase):
                 status=OrderStatus.REJECTED,
                 notes="Global reduce-only blocks live BUY",
             )
+        if not self._is_sandbox_mode():
+            authorization = authorize_mutation(execution_mode=self._execution_mode)
+            if not authorization.allowed:
+                response = {"status": "rejected", "reason": authorization.reason_code}
+                self._write_audit("place_order", request, response, ok=False, error=authorization.reason_code)
+                return Order(order_id="", ticker=ticker, side=side, order_type=order_type,
+                             quantity=quantity, status=OrderStatus.REJECTED, notes=authorization.reason_code)
 
         try:
             lb_side = lb.OrderSide.Buy if side == OrderSide.BUY else lb.OrderSide.Sell
@@ -969,6 +979,11 @@ class LongBridgeBroker(BrokerBase):
 
     def cancel_order(self, order_id: str) -> bool:
         request = {"order_id": order_id}
+        if not self._is_sandbox_mode():
+            authorization = authorize_mutation(execution_mode=self._execution_mode)
+            if not authorization.allowed:
+                self._write_audit("cancel_order", request, {"status": "rejected"}, ok=False, error=authorization.reason_code)
+                return False
         if not self.is_connected():
             self._write_audit("cancel_order", request, {"status": "rejected"}, ok=False, error="Not connected")
             return False

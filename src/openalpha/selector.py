@@ -70,7 +70,8 @@ def _resolve_execution_mode(run_mode: str) -> str:
 
     Priority:
       1. QUANTCAIRN_EXECUTION_MODE env var (LIVE / PAPER / RESEARCH)
-      2. Derived from preflight: FULL → LIVE, all others → RESEARCH
+      2. Derived from preflight: FULL → LIVE, all others → RESEARCH.
+         LIVE is a legacy selector quality label; it is not LIVE_EXECUTION authorization.
 
     PAPER mode must be explicitly requested — it is never auto-selected.
     """
@@ -856,8 +857,9 @@ class AIStrategySelector:
         else:
             _type_label = "RESEARCH_ONLY"
 
-        if not filtered_candidates and _pre_quality_pool and quality_mode_is_strict and _is_live:
-            # LIVE mode: strict quality gate rejected all → preview only, no formal TOP
+        if not filtered_candidates and _pre_quality_pool and quality_mode_is_strict:
+            # Strict data-quality mode rejected all → preview only, no formal TOP.
+            # This quality fallback is independent of execution authorization.
             topk = self._select_diversified_top_k(_pre_quality_pool, self.selection_size)
             for item in topk:
                 item["reduce_only"] = default_reduce_only
