@@ -56,7 +56,11 @@ EXPECTED_ENGINES = [
 ]
 
 # Never bind or inspect the production TOP ports in isolated tests.
-ISOLATED_ENV = {**os.environ, "SOXS_TOP_PORT_OFFSET": "10000"}
+ISOLATED_ENV = {
+    **os.environ,
+    "SOXS_TOP_PORT_OFFSET": "10000",
+    "SOXS_TOP_REQUIRE_READINESS": "0",
+}
 
 
 def test_launcher_defines_three_engines():

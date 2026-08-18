@@ -66,7 +66,7 @@ if [ "$ENGINE_MODE" != "live" ]; then
         LONGBRIDGE_QUOTE_WS_URL LONGBRIDGE_TRADE_WS_URL
 fi
 
-LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
+LOG_DIR="${SOXS_LOG_DIR:-${SOXS_LOGS_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}}"
 REDIRECT_STDIO="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-0}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 

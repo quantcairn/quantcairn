@@ -20,6 +20,9 @@ OWNER_FILE="$CONTROL_DIR/owner"
 REDIRECT="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-1}"
 MODE="${1:-start}"
 PORT_OFFSET="${SOXS_TOP_PORT_OFFSET:-0}"
+REQUIRE_READINESS="${SOXS_TOP_REQUIRE_READINESS:-1}"
+READINESS_TIMEOUT="${SOXS_TOP_READINESS_TIMEOUT_SECONDS:-20}"
+HEALTH_PATH="${SOXS_TOP_HEALTH_PATH:-/api/status}"
 
 # Engine definitions: config port log-name. Ports are part of the production
 # contract and must stay aligned with the Dashboard and launchd template.
@@ -133,6 +136,14 @@ port_is_free_or_owned() {
   return 0
 }
 
+port_owned_by_pid() {
+  local port="$1" expected_pid="$2" pid
+  for pid in $(port_pids "$port"); do
+    [ "$pid" = "$expected_pid" ] && return 0
+  done
+  return 1
+}
+
 SUPERVISOR_LOCK_OWNED=0
 PIDS=()
 PIDS_CFG=()
@@ -161,8 +172,12 @@ cleanup_children() {
         kill "$pid" 2>/dev/null || true
         ;;
       *)
-        echo "[top-supervisor] refusing to stop $name PID $pid: ownership unproven" >&2
-        return 1
+        if port_owned_by_pid "$port" "$pid"; then
+          kill "$pid" 2>/dev/null || true
+        else
+          echo "[top-supervisor] refusing to stop $name PID $pid: ownership unproven" >&2
+          return 1
+        fi
         ;;
     esac
   done
@@ -221,10 +236,51 @@ start_engines() {
     started=$((started + 1))
   done
   echo "[top-supervisor] Launched $started TOP engines (supervisor PID $$ waiting)"
-  if [ "$failed" -gt 0 ]; then
+  if [ "$failed" -gt 0 ] || [ "$started" -ne "${#ENGINES[@]}" ]; then
+    echo "[top-supervisor] refusing readiness: expected ${#ENGINES[@]} engines, launched $started" >&2
+    return 1
+  fi
+  if [ "$REQUIRE_READINESS" = "1" ] && ! wait_for_readiness; then
+    echo "[top-supervisor] refusing readiness: one or more TOP engines are not healthy" >&2
+    cleanup_children || true
     return 1
   fi
   return 0
+}
+
+wait_for_readiness() {
+  local index pid port name pids url response
+  for _ in $(seq 1 "$READINESS_TIMEOUT"); do
+    local all_ready=1
+    for index in "${!PIDS[@]}"; do
+      pid="${PIDS[$index]}"
+      port="${PIDS_PORT[$index]}"
+      name="${PIDS_NAME[$index]}"
+      if ! pid_is_alive "$pid"; then
+        echo "[top-supervisor] $name exited before readiness" >&2
+        return 1
+      fi
+      if ! port_pids "$port" | tr ' ' '\n' | grep -qx "$pid" 2>/dev/null; then
+        all_ready=0
+        continue
+      fi
+      url="http://127.0.0.1:${port}${HEALTH_PATH}"
+      if ! response="$(curl --noproxy '*' --silent --show-error --fail --max-time 1 "$url" 2>/dev/null)"; then
+        all_ready=0
+        continue
+      fi
+      case "$response" in
+        *'"mode":"paper"'*|*'"mode": "paper"'*|*'"execution_mode":"paper"'*|*'"execution_mode": "paper"'*) ;;
+        *)
+          echo "[top-supervisor] $name health response is not PAPER" >&2
+          return 1
+          ;;
+      esac
+    done
+    [ "$all_ready" -eq 1 ] && return 0
+    sleep 1
+  done
+  return 1
 }
 
 process_restart() {
@@ -252,6 +308,13 @@ process_restart() {
     write_status "restart_confirmed" "$request_id" "$detail" "$GENERATION"
   else
     write_status "restart_failed" "$request_id" "$detail" "$GENERATION"
+    # A failed restart is a contained degraded state. Keep the canonical
+    # supervisor alive so a subsequent control request can recover it; never
+    # let launchd race a second supervisor into the same ports.
+    PIDS=()
+    PIDS_CFG=()
+    PIDS_PORT=()
+    PIDS_NAME=()
   fi
 }
 
