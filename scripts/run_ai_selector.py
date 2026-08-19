@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import argparse
+import inspect
 from collections import Counter
 from functools import lru_cache
 
@@ -82,6 +83,17 @@ def _runtime_log_dir() -> Path:
 
 def _runtime_reports_dir() -> Path:
     return Path(REPORTS_DIR) if REPORTS_DIR is not None else resolve_reports_dir(PROJECT_DIR)
+
+
+def _run_selector_with_authoritative_date(selector, *, selection_run_id: str, selection_date: str):
+    """Pass the date contract while preserving narrow legacy test doubles."""
+    kwargs = {"write_configs": False, "selection_run_id": selection_run_id}
+    try:
+        if "selection_date" in inspect.signature(selector.run_selection).parameters:
+            kwargs["selection_date"] = selection_date
+    except (TypeError, ValueError):
+        pass
+    return selector.run_selection(**kwargs)
 
 
 def write_selection_filter_log(report: dict[str, object], now: datetime | None = None) -> Path:
@@ -2385,6 +2397,9 @@ def main(mode: str | None = None):
     os.environ.setdefault("OPENALPHA_TOTAL_BUDGET_SECONDS", "180")
     os.environ.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "60")
     selection_run_id = uuid.uuid4().hex
+    # Resolve the orchestration date once. Every downstream selection artifact
+    # and funnel record must use this same authoritative date.
+    selection_date = _selection_date()
     live_positions = _live_equity_positions()
     if live_positions is None and _has_live_top_configs():
         print("Live position verification failed; refusing to run selection or replace TOP configs.")
@@ -2405,11 +2420,15 @@ def main(mode: str | None = None):
     selection_symbols = _merged_selection_symbols(preferred_symbols)
     # Let selector choose universe source (managed/sample/sp500) unless
     # explicitly overridden via --universe-source CLI.
-    out = sel.run_selection(write_configs=False, selection_run_id=selection_run_id)
+    out = _run_selector_with_authoritative_date(
+        sel, selection_run_id=selection_run_id, selection_date=selection_date
+    )
     selected = out.get('top5') or out.get('top3') or []
     if not selected and selection_symbols:
         integrated_ai["fallback_used"] = True
-        out = sel.run_selection(write_configs=False, selection_run_id=selection_run_id)
+        out = _run_selector_with_authoritative_date(
+            sel, selection_run_id=selection_run_id, selection_date=selection_date
+        )
         selected = out.get('top5') or out.get('top3') or []
     selector_run_id = str(out.get("selection_run_id") or "").strip()
     funnel_run_id = str((out.get("selection_funnel") or {}).get("selection_run_id") or "").strip()
@@ -2561,7 +2580,7 @@ def main(mode: str | None = None):
     post_filter_selected = list(selected)
     selection_stage = "FINALIZED"
     market_stage = selection_stage
-    current_session = _selection_date()
+    current_session = selection_date
     # Read actual universe from selector's own funnel stages (not legacy selection_symbols)
     _sel_funnel = out.get("selection_funnel") or {}
     _sel_stages = _sel_funnel.get("stages") or []
@@ -2794,6 +2813,9 @@ def main(mode: str | None = None):
         'selection_run_id': selection_run_id,
         'top_sync_run_id': selection_run_id,
         'top_sync_status': 'OK',
+        'top_sync_status_semantics': 'BUNDLE_CONFIG_ONLY',
+        'bundle_sync_status': 'OK',
+        'runtime_sync_status': 'PENDING',
         'top_sync_error': '',
         'top_restart_status': (
             'RESTART_PENDING'
@@ -2915,6 +2937,9 @@ def main(mode: str | None = None):
         "selection_run_id": selection_run_id,
         "top_sync_run_id": selection_run_id,
         "top_sync_status": "OK",
+        "top_sync_status_semantics": "BUNDLE_CONFIG_ONLY",
+        "bundle_sync_status": "OK",
+        "runtime_sync_status": summary.get("runtime_sync_status", "PENDING"),
         "top_sync_error": "",
         "top_restart_status": summary.get("top_restart_status", "NOT_REQUESTED"),
         "selection_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
@@ -2935,6 +2960,8 @@ def main(mode: str | None = None):
         requested_top_n=int(summary.get("target_top_n") or TOP_COUNT),
         top_sync_status="OK",
         top_sync_error="",
+        bundle_sync_status="OK",
+        runtime_sync_status="PENDING",
     )
     if isinstance(bundle_result, dict):
         summary.update(bundle_result)
@@ -2949,6 +2976,8 @@ def main(mode: str | None = None):
             status="PENDING",
             selection_run_id=selection_run_id,
             selection_bundle_hash=selection_bundle_hash,
+            bundle_sync_status="OK",
+            runtime_sync_status="PENDING",
         )
         restart_code = _restart_top_engines()
         if restart_code != 0:
@@ -2957,6 +2986,8 @@ def main(mode: str | None = None):
                 selection_run_id=selection_run_id,
                 selection_bundle_hash=selection_bundle_hash,
                 error=f"restart_exit_{restart_code}",
+                bundle_sync_status="OK",
+                runtime_sync_status="FAILED",
             )
             print(f"TOP restart failed with exit code {restart_code}.")
             sys.exit(restart_code)
@@ -2964,6 +2995,8 @@ def main(mode: str | None = None):
             status="CONFIRMED",
             selection_run_id=selection_run_id,
             selection_bundle_hash=selection_bundle_hash,
+            bundle_sync_status="OK",
+            runtime_sync_status="OK",
         )
 
     if str((summary.get("settings") or {}).get("selection_stage") or "") == "fast_preliminary":

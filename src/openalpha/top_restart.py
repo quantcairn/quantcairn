@@ -42,14 +42,27 @@ def record_restart_status(
     selection_run_id: str = "",
     selection_bundle_hash: str = "",
     error: str = "",
+    bundle_sync_status: str = "OK",
+    runtime_sync_status: str | None = None,
     project_dir: Path | None = None,
 ) -> Path:
     """Write only coordination evidence; never alter bundle identity files."""
 
     path = restart_status_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_status = str(status or "UNKNOWN").upper()
+    if runtime_sync_status is None:
+        runtime_sync_status = {
+            "PENDING": "PENDING",
+            "CONFIRMED": "OK",
+            "FAILED": "FAILED",
+        }.get(normalized_status, normalized_status)
     payload = {
-        "status": str(status or "UNKNOWN").upper(),
+        "status": normalized_status,
+        "bundle_sync_status": str(bundle_sync_status or "UNKNOWN").upper(),
+        "runtime_sync_status": str(runtime_sync_status or "UNKNOWN").upper(),
+        "top_restart_status": normalized_status,
+        "top_sync_status_semantics": "RUNTIME_PROCESS_SYNC",
         "selection_run_id": str(selection_run_id or ""),
         "selection_bundle_hash": str(selection_bundle_hash or ""),
         "error": str(error or ""),

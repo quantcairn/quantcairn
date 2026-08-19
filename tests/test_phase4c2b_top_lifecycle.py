@@ -62,6 +62,7 @@ ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         "SOXS_TOP_READINESS_TIMEOUT_SECONDS": "5",
         "SOXS_TOP_RESTART_TIMEOUT_SECONDS": "8",
         "SOXS_TEST_PYTHON": PYTHON,
+        "SOXS_PYTHON_BIN": PYTHON,
         "SOXS_TOP_TEST_FAIL_FILE": str(tmp_path / "fail-slot"),
         "SOXS_DISABLE_LIVE_CREDENTIALS": "1",
     }

@@ -9,28 +9,120 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 LAUNCHER="$PROJECT_DIR/scripts/run_top_engine.sh"
-PYTHON_BIN="${SOXS_PYTHON_BIN:-$(command -v python3)}"
 STATE_DIR="${SOXS_STATE_DIR:-}"
 if [ -z "$STATE_DIR" ]; then
   echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: SOXS_STATE_DIR is required" >&2
   exit 12
 fi
-if [ -n "${SOXS_TOP_CONFIG_DIR:-}" ]; then
-  CONFIG_DIR="$(cd "$SOXS_TOP_CONFIG_DIR" 2>/dev/null && pwd)" || {
-    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: SOXS_TOP_CONFIG_DIR is invalid" >&2
-    exit 12
-  }
-elif [ -n "${SOXS_CONFIG_DIR:-}" ]; then
-  CONFIG_DIR="$(cd "$SOXS_CONFIG_DIR" 2>/dev/null && pwd)" || {
-    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: SOXS_CONFIG_DIR is invalid" >&2
-    exit 12
-  }
-else
-  CONFIG_DIR="$(cd "$STATE_DIR/top_configs" 2>/dev/null && pwd)" || {
-    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: TOP config root is not configured" >&2
-    exit 12
-  }
+RUNTIME_LOG_DIR="${SOXS_LOG_DIR:-${SOXS_LOGS_DIR:-$STATE_DIR/logs}}"
+
+runtime_event() {
+  local event="$1" detail="${2:-}"
+  mkdir -p "$RUNTIME_LOG_DIR" 2>/dev/null || true
+  printf 'event=%s\npid=%s\npython=%s\npython_version=%s\nrelease_root=%s\nconfig_root=%s\nexecution_mode=%s\nrun_id=%s\ndetail=%s\n' \
+    "$event" "$$" "${PYTHON_BIN:-}" "${PYTHON_VERSION:-}" "$PROJECT_DIR" \
+    "${CONFIG_DIR:-}" "${QUANTCAIRN_EXECUTION_MODE:-}" "${BUNDLE_RUN_ID:-}" "$detail" \
+    >> "$RUNTIME_LOG_DIR/top-supervisor-runtime.log" 2>/dev/null || true
+}
+
+runtime_failure() {
+  local state="$1" detail="$2" code="${3:-12}"
+  mkdir -p "$STATE_DIR/top_supervisor" 2>/dev/null || true
+  printf 'state=%s\ndetail=%s\nsupervisor_pid=%s\nproject_dir=%s\npython_bin=%s\npython_version=%s\n' \
+    "$state" "$detail" "$$" "$PROJECT_DIR" "${PYTHON_BIN:-}" "${PYTHON_VERSION:-}" \
+    > "$STATE_DIR/top_supervisor/status" 2>/dev/null || true
+  runtime_event "$state" "$detail"
+  echo "[$state] $detail" >&2
+  exit "$code"
+}
+
+PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+  runtime_failure "python_runtime_invalid" "SOXS_PYTHON_BIN must name an executable stable runtime" 12
 fi
+case "$PYTHON_BIN" in
+  /tmp/*|/private/tmp/*) runtime_failure "python_runtime_invalid" "temporary interpreter paths are not allowed" 12 ;;
+esac
+PYTHON_VERSION="$($PYTHON_BIN -c 'import platform; print(platform.python_version())' 2>/dev/null)" || \
+  runtime_failure "python_runtime_invalid" "interpreter could not report its version" 12
+if [ "$PYTHON_VERSION" != "${SOXS_EXPECTED_PYTHON_VERSION:-3.14.4}" ]; then
+  runtime_failure "python_runtime_invalid" "unexpected Python version: $PYTHON_VERSION" 12
+fi
+
+DEPENDENCY_OUTPUT=""
+if ! DEPENDENCY_OUTPUT="$($PYTHON_BIN - "$PROJECT_DIR" <<'PY'
+import importlib
+import os
+import sys
+
+required = [
+    "flask",
+    "yfinance",
+    "longbridge",
+    "yaml",
+    "src.openalpha.selection_bundle",
+    "src.config.runtime_paths",
+]
+missing = []
+for name in required + [item for item in os.environ.get("SOXS_TOP_EXTRA_REQUIRED_MODULES", "").split(",") if item.strip()]:
+    try:
+        importlib.import_module(name.strip())
+    except Exception as exc:
+        missing.append(f"{name.strip()}:{type(exc).__name__}:{exc}")
+if missing:
+    print(";".join(missing))
+    raise SystemExit(1)
+print("dependencies_ok")
+PY
+)"; then
+  runtime_failure "dependency_preflight_failed" "${DEPENDENCY_OUTPUT:-required imports failed}" 12
+fi
+
+resolve_config_identity() {
+  local manifest="$STATE_DIR/selection_bundle_manifest.json"
+  if [ -f "$manifest" ]; then
+    local identity
+    identity="$($PYTHON_BIN - "$manifest" "$STATE_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+state_root = Path(sys.argv[2]).resolve()
+payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+raw_root = str(payload.get("bundle_root") or payload.get("selection_bundle_root_path") or "").strip()
+if not raw_root:
+    raise SystemExit("bundle_root_missing")
+root = Path(raw_root).expanduser()
+if not root.is_absolute():
+    root = state_root.parent / raw_root if root.parts and root.parts[0] == state_root.name else state_root / raw_root
+root = root.resolve()
+if not root.is_dir():
+    raise SystemExit("bundle_root_missing")
+for slot in ("TOP1.yaml", "TOP2.yaml", "TOP3.yaml"):
+    if not (root / slot).is_file():
+        raise SystemExit(f"{slot}_missing")
+print(f"{root}|{payload.get('selection_run_id', '')}|{payload.get('selection_bundle_hash', '')}")
+PY
+    )" || return 1
+    printf '%s\n' "$identity"
+    return 0
+  fi
+  local configured="${SOXS_TOP_CONFIG_DIR:-${SOXS_CONFIG_DIR:-$STATE_DIR/top_configs}}"
+  configured="$(cd "$configured" 2>/dev/null && pwd)" || return 1
+  printf '%s||\n' "$configured"
+}
+
+CONFIG_IDENTITY="$(resolve_config_identity)" || \
+  runtime_failure "top_config_pointer_invalid" "current committed bundle/config identity is unavailable" 12
+IFS='|' read -r CONFIG_DIR BUNDLE_RUN_ID BUNDLE_HASH <<EOF
+$CONFIG_IDENTITY
+EOF
+CONFIG_DIR="$(cd "$CONFIG_DIR" 2>/dev/null && pwd)" || \
+  runtime_failure "top_config_pointer_invalid" "resolved config root is unavailable" 12
+runtime_event "startup_preflight_passed" "$DEPENDENCY_OUTPUT"
+BUNDLE_SYNC_STATUS="OK"
+export SOXS_TOP_SELECTION_RUN_ID="$BUNDLE_RUN_ID"
 CONTROL_DIR="${SOXS_TOP_CONTROL_DIR:-$STATE_DIR/top_supervisor}"
 SUPERVISOR_PID_FILE="$CONTROL_DIR/supervisor.pid"
 SUPERVISOR_LOCK_DIR="$CONTROL_DIR/supervisor.lock"
@@ -57,6 +149,12 @@ mkdir -p "$CONTROL_DIR"
 
 write_status() {
   local state="$1" request_id="$2" detail="$3" generation="$4"
+  local runtime_status="PENDING"
+  local restart_status="PENDING"
+  case "$state" in
+    running|idle_no_selection|restart_confirmed) runtime_status="OK"; restart_status="OK" ;;
+    restart_failed|start_failed|supervisor_degraded) runtime_status="FAILED"; restart_status="FAILED" ;;
+  esac
   local tmp="$STATUS_FILE.tmp-$$"
   {
     printf 'state=%s\n' "$state"
@@ -65,6 +163,14 @@ write_status() {
     printf 'generation=%s\n' "$generation"
     printf 'supervisor_pid=%s\n' "$$"
     printf 'project_dir=%s\n' "$PROJECT_DIR"
+    printf 'python_bin=%s\n' "$PYTHON_BIN"
+    printf 'python_version=%s\n' "$PYTHON_VERSION"
+    printf 'config_dir=%s\n' "$CONFIG_DIR"
+    printf 'selection_run_id=%s\n' "$BUNDLE_RUN_ID"
+    printf 'selection_bundle_hash=%s\n' "$BUNDLE_HASH"
+    printf 'bundle_sync_status=%s\n' "${BUNDLE_SYNC_STATUS:-UNKNOWN}"
+    printf 'runtime_sync_status=%s\n' "$runtime_status"
+    printf 'top_restart_status=%s\n' "$restart_status"
     printf 'active_engine_count=%s\n' "${#PIDS[@]}"
     printf 'expected_active_engine_count=%s\n' "${ACTIVE_COUNT:-0}"
   } > "$tmp"

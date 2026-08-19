@@ -28,8 +28,9 @@ from .models import (
     default_candidate_for_symbol,
 )
 from .store import CandidateValidationStore
-from src.config.runtime_paths import resolve_artifacts_dir
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_state_dir
 from ..openalpha.selection_bundle import load_committed_selection_bundle
+from .selection_freshness import evaluate_selection_freshness
 
 
 PROJECT_DIR = Path(
@@ -417,6 +418,25 @@ class CandidateValidationOrchestrator:
             source_hint = "provided_bundle" if selection_bundle is not None else "committed_bundle"
             bundle = selection_bundle or load_committed_selection_bundle(self.project_dir)
             rep.update(_selection_bundle_identity(bundle, source_hint=source_hint))
+            freshness = evaluate_selection_freshness(
+                bundle,
+                state_root=resolve_state_dir(self.project_dir),
+            )
+            rep["selection_freshness"] = freshness
+            rep["expected_selector_window"] = freshness.get("expected_selector_window")
+            rep["latest_committed_run_id"] = freshness.get("latest_committed_run_id")
+            rep["freshness_reason"] = freshness.get("reason")
+            if freshness.get("enabled") and (
+                freshness.get("status") == "DEFERRED"
+                or (bundle is not None and freshness.get("status") == "STALE")
+            ):
+                rep["status"] = (
+                    "DEFERRED_SELECTOR_ACTIVE"
+                    if freshness.get("reason") == "selector_active"
+                    else "STALE_BUNDLE_DEFERRED"
+                )
+                rep["applied"] = False
+                return rep
             candidates = self._extract(bundle or {})
             rep["candidate_input_count"] = len(candidates)
             if not candidates:

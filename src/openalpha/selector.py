@@ -5,6 +5,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from src.config.runtime_paths import resolve_logs_dir
 from typing import Dict, List, Sequence, Any
 
@@ -24,6 +25,7 @@ from src.openalpha.earnings_provider import (
 from src.data.fetcher import PriceFetcher
 from src.openalpha.candidate_ranking import score_candidate
 from src.openalpha.funnel_tracker import FunnelTracker, FunnelStageRecord
+from src.utils.market_calendar import required_selection_date
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = None
@@ -645,10 +647,13 @@ class AIStrategySelector:
         write_configs: bool = True,
         symbols_override: List[str] | None = None,
         selection_run_id: str | None = None,
+        selection_date: str | None = None,
     ):
         selection_started_at = datetime.now().timestamp()
         selection_run_id = str(selection_run_id or "").strip() or uuid.uuid4().hex
-        selection_date = datetime.now().strftime("%Y-%m-%d")
+        selection_date = str(selection_date or required_selection_date(
+            datetime.now(ZoneInfo("America/New_York"))
+        ))
         tracker = FunnelTracker(
             selection_run_id=selection_run_id,
             selection_date=selection_date,

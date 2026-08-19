@@ -40,6 +40,8 @@
         <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>SOXS_PROJECT_DIR</key>
         <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_PYTHON_BIN</key>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
         <key>SOXS_STATE_DIR</key>
         <string>REPLACE_WITH_STATE_ROOT</string>
         <key>SOXS_REPORTS_DIR</key>

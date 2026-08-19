@@ -69,6 +69,7 @@ def _fixture(tmp_path: Path):
         "SOXS_TOP_READINESS_TIMEOUT_SECONDS": "5",
         "SOXS_TOP_RESTART_TIMEOUT_SECONDS": "8",
         "SOXS_TEST_PYTHON": PYTHON,
+        "SOXS_PYTHON_BIN": PYTHON,
         "SOXS_DISABLE_LIVE_CREDENTIALS": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
     }

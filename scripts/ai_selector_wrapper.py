@@ -125,6 +125,8 @@ def _compensate_top_restart() -> bool:
             selection_run_id=selection_run_id,
             selection_bundle_hash=bundle_hash,
             error=f"compensation_exit_{code}",
+            bundle_sync_status="OK",
+            runtime_sync_status="FAILED",
             project_dir=PROJECT_DIR,
         )
         return False
@@ -132,6 +134,8 @@ def _compensate_top_restart() -> bool:
         status="CONFIRMED",
         selection_run_id=selection_run_id,
         selection_bundle_hash=bundle_hash,
+        bundle_sync_status="OK",
+        runtime_sync_status="OK",
         project_dir=PROJECT_DIR,
     )
     return True

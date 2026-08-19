@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -58,6 +59,7 @@ EXPECTED_ENGINES = [
 # Never bind or inspect the production TOP ports in isolated tests.
 ISOLATED_ENV = {
     **os.environ,
+    "SOXS_PYTHON_BIN": sys.executable,
     "SOXS_TOP_PORT_OFFSET": "10000",
     "SOXS_TOP_REQUIRE_READINESS": "0",
 }

@@ -149,6 +149,7 @@ def _selection_bundle_fingerprint(bundle: "SelectionBundle") -> str:
         "research_admission": bundle.research_admission,
         "top_sync_status": bundle.top_sync_status,
         "top_sync_error": bundle.top_sync_error,
+        "bundle_sync_status": bundle.bundle_sync_status,
         "selected_symbols": bundle.selected_symbols,
         "disabled_slots": bundle.disabled_slots,
         "top_items": [
@@ -215,6 +216,8 @@ class SelectionBundle:
     requested_top_n: int | None = None
     top_sync_status: str = "OK"
     top_sync_error: str = ""
+    bundle_sync_status: str = "OK"
+    runtime_sync_status: str = "PENDING"
     disabled_reason: str | None = None
     bundle_version: str = "selection_bundle_v1"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -343,6 +346,9 @@ class SelectionBundle:
                 "top_sync_run_id": self.selection_run_id,
                 "top_sync_status": self.top_sync_status,
                 "top_sync_error": self.top_sync_error,
+                "bundle_sync_status": self.bundle_sync_status,
+                "runtime_sync_status": self.runtime_sync_status,
+                "top_sync_status_semantics": "BUNDLE_CONFIG_ONLY",
                 "selection_bundle_version": self.bundle_version,
                 "selection_bundle_hash": self.selection_bundle_hash,
                 "selection_bundle_manifest_path": _relative_path(self.manifest_path),
@@ -382,6 +388,9 @@ class SelectionBundle:
                 "top_sync_run_id": self.selection_run_id,
                 "top_sync_status": self.top_sync_status,
                 "top_sync_error": self.top_sync_error,
+                "bundle_sync_status": self.bundle_sync_status,
+                "runtime_sync_status": self.runtime_sync_status,
+                "top_sync_status_semantics": "BUNDLE_CONFIG_ONLY",
                 "processing_phase": self.processing_phase,
                 "selection_symbols": list(self.selected_symbols),
                 "configured_top_symbols": list(self.selected_symbols),
@@ -419,6 +428,9 @@ class SelectionBundle:
             "top_sync_run_id": self.selection_run_id,
             "top_sync_status": self.top_sync_status,
             "top_sync_error": self.top_sync_error,
+            "bundle_sync_status": self.bundle_sync_status,
+            "runtime_sync_status": self.runtime_sync_status,
+            "top_sync_status_semantics": "BUNDLE_CONFIG_ONLY",
             "selection_date": self.selection_date,
             "generated_at": self.generated_at,
             "selection_stage": self.selection_stage,
@@ -440,6 +452,9 @@ class SelectionBundle:
             "research_admission": self.research_admission,
             "selection_bundle_version": self.bundle_version,
             "selection_bundle_hash": self.selection_bundle_hash,
+            "bundle_sync_status": self.bundle_sync_status,
+            "runtime_sync_status": self.runtime_sync_status,
+            "top_sync_status_semantics": "BUNDLE_CONFIG_ONLY",
             "selection_bundle_manifest_path": _relative_path(self.manifest_path),
             "selection_bundle_root_path": _relative_path(self.bundle_root_path),
             "selection_bundle_audit_path": _relative_path(self.bundle_audit_path),
@@ -541,6 +556,8 @@ def build_selection_bundle(
     requested_top_n: int | None = None,
     top_sync_status: str = "OK",
     top_sync_error: str = "",
+    bundle_sync_status: str | None = None,
+    runtime_sync_status: str | None = None,
     disabled_reason: str | None = None,
 ) -> SelectionBundle:
     selection_run_id = _selection_run_id(selection_run_id)
@@ -578,6 +595,8 @@ def build_selection_bundle(
         requested_top_n=requested_top_n,
         top_sync_status=str(top_sync_status or "OK"),
         top_sync_error=str(top_sync_error or ""),
+        bundle_sync_status=str(bundle_sync_status or summary.get("bundle_sync_status") or "OK"),
+        runtime_sync_status=str(runtime_sync_status or summary.get("runtime_sync_status") or "PENDING"),
         disabled_reason=disabled_reason,
     )
 
@@ -783,6 +802,8 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
         processing_phase=getattr(bundle, "processing_phase", None),
         top_sync_status=getattr(bundle, "top_sync_status", "OK"),
         top_sync_error=getattr(bundle, "top_sync_error", ""),
+        bundle_sync_status=getattr(bundle, "bundle_sync_status", "OK"),
+        runtime_sync_status=getattr(bundle, "runtime_sync_status", "PENDING"),
         disabled_reason=getattr(bundle, "disabled_reason", None),
     )
 
@@ -866,6 +887,8 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
             top_sync_run_id=bundle.selection_run_id,
             top_sync_status=bundle.top_sync_status,
             top_sync_error=bundle.top_sync_error,
+            bundle_sync_status=bundle.bundle_sync_status,
+            runtime_sync_status=bundle.runtime_sync_status,
             selection_symbols=list(state_payload.get("selection_symbols") or []),
             configured_top_symbols=list(state_payload.get("configured_top_symbols") or []),
             disabled_slots=list(state_payload.get("disabled_slots") or []),
@@ -912,6 +935,7 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
         )
         if str(sync_result.get("top_sync_status") or "OK").upper() != "OK":
             bundle.top_sync_status = "NOT_OK"
+            bundle.bundle_sync_status = "FAILED"
             bundle.top_sync_error = str(sync_result.get("top_sync_error") or "top_config_sync_mismatch")
             report_payload = bundle.report_payload()
             state_payload = bundle.state_payload()
@@ -936,6 +960,8 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
                 top_sync_run_id=bundle.selection_run_id,
                 top_sync_status=bundle.top_sync_status,
                 top_sync_error=bundle.top_sync_error,
+                bundle_sync_status=bundle.bundle_sync_status,
+                runtime_sync_status=bundle.runtime_sync_status,
                 selection_symbols=list(state_payload.get("selection_symbols") or []),
                 configured_top_symbols=list(state_payload.get("configured_top_symbols") or []),
                 disabled_slots=list(state_payload.get("disabled_slots") or []),
@@ -983,6 +1009,9 @@ def persist_selection_bundle(bundle: SelectionBundle) -> dict[str, Any]:
         "top_sync_run_id": bundle.selection_run_id,
         "top_sync_status": bundle.top_sync_status,
         "top_sync_error": bundle.top_sync_error,
+        "bundle_sync_status": bundle.bundle_sync_status,
+        "runtime_sync_status": bundle.runtime_sync_status,
+        "top_sync_status_semantics": "BUNDLE_CONFIG_ONLY",
         "selection_date": bundle.selection_date,
         "generated_at": bundle.generated_at,
         "selection_stage": bundle.selection_stage,
@@ -1018,6 +1047,8 @@ def write_selection_bundle_atomic(
     requested_top_n: int | None = None,
     top_sync_status: str = "OK",
     top_sync_error: str = "",
+    bundle_sync_status: str | None = None,
+    runtime_sync_status: str | None = None,
     disabled_reason: str | None = None,
 ) -> dict[str, Any]:
     bundle = build_selection_bundle(
@@ -1033,6 +1064,8 @@ def write_selection_bundle_atomic(
         requested_top_n=requested_top_n,
         top_sync_status=top_sync_status,
         top_sync_error=top_sync_error,
+        bundle_sync_status=bundle_sync_status,
+        runtime_sync_status=runtime_sync_status,
         disabled_reason=disabled_reason,
     )
     return persist_selection_bundle(bundle)

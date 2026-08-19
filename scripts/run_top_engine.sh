@@ -8,14 +8,55 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
-if [ -z "$PYTHON_BIN" ]; then
-    if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
-        PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
-    else
-        PYTHON_BIN="$(command -v python3)"
-    fi
-fi
 VENV_PYTHON="$PYTHON_BIN"
+
+RUNTIME_LOG_DIR="${SOXS_LOG_DIR:-${SOXS_LOGS_DIR:-${SOXS_STATE_DIR:-$PROJECT_DIR}/logs}}"
+runtime_event() {
+    local event="$1" detail="${2:-}"
+    mkdir -p "$RUNTIME_LOG_DIR" 2>/dev/null || true
+    printf 'event=%s\npid=%s\npython=%s\npython_version=%s\nrelease_root=%s\nconfig_root=%s\nexecution_mode=%s\nrun_id=%s\ndetail=%s\n' \
+        "$event" "$$" "${PYTHON_BIN:-}" "${PYTHON_VERSION:-}" "$PROJECT_DIR" \
+        "${cfg:-}" "${QUANTCAIRN_EXECUTION_MODE:-}" "${SOXS_TOP_SELECTION_RUN_ID:-${selection_run_id:-}}" "$detail" \
+        >> "$RUNTIME_LOG_DIR/top-engine-runtime.log" 2>/dev/null || true
+}
+runtime_failure() {
+    local state="$1" detail="$2" code="${3:-12}"
+    runtime_event "$state" "$detail"
+    echo "[$state] $detail" >&2
+    exit "$code"
+}
+if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+    runtime_failure "python_runtime_invalid" "SOXS_PYTHON_BIN must name an executable stable runtime" 12
+fi
+case "$PYTHON_BIN" in
+    /tmp/*|/private/tmp/*) runtime_failure "python_runtime_invalid" "temporary interpreter paths are not allowed" 12 ;;
+esac
+PYTHON_VERSION="$($PYTHON_BIN -c 'import platform; print(platform.python_version())' 2>/dev/null)" || \
+    runtime_failure "python_runtime_invalid" "interpreter could not report its version" 12
+if [ "$PYTHON_VERSION" != "${SOXS_EXPECTED_PYTHON_VERSION:-3.14.4}" ]; then
+    runtime_failure "python_runtime_invalid" "unexpected Python version: $PYTHON_VERSION" 12
+fi
+DEPENDENCY_OUTPUT=""
+if ! DEPENDENCY_OUTPUT="$($PYTHON_BIN - <<'PY'
+import importlib
+required = [
+    "flask", "yfinance", "longbridge", "yaml",
+    "src.config.runtime_paths", "src.engine.trading_engine",
+]
+missing = []
+for name in required:
+    try:
+        importlib.import_module(name)
+    except Exception as exc:
+        missing.append(f"{name}:{type(exc).__name__}:{exc}")
+if missing:
+    print(";".join(missing))
+    raise SystemExit(1)
+print("dependencies_ok")
+PY
+)"; then
+    runtime_failure "dependency_preflight_failed" "${DEPENDENCY_OUTPUT:-required imports failed}" 12
+fi
 
 cfg="${1:?config path required}"
 port="${2:?port required}"
@@ -38,6 +79,7 @@ cfg="$(cd "$(dirname "$cfg")" 2>/dev/null && pwd)/$(basename "$cfg")" || {
     exit 12
 }
 [ -f "$cfg" ] || { echo "CONFIG_MISSING: $cfg" >&2; exit 13; }
+runtime_event "startup_preflight_passed" "$DEPENDENCY_OUTPUT"
 
 cd "$PROJECT_DIR"
 

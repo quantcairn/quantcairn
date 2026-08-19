@@ -79,6 +79,8 @@
         <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>SOXS_PROJECT_DIR</key>
         <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_PYTHON_BIN</key>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
         <key>SOXS_STATE_DIR</key>
         <string>REPLACE_WITH_STATE_ROOT</string>
         <key>SOXS_REPORTS_DIR</key>
@@ -89,6 +91,8 @@
         <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>QUANTCAIRN_EXECUTION_MODE</key>
         <string>PAPER</string>
+        <key>QUANTCAIRN_SELECTION_FRESHNESS_GATE</key>
+        <string>1</string>
         <key>SOXS_DISABLE_LIVE_CREDENTIALS</key>
         <string>1</string>
         <key>YF_DISABLE_CURL_CFFI</key>
