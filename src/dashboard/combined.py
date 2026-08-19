@@ -22,7 +22,7 @@ from src.openalpha.universe_filter import load_universe_rules
 from src.openalpha.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
-from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_state_dir
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_runtime_dir, resolve_state_dir
 from src.broker.paper_portfolio_state import default_paper_portfolio_state_path, read_paper_portfolio_state
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
@@ -56,7 +56,9 @@ TRADING_FLAGS_PATH = STATE_DIR / "trading_flags.json"
 LIFECYCLE_DIR = STATE_DIR / "lifecycle"
 WEEKEND_PAPER_LIFECYCLE_PATH = LIFECYCLE_DIR / "weekend_paper_lifecycle.json"
 LONGBRIDGE_SANDBOX_LIFECYCLE_PATH = LIFECYCLE_DIR / "longbridge_sandbox_lifecycle.json"
-RUNTIME_DIR = Path(os.environ.get("SOXS_RUNTIME_DIR", "").strip() or (PROJECT_DIR / "runtime"))
+# Compatibility override hooks for tests and embedders. Production callers
+# resolve the path through _combined_pid_file_path() at operation time.
+RUNTIME_DIR: Path | None = None
 
 
 def _reports_dir() -> Path:
@@ -71,7 +73,7 @@ def _logs_dir() -> Path:
     return resolve_logs_dir(PROJECT_DIR)
 
 
-COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
+COMBINED_PID_FILE: Path | None = None
 SHADOW_OBSERVER_DIR = default_shadow_output_directory("SOXS.US", "15m")
 
 TICKERS = [
@@ -818,7 +820,11 @@ def _read_unified_paper_portfolio_state() -> dict[str, object] | None:
 
 
 def _combined_pid_file_path() -> Path:
-    return COMBINED_PID_FILE
+    if COMBINED_PID_FILE is not None:
+        return Path(COMBINED_PID_FILE)
+    if RUNTIME_DIR is not None:
+        return Path(RUNTIME_DIR) / "combined.pid"
+    return resolve_runtime_dir() / "combined.pid"
 
 
 def _read_pid_file() -> int | None:

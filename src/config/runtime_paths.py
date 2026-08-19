@@ -39,6 +39,11 @@ def resolve_logs_dir(project_dir: Path | None = None) -> Path:
     return (_env_path("SOXS_LOG_DIR") or _env_path("SOXS_LOGS_DIR") or resolve_project_dir(project_dir) / "logs").resolve()
 
 
+def resolve_runtime_dir(project_dir: Path | None = None) -> Path:
+    """Resolve transient process-runtime files at operation time."""
+    return (_env_path("SOXS_RUNTIME_DIR") or resolve_state_dir(project_dir) / "runtime").resolve()
+
+
 @dataclass(frozen=True)
 class RuntimePaths:
     """Resolved paths; construction never creates directories."""

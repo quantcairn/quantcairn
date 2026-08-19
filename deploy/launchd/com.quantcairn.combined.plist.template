@@ -67,6 +67,8 @@
         <string>PAPER</string>
         <key>SOXS_DISABLE_LIVE_CREDENTIALS</key>
         <string>1</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>

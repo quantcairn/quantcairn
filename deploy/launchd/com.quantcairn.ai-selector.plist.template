@@ -96,6 +96,8 @@
         <string>1</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
         <!-- Enable verbose scheduler decision logging to stderr -->
         <key>OPENALPHA_WRAPPER_VERBOSE</key>
         <string>1</string>

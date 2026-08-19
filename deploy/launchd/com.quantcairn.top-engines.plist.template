@@ -72,6 +72,8 @@
         <string>1</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>
