@@ -21,7 +21,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (tmp_path / "configs").mkdir()
     for slot in (1, 2, 3):
         (tmp_path / "configs" / f"TOP{slot}.yaml").write_text(
-            f"ticker: TEST{slot}\nmode: paper\n", encoding="utf-8"
+            f"enabled: true\nticker: TEST{slot}\nmode: paper\n", encoding="utf-8"
         )
     fake = r'''#!/bin/bash
 set -eu
@@ -54,6 +54,7 @@ ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     env = {
         **os.environ,
         "SOXS_PROJECT_DIR": str(tmp_path),
+        "SOXS_TOP_CONFIG_DIR": str(tmp_path / "configs"),
         "SOXS_STATE_DIR": str(tmp_path / "state"),
         "SOXS_LOG_DIR": str(tmp_path / "logs"),
         "SOXS_TOP_PORT_OFFSET": "10000",

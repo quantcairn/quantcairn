@@ -44,6 +44,28 @@ def resolve_runtime_dir(project_dir: Path | None = None) -> Path:
     return (_env_path("SOXS_RUNTIME_DIR") or resolve_state_dir(project_dir) / "runtime").resolve()
 
 
+def resolve_top_config_dir(project_dir: Path | None = None, *, required: bool = False) -> Path | None:
+    """Resolve generated TOP slot configs outside the code/release tree.
+
+    TOP YAML files are runtime selection output, not release inputs.  An
+    explicit TOP/config root wins; otherwise an explicitly configured state
+    root provides the canonical ``top_configs`` child.  Immutable releases
+    must not silently fall back to ``<release>/configs``.
+    """
+    explicit = _env_path("SOXS_TOP_CONFIG_DIR") or _env_path("SOXS_CONFIG_DIR")
+    if explicit is not None:
+        return explicit
+    state_raw = str(os.environ.get("SOXS_STATE_DIR", "") or "").strip()
+    if state_raw:
+        return (Path(state_raw).expanduser().resolve() / "top_configs").resolve()
+    runtime_raw = str(os.environ.get("SOXS_RUNTIME_DIR", "") or "").strip()
+    if runtime_raw:
+        return (Path(runtime_raw).expanduser().resolve() / "top_configs").resolve()
+    if required:
+        raise RuntimeError("TOP_RUNTIME_ROOT_NOT_CONFIGURED")
+    return None
+
+
 @dataclass(frozen=True)
 class RuntimePaths:
     """Resolved paths; construction never creates directories."""

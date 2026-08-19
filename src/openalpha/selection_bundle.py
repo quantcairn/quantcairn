@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 from src.utils.market_calendar import required_selection_date
-from src.config.runtime_paths import resolve_project_dir, resolve_reports_dir, resolve_state_dir
+from src.config.runtime_paths import CODE_ROOT, resolve_project_dir, resolve_reports_dir, resolve_state_dir, resolve_top_config_dir
 
 
 def _project_dir() -> Path:
@@ -291,7 +291,19 @@ class SelectionBundle:
 
     @property
     def top_paths(self) -> list[Path]:
-        return [_project_dir() / "configs" / f"TOP{i}.yaml" for i in range(1, self.slot_count + 1)]
+        if _project_dir().resolve() != CODE_ROOT.resolve() and not (
+            os.environ.get("SOXS_TOP_CONFIG_DIR") or os.environ.get("SOXS_CONFIG_DIR")
+        ):
+            top_dir = _project_dir() / "configs"
+        else:
+            top_dir = resolve_top_config_dir(_project_dir(), required=False)
+        if top_dir is None:
+            if (_project_dir() / "RELEASE_MANIFEST.json").exists() or _project_dir().resolve() == CODE_ROOT.resolve():
+                raise RuntimeError("TOP_RUNTIME_ROOT_NOT_CONFIGURED")
+            # Explicit temporary project roots remain supported by the tests
+            # and by library callers that supply their own project root.
+            top_dir = _project_dir() / "configs"
+        return [top_dir / f"TOP{i}.yaml" for i in range(1, self.slot_count + 1)]
 
     @property
     def bundle_top_paths(self) -> list[Path]:

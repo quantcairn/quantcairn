@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from src.config.local_env import load_local_ai_env, sanitize_paper_environment
-from src.config.runtime_paths import resolve_logs_dir, resolve_reports_dir
+from src.config.runtime_paths import resolve_logs_dir, resolve_reports_dir, resolve_top_config_dir
 from src.openalpha.settings import load_runtime_settings
 from src.openalpha import selector as _selector_module
 from src.openalpha.config import load_runtime_config
@@ -3094,8 +3094,11 @@ def _load_final_top_configs(limit: int = TOP_COUNT) -> list[dict]:
     import yaml
 
     configs: list[dict] = []
+    config_dir = resolve_top_config_dir(PROJECT_DIR, required=False)
+    if config_dir is None:
+        return configs
     for index in range(1, limit + 1):
-        path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
+        path = config_dir / f"TOP{index}.yaml"
         if not path.exists():
             continue
         try:

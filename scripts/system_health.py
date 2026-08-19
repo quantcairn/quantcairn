@@ -23,7 +23,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
 
 from scripts.runtime_identity import collect_identity, identity_findings
-from src.config.runtime_paths import RuntimePaths, runtime_paths
+from src.config.runtime_paths import RuntimePaths, resolve_top_config_dir, runtime_paths
 
 US_EASTERN = ZoneInfo("America/New_York")
 SERVICES = {
@@ -169,8 +169,10 @@ def _check_execution_mode(project_dir: Path | None = None) -> dict:
     mode = (os.environ.get("QUANTCAIRN_EXECUTION_MODE") or os.environ.get("OPENALPHA_EXECUTION_MODE") or "UNKNOWN").strip().upper()
     allow_live = os.environ.get("OPENALPHA_ALLOW_LIVE_ORDER", "0")
     has_live_config = False
+    config_dir = resolve_top_config_dir(root, required=False)
     for idx in range(1, 6):
-        text = (root / "configs" / f"TOP{idx}.yaml").read_text(encoding="utf-8") if (root / "configs" / f"TOP{idx}.yaml").exists() else ""
+        path = config_dir / f"TOP{idx}.yaml" if config_dir is not None else None
+        text = path.read_text(encoding="utf-8") if path is not None and path.exists() else ""
         if "mode: live" in text.lower():
             has_live_config = True
             break

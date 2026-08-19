@@ -60,6 +60,8 @@
         <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>SOXS_STATE_DIR</key>
         <string>REPLACE_WITH_STATE_ROOT</string>
+        <key>SOXS_TOP_CONFIG_DIR</key>
+        <string>REPLACE_WITH_TOP_CONFIG_ROOT</string>
         <key>SOXS_REPORTS_DIR</key>
         <string>REPLACE_WITH_REPORTS_ROOT</string>
         <key>SOXS_ARTIFACTS_DIR</key>

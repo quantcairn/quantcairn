@@ -340,7 +340,8 @@ def _run_selector_smoke(workspace_root: Path, *, universe_source: str, mode: str
         or ""
     ).strip()
 
-    top_paths = [workspace_root / "configs" / f"TOP{i}.yaml" for i in range(1, 4)]
+    top_config_root = workspace_root / "state" / "top_configs"
+    top_paths = [top_config_root / f"TOP{i}.yaml" for i in range(1, 4)]
     missing_top = [str(path) for path in top_paths if not path.exists()]
     if missing_top:
         raise ReleaseSmokeError(f"missing TOP config files: {missing_top}")

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from src.openalpha.selection_bundle import load_committed_selection_bundle
-from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_state_dir
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_state_dir, resolve_top_config_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 STATE_DIR = resolve_state_dir(PROJECT_DIR)
@@ -414,8 +414,8 @@ def _section_system_health() -> None:
               f"({'today' if sent_at == today else sent_at})")
 
     # Top configs present?
-    config_dir = PROJECT_DIR / "configs"
-    top_configs = sorted(config_dir.glob("TOP*.yaml"))
+    config_dir = resolve_top_config_dir(PROJECT_DIR, required=False)
+    top_configs = sorted(config_dir.glob("TOP*.yaml")) if config_dir is not None else []
     if top_configs:
         modes = []
         for tc in top_configs[:5]:

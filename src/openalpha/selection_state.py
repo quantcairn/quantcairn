@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.config.runtime_paths import resolve_state_dir
+from src.config.runtime_paths import CODE_ROOT, resolve_state_dir, resolve_top_config_dir
 
 import yaml
 from src.openalpha.config import load_runtime_config
@@ -18,6 +18,18 @@ PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve
 def _state_dir() -> Path:
     raw = os.environ.get("SOXS_STATE_DIR")
     return resolve_state_dir(PROJECT_DIR) if not raw else Path(raw).expanduser().resolve()
+
+
+def _top_config_dir() -> Path:
+    if PROJECT_DIR.resolve() != CODE_ROOT.resolve() and not (
+        os.environ.get("SOXS_TOP_CONFIG_DIR") or os.environ.get("SOXS_CONFIG_DIR")
+    ):
+        return PROJECT_DIR / "configs"
+    resolved = resolve_top_config_dir(PROJECT_DIR, required=False)
+    if resolved is not None:
+        return resolved
+    # Explicit temporary project roots remain supported by the library tests.
+    raise RuntimeError("TOP_RUNTIME_ROOT_NOT_CONFIGURED")
 
 
 def selection_state_path() -> Path:
@@ -81,7 +93,7 @@ def current_top_config_slots(limit: int | None = None) -> list[dict[str, Any]]:
     slot_limit = _top_slot_limit(limit)
     slots: list[dict[str, Any]] = []
     for index in range(1, slot_limit + 1):
-        path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
+        path = _top_config_dir() / f"TOP{index}.yaml"
         exists = path.exists()
         config = _read_top_config(path) if exists else {}
         selection = _nested_selection(config)

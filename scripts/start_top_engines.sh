@@ -9,7 +9,28 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 LAUNCHER="$PROJECT_DIR/scripts/run_top_engine.sh"
-STATE_DIR="${SOXS_STATE_DIR:-$PROJECT_DIR/state}"
+PYTHON_BIN="${SOXS_PYTHON_BIN:-$(command -v python3)}"
+STATE_DIR="${SOXS_STATE_DIR:-}"
+if [ -z "$STATE_DIR" ]; then
+  echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: SOXS_STATE_DIR is required" >&2
+  exit 12
+fi
+if [ -n "${SOXS_TOP_CONFIG_DIR:-}" ]; then
+  CONFIG_DIR="$(cd "$SOXS_TOP_CONFIG_DIR" 2>/dev/null && pwd)" || {
+    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: SOXS_TOP_CONFIG_DIR is invalid" >&2
+    exit 12
+  }
+elif [ -n "${SOXS_CONFIG_DIR:-}" ]; then
+  CONFIG_DIR="$(cd "$SOXS_CONFIG_DIR" 2>/dev/null && pwd)" || {
+    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: SOXS_CONFIG_DIR is invalid" >&2
+    exit 12
+  }
+else
+  CONFIG_DIR="$(cd "$STATE_DIR/top_configs" 2>/dev/null && pwd)" || {
+    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED: TOP config root is not configured" >&2
+    exit 12
+  }
+fi
 CONTROL_DIR="${SOXS_TOP_CONTROL_DIR:-$STATE_DIR/top_supervisor}"
 SUPERVISOR_PID_FILE="$CONTROL_DIR/supervisor.pid"
 SUPERVISOR_LOCK_DIR="$CONTROL_DIR/supervisor.lock"
@@ -27,9 +48,9 @@ HEALTH_PATH="${SOXS_TOP_HEALTH_PATH:-/api/status}"
 # Engine definitions: config port log-name. Ports are part of the production
 # contract and must stay aligned with the Dashboard and launchd template.
 ENGINES=(
-  "configs/TOP1.yaml 8080 top1"
-  "configs/TOP2.yaml 8081 top2"
-  "configs/TOP3.yaml 8082 top3"
+  "$CONFIG_DIR/TOP1.yaml 8080 top1"
+  "$CONFIG_DIR/TOP2.yaml 8081 top2"
+  "$CONFIG_DIR/TOP3.yaml 8082 top3"
 )
 
 mkdir -p "$CONTROL_DIR"
@@ -44,6 +65,8 @@ write_status() {
     printf 'generation=%s\n' "$generation"
     printf 'supervisor_pid=%s\n' "$$"
     printf 'project_dir=%s\n' "$PROJECT_DIR"
+    printf 'active_engine_count=%s\n' "${#PIDS[@]}"
+    printf 'expected_active_engine_count=%s\n' "${ACTIVE_COUNT:-0}"
   } > "$tmp"
   mv -f "$tmp" "$STATUS_FILE"
 }
@@ -149,8 +172,104 @@ PIDS=()
 PIDS_CFG=()
 PIDS_PORT=()
 PIDS_NAME=()
+SLOT_ACTIVE=()
+SLOT_CONFIG=()
+ACTIVE_COUNT=0
 RESTART_REQUESTED=0
 GENERATION=0
+
+read_slot_configs() {
+  local output line slot active cfg
+  output="$($PYTHON_BIN - "$CONFIG_DIR" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+symbol_re = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+def parse_scalar(value):
+    value = value.strip()
+    if value in {"true", "True", "TRUE"}:
+        return True
+    if value in {"false", "False", "FALSE"}:
+        return False
+    if value in {"null", "Null", "NULL", "~", ""}:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+def load_flat_mapping(path):
+    payload = {}
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # TOP configs contain additional nested engine settings.  The
+        # supervisor contract only needs the top-level slot fields; nested
+        # content is validated by the engine itself.
+        if raw[:1].isspace():
+            continue
+        if ":" not in line:
+            raise ValueError(f"invalid_mapping_line_{number}")
+        key, value = line.split(":", 1)
+        key = key.strip()
+        if not key or key in payload:
+            raise ValueError(f"invalid_mapping_key_{number}")
+        payload[key] = parse_scalar(value)
+    return payload
+
+for slot in range(1, 4):
+    path = root / f"TOP{slot}.yaml"
+    if not path.is_file():
+        print(f"ERROR|CONFIG_MISSING|{slot}|{path}")
+        raise SystemExit(2)
+    try:
+        payload = load_flat_mapping(path)
+    except Exception as exc:
+        print(f"ERROR|CONFIG_INVALID|{slot}|{exc}")
+        raise SystemExit(2)
+    if not isinstance(payload, dict):
+        print(f"ERROR|CONFIG_INVALID|{slot}|mapping_required")
+        raise SystemExit(2)
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        print(f"ERROR|CONFIG_INVALID|{slot}|enabled_must_be_boolean")
+        raise SystemExit(2)
+    ticker = str(payload.get("ticker") or "").strip().upper()
+    if enabled and (not ticker or not symbol_re.fullmatch(ticker)):
+        print(f"ERROR|CONFIG_INVALID|{slot}|enabled_requires_valid_ticker")
+        raise SystemExit(2)
+    if not enabled and ticker:
+        print(f"ERROR|CONFIG_INVALID|{slot}|disabled_slot_must_not_have_ticker")
+        raise SystemExit(2)
+    mode = str(payload.get("mode") or "paper").strip().lower()
+    if enabled and mode != "paper":
+        print(f"ERROR|CONFIG_INVALID|{slot}|active_top_must_be_paper")
+        raise SystemExit(2)
+    print(f"SLOT|{slot}|{1 if enabled else 0}|{path}")
+PY
+  )" || {
+    echo "[top-supervisor] ${output:-CONFIG_INVALID}" >&2
+    return 1
+  }
+  SLOT_ACTIVE=()
+  SLOT_CONFIG=()
+  ACTIVE_COUNT=0
+  while IFS='|' read -r line slot active cfg; do
+    [ "$line" = "SLOT" ] || continue
+    SLOT_ACTIVE[$slot]="$active"
+    SLOT_CONFIG[$slot]="$cfg"
+    [ "$active" = "1" ] && ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
+  done <<EOF
+$output
+EOF
+  [ "${#SLOT_ACTIVE[@]}" -eq 3 ] || {
+    echo "[top-supervisor] CONFIG_INVALID: incomplete slot set" >&2
+    return 1
+  }
+}
 
 cleanup_children() {
   local index pid cfg port name command
@@ -209,18 +328,25 @@ cleanup() {
 }
 
 start_engines() {
-  local engine cfg port name pids started=0 failed=0
+  local engine cfg port name pids started=0 failed=0 expected=0 slot
   PIDS=()
   PIDS_CFG=()
   PIDS_PORT=()
   PIDS_NAME=()
-  for engine in "${ENGINES[@]}"; do
-    read -r cfg configured_port name <<< "$engine"
-    port=$((configured_port + PORT_OFFSET))
-    if [ ! -f "$cfg" ]; then
-      echo "[top-supervisor] SKIP $name: config $cfg not found" >&2
+  read_slot_configs || return 1
+  for slot in 1 2 3; do
+    read -r cfg port name <<< "${ENGINES[$((slot - 1))]}"
+    if [ "${SLOT_ACTIVE[$slot]}" != "1" ]; then
+      if ! port_is_free_or_owned "$port" "${PIDS[*]-}"; then
+        echo "[top-supervisor] STALE_CHILD: idle slot $slot port $port is occupied" >&2
+        failed=$((failed + 1))
+      fi
       continue
     fi
+    expected=$((expected + 1))
+    engine="${ENGINES[$((slot - 1))]}"
+    read -r cfg configured_port name <<< "$engine"
+    port=$((configured_port + PORT_OFFSET))
     if ! port_is_free_or_owned "$port" "${PIDS[*]-}"; then
       failed=$((failed + 1))
       continue
@@ -236,10 +362,11 @@ start_engines() {
     started=$((started + 1))
   done
   echo "[top-supervisor] Launched $started TOP engines (supervisor PID $$ waiting)"
-  if [ "$failed" -gt 0 ] || [ "$started" -ne "${#ENGINES[@]}" ]; then
-    echo "[top-supervisor] refusing readiness: expected ${#ENGINES[@]} engines, launched $started" >&2
+  if [ "$failed" -gt 0 ] || [ "$started" -ne "$expected" ]; then
+    echo "[top-supervisor] refusing readiness: expected $expected active engines, launched $started" >&2
     return 1
   fi
+  [ "$expected" -eq 0 ] && return 0
   if [ "$REQUIRE_READINESS" = "1" ] && ! wait_for_readiness; then
     echo "[top-supervisor] refusing readiness: one or more TOP engines are not healthy" >&2
     cleanup_children || true
@@ -305,6 +432,9 @@ process_restart() {
   fi
   GENERATION=$((GENERATION + 1))
   if [ "$result" -eq 0 ]; then
+    if [ "$ACTIVE_COUNT" -eq 0 ]; then
+      detail="idle_no_selection"
+    fi
     write_status "restart_confirmed" "$request_id" "$detail" "$GENERATION"
   else
     write_status "restart_failed" "$request_id" "$detail" "$GENERATION"
@@ -388,7 +518,11 @@ if ! start_engines; then
   write_status "start_failed" "" "unknown_port_or_engine_start_failure" "$GENERATION"
   exit 10
 fi
-write_status "running" "" "supervisor_ready" "$GENERATION"
+if [ "$ACTIVE_COUNT" -eq 0 ]; then
+  write_status "idle_no_selection" "" "supervisor_ready" "$GENERATION"
+else
+  write_status "running" "" "supervisor_ready" "$GENERATION"
+fi
 
 while :; do
   if [ "$RESTART_REQUESTED" -eq 1 ]; then

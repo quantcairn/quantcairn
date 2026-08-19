@@ -32,6 +32,7 @@ STATE_ROOT="/Users/chenwei/soxs-range-arbitrage/state"
 REPORTS_ROOT="/Users/chenwei/soxs-range-arbitrage/reports"
 ARTIFACTS_ROOT="/Users/chenwei/soxs-range-arbitrage/artifacts"
 LOGS_ROOT="/Users/chenwei/soxs-range-arbitrage/logs"
+TOP_CONFIG_ROOT="/Users/chenwei/soxs-range-arbitrage/state/top_configs"
 
 # Copy and substitute
 for tmpl in deploy/launchd/*.plist.template; do
@@ -42,6 +43,7 @@ for tmpl in deploy/launchd/*.plist.template; do
         -e "s|REPLACE_WITH_REPORTS_ROOT|$REPORTS_ROOT|g" \
         -e "s|REPLACE_WITH_ARTIFACTS_ROOT|$ARTIFACTS_ROOT|g" \
         -e "s|REPLACE_WITH_LOGS_ROOT|$LOGS_ROOT|g" \
+        -e "s|REPLACE_WITH_TOP_CONFIG_ROOT|$TOP_CONFIG_ROOT|g" \
         "$tmpl" > ~/Library/LaunchAgents/"$name"
 done
 ```
@@ -142,6 +144,7 @@ Follow the Quick Start steps above. The new labels use `com.quantcairn.*` to mat
 | `REPLACE_WITH_REPORTS_ROOT` | Persistent reports root | `/Users/chenwei/soxs-range-arbitrage/reports` |
 | `REPLACE_WITH_ARTIFACTS_ROOT` | Persistent artifacts root | `/Users/chenwei/soxs-range-arbitrage/artifacts` |
 | `REPLACE_WITH_LOGS_ROOT` | Persistent logs root | `/Users/chenwei/soxs-range-arbitrage/logs` |
+| `REPLACE_WITH_TOP_CONFIG_ROOT` | External generated TOP config root; never the immutable release `configs/` directory | `/Users/chenwei/soxs-range-arbitrage/state/top_configs` |
 
 ### Common Python Paths
 

@@ -21,6 +21,24 @@ cfg="${1:?config path required}"
 port="${2:?port required}"
 log_name="${3:?log name required}"
 
+if [[ "$cfg" != /* ]]; then
+    if [ -n "${SOXS_TOP_CONFIG_DIR:-}" ]; then
+        cfg="$SOXS_TOP_CONFIG_DIR/$cfg"
+    elif [ -n "${SOXS_CONFIG_DIR:-}" ]; then
+        cfg="$SOXS_CONFIG_DIR/$cfg"
+    elif [ -n "${SOXS_STATE_DIR:-}" ]; then
+        cfg="$SOXS_STATE_DIR/top_configs/$cfg"
+    else
+        echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED" >&2
+        exit 12
+    fi
+fi
+cfg="$(cd "$(dirname "$cfg")" 2>/dev/null && pwd)/$(basename "$cfg")" || {
+    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED" >&2
+    exit 12
+}
+[ -f "$cfg" ] || { echo "CONFIG_MISSING: $cfg" >&2; exit 13; }
+
 cd "$PROJECT_DIR"
 
 if [ -f "$LOCAL_AI_ENV" ]; then
