@@ -10,21 +10,59 @@ LOCAL_AI_ENV="$PROJECT_DIR/.env.ai_selector.local"
 PYTHON_BIN="${SOXS_PYTHON_BIN:-}"
 VENV_PYTHON="$PYTHON_BIN"
 
+cfg="${1:?config path required}"
+port="${2:?port required}"
+log_name="${3:?log name required}"
+
 RUNTIME_LOG_DIR="${SOXS_LOG_DIR:-${SOXS_LOGS_DIR:-${SOXS_STATE_DIR:-$PROJECT_DIR}/logs}}"
+LOG_DIR="${SOXS_LOG_DIR:-${SOXS_LOGS_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}}"
+LOG_PATH="$LOG_DIR/${log_name}.log"
+FAILURE_PATH="$LOG_DIR/${log_name}.failure"
+STARTUP_STAGE="runtime_preflight"
+
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+rm -f "$FAILURE_PATH"
+if [ "${SOXS_TOP_ENGINE_REDIRECT_STDIO:-0}" = "1" ]; then
+    exec >> "$LOG_PATH" 2>&1
+fi
+
+write_failure_evidence() {
+    local exit_code="$1" reason="$2"
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    {
+        printf 'slot=%s\n' "$log_name"
+        printf 'child_pid=%s\n' "$$"
+        printf 'interpreter=%s\n' "${PYTHON_BIN:-}"
+        printf 'python_version=%s\n' "${PYTHON_VERSION:-}"
+        printf 'exit_code=%s\n' "$exit_code"
+        printf 'startup_stage=%s\n' "$STARTUP_STAGE"
+        printf 'reason=%s\n' "$reason"
+        printf 'log_path=%s\n' "$LOG_PATH"
+        printf 'release_root=%s\n' "$PROJECT_DIR"
+        printf 'config_path=%s\n' "$cfg"
+        printf 'port=%s\n' "$port"
+        printf 'selection_run_id=%s\n' "${SOXS_TOP_SELECTION_RUN_ID:-}"
+    } > "$FAILURE_PATH.tmp-$$"
+    mv -f "$FAILURE_PATH.tmp-$$" "$FAILURE_PATH"
+}
+
 runtime_event() {
     local event="$1" detail="${2:-}"
     mkdir -p "$RUNTIME_LOG_DIR" 2>/dev/null || true
-    printf 'event=%s\npid=%s\npython=%s\npython_version=%s\nrelease_root=%s\nconfig_root=%s\nexecution_mode=%s\nrun_id=%s\ndetail=%s\n' \
-        "$event" "$$" "${PYTHON_BIN:-}" "${PYTHON_VERSION:-}" "$PROJECT_DIR" \
-        "${cfg:-}" "${QUANTCAIRN_EXECUTION_MODE:-}" "${SOXS_TOP_SELECTION_RUN_ID:-${selection_run_id:-}}" "$detail" \
+    printf 'event=%s\npid=%s\nslot=%s\nport=%s\nstartup_stage=%s\npython=%s\npython_version=%s\nrelease_root=%s\nconfig_root=%s\nexecution_mode=%s\nrun_id=%s\nlog_path=%s\ndetail=%s\n' \
+        "$event" "$$" "$log_name" "$port" "$STARTUP_STAGE" "${PYTHON_BIN:-}" "${PYTHON_VERSION:-}" "$PROJECT_DIR" \
+        "${cfg:-}" "${QUANTCAIRN_EXECUTION_MODE:-}" "${SOXS_TOP_SELECTION_RUN_ID:-${selection_run_id:-}}" "$LOG_PATH" "$detail" \
         >> "$RUNTIME_LOG_DIR/top-engine-runtime.log" 2>/dev/null || true
 }
 runtime_failure() {
     local state="$1" detail="$2" code="${3:-12}"
+    STARTUP_STAGE="$state"
+    write_failure_evidence "$code" "$detail"
     runtime_event "$state" "$detail"
     echo "[$state] $detail" >&2
     exit "$code"
 }
+STARTUP_STAGE="runtime_preflight"
 if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
     runtime_failure "python_runtime_invalid" "SOXS_PYTHON_BIN must name an executable stable runtime" 12
 fi
@@ -36,6 +74,7 @@ PYTHON_VERSION="$($PYTHON_BIN -c 'import platform; print(platform.python_version
 if [ "$PYTHON_VERSION" != "${SOXS_EXPECTED_PYTHON_VERSION:-3.14.4}" ]; then
     runtime_failure "python_runtime_invalid" "unexpected Python version: $PYTHON_VERSION" 12
 fi
+STARTUP_STAGE="dependency_preflight"
 DEPENDENCY_OUTPUT=""
 if ! DEPENDENCY_OUTPUT="$($PYTHON_BIN - <<'PY'
 import importlib
@@ -58,10 +97,7 @@ PY
     runtime_failure "dependency_preflight_failed" "${DEPENDENCY_OUTPUT:-required imports failed}" 12
 fi
 
-cfg="${1:?config path required}"
-port="${2:?port required}"
-log_name="${3:?log name required}"
-
+STARTUP_STAGE="config_resolve"
 if [[ "$cfg" != /* ]]; then
     if [ -n "${SOXS_TOP_CONFIG_DIR:-}" ]; then
         cfg="$SOXS_TOP_CONFIG_DIR/$cfg"
@@ -70,15 +106,13 @@ if [[ "$cfg" != /* ]]; then
     elif [ -n "${SOXS_STATE_DIR:-}" ]; then
         cfg="$SOXS_STATE_DIR/top_configs/$cfg"
     else
-        echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED" >&2
-        exit 12
+        runtime_failure "config_resolve" "TOP runtime root is not configured" 12
     fi
 fi
 cfg="$(cd "$(dirname "$cfg")" 2>/dev/null && pwd)/$(basename "$cfg")" || {
-    echo "TOP_RUNTIME_ROOT_NOT_CONFIGURED" >&2
-    exit 12
+    runtime_failure "config_resolve" "TOP config directory is unavailable" 12
 }
-[ -f "$cfg" ] || { echo "CONFIG_MISSING: $cfg" >&2; exit 13; }
+[ -f "$cfg" ] || runtime_failure "config_resolve" "TOP config is missing: $cfg" 13
 runtime_event "startup_preflight_passed" "$DEPENDENCY_OUTPUT"
 
 cd "$PROJECT_DIR"
@@ -93,8 +127,8 @@ fi
 
 echo "Using Python: $PYTHON_BIN"
 
-read ENGINE_MODE SYNTH_START SYNTH_AMP <<EOF
-$( "$VENV_PYTHON" - "$cfg" <<'PY'
+STARTUP_STAGE="config_parse"
+if ! CONFIG_VALUES="$( "$VENV_PYTHON" - "$cfg" <<'PY'
 import sys, yaml
 cfg_path = sys.argv[1]
 with open(cfg_path, "r", encoding="utf-8") as f:
@@ -116,8 +150,10 @@ if support is not None and resistance is not None and support > 0 and resistance
     amp = (((resistance - support) / 2.0) / mid * 100.0) + 2.0
 print(f"{mode} {mid:.4f} {amp:.4f}")
 PY
-)
-EOF
+ )"; then
+    runtime_failure "config_parse" "TOP config could not be parsed" 13
+fi
+read ENGINE_MODE SYNTH_START SYNTH_AMP <<< "$CONFIG_VALUES"
 
 if [ "$ENGINE_MODE" != "live" ]; then
     unset LONGBRIDGE_APP_KEY LONGBRIDGE_APP_SECRET LONGBRIDGE_API_KEY \
@@ -126,8 +162,6 @@ if [ "$ENGINE_MODE" != "live" ]; then
         LONGBRIDGE_QUOTE_WS_URL LONGBRIDGE_TRADE_WS_URL
 fi
 
-LOG_DIR="${SOXS_LOG_DIR:-${SOXS_LOGS_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}}"
-REDIRECT_STDIO="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-0}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
 wait_until_port_free() {
@@ -138,16 +172,18 @@ wait_until_port_free() {
         echo "cannot verify port ownership: lsof is unavailable" >&2
         return 1
     fi
-    local i
+    local i lsof_output lsof_status
     for ((i=0; i<attempts; i++)); do
-        if lsof -tiTCP:"$target_port" -sTCP:LISTEN >/dev/null 2>&1; then
+        lsof_output="$(lsof -tiTCP:"$target_port" -sTCP:LISTEN 2>/dev/null)"
+        lsof_status=$?
+        if [ -z "$lsof_output" ] && { [ "$lsof_status" -eq 0 ] || [ "$lsof_status" -eq 1 ]; }; then
+            return 0
+        fi
+        if [ -n "$lsof_output" ]; then
             sleep "$sleep_seconds"
             continue
         fi
-        local lsof_status=$?
-        if [ "$lsof_status" -eq 1 ]; then
-            return 0
-        fi
+        echo "cannot verify port ownership for $target_port: lsof exit=$lsof_status" >&2
         return 1
     done
     echo "port $target_port still busy after waiting" >&2
@@ -175,9 +211,10 @@ run_engine() {
         "$VENV_PYTHON" run.py --config "$cfg" --paper --dashboard --anytime --port "$port"
 }
 
-if [ "$REDIRECT_STDIO" = "1" ]; then
-    exec >> "$LOG_DIR/${log_name}.log" 2>&1
+STARTUP_STAGE="port_bind"
+if ! wait_until_port_free "$port"; then
+    runtime_failure "port_bind" "port $port is unavailable before engine startup" 14
 fi
 
-wait_until_port_free "$port"
+STARTUP_STAGE="engine_import"
 run_engine

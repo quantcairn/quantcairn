@@ -173,6 +173,10 @@ write_status() {
     printf 'top_restart_status=%s\n' "$restart_status"
     printf 'active_engine_count=%s\n' "${#PIDS[@]}"
     printf 'expected_active_engine_count=%s\n' "${ACTIVE_COUNT:-0}"
+    printf 'failure_evidence_path=%s\n' "${FAILURE_EVIDENCE_PATH:-}"
+    printf 'failure_exit_code=%s\n' "${FAILURE_EXIT_CODE:-}"
+    printf 'failure_startup_stage=%s\n' "${FAILURE_STAGE:-}"
+    printf 'failure_reason=%s\n' "${FAILURE_REASON:-}"
   } > "$tmp"
   mv -f "$tmp" "$STATUS_FILE"
 }
@@ -273,6 +277,50 @@ port_owned_by_pid() {
   return 1
 }
 
+record_child_failure() {
+  local index="$1" pid cfg port name code evidence log_path stage reason
+  pid="${PIDS[$index]}"
+  cfg="${PIDS_CFG[$index]}"
+  port="${PIDS_PORT[$index]}"
+  name="${PIDS_NAME[$index]}"
+  if wait "$pid" 2>/dev/null; then
+    code=0
+  else
+    code=$?
+  fi
+  evidence="$RUNTIME_LOG_DIR/${name}.failure"
+  log_path="$RUNTIME_LOG_DIR/${name}.log"
+  stage="engine_entrypoint"
+  reason="child_exit"
+  if [ -f "$evidence" ]; then
+    stage="$(sed -n 's/^startup_stage=//p' "$evidence" | head -n 1)"
+    reason="$(sed -n 's/^reason=//p' "$evidence" | head -n 1)"
+    [ -n "$stage" ] || stage="engine_entrypoint"
+    [ -n "$reason" ] || reason="child_exit"
+  else
+    {
+      printf 'slot=%s\n' "$name"
+      printf 'child_pid=%s\n' "$pid"
+      printf 'interpreter=%s\n' "$PYTHON_BIN"
+      printf 'python_version=%s\n' "$PYTHON_VERSION"
+      printf 'exit_code=%s\n' "$code"
+      printf 'startup_stage=%s\n' "$stage"
+      printf 'reason=%s\n' "$reason"
+      printf 'log_path=%s\n' "$log_path"
+      printf 'release_root=%s\n' "$PROJECT_DIR"
+      printf 'config_path=%s\n' "$cfg"
+      printf 'port=%s\n' "$port"
+      printf 'selection_run_id=%s\n' "$BUNDLE_RUN_ID"
+    } > "$evidence.tmp-$$"
+    mv -f "$evidence.tmp-$$" "$evidence"
+  fi
+  FAILURE_EVIDENCE_PATH="$evidence"
+  FAILURE_EXIT_CODE="$code"
+  FAILURE_STAGE="$stage"
+  FAILURE_REASON="$reason"
+  START_FAILURE_DETAIL="slot=$name child_pid=$pid exit_code=$code startup_stage=$stage reason=$reason log_path=$log_path evidence_path=$evidence config_path=$cfg"
+}
+
 SUPERVISOR_LOCK_OWNED=0
 PIDS=()
 PIDS_CFG=()
@@ -283,6 +331,11 @@ SLOT_CONFIG=()
 ACTIVE_COUNT=0
 RESTART_REQUESTED=0
 GENERATION=0
+START_FAILURE_DETAIL=""
+FAILURE_EVIDENCE_PATH=""
+FAILURE_EXIT_CODE=""
+FAILURE_STAGE=""
+FAILURE_REASON=""
 
 read_slot_configs() {
   local output line slot active cfg
@@ -439,7 +492,17 @@ start_engines() {
   PIDS_CFG=()
   PIDS_PORT=()
   PIDS_NAME=()
-  read_slot_configs || return 1
+  START_FAILURE_DETAIL=""
+  FAILURE_EVIDENCE_PATH=""
+  FAILURE_EXIT_CODE=""
+  FAILURE_STAGE=""
+  FAILURE_REASON=""
+  if ! read_slot_configs; then
+    START_FAILURE_DETAIL="config_parse_failed config_dir=$CONFIG_DIR"
+    FAILURE_STAGE="config_parse"
+    FAILURE_REASON="slot_config_validation_failed"
+    return 1
+  fi
   for slot in 1 2 3; do
     read -r cfg port name <<< "${ENGINES[$((slot - 1))]}"
     if [ "${SLOT_ACTIVE[$slot]}" != "1" ]; then
@@ -469,6 +532,9 @@ start_engines() {
   done
   echo "[top-supervisor] Launched $started TOP engines (supervisor PID $$ waiting)"
   if [ "$failed" -gt 0 ] || [ "$started" -ne "$expected" ]; then
+    START_FAILURE_DETAIL="engine_launch_failed expected=$expected launched=$started failed=$failed"
+    FAILURE_STAGE="service_construct"
+    FAILURE_REASON="engine_launch_failed"
     echo "[top-supervisor] refusing readiness: expected $expected active engines, launched $started" >&2
     return 1
   fi
@@ -490,6 +556,8 @@ wait_for_readiness() {
       port="${PIDS_PORT[$index]}"
       name="${PIDS_NAME[$index]}"
       if ! pid_is_alive "$pid"; then
+        record_child_failure "$index"
+        echo "[top-supervisor] $START_FAILURE_DETAIL" >&2
         echo "[top-supervisor] $name exited before readiness" >&2
         return 1
       fi
@@ -513,6 +581,9 @@ wait_for_readiness() {
     [ "$all_ready" -eq 1 ] && return 0
     sleep 1
   done
+  START_FAILURE_DETAIL="readiness_timeout expected_paper_health_path=$HEALTH_PATH log_path=$RUNTIME_LOG_DIR"
+  FAILURE_STAGE="readiness_wait"
+  FAILURE_REASON="readiness_timeout"
   return 1
 }
 
@@ -533,7 +604,7 @@ process_restart() {
   PIDS_PORT=()
   PIDS_NAME=()
   if ! start_engines; then
-    detail="restart_failed"
+    detail="${START_FAILURE_DETAIL:-restart_failed}"
     result=1
   fi
   GENERATION=$((GENERATION + 1))
@@ -621,7 +692,7 @@ write_status "starting" "" "initial_start" "$GENERATION"
 trap 'RESTART_REQUESTED=1' USR1
 
 if ! start_engines; then
-  write_status "start_failed" "" "unknown_port_or_engine_start_failure" "$GENERATION"
+  write_status "start_failed" "" "${START_FAILURE_DETAIL:-unknown_port_or_engine_start_failure}" "$GENERATION"
   exit 10
 fi
 if [ "$ACTIVE_COUNT" -eq 0 ]; then
