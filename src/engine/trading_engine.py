@@ -83,8 +83,17 @@ class AISelectionDecision:
 
 
 def _audit_log_path() -> Path:
-    configured_dir = os.environ.get("SOXS_RUNTIME_AUDIT_DIR", "").strip()
-    log_dir = Path(configured_dir) if configured_dir else PROJECT_DIR / "logs"
+    configured_dir = ""
+    for env_name in ("SOXS_RUNTIME_AUDIT_DIR", "SOXS_LOGS_DIR", "SOXS_LOG_DIR"):
+        configured_dir = os.environ.get(env_name, "").strip()
+        if configured_dir:
+            break
+    if not configured_dir:
+        raise RuntimeError(
+            "runtime audit root must be configured via SOXS_RUNTIME_AUDIT_DIR, "
+            "SOXS_LOGS_DIR, or SOXS_LOG_DIR"
+        )
+    log_dir = Path(configured_dir).expanduser().resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
 

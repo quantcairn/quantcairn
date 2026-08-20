@@ -57,7 +57,7 @@ PY
 )
 EOF
 
-LOG_DIR="${SOXS_LOG_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}"
+LOG_DIR="${SOXS_LOG_DIR:-${SOXS_LOGS_DIR:-${TMPDIR:-/private/tmp}/soxs-range-arbitrage/logs}}"
 REDIRECT_STDIO="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-0}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
@@ -71,11 +71,16 @@ wait_until_port_free() {
     fi
     local i
     for ((i=0; i<attempts; i++)); do
+        local lsof_status
         if lsof -tiTCP:"$target_port" -sTCP:LISTEN >/dev/null 2>&1; then
+            lsof_status=0
+        else
+            lsof_status=$?
+        fi
+        if [ "$lsof_status" -eq 0 ]; then
             sleep "$sleep_seconds"
             continue
         fi
-        local lsof_status=$?
         if [ "$lsof_status" -eq 1 ]; then
             return 0
         fi
