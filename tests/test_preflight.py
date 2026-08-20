@@ -73,6 +73,7 @@ class TestDataAvailability:
         availability = _scan_data_availability([], max_symbols=10)
         assert availability["checked"] == 0
 
+    @pytest.mark.network
     def test_scan_with_real_symbol_triggers_no_error(self):
         availability = _scan_data_availability(["AAPL"], max_symbols=1)
         assert availability["checked"] == 1

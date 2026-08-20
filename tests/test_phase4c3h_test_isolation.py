@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UNKNOWN_SYMBOL_TEST = (
@@ -16,6 +18,7 @@ UNKNOWN_SYMBOL_TEST = (
 )
 
 
+@pytest.mark.network
 def test_fetcher_provider_stub_does_not_leak_into_market_data_pipeline():
     """The historical fetcher -> market-data order must stay isolated."""
     result = subprocess.run(
