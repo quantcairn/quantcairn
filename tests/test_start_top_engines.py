@@ -18,6 +18,8 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 LAUNCHER = PROJECT_DIR / "scripts" / "start_top_engines.sh"
@@ -61,9 +63,12 @@ ISOLATED_ENV = {**os.environ, "SOXS_TOP_PORT_OFFSET": "10000"}
 
 def test_launcher_defines_three_engines():
     content = LAUNCHER.read_text(encoding="utf-8")
-    assert '"configs/TOP1.yaml 8080 top1"' in content
-    assert '"configs/TOP2.yaml 8081 top2"' in content
-    assert '"configs/TOP3.yaml 8082 top3"' in content
+    assert '"$CONFIG_DIR/TOP1.yaml 8080 top1"' in content
+    assert '"$CONFIG_DIR/TOP2.yaml 8081 top2"' in content
+    assert '"$CONFIG_DIR/TOP3.yaml 8082 top3"' in content
+    assert '"configs/TOP1.yaml 8080 top1"' not in content
+    assert '"configs/TOP2.yaml 8081 top2"' not in content
+    assert '"configs/TOP3.yaml 8082 top3"' not in content
 
 
 def test_launcher_ports_match_dashboard_tickers():
@@ -127,7 +132,7 @@ def test_supervisor_waits_for_children(tmp_path: Path):
         ["bash", str(launcher_copy)],
         cwd=str(tmp_path),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=ISOLATED_ENV,
+        env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(cfg_dir)},
     )
 
     # Give the supervisor time to start children and enter wait
@@ -181,7 +186,7 @@ def test_cleanup_trap_kills_children_on_exit(tmp_path: Path):
         ["bash", str(launcher_copy)],
         cwd=str(tmp_path),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=ISOLATED_ENV,
+        env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(cfg_dir)},
     )
 
     time.sleep(2)
@@ -255,6 +260,7 @@ def test_launcher_skips_missing_config(tmp_path: Path):
         ["bash", str(launcher_copy)],
         cwd=str(tmp_path),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(cfg_dir)},
     )
 
     try:
@@ -383,7 +389,7 @@ def _supervisor_fixture(tmp_path: Path):
     supervisor = subprocess.Popen(
         ["bash", str(launcher_copy)],
         cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=ISOLATED_ENV,
+        env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(cfg_dir)},
     )
     time.sleep(1)
     assert supervisor.poll() is None
@@ -409,7 +415,8 @@ def test_restart_mode_requests_existing_supervisor(tmp_path: Path):
     try:
         result = subprocess.run(
             ["bash", str(launcher), "restart"],
-            cwd=str(tmp_path), capture_output=True, text=True, timeout=30, env=ISOLATED_ENV,
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+            env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(tmp_path / "configs")},
         )
         assert result.returncode == 0, result.stderr
         assert "restart confirmed" in result.stdout
@@ -429,7 +436,8 @@ def test_concurrent_restart_lock_fails_closed(tmp_path: Path):
     try:
         result = subprocess.run(
             ["bash", str(launcher), "restart"],
-            cwd=str(tmp_path), capture_output=True, text=True, timeout=5, env=ISOLATED_ENV,
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=5,
+            env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(tmp_path / "configs")},
         )
         assert result.returncode == 4
         assert "another restart" in result.stderr
@@ -444,7 +452,8 @@ def test_duplicate_supervisor_start_fails_closed(tmp_path: Path):
     try:
         result = subprocess.run(
             ["bash", str(launcher)],
-            cwd=str(tmp_path), capture_output=True, text=True, timeout=5, env=ISOLATED_ENV,
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=5,
+            env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(tmp_path / "configs")},
         )
         assert result.returncode == 8
         assert "another supervisor" in result.stderr
@@ -474,7 +483,8 @@ def test_unknown_port_owner_fails_closed(tmp_path: Path):
     os.chmod(launcher, 0o755)
     result = subprocess.run(
         ["bash", str(launcher)], cwd=str(tmp_path), capture_output=True,
-        text=True, timeout=5, env={**ISOLATED_ENV, "PATH": f"{fake_bin}:/usr/bin:/bin"},
+        text=True, timeout=5,
+        env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(cfg_dir), "PATH": f"{fake_bin}:/usr/bin:/bin"},
     )
     assert result.returncode == 10
     assert "unknown process" in result.stderr
@@ -498,7 +508,8 @@ def test_unexpected_child_process_fails_restart_closed(tmp_path: Path):
     os.chmod(launcher, 0o755)
     supervisor = subprocess.Popen(
         ["bash", str(launcher)], cwd=str(tmp_path), stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, env=ISOLATED_ENV,
+        stderr=subprocess.PIPE, text=True,
+        env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(cfg_dir)},
     )
     try:
         for _ in range(20):
@@ -507,7 +518,8 @@ def test_unexpected_child_process_fails_restart_closed(tmp_path: Path):
             time.sleep(0.1)
         result = subprocess.run(
             ["bash", str(launcher), "restart"], cwd=str(tmp_path),
-            capture_output=True, text=True, timeout=30, env=ISOLATED_ENV,
+            capture_output=True, text=True, timeout=30,
+            env={**ISOLATED_ENV, "SOXS_TOP_CONFIG_DIR": str(cfg_dir)},
         )
         assert result.returncode == 6
         assert "ownership" in result.stderr
@@ -544,7 +556,7 @@ def test_launcher_engine_count_matches_plist_scope():
     engines_block = content[content.find("ENGINES=("):]
     engines_block = engines_block[:engines_block.find(")") + 1]
     # Count the triple-quoted config/port/name lines
-    lines = [l for l in engines_block.split("\n") if "configs/TOP" in l and "yaml" in l]
+    lines = [l for l in engines_block.split("\n") if "$CONFIG_DIR/TOP" in l and "yaml" in l]
     assert len(lines) == 3, f"Expected 3 engine definitions, found {len(lines)}"
 
 

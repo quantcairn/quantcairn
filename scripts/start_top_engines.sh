@@ -21,12 +21,27 @@ REDIRECT="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-1}"
 MODE="${1:-start}"
 PORT_OFFSET="${SOXS_TOP_PORT_OFFSET:-0}"
 
+# TOP configuration is runtime input.  An immutable release must not depend
+# on source-controlled or release-local configuration files.
+CONFIG_DIR=""
+if [ -n "${SOXS_TOP_CONFIG_DIR:-}" ]; then
+  CONFIG_DIR="${SOXS_TOP_CONFIG_DIR}"
+elif [ -n "${SOXS_CONFIG_DIR:-}" ]; then
+  CONFIG_DIR="${SOXS_CONFIG_DIR%/}/top_configs"
+fi
+if [ -n "$CONFIG_DIR" ]; then
+  CONFIG_DIR="$(cd "$CONFIG_DIR" 2>/dev/null && pwd)" || {
+    echo "[top-supervisor] configured TOP config root is unavailable: $CONFIG_DIR" >&2
+    exit 12
+  }
+fi
+
 # Engine definitions: config port log-name. Ports are part of the production
 # contract and must stay aligned with the Dashboard and launchd template.
 ENGINES=(
-  "configs/TOP1.yaml 8080 top1"
-  "configs/TOP2.yaml 8081 top2"
-  "configs/TOP3.yaml 8082 top3"
+  "$CONFIG_DIR/TOP1.yaml 8080 top1"
+  "$CONFIG_DIR/TOP2.yaml 8081 top2"
+  "$CONFIG_DIR/TOP3.yaml 8082 top3"
 )
 
 mkdir -p "$CONTROL_DIR"
@@ -41,6 +56,8 @@ write_status() {
     printf 'generation=%s\n' "$generation"
     printf 'supervisor_pid=%s\n' "$$"
     printf 'project_dir=%s\n' "$PROJECT_DIR"
+    printf 'config_dir=%s\n' "$CONFIG_DIR"
+    printf 'active_engine_count=%s\n' "${#PIDS[@]}"
   } > "$tmp"
   mv -f "$tmp" "$STATUS_FILE"
 }
@@ -202,8 +219,8 @@ start_engines() {
   for engine in "${ENGINES[@]}"; do
     read -r cfg configured_port name <<< "$engine"
     port=$((configured_port + PORT_OFFSET))
-    if [ ! -f "$cfg" ]; then
-      echo "[top-supervisor] SKIP $name: config $cfg not found" >&2
+    if [ -z "$CONFIG_DIR" ] || [ ! -f "$cfg" ]; then
+      echo "[top-supervisor] SKIP $name: external TOP config is not selected" >&2
       continue
     fi
     if ! port_is_free_or_owned "$port" "${PIDS[*]-}"; then
@@ -325,7 +342,11 @@ if ! start_engines; then
   write_status "start_failed" "" "unknown_port_or_engine_start_failure" "$GENERATION"
   exit 10
 fi
-write_status "running" "" "supervisor_ready" "$GENERATION"
+if [ "${#PIDS[@]}" -eq 0 ]; then
+  write_status "idle_no_selection" "" "no_active_top_configs" "$GENERATION"
+else
+  write_status "running" "" "supervisor_ready" "$GENERATION"
+fi
 
 while :; do
   if [ "$RESTART_REQUESTED" -eq 1 ]; then
