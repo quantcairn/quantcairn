@@ -50,10 +50,11 @@ from ..openalpha import selection_state as selection_state_module
 from ..openalpha.selection_bundle import load_committed_selection_bundle
 from ..openalpha.selection_report import load_latest_ai_selection_state
 from ..utils.market_calendar import required_selection_date
+from ..config.runtime_paths import resolve_logs_dir, resolve_state_dir
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
+STATE_DIR = resolve_state_dir(PROJECT_DIR)
 INVERSE_ETF_SYMBOLS = {"SOXS", "SQQQ", "SPXU", "SDOW", "FAZ"}
 
 # Try to import pytz, fall back if not available
@@ -83,17 +84,8 @@ class AISelectionDecision:
 
 
 def _audit_log_path() -> Path:
-    configured_dir = ""
-    for env_name in ("SOXS_RUNTIME_AUDIT_DIR", "SOXS_LOGS_DIR", "SOXS_LOG_DIR"):
-        configured_dir = os.environ.get(env_name, "").strip()
-        if configured_dir:
-            break
-    if not configured_dir:
-        raise RuntimeError(
-            "runtime audit root must be configured via SOXS_RUNTIME_AUDIT_DIR, "
-            "SOXS_LOGS_DIR, or SOXS_LOG_DIR"
-        )
-    log_dir = Path(configured_dir).expanduser().resolve()
+    configured_dir = os.environ.get("SOXS_RUNTIME_AUDIT_DIR", "").strip()
+    log_dir = Path(configured_dir).expanduser().resolve() if configured_dir else resolve_logs_dir(PROJECT_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
 
@@ -209,6 +201,7 @@ class TradingEngine:
         self.mode = config.mode
         self._ignore_trading_hours = ignore_trading_hours
         self._startup_role = str(startup_role or "standard").strip().lower()
+        state_dir = resolve_state_dir(PROJECT_DIR)
 
         # Initialize components
         self.fetcher = PriceFetcher(
@@ -241,7 +234,7 @@ class TradingEngine:
             max_drawdown_pct=config.risk.max_drawdown_pct,
             cool_down_seconds=config.position.cool_down_seconds,
             order_failure_cooldown_seconds=config.risk.order_failure_cooldown_seconds,
-            state_path=STATE_DIR / "risk" / f"{self.ticker.upper()}.json",
+            state_path=state_dir / "risk" / f"{self.ticker.upper()}.json",
         )
 
         # Broker setup
@@ -274,7 +267,7 @@ class TradingEngine:
             ticker=config.ticker,
             mode=config.mode,
             cooldown_seconds=config.risk.order_failure_cooldown_seconds,
-            state_dir=STATE_DIR,
+            state_dir=state_dir,
         )
 
         self.notifier = Notifier(
@@ -300,16 +293,16 @@ class TradingEngine:
         self._pending_order: Optional[dict] = None
         self._last_exit_check_at = 0.0
         self._pending_order_state_path = (
-            STATE_DIR / "pending_orders" / f"{self.ticker.upper()}.json"
+            state_dir / "pending_orders" / f"{self.ticker.upper()}.json"
         )
         self._position_sync_state_path = (
-            STATE_DIR / "position_sync" / f"{self.ticker.upper()}.json"
+            state_dir / "position_sync" / f"{self.ticker.upper()}.json"
         )
         self._sell_lock_path = (
-            STATE_DIR / "sell_locks" / f"{self.ticker.upper()}.lock"
+            state_dir / "sell_locks" / f"{self.ticker.upper()}.lock"
         )
         self._exit_fence_path = (
-            STATE_DIR / "exit_fences" / f"{self.ticker.upper()}.json"
+            state_dir / "exit_fences" / f"{self.ticker.upper()}.json"
         )
         self._position_sync_fence: Optional[dict] = None
         self._load_pending_order()
@@ -2169,17 +2162,17 @@ class TradingEngine:
                         selection_state_module.PROJECT_DIR / report_path_raw,
                         PROJECT_DIR / report_path_raw,
                         selection_state_path().parent.parent / report_path_raw,
-                        PROJECT_DIR / "reports" / Path(report_path_raw).name,
+                        resolve_reports_dir(PROJECT_DIR) / Path(report_path_raw).name,
                     ]
                 )
-        candidates.append(PROJECT_DIR / "reports" / "ai_selection_latest.json")
+        candidates.append(resolve_reports_dir(PROJECT_DIR) / "ai_selection_latest.json")
         for candidate in candidates:
             try:
                 if candidate.exists():
                     return candidate
             except Exception:
                 continue
-        return candidates[0] if candidates else PROJECT_DIR / "reports" / "ai_selection_latest.json"
+        return candidates[0] if candidates else resolve_reports_dir(PROJECT_DIR) / "ai_selection_latest.json"
 
     def _required_selection_date(self) -> str:
         if not HAS_PYTZ or self._ny_tz is None:

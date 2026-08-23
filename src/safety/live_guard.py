@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from src.openalpha.selection_report import load_latest_ai_selection_state
+from src.config.runtime_paths import resolve_state_dir
 from src.utils.market_calendar import required_selection_date
 
 logger = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ class LiveGuard:
     # -- 6. Selection state consistency --
 
     def _check_selection_state(self) -> None:
-        state_path = PROJECT_DIR / "state" / "ai_selection_state.json"
+        state_path = resolve_state_dir(PROJECT_DIR) / "ai_selection_state.json"
         if not state_path.exists():
             self._error("ai_selection_state.json does not exist")
             return

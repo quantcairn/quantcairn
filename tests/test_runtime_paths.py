@@ -85,7 +85,7 @@ print(json.dumps({
     assert (roots["artifacts"] / "candidates").is_dir()
 
 
-def test_defaults_preserve_project_layout(tmp_path, monkeypatch):
+def test_defaults_use_external_runtime_layout(tmp_path, monkeypatch):
     for name in (
         "SOXS_PROJECT_DIR",
         "SOXS_STATE_DIR",
@@ -99,10 +99,14 @@ def test_defaults_preserve_project_layout(tmp_path, monkeypatch):
 
     paths = runtime_paths()
     assert paths.project_dir == tmp_path.resolve()
-    assert paths.state_dir == tmp_path.resolve() / "state"
-    assert paths.reports_dir == tmp_path.resolve() / "reports"
-    assert paths.artifacts_dir == tmp_path.resolve() / "artifacts"
-    assert paths.logs_dir == tmp_path.resolve() / "logs"
+    external_root = Path.home() / ".quantcairn" / "runtime"
+    assert paths.state_dir == (external_root / "state").resolve()
+    assert paths.reports_dir == (external_root / "reports").resolve()
+    assert paths.artifacts_dir == (external_root / "artifacts").resolve()
+    assert paths.logs_dir == (external_root / "logs").resolve()
+    assert all(not path.is_relative_to(tmp_path.resolve()) for path in (
+        paths.state_dir, paths.reports_dir, paths.artifacts_dir, paths.logs_dir
+    ))
 
 
 def test_runtime_identity_is_redacted_and_uses_explicit_roots(tmp_path):

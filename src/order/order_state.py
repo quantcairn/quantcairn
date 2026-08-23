@@ -17,12 +17,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from src.config.runtime_paths import resolve_state_dir
+
 logger = logging.getLogger(__name__)
 SYNTHETIC_TEST_TICKERS = {"TEST", "MOCK", "FAKE"}
 
 # Default state directory — matches engine convention
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-DEFAULT_STATE_DIR = Path(os.environ.get("SOXS_STATE_DIR") or os.path.join(PROJECT_DIR, "state"))
+DEFAULT_STATE_DIR = resolve_state_dir(Path(PROJECT_DIR))
 
 
 class OrderState(Enum):
@@ -103,7 +105,7 @@ class OrderStateManager:
         self.ticker = ticker.upper()
         self.mode = str(mode or "paper").strip().lower()
         self.cooldown_seconds = cooldown_seconds
-        self._state_dir = Path(state_dir) if state_dir else DEFAULT_STATE_DIR
+        self._state_dir = Path(state_dir) if state_dir else resolve_state_dir(Path(PROJECT_DIR))
         self.runtime_scope = self._detect_runtime_scope()
         bucket_name = "order_state_test" if self.runtime_scope == "test" else "order_state"
         self._state_path = self._state_dir / bucket_name / f"{self.ticker}.json"
