@@ -71,15 +71,14 @@ def _resolve_execution_mode(run_mode: str) -> str:
 
     Priority:
       1. QUANTCAIRN_EXECUTION_MODE env var (LIVE / PAPER / RESEARCH)
-      2. Derived from preflight: FULL → LIVE, all others → RESEARCH
+      2. Derived from preflight: FULL → RESEARCH, all others → RESEARCH.
+         Data readiness never grants LIVE_EXECUTION capability.
 
     PAPER mode must be explicitly requested — it is never auto-selected.
     """
     env_val = str(os.environ.get("QUANTCAIRN_EXECUTION_MODE") or "").strip().upper()
     if env_val in EXECUTION_MODES:
         return env_val
-    if _quality_mode_is_strict(run_mode):
-        return "LIVE"
     return "RESEARCH"
 
 
