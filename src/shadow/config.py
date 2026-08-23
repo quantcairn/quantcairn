@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 import os
 import subprocess
@@ -152,7 +152,7 @@ class ShadowSafetyConfig:
 
 @dataclass(frozen=True)
 class ShadowRuntimeConfig:
-    output_dir: Path = Path("artifacts/shadow/soxs_15m")
+    output_dir: Path = field(default_factory=lambda: default_shadow_output_directory("SOXS.US", "15m"))
     symbol: str = "SOXS.US"
     benchmark_symbols: tuple[str, ...] = ("SOXX.US", "SMH.US")
     frequency: str = "15m"
@@ -221,7 +221,7 @@ class ShadowRuntimeConfig:
         elif self.symbol != "SOXS.US" and benchmarks == ("SOXX.US", "SMH.US") and catalog_defaults:
             benchmarks = catalog_defaults
         resolved_output_dir = self.output_dir
-        if self.symbol != "SOXS.US" and Path(self.output_dir) == Path("artifacts/shadow/soxs_15m"):
+        if self.symbol != "SOXS.US" and Path(self.output_dir) == default_shadow_output_directory("SOXS.US", "15m"):
             resolved_output_dir = default_shadow_output_directory(self.symbol, self.timeframe)
         return ShadowUniverseConfig.for_symbol(
             self.symbol,

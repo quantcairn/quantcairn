@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from pathlib import Path
 from typing import Any
+
+from src.config.runtime_paths import resolve_artifacts_dir
 
 
 VALID_SYMBOL_CLASSES = {"common_stock", "leveraged_etf", "inverse_etf", "index_etf"}
 VALID_RISK_PROFILES = {"balanced", "strict", "very_strict"}
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-SHADOW_ROOT_DIR = PROJECT_DIR / "artifacts" / "shadow"
+SHADOW_ROOT_DIR = resolve_artifacts_dir(PROJECT_DIR) / "shadow"
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9._-]*\.US$")
 _TIMEFRAME_PATTERN = re.compile(r"^(?:\d+[mh]|daily)$")
 _SAFE_SLUG_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
@@ -112,13 +114,22 @@ def _is_safe_timeframe(timeframe: str) -> bool:
 
 
 def is_safe_shadow_output_directory(path: Path | str) -> bool:
-    candidate = Path(path)
-    resolved = candidate.resolve(strict=False) if candidate.is_absolute() else (PROJECT_DIR / candidate).resolve(strict=False)
+    resolved = resolve_shadow_output_directory(path)
     try:
         resolved.relative_to(SHADOW_ROOT_DIR.resolve())
     except ValueError:
         return False
     return True
+
+
+def resolve_shadow_output_directory(path: Path | str) -> Path:
+    """Map relative shadow paths into the configured artifact root."""
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate.resolve(strict=False)
+    if candidate.parts[:2] == ("artifacts", "shadow"):
+        candidate = Path(*candidate.parts[2:])
+    return (SHADOW_ROOT_DIR / candidate).resolve(strict=False)
 
 
 def canonical_shadow_symbol(symbol: str) -> str:
@@ -161,10 +172,10 @@ def default_shadow_output_directory(symbol: str, timeframe: str) -> Path:
     normalized_symbol = canonical_shadow_symbol(symbol)
     normalized_timeframe = str(timeframe or "15m").strip().lower() or "15m"
     if normalized_symbol == "SOXS.US" and normalized_timeframe == "15m":
-        return Path("artifacts/shadow/soxs_15m")
+        return SHADOW_ROOT_DIR / "soxs_15m"
     safe_symbol = _safe_slug(normalized_symbol.split(".")[0], fallback="shadow")
     safe_timeframe = _safe_slug(normalized_timeframe, fallback="15m")
-    return Path(f"artifacts/shadow/{safe_symbol}_{safe_timeframe}")
+    return SHADOW_ROOT_DIR / f"{safe_symbol}_{safe_timeframe}"
 
 
 def shadow_title_for(symbol: str, timeframe: str | None = None) -> str:
@@ -181,7 +192,7 @@ class ShadowUniverseConfig:
     strategy_family: str = "range_etf"
     risk_profile: str = "strict"
     regular_session_only: bool = True
-    output_directory: Path = Path("artifacts/shadow/soxs_15m")
+    output_directory: Path = field(default_factory=lambda: default_shadow_output_directory("SOXS.US", "15m"))
     shadow_enabled: bool = True
     trading_enabled: bool = False
     symbol_class: str = "inverse_etf"
@@ -218,7 +229,11 @@ class ShadowUniverseConfig:
         resolved_risk_profile = str(risk_profile or entry.get("risk_profile") or "").strip().lower()
         resolved_class = str(symbol_class or entry.get("symbol_class") or "common_stock").strip().lower()
         resolved_timeframe = str(timeframe or "15m").strip().lower() or "15m"
-        resolved_output_directory = Path(output_directory) if output_directory else default_shadow_output_directory(canonical_symbol, resolved_timeframe)
+        resolved_output_directory = (
+            resolve_shadow_output_directory(output_directory)
+            if output_directory
+            else default_shadow_output_directory(canonical_symbol, resolved_timeframe)
+        )
         return cls(
             symbol=canonical_symbol,
             benchmarks=resolved_benchmarks,

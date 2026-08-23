@@ -20,9 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from src.openalpha.selection_bundle import load_committed_selection_bundle
+from src.config.runtime_paths import resolve_artifacts_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-SHADOW_REGIME_ROOT = PROJECT_DIR / "artifacts" / "research" / "regime_shadow"
+SHADOW_REGIME_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "research" / "regime_shadow"
 
 
 def _utc_now_iso() -> str:
