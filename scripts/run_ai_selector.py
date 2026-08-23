@@ -416,7 +416,7 @@ def _provider_metadata(
     if data_mode in {"fallback", "mixed"} or fallback_used:
         providers_used.append("market_data_fallback")
 
-    has_longbridge_creds = all(
+    has_longbridge_creds = os.environ.get("SOXS_ALLOW_LIVE_DATA_CREDENTIALS", "").strip() == "1" and all(
         [
             os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY"),
             os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET"),
