@@ -162,8 +162,8 @@ class TestFallbackDataDiagnosable:
             f"SPY should have ≥60 OHLCV rows, got {diag['available_rows']}"
         )
 
-    def test_quality_fallback_still_sets_selection_stage_fast_preliminary(self):
-        """When quality rejects everything, selection_stage must be fast_preliminary."""
+    def test_quality_fallback_sets_eod_quality_relaxed_in_research_mode(self):
+        """Research fallback uses eod_quality_relaxed when quality rejects all."""
         from types import SimpleNamespace
 
         from src.openalpha import selector as selector_module
@@ -181,7 +181,8 @@ class TestFallbackDataDiagnosable:
             with tempfile.TemporaryDirectory() as tmpdir:
                 log_dir = Path(tmpdir) / "logs"
                 p.setattr(selector_module, "LOG_DIR", log_dir)
-                # Force FULL mode so quality_fallback_active=True (not EOD relaxed)
+                # FULL preflight no longer grants LIVE capability; execution
+                # remains RESEARCH, so all-rejected fallback is EOD relaxed.
                 try:
                     from src.openalpha import preflight as pf_module
                     p.setattr(pf_module, "run_preflight",
@@ -247,13 +248,12 @@ class TestFallbackDataDiagnosable:
                     result = selector.run_selection(write_configs=False)
                     assert (
                         result["settings"]["selection_stage"]
-                        == "fast_preliminary"
+                        == "eod_quality_relaxed"
                     )
-                    assert result["quality_fallback_active"] is True
-                    # Preview candidates exist (research only)
+                    assert result["quality_fallback_active"] is False
+                    # Research candidates remain formal after relaxed fallback.
                     assert len(result["preview_candidates"]) >= 1
-                    # Formal is empty
-                    assert result["formal_candidates"] == []
+                    assert len(result["formal_candidates"]) >= 1
                 finally:
                     if prev is None:
                         _os.environ.pop("OPENALPHA_UNIVERSE", None)
