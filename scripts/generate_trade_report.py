@@ -15,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.reports.trade_audit import summarize_trade_log
+from src.config.runtime_paths import resolve_logs_dir, resolve_reports_dir
 
 
 def _fmt_money(value: object) -> str:
@@ -66,8 +67,8 @@ def _build_markdown(report: dict[str, object], day: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=None, help="Target trading date in YYYYMMDD format. Defaults to today.")
-    parser.add_argument("--log-dir", default=str(PROJECT_DIR / "logs"), help="Directory containing trades-YYYYMMDD.jsonl.")
-    parser.add_argument("--output-dir", default=str(PROJECT_DIR / "reports"), help="Directory for report outputs.")
+    parser.add_argument("--log-dir", default=str(resolve_logs_dir(PROJECT_DIR)), help="Directory containing trades-YYYYMMDD.jsonl.")
+    parser.add_argument("--output-dir", default=str(resolve_reports_dir(PROJECT_DIR)), help="Directory for report outputs.")
     args = parser.parse_args()
 
     day = args.date or datetime.now().strftime("%Y%m%d")

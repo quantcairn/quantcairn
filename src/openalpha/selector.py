@@ -26,7 +26,12 @@ from src.openalpha.candidate_ranking import score_candidate
 from src.openalpha.funnel_tracker import FunnelTracker, FunnelStageRecord
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LOG_DIR = resolve_logs_dir(PROJECT_DIR)
+# Optional test injection hook; production log resolution is operation-time.
+LOG_DIR = None
+
+
+def _runtime_log_dir() -> Path:
+    return Path(LOG_DIR) if LOG_DIR is not None else resolve_logs_dir(PROJECT_DIR)
 
 
 def _load_managed_universe() -> list[str] | None:
@@ -85,7 +90,7 @@ def _quality_mode_is_strict(run_mode: str) -> bool:
 
 def _selection_log_path(now: datetime | None = None) -> Path:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d")
-    return LOG_DIR / f"selection_{stamp}.log"
+    return _runtime_log_dir() / f"selection_{stamp}.log"
 
 
 def _write_text_atomic(path: Path, content: str) -> Path:
@@ -508,7 +513,7 @@ def apply_quality_filters(candidates, run_mode: str = "FULL"):
 
 
 def write_selection_filter_log(report: dict[str, Any], now: datetime | None = None) -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _runtime_log_dir().mkdir(parents=True, exist_ok=True)
     path = _selection_log_path(now=now)
     lines = [
         _json_log_line(

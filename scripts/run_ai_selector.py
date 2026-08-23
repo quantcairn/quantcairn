@@ -69,11 +69,20 @@ from src.openalpha.selection_bundle import write_selection_bundle_atomic
 from src.openalpha.top_restart import record_restart_status, request_supervisor_restart
 
 PROJECT_DIR = Path(PROJECT_ROOT).resolve()
-LOG_DIR = resolve_logs_dir(PROJECT_DIR)
-REPORTS_DIR = resolve_reports_dir(PROJECT_DIR)
+# Optional test injection hooks; production paths resolve per operation.
+LOG_DIR = None
+REPORTS_DIR = None
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 OPENALPHA_RUNTIME = load_runtime_config()
 TOP_COUNT = max(1, int(OPENALPHA_RUNTIME.top_n))
+
+
+def _runtime_log_dir() -> Path:
+    return Path(LOG_DIR) if LOG_DIR is not None else resolve_logs_dir(PROJECT_DIR)
+
+
+def _runtime_reports_dir() -> Path:
+    return Path(REPORTS_DIR) if REPORTS_DIR is not None else resolve_reports_dir(PROJECT_DIR)
 
 
 def write_selection_filter_log(report: dict[str, object], now: datetime | None = None) -> Path:
@@ -85,7 +94,7 @@ def write_selection_filter_log(report: dict[str, object], now: datetime | None =
 
     original_log_dir = getattr(_selector_module, "LOG_DIR", None)
     try:
-        _selector_module.LOG_DIR = LOG_DIR
+        _selector_module.LOG_DIR = _runtime_log_dir()
         return _selector_module.write_selection_filter_log(report, now=now)
     finally:
         if original_log_dir is not None:
@@ -2139,9 +2148,10 @@ def _prioritize_ai_rank(rows: list[dict], signal_map: dict[str, dict]) -> list[d
 
 
 def _write_reports(summary: dict) -> tuple[Path, Path]:
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    latest_json = REPORTS_DIR / "ai_selection_latest.json"
-    dated_json = REPORTS_DIR / f"ai_selection_{_et_now().strftime('%Y%m%d')}.json"
+    reports_dir = _runtime_reports_dir()
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    latest_json = reports_dir / "ai_selection_latest.json"
+    dated_json = reports_dir / f"ai_selection_{_et_now().strftime('%Y%m%d')}.json"
     payload = json.dumps(summary, ensure_ascii=False, indent=2, default=str)
     latest_json.write_text(payload, encoding="utf-8")
     dated_json.write_text(payload, encoding="utf-8")
@@ -2192,9 +2202,10 @@ def _spawn_background_refinement(expected_timestamp: str) -> None:
     env.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "60")
     env["OPENALPHA_EXPECTED_TIMESTAMP"] = expected_timestamp
     env["OPENALPHA_REFINEMENT_ONLY"] = "1"
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LOG_DIR / "ai_selector_refine.out.log", "a", encoding="utf-8") as out, open(
-        LOG_DIR / "ai_selector_refine.err.log",
+    log_dir = _runtime_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with open(log_dir / "ai_selector_refine.out.log", "a", encoding="utf-8") as out, open(
+        log_dir / "ai_selector_refine.err.log",
         "a",
         encoding="utf-8",
     ) as err:
@@ -2896,7 +2907,7 @@ def main(mode: str | None = None):
         "et_date": current_session,
         "generated_at": timestamp,
         "selected_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
-        "report_path": str(REPORTS_DIR / "ai_selection_latest.json"),
+        "report_path": str(_runtime_reports_dir() / "ai_selection_latest.json"),
         "selection_stage": selection_stage,
         "processing_phase": processing_phase,
         "result_quality": str(summary.get("result_quality") or ""),

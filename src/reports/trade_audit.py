@@ -4,6 +4,8 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ..config.runtime_paths import resolve_logs_dir
 from typing import Any
 
 
@@ -14,12 +16,12 @@ def _parse_date(value: str | None) -> str:
 
 
 def trade_log_path(log_dir: str | Path | None = None, day: str | None = None) -> Path:
-    root = Path(log_dir) if log_dir is not None else Path(__file__).resolve().parents[2] / "logs"
+    root = Path(log_dir) if log_dir is not None else resolve_logs_dir(Path(__file__).resolve().parents[2])
     return root / f"trades-{_parse_date(day)}.jsonl"
 
 
 def latest_trade_log_day(log_dir: str | Path | None = None) -> str | None:
-    root = Path(log_dir) if log_dir is not None else Path(__file__).resolve().parents[2] / "logs"
+    root = Path(log_dir) if log_dir is not None else resolve_logs_dir(Path(__file__).resolve().parents[2])
     candidates = sorted(root.glob("trades-*.jsonl"))
     if not candidates:
         return None
@@ -28,7 +30,7 @@ def latest_trade_log_day(log_dir: str | Path | None = None) -> str | None:
 
 
 def latest_trade_activity_day(log_dir: str | Path | None = None, mode: str | None = None) -> str | None:
-    root = Path(log_dir) if log_dir is not None else Path(__file__).resolve().parents[2] / "logs"
+    root = Path(log_dir) if log_dir is not None else resolve_logs_dir(Path(__file__).resolve().parents[2])
     candidates = sorted(root.glob("trades-*.jsonl"), reverse=True)
     for path in candidates:
         day = path.stem.replace("trades-", "")

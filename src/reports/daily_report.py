@@ -15,12 +15,13 @@ from typing import Any
 from ..engine.trading_engine import append_runtime_audit
 from ..utils.market_calendar import is_us_market_trading_day
 from ..config.runtime_values import get_runtime_env
+from ..config.runtime_paths import resolve_logs_dir, resolve_reports_dir
 from .trade_audit import load_trade_records
 
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-REPORTS_DIR = PROJECT_DIR / "reports"
+REPORTS_DIR = resolve_reports_dir(PROJECT_DIR)
 ORDER_ID_RE = re.compile(r'order_id:\s*"([^"]+)"')
 SYMBOL_RE = re.compile(r'symbol:\s*"([A-Z.\-]+)"')
 SIDE_RE = re.compile(r"side:\s*(Buy|Sell)", re.IGNORECASE)
@@ -422,7 +423,7 @@ def generate_daily_report(
         )()
         if not account_reliable:
             raise RuntimeError("broker_account_unverified")
-        records = load_trade_records(log_dir=log_dir or (PROJECT_DIR / "logs"), day=trade_day.strftime("%Y%m%d"))
+        records = load_trade_records(log_dir=log_dir or resolve_logs_dir(PROJECT_DIR), day=trade_day.strftime("%Y%m%d"))
         if any(_is_test_audit_record(record) for record in records):
             warnings.append("test_audit_events_ignored")
         fill_events = extract_fill_events(records)

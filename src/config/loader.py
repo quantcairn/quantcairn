@@ -4,7 +4,9 @@ Configuration loader: reads config.yaml and returns typed config objects.
 import json
 import os
 import yaml
+from pathlib import Path
 from .runtime_values import load_private_longbridge_config
+from .runtime_paths import resolve_state_dir
 from dataclasses import dataclass, field
 from typing import Optional, Literal
 
@@ -17,8 +19,13 @@ from ..broker.longbridge_broker import (
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-STATE_DIR = os.environ.get("SOXS_STATE_DIR") or os.path.join(PROJECT_DIR, "state")
+STATE_DIR = str(resolve_state_dir(Path(PROJECT_DIR)))
 TRADING_FLAGS_PATH = os.path.join(STATE_DIR, "trading_flags.json")
+
+
+def _trading_flags_path() -> Path:
+    """Resolve mutable trading flags at read time, not import time."""
+    return resolve_state_dir(Path(PROJECT_DIR)) / "trading_flags.json"
 
 
 @dataclass
@@ -258,10 +265,11 @@ def _coerce_rank_weights(value) -> dict[int, float]:
 
 def _load_trading_flags() -> dict:
     """Load shared runtime trading flags from the state directory."""
+    path = _trading_flags_path()
     try:
-        if not os.path.exists(TRADING_FLAGS_PATH):
+        if not path.exists():
             return {}
-        with open(TRADING_FLAGS_PATH, "r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:

@@ -88,6 +88,8 @@
         <string>REPLACE_WITH_ARTIFACTS_ROOT</string>
         <key>SOXS_LOGS_DIR</key>
         <string>REPLACE_WITH_LOGS_ROOT</string>
+        <key>SOXS_LOG_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>QUANTCAIRN_EXECUTION_MODE</key>
         <string>PAPER</string>
         <key>YF_DISABLE_CURL_CFFI</key>
