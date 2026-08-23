@@ -50,7 +50,7 @@ from ..openalpha import selection_state as selection_state_module
 from ..openalpha.selection_bundle import load_committed_selection_bundle
 from ..openalpha.selection_report import load_latest_ai_selection_state
 from ..utils.market_calendar import required_selection_date
-from ..config.runtime_paths import resolve_logs_dir, resolve_state_dir
+from ..config.runtime_paths import resolve_logs_dir, resolve_reports_dir, resolve_state_dir
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]

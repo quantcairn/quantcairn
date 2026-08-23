@@ -51,6 +51,8 @@ def test_trading_engine_audit_uses_runtime_log_root(tmp_path, monkeypatch):
     runtime_logs = tmp_path / "runtime-logs"
     source_root.mkdir()
     monkeypatch.setenv("SOXS_PROJECT_DIR", str(source_root))
+    monkeypatch.setenv("SOXS_RUNTIME_AUDIT_DIR", str(runtime_logs))
+    monkeypatch.setenv("SOXS_LOG_DIR", str(runtime_logs))
     monkeypatch.setenv("SOXS_LOGS_DIR", str(runtime_logs))
 
     engine_module.append_runtime_audit({"phase": "path-isolation-test"})

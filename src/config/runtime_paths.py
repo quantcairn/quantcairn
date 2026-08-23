@@ -16,7 +16,7 @@ CODE_ROOT = Path(__file__).resolve().parents[2]
 
 def _default_runtime_root() -> Path:
     """Return a persistent runtime root outside the immutable source tree."""
-    return (Path.home() / ".quantcairn" / "runtime").resolve()
+    return (_env_path("QUANTCAIRN_HOME") or Path.home() / ".quantcairn" / "runtime").resolve()
 
 
 def _env_path(name: str) -> Path | None:
@@ -41,7 +41,7 @@ def resolve_artifacts_dir(project_dir: Path | None = None) -> Path:
 
 
 def resolve_logs_dir(project_dir: Path | None = None) -> Path:
-    return (_env_path("SOXS_LOG_DIR") or _env_path("SOXS_LOGS_DIR") or _default_runtime_root() / "logs").resolve()
+    return (_env_path("SOXS_LOGS_DIR") or _env_path("SOXS_LOG_DIR") or _default_runtime_root() / "logs").resolve()
 
 
 @dataclass(frozen=True)

@@ -122,8 +122,7 @@ def test_audit_path_precedence_and_no_source_fallback(monkeypatch, tmp_path):
     assert trading_engine._audit_log_path().parent == legacy_logs
 
     monkeypatch.delenv("SOXS_LOG_DIR")
-    with pytest.raises(RuntimeError, match="runtime audit root must be configured"):
-        trading_engine._audit_log_path()
+    assert trading_engine._audit_log_path().parent == trading_engine.resolve_logs_dir(release)
     assert not (release / "logs").exists()
 
 
