@@ -129,3 +129,117 @@ def test_scheduler_apply_writes_validation_transition_without_paper_live(tmp_pat
         event["final_status"] == ValidationStatus.DATA_INVALID.value
         for event in audit_rows[-1]["transition_events"]
     )
+
+
+def _write_committed_bundle(state_root: Path, *, run_id: str, selection_date: str, bundle_hash: str | None):
+    bundle_root = state_root / "selection_bundles" / run_id / "selection_bundle_v1"
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "bundle_version": "selection_bundle_v1",
+        "selection_run_id": run_id,
+        "selection_date": selection_date,
+        "selection_bundle_hash": bundle_hash,
+        "bundle_root": str(bundle_root),
+        "paths": {"manifest": str(state_root / "selection_bundle_manifest.json")},
+    }
+    report = {
+        "selection_run_id": run_id,
+        "selection_date": selection_date,
+        "research_top_candidates": [],
+        "top3": [],
+        "top5": [],
+        "top10": [],
+    }
+    (state_root / "selection_bundle_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    (bundle_root / "ai_selection_report.json").write_text(
+        json.dumps(report), encoding="utf-8"
+    )
+    return bundle_root
+
+
+def _run_scheduler_against_external_bundle(tmp_path: Path, monkeypatch, *, bundle_hash: str | None):
+    import scripts.run_candidate_validation_scheduler as scheduler
+    import src.candidate_validation.orchestrator as orch_mod
+
+    state_root = tmp_path / "external-state"
+    artifacts_root = tmp_path / "external-artifacts"
+    _write_committed_bundle(
+        state_root,
+        run_id="selection-current",
+        selection_date="2026-08-11",
+        bundle_hash=bundle_hash,
+    )
+    monkeypatch.setenv("SOXS_STATE_DIR", str(state_root))
+    monkeypatch.setenv("SOXS_ARTIFACTS_DIR", str(artifacts_root))
+    store_root = artifacts_root / "candidates"
+    store = CandidateValidationStore(root_dir=store_root)
+    orchestrator = CandidateValidationOrchestrator(store=store, project_dir=tmp_path)
+
+    monkeypatch.setattr(scheduler, "PROJECT_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(orch_mod, "CANDIDATE_ROOT", store_root, raising=False)
+    monkeypatch.setattr(orch_mod, "VALIDATION_ROOT", store_root / "validation", raising=False)
+    monkeypatch.setattr(orch_mod, "ORCHESTRATOR_LOCK_PATH", store_root / ".orchestrator.lock", raising=False)
+    monkeypatch.setattr(orch_mod, "ORCHESTRATOR_AUDIT_PATH", store_root / "orchestrator_run_audit.jsonl", raising=False)
+    monkeypatch.setattr(scheduler, "CandidateValidationOrchestrator", lambda: orchestrator, raising=False)
+    monkeypatch.setattr(scheduler.sys, "argv", ["run_candidate_validation_scheduler.py", "--json"], raising=False)
+    return scheduler.main(), scheduler, artifacts_root
+
+
+def test_scheduler_audit_records_committed_bundle_identity_from_external_state(tmp_path, monkeypatch, capsys):
+    rc, scheduler, artifacts_root = _run_scheduler_against_external_bundle(
+        tmp_path, monkeypatch, bundle_hash="canonical-hash"
+    )
+    assert rc == 0
+    json.loads(capsys.readouterr().out)
+    audit_path = artifacts_root / "candidates" / "validation_scheduler_runs.jsonl"
+    row = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert row["validation_run_id"] == row["run_id"]
+    assert row["selection_run_id"] == "selection-current"
+    assert row["selection_date"] == "2026-08-11"
+    assert row["bundle_hash"] == "canonical-hash"
+    assert row["bundle_source"] == "committed_bundle"
+    assert row["candidate_input_count"] == 0
+    assert not (tmp_path / "state").exists()
+
+
+def test_scheduler_legacy_bundle_identity_is_explicit(tmp_path, monkeypatch, capsys):
+    rc, scheduler, artifacts_root = _run_scheduler_against_external_bundle(
+        tmp_path, monkeypatch, bundle_hash=None
+    )
+    assert rc == 0
+    json.loads(capsys.readouterr().out)
+    row = json.loads(
+        (artifacts_root / "candidates" / "validation_scheduler_runs.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert row["selection_run_id"] == "selection-current"
+    assert row["selection_date"] == "2026-08-11"
+    assert row["bundle_hash"] is None
+    assert row["bundle_source"] == "legacy_committed_bundle"
+
+
+def test_scheduler_missing_bundle_identity_is_explicit(tmp_path, monkeypatch, capsys):
+    import scripts.run_candidate_validation_scheduler as scheduler
+    import src.candidate_validation.orchestrator as orch_mod
+
+    store_root = tmp_path / "artifacts" / "candidates"
+    orchestrator = CandidateValidationOrchestrator(
+        store=CandidateValidationStore(root_dir=store_root), project_dir=tmp_path
+    )
+    monkeypatch.setattr(scheduler, "PROJECT_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(orch_mod, "CANDIDATE_ROOT", store_root, raising=False)
+    monkeypatch.setattr(orch_mod, "ORCHESTRATOR_LOCK_PATH", store_root / ".orchestrator.lock", raising=False)
+    monkeypatch.setattr(orch_mod, "ORCHESTRATOR_AUDIT_PATH", store_root / "orchestrator_run_audit.jsonl", raising=False)
+    monkeypatch.setattr(orch_mod, "load_committed_selection_bundle", lambda _project: None, raising=False)
+    monkeypatch.setattr(scheduler, "CandidateValidationOrchestrator", lambda: orchestrator, raising=False)
+    monkeypatch.setattr(scheduler.sys, "argv", ["run_candidate_validation_scheduler.py", "--json"], raising=False)
+
+    assert scheduler.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "NO_CANDIDATES"
+    assert payload["selection_run_id"] is None
+    assert payload["bundle_hash"] is None
+    assert payload["bundle_source"] == "missing_bundle"

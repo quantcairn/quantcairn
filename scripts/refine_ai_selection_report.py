@@ -14,10 +14,11 @@ if str(PROJECT_DIR) not in sys.path:
 from scripts import run_ai_selector as selector_runner
 from src.openalpha.selector import AIStrategySelector
 from src.openalpha.settings import load_runtime_settings, resolve_price_band
+from src.config.runtime_paths import resolve_reports_dir, resolve_state_dir
 
 
 def _latest_report_path() -> Path:
-    return PROJECT_DIR / "reports" / "ai_selection_latest.json"
+    return resolve_reports_dir(PROJECT_DIR) / "ai_selection_latest.json"
 
 
 def _load_latest_report() -> dict:
@@ -32,7 +33,7 @@ def _load_latest_report() -> dict:
 
 
 def _current_manifest_path() -> Path:
-    return PROJECT_DIR / "state" / "selection_bundle_manifest.json"
+    return resolve_state_dir(PROJECT_DIR) / "selection_bundle_manifest.json"
 
 
 def _load_current_manifest() -> dict:

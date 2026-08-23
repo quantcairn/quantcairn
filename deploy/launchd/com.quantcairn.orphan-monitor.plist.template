@@ -8,8 +8,8 @@
   active TOP trading engine. Runs the orphan monitor in a long-lived
   loop, evaluating risk exits on trading days during market hours.
 
-  This job should only be loaded when LongBridge live/sandbox broker
-  credentials are configured.
+  This template is PAPER-safe by default and disabled until a separately
+  approved broker deployment enables the monitor.
 
   Installation:
       cp deploy/launchd/com.quantcairn.orphan-monitor.plist.template \
@@ -33,10 +33,10 @@
     <string>REPLACE_WITH_PROJECT_ROOT</string>
 
     <key>StandardOutPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/orphan-monitor.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/orphan-monitor.log</string>
 
     <key>StandardErrorPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/orphan-monitor.err.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/orphan-monitor.err.log</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -54,9 +54,17 @@
         <key>SOXS_PROJECT_DIR</key>
         <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>SOXS_STATE_DIR</key>
-        <string>REPLACE_WITH_PROJECT_ROOT/state</string>
+        <string>REPLACE_WITH_STATE_ROOT</string>
+        <key>SOXS_REPORTS_DIR</key>
+        <string>REPLACE_WITH_REPORTS_ROOT</string>
+        <key>SOXS_ARTIFACTS_DIR</key>
+        <string>REPLACE_WITH_ARTIFACTS_ROOT</string>
+        <key>SOXS_LOGS_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>QUANTCAIRN_EXECUTION_MODE</key>
-        <string>LIVE</string>
+        <string>PAPER</string>
+        <key>SOXS_DISABLE_ORPHAN_MONITOR</key>
+        <string>1</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
     </dict>

@@ -33,6 +33,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_state_dir
 from typing import Any
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -41,9 +42,9 @@ from typing import Any
 
 REGISTRY_VERSION = "research_registry.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-HISTORY_ROOT = PROJECT_DIR / "artifacts" / "learning" / "research_history"
-LEARNING_ROOT = PROJECT_DIR / "artifacts" / "learning"
-BUNDLES_ROOT = PROJECT_DIR / "state" / "selection_bundles"
+HISTORY_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "research_history"
+LEARNING_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning"
+BUNDLES_ROOT = resolve_state_dir(PROJECT_DIR) / "selection_bundles"
 
 # ── ML readiness thresholds (configurable, not hardcoded) ──
 DEFAULT_ML_READINESS_THRESHOLDS: dict[str, int | float] = {

@@ -42,6 +42,7 @@ def _setup_base_mocks(monkeypatch, tmp_path):
     scripts_dir.mkdir(parents=True, exist_ok=True)
     (scripts_dir / "run_ai_selector.py").write_text("# dummy", encoding="utf-8")
     (scripts_dir / "generate_daily_research_report.py").write_text("# dummy", encoding="utf-8")
+    (scripts_dir / "start_top_engines.sh").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
 
     # Force the run
     monkeypatch.setenv("FORCE_AI_RUN", "1")
@@ -137,6 +138,35 @@ def test_selector_failure_does_not_trigger_report(monkeypatch, tmp_path):
         if any("generate_daily_research_report.py" in str(c) for c in cmd)
     ]
     assert len(report_calls) == 0, "Report must not be triggered on selector failure"
+
+
+def test_restart_compensation_does_not_rerun_selector(monkeypatch, tmp_path):
+    """A failed selector restart retries only the supervisor control path."""
+    _setup_base_mocks(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOXS_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("SOXS_STATE_DIR", raising=False)
+    _mock_selector_failure(monkeypatch, code=6)
+    status_path = Path(tmp_path) / "state" / "top_restart_status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        '{"status":"FAILED","selection_run_id":"selection-1",'
+        '"selection_bundle_hash":"bundle-1"}',
+        encoding="utf-8",
+    )
+    restart_calls: list[list[str]] = []
+
+    def _restart_only(cmd, **kw):
+        restart_calls.append(list(cmd))
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(subprocess, "run", _restart_only)
+
+    from scripts.ai_selector_wrapper import _run_selection_if_due
+
+    _run_selection_if_due()
+    assert len(restart_calls) == 1
+    assert restart_calls[0][-1] == "restart"
+    assert status_path.read_text(encoding="utf-8").find('"status": "CONFIRMED"') >= 0
 
 
 def test_generator_failure_does_not_fail_wrapper(monkeypatch, tmp_path):

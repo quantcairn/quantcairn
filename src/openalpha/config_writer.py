@@ -4,11 +4,13 @@ import os
 import json
 import uuid
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from src.config.runtime_values import has_longbridge_runtime_credentials
 from src.portfolio.risk_allocator import RiskAllocator
 from src.utils.market_calendar import market_session_context, required_selection_date
+from src.config.runtime_paths import resolve_state_dir
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
@@ -62,7 +64,7 @@ def _dynamic_min_profit_per_trade(estimated_price: float) -> float:
 
 
 def _global_reduce_only_enabled() -> bool:
-    state_dir = os.environ.get("SOXS_STATE_DIR") or os.path.join(BASE, "state")
+    state_dir = str(resolve_state_dir(Path(BASE)))
     flags_path = os.path.join(state_dir, "trading_flags.json")
     try:
         with open(flags_path, "r", encoding="utf-8") as f:
@@ -263,7 +265,7 @@ def _is_runtime_top_dir(path: str | os.PathLike[str]) -> bool:
 
 
 def _top_disable_backup_dir() -> str:
-    state_dir = os.environ.get("SOXS_STATE_DIR") or os.path.join(BASE, "state")
+    state_dir = str(resolve_state_dir(Path(BASE)))
     return os.path.join(state_dir, "top_config_disable_backups")
 
 

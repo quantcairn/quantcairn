@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.config.runtime_paths import resolve_state_dir
+
 import yaml
 from src.openalpha.config import load_runtime_config
 
@@ -15,7 +17,7 @@ PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve
 
 def _state_dir() -> Path:
     raw = os.environ.get("SOXS_STATE_DIR")
-    return Path(raw) if raw else PROJECT_DIR / "state"
+    return resolve_state_dir(PROJECT_DIR) if not raw else Path(raw).expanduser().resolve()
 
 
 def selection_state_path() -> Path:

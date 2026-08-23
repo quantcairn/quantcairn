@@ -105,6 +105,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = ["-q", "--tb=short"]
 markers = [
+    "network: marks tests that require external market-data access (deselect with '-m \"not network\"')",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 

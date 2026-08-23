@@ -87,7 +87,7 @@ def test_chart_api_returns_prices_and_only_filled_trades(monkeypatch):
     _patch_chart_basics(
         monkeypatch,
         {
-            8092: {"price": 8.42, "timestamp": "2026-07-09T21:35:00+08:00"},
+            8081: {"price": 8.42, "timestamp": "2026-07-09T21:35:00+08:00"},
         },
         [
             _filled_order_record("1", "SOFI", "Buy", 8.42, 20, "2026-07-09T21:36:10+08:00"),
@@ -147,7 +147,7 @@ def test_chart_api_ignores_previous_day_trades_when_today_log_is_empty(monkeypat
     _patch_chart_basics(
         monkeypatch,
         {
-            8092: {"price": 8.42, "timestamp": "2026-07-10T21:35:00+08:00"},
+            8081: {"price": 8.42, "timestamp": "2026-07-10T21:35:00+08:00"},
         },
         [],
         trade_day="20260710",
@@ -175,9 +175,9 @@ def test_index_renders_when_top3_config_is_missing(monkeypatch):
         _patch_chart_basics(
             monkeypatch,
             {
-                8091: {"price": 4.84, "timestamp": "2026-07-09T21:35:00+08:00"},
-                8092: {"price": 8.42, "timestamp": "2026-07-09T21:35:10+08:00"},
-                8093: None,
+                8080: {"price": 4.84, "timestamp": "2026-07-09T21:35:00+08:00"},
+                8081: {"price": 8.42, "timestamp": "2026-07-09T21:35:10+08:00"},
+                8082: None,
             },
             [],
             project_dir=project_dir,

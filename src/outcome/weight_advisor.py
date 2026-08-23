@@ -21,8 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.config.runtime_paths import resolve_artifacts_dir
+
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LEARNING_DIR = PROJECT_DIR / "artifacts" / "learning"
+LEARNING_DIR = resolve_artifacts_dir(PROJECT_DIR) / "learning"
 OUTCOME_CSV_PATH = LEARNING_DIR / "outcome_dataset.csv"
 OUTCOME_PARQUET_PATH = LEARNING_DIR / "outcome_dataset.parquet"
 WEIGHTS_PATH = LEARNING_DIR / "suggested_weights.json"

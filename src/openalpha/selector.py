@@ -5,6 +5,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from src.config.runtime_paths import resolve_logs_dir
 from typing import Dict, List, Sequence, Any
 
 import numpy as np
@@ -25,7 +26,12 @@ from src.openalpha.candidate_ranking import score_candidate
 from src.openalpha.funnel_tracker import FunnelTracker, FunnelStageRecord
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LOG_DIR = PROJECT_DIR / "logs"
+# Optional test injection hook; production log resolution is operation-time.
+LOG_DIR = None
+
+
+def _runtime_log_dir() -> Path:
+    return Path(LOG_DIR) if LOG_DIR is not None else resolve_logs_dir(PROJECT_DIR)
 
 
 def _load_managed_universe() -> list[str] | None:
@@ -65,15 +71,14 @@ def _resolve_execution_mode(run_mode: str) -> str:
 
     Priority:
       1. QUANTCAIRN_EXECUTION_MODE env var (LIVE / PAPER / RESEARCH)
-      2. Derived from preflight: FULL → LIVE, all others → RESEARCH
+      2. Derived from preflight: FULL → RESEARCH, all others → RESEARCH.
+         Data readiness never grants LIVE_EXECUTION capability.
 
     PAPER mode must be explicitly requested — it is never auto-selected.
     """
     env_val = str(os.environ.get("QUANTCAIRN_EXECUTION_MODE") or "").strip().upper()
     if env_val in EXECUTION_MODES:
         return env_val
-    if _quality_mode_is_strict(run_mode):
-        return "LIVE"
     return "RESEARCH"
 
 
@@ -84,7 +89,7 @@ def _quality_mode_is_strict(run_mode: str) -> bool:
 
 def _selection_log_path(now: datetime | None = None) -> Path:
     stamp = (now or datetime.now()).strftime("%Y-%m-%d")
-    return LOG_DIR / f"selection_{stamp}.log"
+    return _runtime_log_dir() / f"selection_{stamp}.log"
 
 
 def _write_text_atomic(path: Path, content: str) -> Path:
@@ -474,6 +479,24 @@ def _apply_quality_filters_with_report(
             )
             if not removed:
                 filtered.append(item)
+        if timed_out:
+            evaluated_symbols = {
+                str(row.get("symbol") or "").strip().upper() for row in rows
+            }
+            for raw in candidates:
+                symbol = _normalize_ticker(raw.get("ticker"))
+                if not symbol or symbol in evaluated_symbols:
+                    continue
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "removed": True,
+                        "reason": "quality_evaluation_budget_exhausted",
+                        "not_evaluated": True,
+                        "evaluation_status": "NOT_EVALUATED",
+                    }
+                )
+                evaluated_symbols.add(symbol)
     finally:
         close_fn = getattr(context, "close", None)
         if callable(close_fn):
@@ -507,7 +530,7 @@ def apply_quality_filters(candidates, run_mode: str = "FULL"):
 
 
 def write_selection_filter_log(report: dict[str, Any], now: datetime | None = None) -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _runtime_log_dir().mkdir(parents=True, exist_ok=True)
     path = _selection_log_path(now=now)
     lines = [
         _json_log_line(

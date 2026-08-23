@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from src.config.runtime_paths import resolve_reports_dir
 from pathlib import Path
 
 
@@ -29,7 +30,7 @@ UNIVERSE = [
     "WULF",
 ]
 
-REPORTS_DIR = Path(__file__).resolve().parent / "reports"
+REPORTS_DIR = resolve_reports_dir(Path(__file__).resolve().parents[2])
 LATEST_TOP10_PATH = REPORTS_DIR / "latest_top10.json"
 
 

@@ -36,21 +36,39 @@ def _parse_date(value: str | None) -> date | None:
         raise SystemExit(f"invalid --date: {value}") from exc
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the daily research pipeline.")
+    parser.add_argument(
+        "--mode",
+        choices=("legacy", "independent"),
+        default="legacy",
+        help="Research execution mode (default: legacy).",
+    )
     parser.add_argument("--date", default=None, help="Target research date (YYYY-MM-DD).")
     parser.add_argument("--dry-run", action="store_true", help="Show the plan without writing files.")
     parser.add_argument("--force", action="store_true", help="Regenerate the current day's report.")
+    return parser
+
+
+def main() -> int:
+    parser = _build_parser()
     args = parser.parse_args()
 
     scheduler = DailyResearchScheduler()
     result = scheduler.run(
         _parse_date(args.date),
+        mode=args.mode,
         dry_run=bool(args.dry_run),
         force=bool(args.force),
     )
 
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    if args.mode == "independent" and result.get("status") in {
+        "failed",
+        "blocked_missing_bundle",
+        "blocked_invalid_bundle",
+    }:
+        return 1
     return 0
 
 

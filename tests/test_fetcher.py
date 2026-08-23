@@ -9,6 +9,11 @@ import os
 import src.data.fetcher as fetcher_mod
 
 
+_ORIGINAL_YF = fetcher_mod.yf
+_ORIGINAL_YF_AVAILABLE = fetcher_mod._YF_AVAILABLE
+_ORIGINAL_YF_TICKER = getattr(_ORIGINAL_YF, "Ticker", None)
+
+
 class DummyHist:
     empty = False
 
@@ -58,6 +63,16 @@ if not fetcher_mod._YF_AVAILABLE:
     _yf_stub = SimpleNamespace(Ticker=DummyTicker)
     fetcher_mod.yf = _yf_stub
     fetcher_mod._YF_AVAILABLE = True
+
+
+@pytest.fixture(scope="module", autouse=True)
+def restore_provider_globals_after_fetcher_module():
+    """Do not leak the import-time fallback provider into later test modules."""
+    yield
+    fetcher_mod.yf = _ORIGINAL_YF
+    fetcher_mod._YF_AVAILABLE = _ORIGINAL_YF_AVAILABLE
+    if _ORIGINAL_YF is not None and _ORIGINAL_YF_TICKER is not None:
+        _ORIGINAL_YF.Ticker = _ORIGINAL_YF_TICKER
 
 
 def test_price_fetcher_normalizes_us_suffix_for_provider_calls(monkeypatch=None):
@@ -344,6 +359,7 @@ def test_price_fetcher_uses_quantcairn_home_for_yfinance_cache_dir(monkeypatch, 
 
     monkeypatch.setenv("QUANTCAIRN_HOME", str(project_home))
     monkeypatch.delenv("SOXS_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("SOXS_STATE_DIR", raising=False)
     monkeypatch.delenv("SOXS_YFINANCE_CACHE_DIR", raising=False)
     monkeypatch.setattr(fetcher_mod.yf, "Ticker", DummyTicker)
     monkeypatch.setattr(fetcher_mod, "_YFINANCE_CACHE_INITIALIZED", False)

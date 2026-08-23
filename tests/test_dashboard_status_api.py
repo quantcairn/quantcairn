@@ -932,7 +932,13 @@ def _write_candidate_artifacts(root: Path, *, symbol="SOXS.US", asset_type="inve
 
 
 
-def test_api_status_returns_json_with_core_fields(monkeypatch):
+def test_api_status_returns_json_with_core_fields(monkeypatch, tmp_path):
+    artifacts_root = tmp_path / "artifacts"
+    monkeypatch.setenv("SOXS_ARTIFACTS_DIR", str(artifacts_root))
+    store = _write_candidate_artifacts(artifacts_root / "candidates", symbol="SOFI", asset_type="common_stock", strategy_family="equity_mean_reversion", risk_profile="balanced")
+    candidate = store.load_latest_candidates()[0]
+    candidate.metadata["freshness_status"] = "FRESH"
+    store.save_candidates([candidate])
     _patch_status_basics(
         monkeypatch,
         status_map={
@@ -1120,7 +1126,12 @@ def test_api_status_returns_json_with_core_fields(monkeypatch):
     assert 'title="1234567890abcdef1234567890abcdef"' in html
 
 
-def test_api_status_includes_ranked_paper_position_policy(monkeypatch):
+def test_api_status_includes_ranked_paper_position_policy(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        dashboard,
+        "_read_unified_paper_portfolio_state",
+        lambda: {"cash": 10_000.0, "equity": 10_000.0, "buying_power": 10_000.0, "positions": []},
+    )
     policy = PositionPolicyConfig(
         mode="ranked_aggressive",
         paper_position_policy_enabled=True,
@@ -1220,7 +1231,7 @@ def test_api_status_does_not_poll_disabled_top_slots(monkeypatch, tmp_path):
 
     def _fake_fetch_status(port: int):
         calls.append(port)
-        return {"mode": "paper", "price": 18.52, "last_signal": "HOLD", "halted": False} if port == 8091 else None
+        return {"mode": "paper", "price": 18.52, "last_signal": "HOLD", "halted": False} if port == 8080 else None
 
     monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
     monkeypatch.setattr(dashboard, "_fetch_status", _fake_fetch_status)
@@ -1255,7 +1266,7 @@ def test_api_status_does_not_poll_disabled_top_slots(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert calls == [8091]
+    assert calls == [8080]
     assert payload["top_engines"][0]["configured"] is True
     assert payload["top_engines"][1]["configured"] is False
     assert payload["top_engines"][2]["configured"] is False
@@ -1354,6 +1365,7 @@ def test_api_status_shows_sandbox_snapshot_without_paper_fallback(monkeypatch):
             "mismatch_reason": "",
         },
         ai_selection={"fallback_used": False, "top3": [], "settings": {"min_price": 4.0, "max_price": 50.0}},
+        top_modes=["sandbox", "sandbox", "sandbox"],
         live_account={
             "cash": 1000.0,
             "equity": 1000.0,
@@ -1468,6 +1480,7 @@ def test_api_status_distinguishes_display_mode_from_execution_mode(monkeypatch):
 def test_candidate_validation_status_api_returns_read_only_snapshot(monkeypatch, tmp_path):
     project_dir = tmp_path / "project"
     candidates_root = project_dir / "artifacts" / "candidates"
+    monkeypatch.setenv("SOXS_ARTIFACTS_DIR", str(project_dir / "artifacts"))
     candidates_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(dashboard, "PROJECT_DIR", project_dir)
     _write_candidate_artifacts(candidates_root, symbol="AAPL.US", asset_type="common_stock", benchmarks=["QQQ.US", "SPY.US"], strategy_family="equity_mean_reversion", risk_profile="balanced", timeframe="15m", ai_score=88.2, ai_reason="price near support", candidate_score=91.4, liquidity_score=93.0, trend_score=87.5, volatility_score=76.0, risk_score=84.0, strategy_fit_score=95.0, recommended_strategy="mean_reversion", score_reason="liquidity:strong; trend:range; volatility:fit; risk:clean; strategy_fit:match")

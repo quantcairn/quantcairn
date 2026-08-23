@@ -24,18 +24,19 @@ from pathlib import Path
 from typing import Any
 
 from src.broker.paper_portfolio_state import read_paper_portfolio_state
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir
 from src.openalpha.selection_bundle import load_committed_selection_bundle
 from src.openalpha.selection_state import load_selection_state
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LEARNING_DIR = PROJECT_DIR / "artifacts" / "learning"
+LEARNING_DIR = resolve_artifacts_dir(PROJECT_DIR) / "learning"
 OUTCOME_CSV_PATH = LEARNING_DIR / "outcome_dataset.csv"
 OUTCOME_PARQUET_PATH = LEARNING_DIR / "outcome_dataset.parquet"
 OUTCOME_STATE_PATH = LEARNING_DIR / ".outcome_collector_state.json"
 OUTCOME_LOCK_PATH = LEARNING_DIR / ".outcome_collector.lock"
 OUTCOME_SUMMARY_PATH = LEARNING_DIR / "outcome_summary.json"
 OUTCOME_VERSION_PATH = LEARNING_DIR / "dataset_version.json"
-AUDIT_LOG_DIR = PROJECT_DIR / "logs"
+AUDIT_LOG_DIR = resolve_logs_dir(PROJECT_DIR)
 SCHEMA_VERSION = "outcome_collector.v3"
 ALLOWED_EXECUTION_MODES = {"paper", "sandbox"}
 SAFE_LOOKBACK_DAYS = 3

@@ -12,6 +12,7 @@ from urllib.parse import urljoin
 import requests
 
 from .broker import BrokerInterface
+from ..safety.execution_authorizer import authorize_mutation
 
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
@@ -82,6 +83,7 @@ class LongBridgeBroker(BrokerInterface):
         timeout_seconds: float = 15.0,
         log_dir: Optional[str] = None,
         session: Optional[requests.Session] = None,
+        execution_mode: Optional[str] = None,
     ):
         self.api_key = api_key or os.getenv("LONGBRIDGE_API_KEY")
         self.api_secret = api_secret or os.getenv("LONGBRIDGE_API_SECRET")
@@ -90,6 +92,9 @@ class LongBridgeBroker(BrokerInterface):
         self.timeout_seconds = timeout_seconds
         self.session = session or requests.Session()
         self.dry_run = _env_bool("DRY_RUN", True) if dry_run is None else dry_run
+        self.execution_mode = str(
+            execution_mode or os.getenv("QUANTCAIRN_EXECUTION_MODE", "")
+        ).strip().upper()
 
         root = _project_root()
         self.log_dir = Path(log_dir) if log_dir else root / "logs"
@@ -255,6 +260,12 @@ class LongBridgeBroker(BrokerInterface):
                 }
             )
             return result
+        if not self.dry_run:
+            authorization = authorize_mutation(execution_mode=self.execution_mode)
+            if not authorization.allowed:
+                result = {"status": "rejected", "ok": False, "reason": authorization.reason_code}
+                self._write_audit({"action": "place_order", "dry_run": False, "request": normalized, "response": result})
+                return result
         result = self._request("POST", self.place_order_path, normalized, action="place_order")
         if result.get("dry_run"):
             result["order_id"] = f"dryrun-{result['trace_id'][:12]}"
@@ -262,6 +273,17 @@ class LongBridgeBroker(BrokerInterface):
         return result
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        if not self.dry_run:
+            authorization = authorize_mutation(execution_mode=self.execution_mode)
+            if not authorization.allowed:
+                result = {"status": "rejected", "ok": False, "reason": authorization.reason_code}
+                self._write_audit({
+                    "action": "cancel_order",
+                    "dry_run": False,
+                    "request": {"order_id": order_id},
+                    "response": result,
+                })
+                return result
         path = self.cancel_order_path.format(order_id=order_id)
         result = self._request("POST", path, {"order_id": order_id}, action="cancel_order")
         if result.get("dry_run"):

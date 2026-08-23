@@ -13,13 +13,11 @@ from typing import Any
 
 import yaml
 from src.utils.market_calendar import required_selection_date
+from src.config.runtime_paths import resolve_project_dir, resolve_reports_dir, resolve_state_dir
 
 
 def _project_dir() -> Path:
-    from src.openalpha.selection_state import PROJECT_DIR
-
-    configured = str(os.environ.get("SOXS_PROJECT_DIR") or "").strip()
-    return Path(configured).expanduser().resolve() if configured else Path(PROJECT_DIR).resolve()
+    return resolve_project_dir()
 
 
 def _state_dir() -> Path:
@@ -251,11 +249,11 @@ class SelectionBundle:
 
     @property
     def report_latest_path(self) -> Path:
-        return _project_dir() / "reports" / "ai_selection_latest.json"
+        return resolve_reports_dir() / "ai_selection_latest.json"
 
     @property
     def report_dated_path(self) -> Path:
-        return _project_dir() / "reports" / f"ai_selection_{self.selection_date}.json"
+        return resolve_reports_dir() / f"ai_selection_{self.selection_date}.json"
 
     @property
     def state_path(self) -> Path:
@@ -574,12 +572,13 @@ def build_selection_bundle(
 
 def load_selection_bundle_manifest(project_dir: Path | None = None) -> dict[str, Any] | None:
     root = Path(project_dir) if project_dir is not None else _project_dir()
-    manifest = _load_json(root / "state" / "selection_bundle_manifest.json")
+    manifest = _load_json(resolve_state_dir(root) / "selection_bundle_manifest.json")
     return manifest if isinstance(manifest, dict) else None
 
 
 def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str, Any] | None:
     root = Path(project_dir) if project_dir is not None else _project_dir()
+    state_root = resolve_state_dir(root)
     manifest = load_selection_bundle_manifest(root)
     if not isinstance(manifest, dict):
         return None
@@ -592,7 +591,12 @@ def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str
     ).strip()
     bundle_root = Path(bundle_root_raw)
     if bundle_root_raw and not bundle_root.is_absolute():
-        bundle_root = root / bundle_root_raw
+        # Published manifests historically used project-relative state/... paths;
+        # newer deployments may keep state outside the code root.
+        if bundle_root.parts and bundle_root.parts[0] == state_root.name:
+            bundle_root = state_root.parent / bundle_root_raw
+        else:
+            bundle_root = state_root / bundle_root_raw
 
     report_candidates = [bundle_root / "ai_selection_report.json"]
     state_candidates = [bundle_root / "ai_selection_state.json"]
@@ -608,7 +612,7 @@ def load_committed_selection_bundle(project_dir: Path | None = None) -> dict[str
         return None
 
     bundle_root_rel = _relative_path(bundle_root)
-    manifest_rel = _relative_path(root / "state" / "selection_bundle_manifest.json")
+    manifest_rel = _relative_path(state_root / "selection_bundle_manifest.json")
     report = dict(report)
     report.setdefault("selection_bundle_manifest_path", manifest_rel)
     report.setdefault("selection_bundle_root_path", bundle_root_rel)

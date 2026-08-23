@@ -1,9 +1,16 @@
 import logging
+import json
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
 from src.notifier import alerts
-from src.notifier.alerts import Notifier, _build_public_channel_message, _resolve_selection_market_state
+from src.notifier.alerts import (
+    Notifier,
+    TelegramDeliveryResult,
+    _build_public_channel_message,
+    _resolve_selection_market_state,
+)
 
 
 def _sample_top(ticker: str = "SOXS", score: float = 88.0) -> dict:
@@ -54,7 +61,7 @@ def _committed_bundle_report(*, selection_run_id: str, selection_bundle_hash: st
 def test_trade_notification_rejects_invalid_fill(monkeypatch):
     notifier = Notifier(console=False, macos_notification=True, webhook_url="https://example.invalid")
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("SOXS", "SELL", 0, 100.0, mode="paper")
     notifier.trade("SOXS", "SELL", 5, 0.0, pnl=-500.0, mode="paper")
@@ -70,12 +77,12 @@ def test_trade_notification_uses_explicit_mode_label(tmp_path, monkeypatch):
     notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
                         trade_notification_state_path=tmp_path / "trade_notifications.json")
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("SOXS", "SELL", 5, 105.0, pnl=25.0, mode="live")
 
     assert calls
-    assert "实盘卖出" in calls[0][0][0]
+    assert "实盘卖出" in calls[0][0]
 
 
 def test_only_trade_notifications_reach_macos(tmp_path):
@@ -151,7 +158,7 @@ def test_trade_notification_key_prevents_duplicate_send(tmp_path, monkeypatch):
         trade_notification_state_path=tmp_path / "trade_notifications.json",
     )
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade(
         "SOFI",
@@ -195,8 +202,8 @@ def test_trade_fill_id_prevents_replay_across_notifier_instances(tmp_path, monke
     )
     first_calls = []
     second_calls = []
-    monkeypatch.setattr(first, "_send", lambda *args, **kwargs: first_calls.append((args, kwargs)))
-    monkeypatch.setattr(second, "_send", lambda *args, **kwargs: second_calls.append((args, kwargs)))
+    monkeypatch.setattr(first, "_macos_notify", lambda title, body: first_calls.append((title, body)) or True)
+    monkeypatch.setattr(second, "_macos_notify", lambda title, body: second_calls.append((title, body)) or True)
 
     first.trade("SOXS", "SELL", 3, 25.0, mode="paper", fill_id="fill-123")
     second.trade("SOXS", "SELL", 3, 25.0, mode="paper", fill_id="fill-123")
@@ -213,7 +220,7 @@ def test_trade_event_id_prevents_duplicate_send_without_fill_id(tmp_path, monkey
         trade_notification_state_path=tmp_path / "trade_notifications.json",
     )
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("AAPL", "SELL", 2, 150.0, mode="paper", event_id="event-xyz")
     notifier.trade("AAPL", "SELL", 2, 150.0, mode="paper", event_id="event-xyz")
@@ -226,7 +233,7 @@ def test_trade_without_event_identity_is_not_deduplicated(tmp_path, monkeypatch)
     notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
                         trade_notification_state_path=tmp_path / "trade_notifications.json")
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
@@ -240,7 +247,7 @@ def test_fallback_key_differs_for_different_trades(tmp_path, monkeypatch):
     notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
                         trade_notification_state_path=tmp_path / "trade_notifications.json")
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
     notifier.trade("NVDA", "BUY", 5, 105.0, mode="paper")
@@ -253,7 +260,7 @@ def test_fallback_key_differs_for_different_tickers(tmp_path, monkeypatch):
     notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
                         trade_notification_state_path=tmp_path / "trade_notifications.json")
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("AAPL", "BUY", 1, 100.0, mode="paper")
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
@@ -266,7 +273,7 @@ def test_fallback_key_differs_for_buy_vs_sell(tmp_path, monkeypatch):
     notifier = Notifier(console=False, macos_notification=True, webhook_url=None,
                         trade_notification_state_path=tmp_path / "trade_notifications.json")
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper")
     notifier.trade("NVDA", "SELL", 1, 100.0, mode="paper")
@@ -282,7 +289,7 @@ def test_explicit_notification_key_takes_priority_over_fallback(tmp_path, monkey
         trade_notification_state_path=state_path,
     )
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("NVDA", "BUY", 1, 100.0, mode="paper",
                    notification_key="my-custom-key-001")
@@ -305,14 +312,144 @@ def test_fallback_key_persists_across_instances(tmp_path, monkeypatch):
     )
     first_calls = []
     second_calls = []
-    monkeypatch.setattr(first, "_send", lambda *args, **kwargs: first_calls.append((args, kwargs)))
-    monkeypatch.setattr(second, "_send", lambda *args, **kwargs: second_calls.append((args, kwargs)))
+    monkeypatch.setattr(first, "_macos_notify", lambda title, body: first_calls.append((title, body)) or True)
+    monkeypatch.setattr(second, "_macos_notify", lambda title, body: second_calls.append((title, body)) or True)
 
     first.trade("NVDA", "BUY", 1, 100.0, mode="paper")
     second.trade("NVDA", "BUY", 1, 100.0, mode="paper")
 
     assert len(first_calls) == 1
     assert second_calls == []
+
+
+def _successful_telegram_result():
+    return TelegramDeliveryResult(configured=True, attempted=True, success=True)
+
+
+def _failed_telegram_result():
+    return TelegramDeliveryResult(
+        configured=True, attempted=True, success=False, error="telegram_http_401"
+    )
+
+
+def test_channel_delivery_same_event_sends_each_channel_once(tmp_path, monkeypatch):
+    state_path = tmp_path / "trade_notifications.json"
+    notifier = Notifier(
+        console=False, macos_notification=True,
+        telegram_bot_token="test-token", telegram_chat_id="test-chat",
+        trade_notification_state_path=state_path,
+    )
+    mac_calls = []
+    telegram_calls = []
+    monkeypatch.setattr(notifier, "_macos_notify", lambda *_args: mac_calls.append(1) or True)
+    monkeypatch.setattr(notifier, "_telegram_send", lambda *_args: telegram_calls.append(1) or _successful_telegram_result())
+
+    for _ in range(2):
+        notifier.trade("SOXS", "SELL", 1, 10.0, mode="paper", notification_key="event-1")
+
+    assert len(mac_calls) == 1
+    assert len(telegram_calls) == 1
+    payload = json.loads(state_path.read_text())
+    assert payload["schema_version"] == "trade_notification_state.v2"
+    channels = payload["notifications"]["event-1"]["channels"]
+    assert channels["macos"]["status"] == "SENT"
+    assert channels["telegram"]["status"] == "SENT"
+
+
+def test_channel_delivery_restart_preserves_dedupe(tmp_path, monkeypatch):
+    state_path = tmp_path / "trade_notifications.json"
+    first = Notifier(console=False, telegram_bot_token="token", telegram_chat_id="chat", trade_notification_state_path=state_path)
+    second = Notifier(console=False, telegram_bot_token="token", telegram_chat_id="chat", trade_notification_state_path=state_path)
+    mac_calls = []; telegram_calls = []
+    monkeypatch.setattr(first, "_macos_notify", lambda *_args: mac_calls.append(1) or True)
+    monkeypatch.setattr(second, "_macos_notify", lambda *_args: mac_calls.append(1) or True)
+    monkeypatch.setattr(first, "_telegram_send", lambda *_args: telegram_calls.append(1) or _successful_telegram_result())
+    monkeypatch.setattr(second, "_telegram_send", lambda *_args: telegram_calls.append(1) or _successful_telegram_result())
+
+    first.trade("SOXS", "BUY", 1, 10.0, mode="paper", notification_key="restart-event")
+    second.trade("SOXS", "BUY", 1, 10.0, mode="paper", notification_key="restart-event")
+
+    assert len(mac_calls) == 1
+    assert len(telegram_calls) == 1
+
+
+def test_failed_telegram_retries_only_telegram(tmp_path, monkeypatch):
+    state_path = tmp_path / "trade_notifications.json"
+    notifier = Notifier(console=False, telegram_bot_token="token", telegram_chat_id="chat", trade_notification_state_path=state_path)
+    mac_calls = []; telegram_calls = []
+    monkeypatch.setattr(notifier, "_macos_notify", lambda *_args: mac_calls.append(1) or True)
+    monkeypatch.setattr(notifier, "_telegram_send", lambda *_args: telegram_calls.append(1) or (_failed_telegram_result() if len(telegram_calls) == 1 else _successful_telegram_result()))
+
+    notifier.trade("SOXS", "SELL", 1, 10.0, mode="paper", notification_key="telegram-retry")
+    notifier.trade("SOXS", "SELL", 1, 10.0, mode="paper", notification_key="telegram-retry")
+
+    assert len(mac_calls) == 1
+    assert len(telegram_calls) == 2
+
+
+def test_failed_macos_retries_only_macos(tmp_path, monkeypatch):
+    state_path = tmp_path / "trade_notifications.json"
+    notifier = Notifier(console=False, telegram_bot_token="token", telegram_chat_id="chat", trade_notification_state_path=state_path)
+    mac_calls = []; telegram_calls = []
+    monkeypatch.setattr(notifier, "_macos_notify", lambda *_args: mac_calls.append(1) or len(mac_calls) > 1)
+    monkeypatch.setattr(notifier, "_telegram_send", lambda *_args: telegram_calls.append(1) or _successful_telegram_result())
+
+    notifier.trade("SOXS", "SELL", 1, 10.0, mode="paper", notification_key="mac-retry")
+    notifier.trade("SOXS", "SELL", 1, 10.0, mode="paper", notification_key="mac-retry")
+
+    assert len(mac_calls) == 2
+    assert len(telegram_calls) == 1
+
+
+def test_legacy_trade_state_migrates_without_replay(tmp_path, monkeypatch):
+    state_path = tmp_path / "trade_notifications.json"
+    state_path.write_text(json.dumps({
+        "schema_version": "trade_notification_state.v1",
+        "sent_keys": ["legacy-event"],
+        "notifications": {"legacy-event": {"ticker": "SOXS", "mode": "paper", "created_at": "2026-08-22T00:00:00+00:00"}},
+    }))
+    notifier = Notifier(console=False, telegram_bot_token="token", telegram_chat_id="chat", trade_notification_state_path=state_path)
+    mac_calls = []; telegram_calls = []
+    monkeypatch.setattr(notifier, "_macos_notify", lambda *_args: mac_calls.append(1) or True)
+    monkeypatch.setattr(notifier, "_telegram_send", lambda *_args: telegram_calls.append(1) or _successful_telegram_result())
+
+    notifier.trade("SOXS", "SELL", 1, 10.0, mode="paper", notification_key="legacy-event")
+
+    payload = json.loads(state_path.read_text())
+    assert payload["schema_version"] == "trade_notification_state.v2"
+    assert mac_calls == [] and telegram_calls == []
+    assert payload["notifications"]["legacy-event"]["channels"]["macos"]["legacy_migrated"] is True
+
+
+def test_channel_state_records_provenance_and_paper_label(tmp_path, monkeypatch):
+    state_path = tmp_path / "trade_notifications.json"
+    notifier = Notifier(console=False, macos_notification=True, trade_notification_state_path=state_path)
+    titles = []
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, _body: titles.append(title) or True)
+
+    notifier.trade("SOXS", "SELL", 1, 10.0, mode="paper", event_id="paper-event")
+
+    payload = json.loads(state_path.read_text())
+    record = payload["notifications"]["paper:SOXS:SELL:event:paper-event"]
+    assert "模拟卖出" in titles[0]
+    for field in ("notification_id", "source_event_id", "ticker", "side", "mode", "pid", "ppid", "process_start_time", "release_sha", "sender"):
+        assert field in record
+    assert "token" not in json.dumps(record).lower()
+
+
+def test_concurrent_consumers_claim_each_channel_once(tmp_path, monkeypatch):
+    state_path = tmp_path / "trade_notifications.json"
+    notifiers = [Notifier(console=False, telegram_bot_token="token", telegram_chat_id="chat", trade_notification_state_path=state_path) for _ in range(8)]
+    mac_calls = []; telegram_calls = []
+    for notifier in notifiers:
+        monkeypatch.setattr(notifier, "_macos_notify", lambda *_args: mac_calls.append(1) or True)
+        monkeypatch.setattr(notifier, "_telegram_send", lambda *_args: telegram_calls.append(1) or _successful_telegram_result())
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda n: n.trade("SOXS", "BUY", 1, 10.0, mode="paper", notification_key="concurrent-event"), notifiers))
+
+    assert len(mac_calls) == 1
+    assert len(telegram_calls) == 1
 
 
 def test_telegram_send_single_redacts_token_from_exception_logs(monkeypatch, caplog):

@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Optional
+from src.config.runtime_paths import resolve_state_dir
 
 # Module-level optional imports: these are try/except'd so the module
 # loads even in core-only mode. They also capture the real module
@@ -72,9 +73,8 @@ def _resolve_yfinance_cache_dir() -> Path:
     raw = os.environ.get("SOXS_YFINANCE_CACHE_DIR")
     if raw:
         return Path(raw).expanduser().resolve()
-    project_home = os.environ.get("QUANTCAIRN_HOME") or os.environ.get("SOXS_PROJECT_DIR")
-    if project_home:
-        return (Path(project_home).expanduser().resolve() / "state" / "yfinance_cache").resolve()
+    if any(os.environ.get(name) for name in ("SOXS_STATE_DIR", "QUANTCAIRN_HOME", "SOXS_PROJECT_DIR")):
+        return resolve_state_dir(_resolve_project_dir()) / "yfinance_cache"
     return DEFAULT_YFINANCE_CACHE_DIR
 
 

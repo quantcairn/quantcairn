@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from src.openalpha.selection_report import load_latest_ai_selection_state
+from src.config.runtime_paths import resolve_reports_dir
 
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-REPORTS_DIR = PROJECT_DIR / "reports"
+REPORTS_DIR = resolve_reports_dir(PROJECT_DIR)
 
 
 @dataclass

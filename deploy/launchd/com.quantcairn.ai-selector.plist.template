@@ -23,18 +23,19 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>REPLACE_WITH_PYTHON_PATH</string>
-        <string>REPLACE_WITH_PROJECT_ROOT/scripts/ai_selector_wrapper.py</string>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>SECRETS="$HOME/Library/Application Support/QuantCairn/secrets.env"; if [ -f "$SECRETS" ] &amp;&amp; [ "$(stat -f '%Lp' "$SECRETS")" = "600" ]; then set -a; . "$SECRETS"; set +a; fi; exec REPLACE_WITH_PYTHON_PATH REPLACE_WITH_PROJECT_ROOT/scripts/ai_selector_wrapper.py</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>REPLACE_WITH_PROJECT_ROOT</string>
 
     <key>StandardOutPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/ai_selector.out.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/ai_selector.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/ai_selector.err.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/ai_selector.err.log</string>
 
     <key>StartCalendarInterval</key>
     <array>
@@ -79,6 +80,18 @@
         <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>SOXS_PROJECT_DIR</key>
         <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_STATE_DIR</key>
+        <string>REPLACE_WITH_STATE_ROOT</string>
+        <key>SOXS_REPORTS_DIR</key>
+        <string>REPLACE_WITH_REPORTS_ROOT</string>
+        <key>SOXS_ARTIFACTS_DIR</key>
+        <string>REPLACE_WITH_ARTIFACTS_ROOT</string>
+        <key>SOXS_LOGS_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
+        <key>SOXS_LOG_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
+        <key>QUANTCAIRN_EXECUTION_MODE</key>
+        <string>PAPER</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
         <!-- Enable verbose scheduler decision logging to stderr -->

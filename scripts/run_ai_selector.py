@@ -10,7 +10,9 @@ import argparse
 from collections import Counter
 from functools import lru_cache
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+PROJECT_ROOT = os.path.abspath(
+    os.environ.get("SOXS_PROJECT_DIR") or os.path.join(os.path.dirname(__file__), "..")
+)
 VENV_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
 VENV_PREFIX = os.path.join(PROJECT_ROOT, ".venv")
 if (
@@ -45,6 +47,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from src.config.local_env import load_local_ai_env
+from src.config.runtime_paths import resolve_logs_dir, resolve_reports_dir
 from src.openalpha.settings import load_runtime_settings
 from src.openalpha import selector as _selector_module
 from src.openalpha.config import load_runtime_config
@@ -63,13 +66,23 @@ from src.notifier.alerts import notify_ai_selection_result
 from src.candidate_validation import CandidateValidationStore
 from src.dashboard.snapshots import write_dashboard_snapshot
 from src.openalpha.selection_bundle import write_selection_bundle_atomic
+from src.openalpha.top_restart import record_restart_status, request_supervisor_restart
 
-PROJECT_DIR = Path(__file__).resolve().parents[1]
-LOG_DIR = PROJECT_DIR / "logs"
-REPORTS_DIR = PROJECT_DIR / "reports"
+PROJECT_DIR = Path(PROJECT_ROOT).resolve()
+# Optional test injection hooks; production paths resolve per operation.
+LOG_DIR = None
+REPORTS_DIR = None
 EQUITY_SYMBOL_RE = re.compile(r"^[A-Z][A-Z.-]{0,9}$")
 OPENALPHA_RUNTIME = load_runtime_config()
 TOP_COUNT = max(1, int(OPENALPHA_RUNTIME.top_n))
+
+
+def _runtime_log_dir() -> Path:
+    return Path(LOG_DIR) if LOG_DIR is not None else resolve_logs_dir(PROJECT_DIR)
+
+
+def _runtime_reports_dir() -> Path:
+    return Path(REPORTS_DIR) if REPORTS_DIR is not None else resolve_reports_dir(PROJECT_DIR)
 
 
 def write_selection_filter_log(report: dict[str, object], now: datetime | None = None) -> Path:
@@ -81,7 +94,7 @@ def write_selection_filter_log(report: dict[str, object], now: datetime | None =
 
     original_log_dir = getattr(_selector_module, "LOG_DIR", None)
     try:
-        _selector_module.LOG_DIR = LOG_DIR
+        _selector_module.LOG_DIR = _runtime_log_dir()
         return _selector_module.write_selection_filter_log(report, now=now)
     finally:
         if original_log_dir is not None:
@@ -403,7 +416,7 @@ def _provider_metadata(
     if data_mode in {"fallback", "mixed"} or fallback_used:
         providers_used.append("market_data_fallback")
 
-    has_longbridge_creds = all(
+    has_longbridge_creds = os.environ.get("SOXS_ALLOW_LIVE_DATA_CREDENTIALS", "").strip() == "1" and all(
         [
             os.environ.get("LONGBRIDGE_APP_KEY") or os.environ.get("LONGBRIDGE_API_KEY"),
             os.environ.get("LONGBRIDGE_APP_SECRET") or os.environ.get("LONGBRIDGE_API_SECRET"),
@@ -2135,9 +2148,10 @@ def _prioritize_ai_rank(rows: list[dict], signal_map: dict[str, dict]) -> list[d
 
 
 def _write_reports(summary: dict) -> tuple[Path, Path]:
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    latest_json = REPORTS_DIR / "ai_selection_latest.json"
-    dated_json = REPORTS_DIR / f"ai_selection_{_et_now().strftime('%Y%m%d')}.json"
+    reports_dir = _runtime_reports_dir()
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    latest_json = reports_dir / "ai_selection_latest.json"
+    dated_json = reports_dir / f"ai_selection_{_et_now().strftime('%Y%m%d')}.json"
     payload = json.dumps(summary, ensure_ascii=False, indent=2, default=str)
     latest_json.write_text(payload, encoding="utf-8")
     dated_json.write_text(payload, encoding="utf-8")
@@ -2168,15 +2182,7 @@ def _restart_top_engines() -> int:
     if os.environ.get("OPENALPHA_RESTART_TOP", "1") == "0":
         print("OPENALPHA_RESTART_TOP=0; skipping TOP engine restart.")
         return 0
-    launcher = PROJECT_DIR / "scripts" / "start_top_engines.sh"
-    if not launcher.exists():
-        print(f"Missing launcher: {launcher}")
-        return 1
-    return subprocess.run(
-        ["/bin/bash", str(launcher), "restart"],
-        cwd=PROJECT_DIR,
-        check=False,
-    ).returncode
+    return request_supervisor_restart(PROJECT_DIR)
 
 
 def _spawn_background_refinement(expected_timestamp: str) -> None:
@@ -2196,8 +2202,10 @@ def _spawn_background_refinement(expected_timestamp: str) -> None:
     env.setdefault("OPENALPHA_QUALITY_BUDGET_SECONDS", "60")
     env["OPENALPHA_EXPECTED_TIMESTAMP"] = expected_timestamp
     env["OPENALPHA_REFINEMENT_ONLY"] = "1"
-    with open(PROJECT_DIR / "logs" / "ai_selector_refine.out.log", "a", encoding="utf-8") as out, open(
-        PROJECT_DIR / "logs" / "ai_selector_refine.err.log",
+    log_dir = _runtime_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with open(log_dir / "ai_selector_refine.out.log", "a", encoding="utf-8") as out, open(
+        log_dir / "ai_selector_refine.err.log",
         "a",
         encoding="utf-8",
     ) as err:
@@ -2787,6 +2795,11 @@ def main(mode: str | None = None):
         'top_sync_run_id': selection_run_id,
         'top_sync_status': 'OK',
         'top_sync_error': '',
+        'top_restart_status': (
+            'RESTART_PENDING'
+            if selected and market_stage == 'FINALIZED' and os.environ.get('OPENALPHA_RESTART_TOP', '1') != '0'
+            else 'NOT_REQUESTED'
+        ),
         'market_context': market_context.to_dict(),
         'providers_used': providers_used,
         'providers_disabled': providers_disabled,
@@ -2894,7 +2907,7 @@ def main(mode: str | None = None):
         "et_date": current_session,
         "generated_at": timestamp,
         "selected_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
-        "report_path": str(PROJECT_DIR / "reports" / "ai_selection_latest.json"),
+        "report_path": str(_runtime_reports_dir() / "ai_selection_latest.json"),
         "selection_stage": selection_stage,
         "processing_phase": processing_phase,
         "result_quality": str(summary.get("result_quality") or ""),
@@ -2903,6 +2916,7 @@ def main(mode: str | None = None):
         "top_sync_run_id": selection_run_id,
         "top_sync_status": "OK",
         "top_sync_error": "",
+        "top_restart_status": summary.get("top_restart_status", "NOT_REQUESTED"),
         "selection_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
         "configured_top_symbols": [str(item.get("ticker") or "").strip().upper() for item in selected],
         "disabled_slots": list(range(len(selected) + 1, TOP_COUNT + 1)),
@@ -2930,10 +2944,27 @@ def main(mode: str | None = None):
     _notify_selection_result(summary, notification_rows)
 
     if selected and market_stage == "FINALIZED":
+        selection_bundle_hash = str(summary.get("selection_bundle_hash") or "")
+        record_restart_status(
+            status="PENDING",
+            selection_run_id=selection_run_id,
+            selection_bundle_hash=selection_bundle_hash,
+        )
         restart_code = _restart_top_engines()
         if restart_code != 0:
+            record_restart_status(
+                status="FAILED",
+                selection_run_id=selection_run_id,
+                selection_bundle_hash=selection_bundle_hash,
+                error=f"restart_exit_{restart_code}",
+            )
             print(f"TOP restart failed with exit code {restart_code}.")
             sys.exit(restart_code)
+        record_restart_status(
+            status="CONFIRMED",
+            selection_run_id=selection_run_id,
+            selection_bundle_hash=selection_bundle_hash,
+        )
 
     if str((summary.get("settings") or {}).get("selection_stage") or "") == "fast_preliminary":
         _spawn_background_refinement(timestamp)

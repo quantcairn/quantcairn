@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from src.config.runtime_paths import resolve_logs_dir, resolve_reports_dir, resolve_state_dir
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
@@ -22,13 +23,13 @@ from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_REPORTS_DIR = PROJECT_DIR / "reports" / "research"
+DEFAULT_REPORTS_DIR = resolve_reports_dir(PROJECT_DIR) / "research"
 DEFAULT_SITE_DIR = PROJECT_DIR / "site" / "research"
-DEFAULT_LOG_DIR = PROJECT_DIR / "logs"
-DEFAULT_BROKER_CACHE_DIR = PROJECT_DIR / "state" / "broker_cache"
-DEFAULT_ORDER_STATE_DIR = PROJECT_DIR / "state" / "order_state"
-DEFAULT_AI_REPORT_PATH = PROJECT_DIR / "reports" / "ai_selection_latest.json"
-DEFAULT_SELECTION_STATE_PATH = PROJECT_DIR / "state" / "ai_selection_state.json"
+DEFAULT_LOG_DIR = resolve_logs_dir(PROJECT_DIR)
+DEFAULT_BROKER_CACHE_DIR = resolve_state_dir(PROJECT_DIR) / "broker_cache"
+DEFAULT_ORDER_STATE_DIR = resolve_state_dir(PROJECT_DIR) / "order_state"
+DEFAULT_AI_REPORT_PATH = resolve_reports_dir(PROJECT_DIR) / "ai_selection_latest.json"
+DEFAULT_SELECTION_STATE_PATH = resolve_state_dir(PROJECT_DIR) / "ai_selection_state.json"
 
 FALLBACK_PRICE_BAND = (DEFAULT_MIN_PRICE, DEFAULT_MAX_PRICE)
 DEFAULT_TICKER_SET = ["SOFI", "LABD", "F"]
@@ -160,7 +161,7 @@ def _coerce_selection_entry(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_selection_state(project_dir: Path) -> dict[str, Any]:
-    return _load_json(project_dir / "state" / "ai_selection_state.json")
+    return _load_json(resolve_state_dir(project_dir) / "ai_selection_state.json")
 
 
 def _load_top_configs(project_dir: Path) -> list[dict[str, Any]]:
@@ -210,7 +211,7 @@ def _load_cached_snapshot(path: Path) -> dict[str, Any]:
 
 
 def _load_cached_account_and_positions(project_dir: Path) -> dict[str, Any]:
-    cache_dir = project_dir / "state" / "broker_cache"
+    cache_dir = resolve_state_dir(project_dir) / "broker_cache"
     account = _load_cached_snapshot(cache_dir / "longbridge_account.json")
     positions_payload = _load_cached_snapshot(cache_dir / "longbridge_positions.json")
     positions = positions_payload.get("positions")
@@ -280,7 +281,7 @@ def _parse_order_state_file(path: Path) -> dict[str, Any]:
 
 
 def _load_order_state(project_dir: Path) -> list[dict[str, Any]]:
-    order_dir = project_dir / "state" / "order_state"
+    order_dir = resolve_state_dir(project_dir) / "order_state"
     if not order_dir.exists():
         return []
     payloads: list[dict[str, Any]] = []
@@ -300,7 +301,7 @@ def _is_test_record(record: dict[str, Any]) -> bool:
 
 
 def _trade_summary(project_dir: Path, report_day: date) -> dict[str, Any]:
-    log_dir = project_dir / "logs"
+    log_dir = resolve_logs_dir(project_dir)
     requested_day = report_day.strftime("%Y%m%d")
     path = log_dir / f"trades-{requested_day}.jsonl"
     day = requested_day if path.exists() else latest_trade_activity_day(log_dir=log_dir, mode="paper")
@@ -585,11 +586,12 @@ def _no_trade_reason(top_cards: list[dict[str, Any]], trade_summary: dict[str, A
 
 def _trade_decision_summary(project_dir: Path, report_day: date, trade_summary: dict[str, Any]) -> dict[str, Any]:
     requested_day = report_day.strftime("%Y%m%d")
-    path = project_dir / "logs" / f"trades-{requested_day}.jsonl"
-    day = requested_day if path.exists() else latest_trade_activity_day(log_dir=project_dir / "logs", mode="paper")
+    log_dir = resolve_logs_dir(project_dir)
+    path = log_dir / f"trades-{requested_day}.jsonl"
+    day = requested_day if path.exists() else latest_trade_activity_day(log_dir=log_dir, mode="paper")
     if not day:
-        day = latest_trade_log_day(log_dir=project_dir / "logs") or requested_day
-    records = load_trade_records(project_dir / "logs", day)
+        day = latest_trade_log_day(log_dir=log_dir) or requested_day
+    records = load_trade_records(log_dir, day)
     decision_records = [
         record for record in records
         if "decision" in str(record.get("phase") or "").lower() or str(record.get("phase") or "").lower() == "risk_decision"
@@ -719,7 +721,7 @@ def _trade_event_flags(records: list[dict[str, Any]], ticker: str) -> dict[str, 
 def _strategy_review_summary(project_dir: Path, report_day: date, top_cards: list[dict[str, Any]], trade_activity: dict[str, Any]) -> dict[str, Any]:
     requested_day = report_day.strftime("%Y%m%d")
     trade_log_day = trade_activity.get("trade_log_day_used") or requested_day
-    records = load_trade_records(project_dir / "logs", trade_log_day)
+    records = load_trade_records(resolve_logs_dir(project_dir), trade_log_day)
     review_rows: list[dict[str, Any]] = []
     counts = Counter()
 
@@ -1473,11 +1475,11 @@ def _build_report_payload(
         else "mixed" if top_configs else "unknown",
         "source_paths": {
             "project_dir": str(project_dir),
-            "ai_selection_report": str(project_dir / "reports" / "ai_selection_latest.json"),
-            "selection_state": str(project_dir / "state" / "ai_selection_state.json"),
-            "broker_cache_dir": str(project_dir / "state" / "broker_cache"),
-            "order_state_dir": str(project_dir / "state" / "order_state"),
-            "trade_log_dir": str(project_dir / "logs"),
+            "ai_selection_report": str(resolve_reports_dir(project_dir) / "ai_selection_latest.json"),
+            "selection_state": str(resolve_state_dir(project_dir) / "ai_selection_state.json"),
+            "broker_cache_dir": str(resolve_state_dir(project_dir) / "broker_cache"),
+            "order_state_dir": str(resolve_state_dir(project_dir) / "order_state"),
+            "trade_log_dir": str(resolve_logs_dir(project_dir)),
         },
         "settings": {
             "min_price": _safe_float((ai_report.get("settings") or {}).get("min_price"), FALLBACK_PRICE_BAND[0]),

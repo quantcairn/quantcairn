@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -29,8 +30,8 @@ from typing import Any
 
 PAPER_RESEARCH_VERSION = "paper_research.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-PAPER_ROOT = PROJECT_DIR / "artifacts" / "learning" / "paper_trading"
-LEDGER_ROOT = PROJECT_DIR / "artifacts" / "learning" / "selection_ledger"
+PAPER_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "paper_trading"
+LEDGER_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "selection_ledger"
 
 VALID_STATUSES = {"OPEN", "CLOSED", "FAILED"}
 

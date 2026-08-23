@@ -4,6 +4,8 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from src.config.loader import load_config
 from src.engine.trading_engine import TradingEngine
 
@@ -145,6 +147,7 @@ def test_longbridge_sandbox_requires_explicit_endpoints(monkeypatch=None):
             app_secret="s",
             access_token="t",
             environment="sandbox",
+            audit_dir=tempfile.mkdtemp(prefix="longbridge-audit-"),
         )
 
         assert broker.connect() is False
@@ -283,10 +286,21 @@ def test_trading_engine_passes_longbridge_fields(monkeypatch=None):
 def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
+            def __init__(self):
+                self._originals = {}
+
             def setattr(self, target, value):
                 module_name, attr_name = target.rsplit(".", 1)
                 module = __import__(module_name, fromlist=[attr_name])
+                key = (module_name, attr_name)
+                if key not in self._originals:
+                    self._originals[key] = getattr(module, attr_name)
                 setattr(module, attr_name, value)
+
+            def restore(self):
+                for (module_name, attr_name), original in self._originals.items():
+                    module = __import__(module_name, fromlist=[attr_name])
+                    setattr(module, attr_name, original)
 
         monkeypatch = SimpleMonkeyPatch()
 
@@ -362,6 +376,10 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
 
     monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+    monkeypatch.setattr(
+        "src.broker.longbridge_broker.authorize_mutation",
+        lambda **_: SimpleNamespace(allowed=True, reason_code="AUTHORIZED"),
+    )
 
     broker = module.LongBridgeBroker(
         app_key="k",
@@ -394,6 +412,8 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     assert records[-1]["action"] == "place_order"
     assert records[-1]["ok"] is True
     assert records[-1]["response"]["order_id"] == "LB-12345"
+    if hasattr(monkeypatch, "restore"):
+        monkeypatch.restore()
 
 
 def test_longbridge_order_query_exposes_limit_price_from_sdk_price_field(tmp_path, monkeypatch=None):
@@ -588,10 +608,21 @@ def test_longbridge_active_orders_include_limit_price_in_snapshot(tmp_path, monk
 def test_longbridge_sandbox_buy_is_not_blocked_by_reduce_only(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
+            def __init__(self):
+                self._originals = {}
+
             def setattr(self, target, value):
                 module_name, attr_name = target.rsplit(".", 1)
                 module = __import__(module_name, fromlist=[attr_name])
+                key = (module_name, attr_name)
+                if key not in self._originals:
+                    self._originals[key] = getattr(module, attr_name)
                 setattr(module, attr_name, value)
+
+            def restore(self):
+                for (module_name, attr_name), original in self._originals.items():
+                    module = __import__(module_name, fromlist=[attr_name])
+                    setattr(module, attr_name, original)
 
         monkeypatch = SimpleMonkeyPatch()
 
@@ -662,6 +693,10 @@ def test_longbridge_sandbox_buy_is_not_blocked_by_reduce_only(tmp_path, monkeypa
     )
 
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+    monkeypatch.setattr(
+        "src.broker.longbridge_broker.authorize_mutation",
+        lambda **_: SimpleNamespace(allowed=True, reason_code="AUTHORIZED"),
+    )
     broker = module.LongBridgeBroker(
         app_key="k",
         app_secret="s",
@@ -682,6 +717,8 @@ def test_longbridge_sandbox_buy_is_not_blocked_by_reduce_only(tmp_path, monkeypa
     assert order.status == module.OrderStatus.PENDING
     assert broker._trade_ctx.submit_kwargs is not None
     assert broker._trade_ctx.submit_kwargs["side"] == module.lb.OrderSide.Buy
+    if hasattr(monkeypatch, "restore"):
+        monkeypatch.restore()
 
 
 def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, monkeypatch):
@@ -755,6 +792,11 @@ def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, 
 
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
     monkeypatch.setenv("SOXS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("QUANTCAIRN_EXECUTION_MODE", "LIVE_EXECUTION")
+    monkeypatch.setenv("QUANTCAIRN_LIVE_ARMED", "YES")
+    kill_switch = tmp_path / "kill-switch.json"
+    kill_switch.write_text(json.dumps({"state": "OPEN"}), encoding="utf-8")
+    monkeypatch.setenv("QUANTCAIRN_LIVE_KILL_SWITCH_FILE", str(kill_switch))
 
     broker = module.LongBridgeBroker(
         app_key="k",
@@ -766,6 +808,7 @@ def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, 
         quote_ws_url="wss://openapi-quote.longbridge.com/v2",
         trade_ws_url="wss://openapi-trade.longbridge.com/v2",
         audit_dir=str(tmp_path / "logs"),
+        execution_mode="LIVE_EXECUTION",
     )
 
     assert broker.connect() is True
@@ -880,7 +923,12 @@ def test_get_active_orders_accepts_unhashable_status_objects(monkeypatch=None):
 
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
-    broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        audit_dir=tempfile.mkdtemp(prefix="longbridge-audit-"),
+    )
     assert broker.connect() is True
 
     orders = broker.get_active_orders("PLTR")
@@ -938,7 +986,12 @@ def test_get_active_orders_reuses_cached_snapshot_after_rate_limit(tmp_path, mon
     original_state_dir = os.environ.get("SOXS_STATE_DIR")
     os.environ["SOXS_STATE_DIR"] = str(tmp_path / "state")
     try:
-        broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+        broker = module.LongBridgeBroker(
+            app_key="k",
+            app_secret="s",
+            access_token="t",
+            audit_dir=str(tmp_path / "logs"),
+        )
         assert broker.connect() is True
 
         first = broker.get_active_orders("PLTR")
@@ -1217,7 +1270,12 @@ def test_longbridge_broker_uses_safer_default_cache_and_backoff(monkeypatch=None
         monkeypatch.delenv("LONGBRIDGE_RETRY_BACKOFF_SECONDS", raising=False)
         monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
 
-        broker = module.LongBridgeBroker(app_key="k", app_secret="s", access_token="t")
+        broker = module.LongBridgeBroker(
+            app_key="k",
+            app_secret="s",
+            access_token="t",
+            audit_dir=tempfile.mkdtemp(prefix="longbridge-audit-"),
+        )
 
         assert broker._account_cache_ttl_seconds == 180.0
         assert broker._positions_cache_ttl_seconds == 180.0
@@ -1229,10 +1287,32 @@ def test_longbridge_broker_uses_safer_default_cache_and_backoff(monkeypatch=None
 def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
+            def __init__(self):
+                self._env = {}
+
             def setattr(self, target, value):
                 module_name, attr_name = target.rsplit(".", 1)
                 module = __import__(module_name, fromlist=[attr_name])
                 setattr(module, attr_name, value)
+
+            def setenv(self, key, value):
+                if key not in self._env:
+                    self._env[key] = os.environ.get(key)
+                os.environ[key] = value
+
+            def delenv(self, key, raising=True):
+                if key not in self._env:
+                    self._env[key] = os.environ.get(key)
+                if raising and key not in os.environ:
+                    raise KeyError(key)
+                os.environ.pop(key, None)
+
+            def restore(self):
+                for key, value in self._env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
         monkeypatch = SimpleMonkeyPatch()
 
@@ -1293,6 +1373,10 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
 
     monkeypatch.setattr("src.broker.longbridge_broker.get_runtime_env", lambda key, default="": default)
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
+    monkeypatch.setenv("QUANTCAIRN_LIVE_ARMED", "YES")
+    kill_switch = tmp_path / "kill-switch.json"
+    kill_switch.write_text(json.dumps({"state": "OPEN"}), encoding="utf-8")
+    monkeypatch.setenv("QUANTCAIRN_LIVE_KILL_SWITCH_FILE", str(kill_switch))
 
     broker = module.LongBridgeBroker(
         app_key="k",
@@ -1304,6 +1388,7 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
         quote_ws_url="wss://openapi-quote.longbridge.com/v2",
         trade_ws_url="wss://openapi-trade.longbridge.com/v2",
         audit_dir=str(tmp_path / "logs"),
+        execution_mode="LIVE_EXECUTION",
     )
 
     assert broker.connect() is True
@@ -1318,6 +1403,8 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
     assert records[-1]["action"] == "place_order"
     assert records[-1]["ok"] is True
     assert records[-1]["response"]["order_id"] == "LB-99999"
+    if hasattr(monkeypatch, "restore"):
+        monkeypatch.restore()
 
 
 def test_positions_failure_marks_snapshot_unreliable(tmp_path):
@@ -1429,6 +1516,7 @@ def test_primary_live_broker_blocks_buy_in_global_reduce_only(tmp_path):
             access_token="t",
             environment="prod",
             audit_dir=str(tmp_path / "logs"),
+            execution_mode="LIVE",
         )
         broker._connected = True
         broker._trade_ctx = FakeTradeContext()
@@ -1440,16 +1528,147 @@ def test_primary_live_broker_blocks_buy_in_global_reduce_only(tmp_path):
         assert "reduce-only" in order.notes
 
         sell_order = broker.place_order("SOXS.US", module.OrderSide.SELL, 1)
-        assert sell_order.status == module.OrderStatus.PENDING
-        assert sell_order.order_id == "LB-REDUCE-1"
-        assert broker._trade_ctx.calls and broker._trade_ctx.calls[-1]["side"] == module.lb.OrderSide.Sell
-        assert all(call["side"] != module.lb.OrderSide.Buy for call in broker._trade_ctx.calls)
+        assert sell_order.status == module.OrderStatus.REJECTED
+        assert sell_order.order_id == ""
+        assert sell_order.notes == "NOT_LIVE_EXECUTION"
+        assert broker._trade_ctx.calls == []
     finally:
         if original_env is None:
             os.environ.pop("LONGBRIDGE_ENV", None)
         else:
             os.environ["LONGBRIDGE_ENV"] = original_env
         module._global_reduce_only_enabled = original_reduce_only
+
+
+def _sandbox_authorization_broker(tmp_path, monkeypatch, *, mode, armed, kill_state):
+    from src.broker import longbridge_broker as module
+
+    kill_switch = tmp_path / "kill-switch.json"
+    kill_switch.write_text(json.dumps({"state": kill_state}), encoding="utf-8")
+    monkeypatch.setenv("QUANTCAIRN_LIVE_KILL_SWITCH_FILE", str(kill_switch))
+    if armed is None:
+        monkeypatch.delenv("QUANTCAIRN_LIVE_ARMED", raising=False)
+    else:
+        monkeypatch.setenv("QUANTCAIRN_LIVE_ARMED", armed)
+    monkeypatch.setattr(
+        "src.broker.longbridge_broker.get_runtime_env",
+        lambda key, default="": default,
+    )
+
+    class FakeTradeContext:
+        def __init__(self):
+            self.submit_calls = 0
+            self.cancel_calls = 0
+
+        def submit_order(self, **kwargs):
+            self.submit_calls += 1
+            return SimpleNamespace(order_id="SANDBOX-ORDER-1")
+
+        def cancel_order(self, **kwargs):
+            self.cancel_calls += 1
+            return SimpleNamespace(ok=True)
+
+    broker = module.LongBridgeBroker(
+        app_key="k",
+        app_secret="s",
+        access_token="t",
+        account_type="paper",
+        environment="sandbox",
+        http_url="https://openapi.longbridge.com",
+        quote_ws_url="wss://openapi-quote.longbridge.com/v2",
+        trade_ws_url="wss://openapi-trade.longbridge.com/v2",
+        audit_dir=str(tmp_path / "logs"),
+        execution_mode=mode,
+    )
+    broker._connected = True
+    broker._trade_ctx = FakeTradeContext()
+    broker._sandbox_first_run_confirmed = True
+    return broker, module
+
+
+@pytest.mark.parametrize(
+    ("mode", "armed", "kill_state"),
+    [
+        ("PAPER", "YES", "OPEN"),
+        ("LIVE_OBSERVE_ONLY", "YES", "OPEN"),
+        ("LIVE", "YES", "OPEN"),
+        ("LIVE_EXECUTION", None, "OPEN"),
+        ("LIVE_EXECUTION", "YES", "CLOSED"),
+    ],
+)
+def test_sandbox_place_order_denied_before_sdk_mutation(
+    tmp_path, monkeypatch, mode, armed, kill_state
+):
+    broker, module = _sandbox_authorization_broker(
+        tmp_path,
+        monkeypatch,
+        mode=mode,
+        armed=armed,
+        kill_state=kill_state,
+    )
+
+    order = broker.place_order("AAPL", module.OrderSide.BUY, 1)
+
+    assert order.status == module.OrderStatus.REJECTED
+    assert order.notes in {
+        "NOT_LIVE_EXECUTION",
+        "LIVE_NOT_ARMED",
+        "KILL_SWITCH_CLOSED",
+    }
+    assert broker._trade_ctx.submit_calls == 0
+
+
+def test_sandbox_place_order_requires_authorizer_before_sdk_call(tmp_path, monkeypatch):
+    broker, module = _sandbox_authorization_broker(
+        tmp_path,
+        monkeypatch,
+        mode="LIVE_EXECUTION",
+        armed="YES",
+        kill_state="OPEN",
+    )
+
+    order = broker.place_order("AAPL", module.OrderSide.SELL, 1)
+
+    assert order.status == module.OrderStatus.PENDING
+    assert order.order_id == "SANDBOX-ORDER-1"
+    assert broker._trade_ctx.submit_calls == 1
+
+
+def test_sandbox_cancel_order_denied_before_sdk_mutation(tmp_path, monkeypatch):
+    broker, _module = _sandbox_authorization_broker(
+        tmp_path,
+        monkeypatch,
+        mode="PAPER",
+        armed="YES",
+        kill_state="OPEN",
+    )
+
+    assert broker.cancel_order("order-1") is False
+    assert broker._trade_ctx.cancel_calls == 0
+
+
+def test_sandbox_authorizer_exception_denies_place_and_cancel(tmp_path, monkeypatch):
+    from src.safety import execution_authorizer
+
+    def raise_reader(_path=None):
+        raise RuntimeError("simulated authorization failure")
+
+    monkeypatch.setattr(execution_authorizer, "read_kill_switch_state", raise_reader)
+    broker, module = _sandbox_authorization_broker(
+        tmp_path,
+        monkeypatch,
+        mode="LIVE_EXECUTION",
+        armed="YES",
+        kill_state="OPEN",
+    )
+
+    order = broker.place_order("AAPL", module.OrderSide.SELL, 1)
+
+    assert order.status == module.OrderStatus.REJECTED
+    assert order.notes == "AUTHORIZATION_ERROR"
+    assert broker.cancel_order("order-1") is False
+    assert broker._trade_ctx.submit_calls == 0
+    assert broker._trade_ctx.cancel_calls == 0
 
 
 def run_test_direct():

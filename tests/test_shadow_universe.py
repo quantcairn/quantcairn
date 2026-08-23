@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.shadow.universe import (
     ShadowUniverseConfig,
+    SHADOW_ROOT_DIR,
     default_benchmarks_for,
     default_shadow_output_directory,
     shadow_title_for,
@@ -17,7 +18,7 @@ def test_shadow_universe_defaults_preserve_soxs_behavior():
     assert config.timeframe == "15m"
     assert config.symbol_class == "inverse_etf"
     assert config.strategy_family == "range_etf"
-    assert config.output_directory == Path("artifacts/shadow/soxs_15m")
+    assert config.output_directory == SHADOW_ROOT_DIR / "soxs_15m"
     assert config.display_name == "SOXS Shadow Observer"
     assert config.validate() == []
 
@@ -140,6 +141,6 @@ def test_shadow_universe_rejects_shadow_disabled_or_trading_enabled():
 
 def test_shadow_universe_helpers_keep_generic_output_paths():
     assert default_benchmarks_for("SOXS.US") == ("SOXX.US", "SMH.US")
-    assert default_shadow_output_directory("SOXS.US", "15m") == Path("artifacts/shadow/soxs_15m")
-    assert default_shadow_output_directory("AAPL.US", "15m") == Path("artifacts/shadow/aapl_15m")
+    assert default_shadow_output_directory("SOXS.US", "15m") == SHADOW_ROOT_DIR / "soxs_15m"
+    assert default_shadow_output_directory("AAPL.US", "15m") == SHADOW_ROOT_DIR / "aapl_15m"
     assert shadow_title_for("AAPL.US", "15m") == "AAPL Shadow Observer"

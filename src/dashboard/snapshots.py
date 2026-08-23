@@ -12,12 +12,13 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from src.config.runtime_paths import resolve_state_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 
 def _state_dir() -> Path:
-    return Path(os.environ.get("SOXS_STATE_DIR", "").strip() or (PROJECT_DIR / "state"))
+    return resolve_state_dir(PROJECT_DIR)
 
 
 def _snapshot_name(name: str) -> str | None:

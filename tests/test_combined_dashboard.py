@@ -1398,7 +1398,7 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
     })
 
     statuses = {
-        8091: {
+        8080: {
             "ticker": "TOP1 · NVDA",
             "online": True,
             "price": 102.0,
@@ -1422,7 +1422,7 @@ def test_combined_dashboard_renders_separate_buy_sell_triggers(monkeypatch):
             "trades_today": 0,
             "halted": False,
         },
-        8092: {
+        8081: {
             "ticker": "TOP2 · TSLA",
             "online": True,
             "price": 108.5,
@@ -1518,7 +1518,7 @@ def test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch
     })
 
     statuses = {
-        8091: {
+        8080: {
             "price": 10.1,
             "change": 0.0,
             "high_1m": 10.2,
@@ -1539,7 +1539,7 @@ def test_combined_dashboard_buy_trigger_skips_symbols_with_positions(monkeypatch
             "trades_today": 0,
             "halted": False,
         },
-        8092: {
+        8081: {
             "price": 10.4,
             "change": 0.0,
             "high_1m": 10.5,

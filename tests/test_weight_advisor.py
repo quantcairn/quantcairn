@@ -195,11 +195,12 @@ class TestWeightAdvisor:
         with patch.object(module, "OUTCOME_CSV_PATH", csv_path):
             with patch.object(module, "LEARNING_DIR", tmp_path):
                 with patch.object(module, "WEIGHTS_PATH", weights_path):
-                    report = run_weight_advisor(dry_run=False)
-                    assert weights_path.exists()
-                    loaded = json.loads(weights_path.read_text(encoding="utf-8"))
-                    assert loaded["model_version"] == MODEL_VERSION
-                    assert loaded["approval_status"] == "PENDING_HUMAN_APPROVAL"
+                    with patch.object(module, "STRATEGY_PERF_PATH", tmp_path / "strategy_performance.json"):
+                        report = run_weight_advisor(dry_run=False)
+        assert weights_path.exists()
+        loaded = json.loads(weights_path.read_text(encoding="utf-8"))
+        assert loaded["model_version"] == MODEL_VERSION
+        assert loaded["approval_status"] == "PENDING_HUMAN_APPROVAL"
 
     def test_evaluation_metrics_present(self, tmp_path: Path):
         rows = [_outcome(symbol=f"S{i}", pnl_pct=float((i % 7) - 3)) for i in range(30)]

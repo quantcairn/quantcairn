@@ -83,8 +83,17 @@ class AISelectionDecision:
 
 
 def _audit_log_path() -> Path:
-    configured_dir = os.environ.get("SOXS_RUNTIME_AUDIT_DIR", "").strip()
-    log_dir = Path(configured_dir) if configured_dir else PROJECT_DIR / "logs"
+    configured_dir = ""
+    for env_name in ("SOXS_RUNTIME_AUDIT_DIR", "SOXS_LOGS_DIR", "SOXS_LOG_DIR"):
+        configured_dir = os.environ.get(env_name, "").strip()
+        if configured_dir:
+            break
+    if not configured_dir:
+        raise RuntimeError(
+            "runtime audit root must be configured via SOXS_RUNTIME_AUDIT_DIR, "
+            "SOXS_LOGS_DIR, or SOXS_LOG_DIR"
+        )
+    log_dir = Path(configured_dir).expanduser().resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"trades-{datetime.now().strftime('%Y%m%d')}.jsonl"
 
@@ -250,6 +259,7 @@ class TradingEngine:
                 trade_ws_url=config.broker.longbridge.trade_ws_url,
                 log_path=config.broker.longbridge.log_path,
                 allow_live_order=config.broker.longbridge.allow_live_order,
+                execution_mode=("LIVE_EXECUTION" if config.mode == "live" else "LIVE_OBSERVE_ONLY"),
             )
             logger.info("Using Long Bridge (%s) broker", config.mode.upper())
         else:

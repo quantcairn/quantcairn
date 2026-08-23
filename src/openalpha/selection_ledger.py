@@ -23,6 +23,7 @@ import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any
 
 from quantcairn import __version__ as _selector_version
@@ -33,7 +34,7 @@ from quantcairn import __version__ as _selector_version
 
 SCHEMA_VERSION = "selection_ledger.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LEDGER_ROOT = PROJECT_DIR / "artifacts" / "learning" / "selection_ledger"
+LEDGER_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "selection_ledger"
 RUNS_DIR = LEDGER_ROOT / "runs"
 INDEX_PATH = LEDGER_ROOT / "ledger_index.json"
 

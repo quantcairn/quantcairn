@@ -32,10 +32,10 @@
     <string>REPLACE_WITH_PROJECT_ROOT</string>
 
     <key>StandardOutPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/combined.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/combined.log</string>
 
     <key>StandardErrorPath</key>
-    <string>REPLACE_WITH_PROJECT_ROOT/logs/combined.err.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/combined.err.log</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -48,6 +48,18 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>QUANTCAIRN_HOME</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_PROJECT_DIR</key>
+        <string>REPLACE_WITH_PROJECT_ROOT</string>
+        <key>SOXS_STATE_DIR</key>
+        <string>REPLACE_WITH_STATE_ROOT</string>
+        <key>SOXS_REPORTS_DIR</key>
+        <string>REPLACE_WITH_REPORTS_ROOT</string>
+        <key>SOXS_ARTIFACTS_DIR</key>
+        <string>REPLACE_WITH_ARTIFACTS_ROOT</string>
+        <key>SOXS_LOGS_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
         <!-- Set execution mode: PAPER | RESEARCH | LIVE -->

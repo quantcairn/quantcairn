@@ -2,6 +2,7 @@
 Notification system: sends alerts via console, macOS notifications, webhooks, and Telegram.
 """
 import json
+import hashlib
 import logging
 import math
 import os
@@ -15,12 +16,18 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - supported deployment is macOS/Linux
+    fcntl = None
+
 import requests
 import yaml
 
 from src.openalpha.selection_bundle import load_committed_selection_bundle
 from src.openalpha.selection_report import provider_audit_sections
 from src.broker.paper_portfolio_state import read_paper_portfolio_state
+from src.config.runtime_paths import resolve_state_dir
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -31,8 +38,11 @@ ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 _telegram_last_send = 0.0
 _trade_notification_lock = threading.Lock()
 _ai_selection_notification_lock = threading.RLock()
-_TRADE_NOTIFICATION_SCHEMA_VERSION = "trade_notification_state.v1"
+_process_provenance: dict | None = None
+_TRADE_NOTIFICATION_SCHEMA_VERSION = "trade_notification_state.v2"
+_TRADE_NOTIFICATION_LEGACY_SCHEMA_VERSION = "trade_notification_state.v1"
 _MAX_TRADE_NOTIFICATION_KEYS = 5000
+_TRADE_NOTIFICATION_PENDING_TTL_SECONDS = 300
 _AI_SELECTION_NOTIFICATION_TYPE = "AI_SELECTION_FINALIZED"
 _MAX_AI_SELECTION_NOTIFICATION_ATTEMPTS = 3
 _TELEGRAM_URL_RE = re.compile(r"https://api\.telegram\.org/bot([^/\s?]+)(/sendMessage)", re.IGNORECASE)
@@ -95,87 +105,215 @@ def default_trade_notification_state_path() -> Path:
     override = os.environ.get("SOXS_TRADE_NOTIFICATION_STATE_PATH")
     if override:
         return Path(override).expanduser().resolve()
-    state_dir = os.environ.get("SOXS_STATE_DIR")
-    if state_dir:
-        return (Path(state_dir).expanduser().resolve() / "trade_notification_state.json")
-    return PROJECT_DIR / "state" / "trade_notification_state.json"
+    return resolve_state_dir(PROJECT_DIR) / "trade_notification_state.json"
 
 
 def default_ai_selection_notification_ledger_path() -> Path:
     override = os.environ.get("SOXS_AI_SELECTION_NOTIFICATION_LEDGER_PATH")
     if override:
         return Path(override).expanduser().resolve()
-    state_dir = os.environ.get("SOXS_STATE_DIR")
-    if state_dir:
-        return Path(state_dir).expanduser().resolve() / "notifications" / "notification_ledger.jsonl"
-    return PROJECT_DIR / "state" / "notifications" / "notification_ledger.jsonl"
+    return resolve_state_dir(PROJECT_DIR) / "notifications" / "notification_ledger.jsonl"
 
 
 def _load_trade_notification_state(path: Path) -> dict:
+    empty = {
+        "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
+        "sent_keys": [],
+        "notifications": {},
+    }
     if not path.exists():
-        return {
-            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
-            "sent_keys": [],
-            "notifications": {},
-        }
+        return empty
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("Trade notification dedupe state unavailable: %s", exc)
-        return {
-            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
-            "sent_keys": [],
-            "notifications": {},
-        }
+        return empty
     if not isinstance(payload, dict):
-        return {
-            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
-            "sent_keys": [],
-            "notifications": {},
-        }
+        return empty
     sent_keys = [str(item) for item in payload.get("sent_keys") or [] if str(item)]
     notifications = payload.get("notifications")
     if not isinstance(notifications, dict):
         notifications = {}
+    normalized = {}
+    for key, metadata in notifications.items():
+        key = str(key)
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        channels = metadata.get("channels")
+        if not isinstance(channels, dict):
+            # v1 only knew that the whole notification key had been observed.
+            # Preserve its no-replay behavior for both channels while making
+            # the migration explicit and secret-free.
+            legacy_status = {
+                "status": "SENT",
+                "attempt_count": 1,
+                "last_attempt_at": metadata.get("created_at"),
+                "sent_at": metadata.get("created_at"),
+                "last_error_class": None,
+                "legacy_migrated": True,
+            }
+            channels = {"macos": dict(legacy_status), "telegram": dict(legacy_status)}
+        metadata["channels"] = channels
+        normalized[key] = metadata
     return {
-        "schema_version": payload.get("schema_version") or _TRADE_NOTIFICATION_SCHEMA_VERSION,
+        "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
         "sent_keys": sent_keys,
-        "notifications": notifications,
+        "notifications": normalized,
     }
 
 
-def _record_trade_notification_key(path: Path, notification_key: str, metadata: dict) -> bool:
-    """Return True only for the first observed notification key."""
+def _write_trade_notification_state(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _trade_notification_file_lock(path: Path):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def _runtime_provenance() -> dict:
+    global _process_provenance
+    if _process_provenance is not None:
+        return dict(_process_provenance)
+    pid = os.getpid()
+    try:
+        process_start_time = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        process_start_time = None
+    try:
+        release_sha = os.environ.get("SOXS_RELEASE_SHA", "").strip()
+        if not release_sha:
+            manifest_path = PROJECT_DIR / "RELEASE_MANIFEST.json"
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                release_sha = str(manifest.get("git_sha") or "").strip()
+            if not release_sha:
+                release_sha = subprocess.check_output(
+                    ["git", "-C", str(PROJECT_DIR), "rev-parse", "HEAD"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        release_sha = "UNKNOWN"
+    _process_provenance = {
+        "pid": pid,
+        "ppid": os.getppid(),
+        "process_start_time": process_start_time or "UNKNOWN",
+        "release_sha": release_sha or "UNKNOWN",
+        "sender": "src.notifier.alerts:Notifier.trade",
+    }
+    return dict(_process_provenance)
+
+
+def _trade_notification_id(notification_key: str) -> str:
+    digest = hashlib.sha256(notification_key.encode("utf-8")).hexdigest()[:20]
+    return f"trade:{digest}"
+
+
+def _claim_trade_notification_channel(
+    path: Path, notification_key: str, channel: str, metadata: dict,
+) -> bool:
+    """Atomically claim one channel; a SENT channel is never sent twice."""
     key = str(notification_key or "").strip()
     if not key:
         return True
     with _trade_notification_lock:
-        state = _load_trade_notification_state(path)
-        sent_keys = [str(item) for item in state.get("sent_keys") or [] if str(item)]
-        if key in set(sent_keys):
-            logger.info("Skipped duplicate trade notification: %s", key)
-            return False
-        sent_keys.append(key)
-        if len(sent_keys) > _MAX_TRADE_NOTIFICATION_KEYS:
-            sent_keys = sent_keys[-_MAX_TRADE_NOTIFICATION_KEYS:]
-        notifications = state.get("notifications") or {}
-        notifications = {str(k): v for k, v in notifications.items() if str(k) in set(sent_keys)}
-        notifications[key] = dict(metadata)
-        payload = {
-            "schema_version": _TRADE_NOTIFICATION_SCHEMA_VERSION,
-            "updated_at": datetime.now(US_EASTERN).isoformat(),
-            "sent_keys": sent_keys,
-            "notifications": notifications,
-        }
+        handle = _trade_notification_file_lock(path)
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-            os.replace(tmp, path)
-        except Exception as exc:
-            logger.warning("Trade notification dedupe state write failed: %s", exc)
+            state = _load_trade_notification_state(path)
+            sent_keys = [str(item) for item in state.get("sent_keys") or [] if str(item)]
+            if key not in sent_keys:
+                sent_keys.append(key)
+            sent_keys = sent_keys[-_MAX_TRADE_NOTIFICATION_KEYS:]
+            notifications = state.setdefault("notifications", {})
+            notifications = {
+                str(item_key): item_value
+                for item_key, item_value in notifications.items()
+                if str(item_key) in set(sent_keys)
+            }
+            state["notifications"] = notifications
+            record = dict(notifications.get(key) or {})
+            record.update(metadata)
+            record.setdefault("notification_id", _trade_notification_id(key))
+            channels = record.setdefault("channels", {})
+            current = dict(channels.get(channel) or {})
+            if current.get("status") == "SENT":
+                logger.info("Skipped duplicate %s delivery: %s", channel, key)
+                # Persist a v1 -> v2 migration even when the legacy record
+                # suppresses the delivery itself.
+                state["schema_version"] = _TRADE_NOTIFICATION_SCHEMA_VERSION
+                state["updated_at"] = datetime.now(US_EASTERN).isoformat()
+                _write_trade_notification_state(path, state)
+                return False
+            if current.get("status") == "PENDING":
+                try:
+                    last_attempt = datetime.fromisoformat(str(current.get("last_attempt_at")))
+                    age = (datetime.now(last_attempt.tzinfo) - last_attempt).total_seconds()
+                except (TypeError, ValueError):
+                    age = 0
+                if age < _TRADE_NOTIFICATION_PENDING_TTL_SECONDS:
+                    logger.info("Skipped concurrent %s delivery: %s", channel, key)
+                    return False
+            now = datetime.now(US_EASTERN).isoformat()
+            current["status"] = "PENDING"
+            current["attempt_count"] = int(current.get("attempt_count") or 0) + 1
+            current["last_attempt_at"] = now
+            current["sent_at"] = current.get("sent_at")
+            current["last_error_class"] = None
+            channels[channel] = current
+            record["channels"] = channels
+            notifications[key] = record
+            state["schema_version"] = _TRADE_NOTIFICATION_SCHEMA_VERSION
+            state["sent_keys"] = sent_keys
+            state["updated_at"] = now
+            _write_trade_notification_state(path, state)
             return True
-        return True
+        except Exception as exc:
+            logger.warning("Trade notification channel claim failed: %s", exc)
+            return True
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
+
+def _complete_trade_notification_channel(
+    path: Path, notification_key: str, channel: str, *, success: bool,
+    error_class: str | None = None,
+) -> None:
+    with _trade_notification_lock:
+        handle = _trade_notification_file_lock(path)
+        try:
+            state = _load_trade_notification_state(path)
+            record = dict((state.get("notifications") or {}).get(notification_key) or {})
+            channels = record.setdefault("channels", {})
+            current = dict(channels.get(channel) or {})
+            current["status"] = "SENT" if success else "FAILED"
+            current["last_error_class"] = None if success else (error_class or "delivery_failed")
+            if success:
+                current["sent_at"] = datetime.now(US_EASTERN).isoformat()
+            channels[channel] = current
+            record["channels"] = channels
+            state.setdefault("notifications", {})[notification_key] = record
+            state["schema_version"] = _TRADE_NOTIFICATION_SCHEMA_VERSION
+            state["updated_at"] = datetime.now(US_EASTERN).isoformat()
+            _write_trade_notification_state(path, state)
+        except Exception as exc:
+            logger.warning("Trade notification channel state update failed: %s", exc)
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
 
 def _selection_notification_key(report: dict, notification_type: str = _AI_SELECTION_NOTIFICATION_TYPE) -> str | None:
@@ -392,6 +530,7 @@ class Notifier:
 
         self._trade_count_since_summary = 0
         self._last_trades: list[str] = []
+        self._trade_notification_events_seen: set[str] = set()
         self._trade_notification_state_path = (
             Path(trade_notification_state_path).expanduser().resolve()
             if trade_notification_state_path is not None
@@ -450,23 +589,6 @@ class Notifier:
             quantity=quantity_int,
             price=price_float,
         )
-        first_seen = _record_trade_notification_key(
-            self._trade_notification_state_path,
-            dedupe_key,
-            {
-                "ticker": str(ticker or ""),
-                "side": side_upper,
-                "quantity": quantity_int,
-                "price": price_float,
-                "mode": str(mode or ""),
-                "fill_id": fill_id,
-                "event_id": event_id,
-                "created_at": datetime.now(US_EASTERN).isoformat(),
-            },
-        )
-        if not first_seen:
-            return
-
         prefix = "实盘" if mode == "live" else "模拟"
         side_cn = "买入" if side_upper == "BUY" else "卖出"
         emoji = "🟢" if side_upper == "BUY" else "🔴"
@@ -484,27 +606,92 @@ class Notifier:
                     f" | 权益 ${float(portfolio_state.get('equity') or 0.0):,.2f}"
                 )
 
+        provenance = _runtime_provenance()
+        notification_metadata = {
+            "notification_id": _trade_notification_id(dedupe_key),
+            "source_event_id": event_id or dedupe_key,
+            "trade_key": dedupe_key,
+            "ticker": str(ticker or ""),
+            "side": side_upper,
+            "quantity": quantity_int,
+            "price": price_float,
+            "mode": str(mode or "").strip().lower(),
+            "fill_id": fill_id,
+            "event_id": event_id,
+            "created_at": datetime.now(US_EASTERN).isoformat(),
+            **provenance,
+        }
+
         # Diagnostic log — emitted before every external trade notification so
         # duplicate-send investigations have a complete paper trail.
         logger.info(
-            "[TG_NOTIFY] time=%s mode=%s symbol=%s side=%s dedup_key=%s event_id=%s pid=%s",
-            datetime.now().isoformat(),
-            str(mode or "").strip().lower(),
+            "[TRADE_NOTIFY] notification_id=%s mode=%s symbol=%s side=%s trade_key=%s event_id=%s pid=%s ppid=%s release_sha=%s sender=%s",
+            notification_metadata["notification_id"],
+            notification_metadata["mode"],
             str(ticker or "").strip().upper(),
             side_upper,
             dedupe_key,
             event_id or "",
-            os.getpid(),
+            provenance["pid"],
+            provenance["ppid"],
+            provenance["release_sha"],
+            provenance["sender"],
         )
 
         # External notifications are intentionally limited to filled trades
         # so the desktop / Telegram channels stay quiet during scans, signals,
         # rejects, and submitted-but-unfilled orders.
-        self._send(title, body, "trade", macos=True, remote=True)
+        if self.console_enabled:
+            self._console_out(datetime.now().strftime("%H:%M:%S"), title, body, "trade")
+        if self.webhook_url:
+            self._webhook_send(title, body, "trade")
+
+        channel_claimed = False
+        if self.macos_enabled:
+            if _claim_trade_notification_channel(
+                self._trade_notification_state_path, dedupe_key, "macos", notification_metadata
+            ):
+                channel_claimed = True
+                mac_success = self._macos_notify(title, body)
+                _complete_trade_notification_channel(
+                    self._trade_notification_state_path, dedupe_key, "macos",
+                    success=mac_success,
+                    error_class=None if mac_success else "macos_delivery_failed",
+                )
+        else:
+            if _claim_trade_notification_channel(
+                self._trade_notification_state_path, dedupe_key, "macos", notification_metadata
+            ):
+                channel_claimed = True
+                _complete_trade_notification_channel(
+                    self._trade_notification_state_path, dedupe_key, "macos",
+                    success=False, error_class="macos_disabled",
+                )
+
+        if _claim_trade_notification_channel(
+            self._trade_notification_state_path, dedupe_key, "telegram", notification_metadata
+        ):
+            channel_claimed = True
+            if self._telegram_enabled:
+                telegram_result = self._telegram_send(title, body)
+                _complete_trade_notification_channel(
+                    self._trade_notification_state_path, dedupe_key, "telegram",
+                    success=telegram_result.success,
+                    error_class=(None if telegram_result.success else (
+                        "telegram_http_error" if telegram_result.error else "telegram_delivery_failed"
+                    )),
+                )
+            else:
+                _complete_trade_notification_channel(
+                    self._trade_notification_state_path, dedupe_key, "telegram",
+                    success=False, error_class="telegram_not_configured",
+                )
 
         # Track for summary
-        self._trade_count_since_summary += 1
-        self._last_trades.append(body)
+        if channel_claimed and dedupe_key not in self._trade_notification_events_seen:
+            self._trade_notification_events_seen.add(dedupe_key)
+            self._trade_count_since_summary += 1
+            self._last_trades.append(body)
 
     @staticmethod
     def _build_trade_notification_key(
@@ -636,7 +823,7 @@ class Notifier:
         print(f"{color}[{timestamp}] {title}{reset}")
         print(f"{color}         {body}{reset}")
 
-    def _macos_notify(self, title: str, body: str) -> None:
+    def _macos_notify(self, title: str, body: str) -> bool:
         """Send macOS native notification via osascript."""
         try:
             safe_body = body.replace('"', '\\"')
@@ -644,12 +831,17 @@ class Notifier:
             script = f'''
             display notification "{safe_body}" with title "{safe_title}" sound name "Glass"
             '''
-            subprocess.run(
+            result = subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True, timeout=3,
             )
-        except Exception:
-            pass  # Non-critical, don't crash
+            if result.returncode != 0:
+                logger.warning("macOS notification delivery failed: osascript_exit_%s", result.returncode)
+                return False
+            return True
+        except Exception as exc:
+            logger.warning("macOS notification delivery failed: %s", type(exc).__name__)
+            return False
 
     def _webhook_send(self, title: str, body: str, category: str) -> None:
         """Send webhook notification (Discord/Slack format)."""
@@ -1129,7 +1321,7 @@ def build_research_admission_notice(
     if admission == "RESEARCH_READY":
         return "候选可进入独立数据验证，不代表具备交易资格。"
     if admission == "LIVE_TRADABLE":
-        return "候选已通过实时数据质量验证，具备实盘交易资格。请确认风控参数后执行。"
+        return "候选已通过实时数据质量验证，不代表真实交易执行已启用。"
     if execution == "FAILED":
         return "本次流程已完成，但执行失败或结果不可用。当前仅允许排障和重新补数。不得进入 Backtest、Walk-Forward、Paper 或 Live。"
     return "候选可进入独立数据验证，不代表具备交易资格。"
@@ -1676,7 +1868,7 @@ def _build_ai_selection_message(selection_report: dict, top_configs: list | None
         "RESEARCH_READY": "已就绪",
         "RESEARCH_ONLY": "仅研究",
         "PAPER_ELIGIBLE": "模拟交易就绪",
-        "LIVE_TRADABLE": "可实盘交易",
+        "LIVE_TRADABLE": "实时数据校验通过",
         "BLOCKED": "已阻止",
     }.get(research_admission, research_admission or "未知")
     notice = build_research_admission_notice(
@@ -1798,7 +1990,7 @@ def _build_public_channel_message(
     # ── Mode label ───────────────────────────────────────────────────────
     mode_emoji = {"LIVE": "🔴", "PAPER": "🟡", "RESEARCH": "🔵"}.get(execution_mode, "⚪")
     mode_text = {"LIVE": "Live", "PAPER": "Paper", "RESEARCH": "Research"}.get(execution_mode, execution_mode)
-    ct_label = {"LIVE_TRADABLE": "Tradable", "PAPER_ELIGIBLE": "Paper Eligible", "RESEARCH_ONLY": "Research Only"}.get(candidate_type, candidate_type)
+    ct_label = {"LIVE_TRADABLE": "Realtime Qualified", "PAPER_ELIGIBLE": "Paper Eligible", "RESEARCH_ONLY": "Research Only"}.get(candidate_type, candidate_type)
 
     # ── Market state ─────────────────────────────────────────────────────
     market_state = _resolve_selection_market_state(report)
@@ -1947,7 +2139,7 @@ def _stage_explanation(selection_stage: str, result_quality: str, research_admis
         "RESEARCH_READY": "可进入下一阶段研究",
         "RESEARCH_ONLY": "仅供研究，不代表交易资格",
         "PAPER_ELIGIBLE": "模拟交易候选，可创建模拟持仓",
-        "LIVE_TRADABLE": "实盘候选，已通过实时数据验证",
+        "LIVE_TRADABLE": "实时数据校验通过",
         "BLOCKED": "阻断后续研究或交易准入",
     }
     parts = [

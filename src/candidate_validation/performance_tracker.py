@@ -7,12 +7,13 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any, Iterable
 
 from .models import CandidateRecord, ValidationStatus
 
 PROJECT_DIR = Path(os.environ.get("SOXS_PROJECT_DIR", str(Path(__file__).resolve().parents[2])))
-CANDIDATE_ROOT = PROJECT_DIR / "artifacts" / "candidates"
+CANDIDATE_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "candidates"
 
 SCORE_BUCKETS: tuple[tuple[float, float, str], ...] = (
     (90.0, 100.0, "90-100"),
@@ -142,9 +143,11 @@ def _status_rank(status: str) -> int:
 
 @dataclass(slots=True)
 class CandidatePerformanceTracker:
-    root_dir: Path = CANDIDATE_ROOT
+    root_dir: Path | None = None
 
     def __post_init__(self) -> None:
+        if self.root_dir is None:
+            self.root_dir = resolve_artifacts_dir(PROJECT_DIR) / "candidates"
         self.root_dir = Path(self.root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
 

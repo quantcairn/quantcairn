@@ -366,7 +366,7 @@ class TestAfterMarketProducesTopCandidates:
                 assert len(result["top5"]) > 0
 
     @pytest.mark.slow
-    def test_full_mode_quality_all_rejected_sets_fallback(self, monkeypatch):
+    def test_full_mode_quality_all_rejected_uses_research_fallback(self, monkeypatch):
         """FULL mode + all quality-rejected → quality_fallback_active=True."""
         from src.openalpha.selector import AIStrategySelector
 
@@ -417,8 +417,9 @@ class TestAfterMarketProducesTopCandidates:
                 result = selector.run_selection(write_configs=False)
 
                 assert result["run_mode"] == "FULL"
-                assert result["quality_fallback_active"] is True
-                assert result["formal_candidates"] == []
+                assert result["settings"]["selection_stage"] == "eod_quality_relaxed"
+                assert result["quality_fallback_active"] is False
+                assert len(result["formal_candidates"]) > 0
                 assert len(result["preview_candidates"]) > 0
 
     @pytest.mark.slow

@@ -25,6 +25,7 @@ from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta, timezone
 from itertools import accumulate
 from pathlib import Path
+from src.config.runtime_paths import resolve_artifacts_dir
 from typing import Any
 
 from src.openalpha.learning_dataset import (
@@ -39,7 +40,7 @@ from src.openalpha.learning_dataset import (
 
 WALK_FORWARD_VERSION = "walk_forward.v1"
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-WF_ROOT = PROJECT_DIR / "artifacts" / "learning" / "walk_forward"
+WF_ROOT = resolve_artifacts_dir(PROJECT_DIR) / "learning" / "walk_forward"
 
 # ── Default thresholds for robustness flags ──
 DEFAULT_MIN_SAMPLES = 10

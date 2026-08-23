@@ -96,15 +96,15 @@ def test_notifier_reads_paper_portfolio_state_without_writing(tmp_path, monkeypa
         path=state_path,
     )
     monkeypatch.setenv("SOXS_PAPER_PORTFOLIO_STATE_PATH", str(state_path))
-    notifier = Notifier(console=False, macos_notification=False, webhook_url=None)
+    notifier = Notifier(console=False, macos_notification=True, webhook_url=None)
     calls = []
-    monkeypatch.setattr(notifier, "_send", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(notifier, "_macos_notify", lambda title, body: calls.append((title, body)) or True)
 
     notifier.trade("SOFI", "BUY", 1, 10.0, mode="paper")
 
     assert calls
-    assert "现金 $900.00" in calls[0][0][1]
-    assert "权益 $900.00" in calls[0][0][1]
+    assert "现金 $900.00" in calls[0][1]
+    assert "权益 $900.00" in calls[0][1]
 
 
 def test_outcome_collector_reads_unified_paper_state(tmp_path):

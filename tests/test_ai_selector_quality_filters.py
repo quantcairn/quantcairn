@@ -292,14 +292,19 @@ def test_selector_never_pads_quality_output_to_reach_selection_size():
         monkeypatch.restore()
 
 
-def test_selector_returns_fast_preliminary_when_quality_stage_times_out():
+def test_selector_returns_fast_preliminary_when_quality_stage_is_bypassed():
     monkeypatch = SimpleMonkeyPatch()
+    previous_fast_start = _os.environ.get("OPENALPHA_FAST_START_ONLY")
+    previous_execution_mode = _os.environ.get("QUANTCAIRN_EXECUTION_MODE")
+    _os.environ["OPENALPHA_FAST_START_ONLY"] = "1"
+    _os.environ["QUANTCAIRN_EXECUTION_MODE"] = "LIVE"
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_dir = Path(tmpdir) / "logs"
 
             monkeypatch.setattr(selector_module, "LOG_DIR", log_dir)
-            # Force FULL mode so quality fallback is triggered (not EOD relaxed)
+            # Explicitly exercise the fast preliminary bypass, independent of
+            # the PAPER/RESEARCH eod_quality_relaxed fallback.
             try:
                 from src.openalpha import preflight as pf_module
                 monkeypatch.setattr(pf_module, "run_preflight",
@@ -344,6 +349,14 @@ def test_selector_returns_fast_preliminary_when_quality_stage_times_out():
                 assert [item["ticker"] for item in result["top5"]] == ["AAA", "BBB", "CCC"]
                 assert result["settings"]["selection_stage"] == "fast_preliminary"
     finally:
+        if previous_fast_start is None:
+            _os.environ.pop("OPENALPHA_FAST_START_ONLY", None)
+        else:
+            _os.environ["OPENALPHA_FAST_START_ONLY"] = previous_fast_start
+        if previous_execution_mode is None:
+            _os.environ.pop("QUANTCAIRN_EXECUTION_MODE", None)
+        else:
+            _os.environ["QUANTCAIRN_EXECUTION_MODE"] = previous_execution_mode
         monkeypatch.restore()
 
 
@@ -354,7 +367,7 @@ def run_test_direct():
     test_apply_quality_filters_allows_liquid_special_etf_with_unconfirmed_quote_spread()
     test_selector_respects_quality_filter_output_without_backfill()
     test_selector_never_pads_quality_output_to_reach_selection_size()
-    test_selector_returns_fast_preliminary_when_quality_stage_times_out()
+    test_selector_returns_fast_preliminary_when_quality_stage_is_bypassed()
 
 
 if __name__ == "__main__":

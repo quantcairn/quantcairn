@@ -8,9 +8,6 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
-UNIVERSE_ARTIFACT_DIR = PROJECT_DIR / "artifacts" / "universe"
-
 ASSET_TYPES = (
     "index_etf", "common_stock", "sector_etf",
     "leveraged_etf", "inverse_etf", "mega_cap",

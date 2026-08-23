@@ -73,6 +73,7 @@ class TestDataAvailability:
         availability = _scan_data_availability([], max_symbols=10)
         assert availability["checked"] == 0
 
+    @pytest.mark.network
     def test_scan_with_real_symbol_triggers_no_error(self):
         availability = _scan_data_availability(["AAPL"], max_symbols=1)
         assert availability["checked"] == 1
@@ -95,7 +96,13 @@ class TestDataAvailability:
         def fake_scan(symbols, max_symbols=20):
             captured["symbols"] = list(symbols)
             captured["max_symbols"] = max_symbols
-            return {"quotes": 2, "ohlcv": 2, "checked": 4}
+            return {
+                "quotes": 2,
+                "ohlcv": 2,
+                "checked": 4,
+                "errors": 1,
+                "elapsed_seconds": 1.25,
+            }
 
         monkeypatch.setattr("src.openalpha.preflight.market_session_context", lambda now_et: FakeSession())
         monkeypatch.setattr("src.openalpha.preflight._scan_data_availability", fake_scan)
@@ -115,6 +122,8 @@ class TestDataAvailability:
         assert report.symbols_checked == 4
         assert report.quote_coverage_pct == 50.0
         assert report.ohlcv_coverage_pct == 50.0
+        assert report.scan_errors == 1
+        assert report.scan_elapsed_seconds == 1.25
         assert report.run_mode == "FULL"
 
     def test_run_preflight_persists_selection_run_id(self, monkeypatch, tmp_path):
@@ -137,7 +146,7 @@ class TestDataAvailability:
             "src.openalpha.preflight._et_now",
             lambda: __import__("datetime").datetime(2026, 7, 24, 10, 30, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")),
         )
-        monkeypatch.setattr("src.openalpha.preflight.PREFLIGHT_ARTIFACT_DIR", tmp_path / "artifacts" / "selection")
+        monkeypatch.setattr("src.openalpha.preflight._artifact_dir", lambda: tmp_path / "artifacts" / "selection")
 
         report = run_preflight(
             symbols=["AAPL", "MSFT"],
@@ -203,6 +212,8 @@ class TestSerialization:
         assert d["market_state"] == "AFTER_HOURS"
         assert d["run_mode"] == "AFTER_MARKET"
         assert d["quote_coverage_pct"] == 30.0
+        assert d["scan_errors"] == 0
+        assert d["scan_elapsed_seconds"] == 0.0
         assert d["selection_run_id"] == ""
         assert d["diagnostic_preflight"] is False
 

@@ -25,7 +25,13 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-LIFECYCLE_STATE_PATH = PROJECT_DIR / "state" / "lifecycle" / "longbridge_sandbox_lifecycle.json"
+from src.config.runtime_paths import resolve_state_dir
+
+LIFECYCLE_STATE_PATH = resolve_state_dir(PROJECT_DIR) / "lifecycle" / "longbridge_sandbox_lifecycle.json"
+
+
+def _lifecycle_state_path() -> Path:
+    return resolve_state_dir(PROJECT_DIR) / "lifecycle" / "longbridge_sandbox_lifecycle.json"
 
 from src.broker.base import Order, OrderSide, OrderStatus, OrderType
 from src.broker.longbridge_broker import LongBridgeBroker
@@ -374,10 +380,11 @@ def _persist_lifecycle_report(report: dict[str, Any]) -> None:
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "report": report,
         }
-        LIFECYCLE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = LIFECYCLE_STATE_PATH.with_suffix(".tmp")
+        path = _lifecycle_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-        tmp.replace(LIFECYCLE_STATE_PATH)
+        tmp.replace(path)
     except Exception:
         pass
 

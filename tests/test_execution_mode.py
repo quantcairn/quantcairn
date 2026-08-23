@@ -52,9 +52,9 @@ class TestExecutionModeResolution:
         monkeypatch.setenv("QUANTCAIRN_EXECUTION_MODE", "paper")
         assert _resolve_execution_mode("FULL") == "PAPER"
 
-    def test_default_full_to_live(self, monkeypatch):
+    def test_default_full_to_research(self, monkeypatch):
         monkeypatch.delenv("QUANTCAIRN_EXECUTION_MODE", raising=False)
-        assert _resolve_execution_mode("FULL") == "LIVE"
+        assert _resolve_execution_mode("FULL") == "RESEARCH"
 
     def test_default_non_full_to_research(self, monkeypatch):
         monkeypatch.delenv("QUANTCAIRN_EXECUTION_MODE", raising=False)
@@ -65,7 +65,7 @@ class TestExecutionModeResolution:
 
     def test_unknown_env_var_ignored(self, monkeypatch):
         monkeypatch.setenv("QUANTCAIRN_EXECUTION_MODE", "INVALID")
-        assert _resolve_execution_mode("FULL") == "LIVE"
+        assert _resolve_execution_mode("FULL") == "RESEARCH"
 
     def test_execution_modes_constant(self):
         assert EXECUTION_MODES == ("LIVE", "PAPER", "RESEARCH")
@@ -236,7 +236,8 @@ class TestPaperMode:
         assert captured["symbols"] == ["AAPL", "MSFT", "NVDA"]
         assert captured["max_scan_symbols"] == 3
         assert result["run_mode"] == "FULL"
-        assert result["execution_mode"] == "LIVE"
+        # Data readiness does not grant LIVE execution capability.
+        assert result["execution_mode"] == "RESEARCH"
 
     def test_paper_mode_candidates_have_confidence(self, monkeypatch):
         monkeypatch.setenv("QUANTCAIRN_EXECUTION_MODE", "PAPER")

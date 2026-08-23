@@ -295,3 +295,102 @@ class TestNoSideEffects:
             after_info = next((m, s) for p, m, s in after_files if p == path)
             assert before_info == after_info, \
                 f"File modified by health check: {path}\n  before: {before_info}\n  after: {after_info}"
+
+
+class TestSlice6Diagnostics:
+    def test_runtime_identity_reports_external_roots_without_creating_them(self, monkeypatch, tmp_path):
+        from scripts.runtime_identity import collect_identity, identity_findings
+
+        code = tmp_path / "code"
+        code.mkdir()
+        for name in ("state", "reports", "artifacts", "logs"):
+            (tmp_path / "runtime" / name).mkdir(parents=True)
+        monkeypatch.setenv("SOXS_PROJECT_DIR", str(code))
+        monkeypatch.setenv("SOXS_STATE_DIR", str(tmp_path / "runtime" / "state"))
+        monkeypatch.setenv("SOXS_REPORTS_DIR", str(tmp_path / "runtime" / "reports"))
+        monkeypatch.setenv("SOXS_ARTIFACTS_DIR", str(tmp_path / "runtime" / "artifacts"))
+        monkeypatch.setenv("SOXS_LOGS_DIR", str(tmp_path / "runtime" / "logs"))
+        identity = collect_identity(code)
+        assert identity["state_root"] == str(tmp_path / "runtime" / "state")
+        assert identity_findings(identity)["status"] != "BLOCKED"
+        assert not (code / "state").exists()
+
+    def test_launchd_drift_detects_orphan_live_configuration(self, monkeypatch, tmp_path):
+        import plistlib
+        import scripts.system_health as module
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        plist = launch_agents / "com.quantcairn.orphan-monitor.plist"
+        plist.write_bytes(plistlib.dumps({
+            "Label": "com.quantcairn.orphan-monitor",
+            "ProgramArguments": ["/bin/bash", str(tmp_path / "scripts" / "start_orphan_monitor.py")],
+            "EnvironmentVariables": {"SOXS_PROJECT_DIR": str(tmp_path), "QUANTCAIRN_EXECUTION_MODE": "LIVE"},
+        }))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = module._check_launchd_drift(tmp_path)
+        orphan = result["services"]["com.quantcairn.orphan-monitor"]
+        assert result["status"] == "MISCONFIGURED"
+        assert "orphan_execution_mode_not_paper" in orphan["issues"]
+
+    def test_missing_optional_artifacts_are_safe_and_preflight_is_sample_scoped(self, tmp_path):
+        from scripts.system_health import generate_report, render_text
+
+        artifact = tmp_path / "artifacts" / "selection"
+        artifact.mkdir(parents=True)
+        (artifact / "preflight.json").write_text(json.dumps({
+            "quote_coverage_pct": 100.0, "ohlcv_coverage_pct": 100.0,
+            "scan_timed_out": True, "scan_errors": [], "run_mode": "DEGRADED",
+        }))
+        report = generate_report(tmp_path)
+        assert report["preflight"]["coverage_scope"] == "sample"
+        assert report["preflight"]["status"] == "DEGRADED"
+        assert "Selection Bundle" in render_text(report)
+
+    def test_selection_bundle_identity_and_mismatch_are_reported(self, tmp_path):
+        from scripts.system_health import _check_selection_bundle
+
+        state = tmp_path / "state"
+        bundle = state / "selection_bundles" / "run-1"
+        bundle.mkdir(parents=True)
+        (state / "selection_bundle_manifest.json").write_text(json.dumps({
+            "selection_run_id": "run-1", "selection_date": "2026-08-15", "selection_bundle_hash": "hash-1",
+        }))
+        (state / "ai_selection_state.json").write_text(json.dumps({
+            "selection_run_id": "run-2", "selection_date": "2026-08-15",
+        }))
+        result = _check_selection_bundle(tmp_path)
+        assert result["selection_run_id"] == "run-1"
+        assert "selection_run_id_mismatch" in result["issues"]
+
+    def test_validation_safety_and_research_identity_are_read_only(self, tmp_path):
+        from scripts.system_health import _check_candidate_validation, _check_research
+
+        candidate_root = tmp_path / "artifacts" / "candidates"
+        candidate_root.mkdir(parents=True)
+        (candidate_root / "validation_scheduler_runs.jsonl").write_text(json.dumps({
+            "validation_run_id": "v-1", "selection_run_id": "s-1", "bundle_hash": "b-1",
+            "mode": "dry_run", "candidates_scanned": 3, "candidates_advanced": 0,
+            "transitions": [], "errors": [],
+        }) + "\n")
+        validation = _check_candidate_validation(tmp_path)
+        assert validation["validation_run_id"] == "v-1"
+        assert validation["status"] == "HEALTHY"
+
+        research_day = tmp_path / "artifacts" / "research" / "daily" / "2026-08-15"
+        research_day.mkdir(parents=True)
+        (research_day / "research_run_audit.json").write_text(json.dumps({
+            "research_run_id": "r-1", "mode": "independent", "selector_invoked": False,
+            "selection_run_id": "s-1", "status": "completed",
+        }))
+        (research_day / "daily_candidate_report.json").write_text(json.dumps({"candidate_count": 0}))
+        research = _check_research(tmp_path)
+        assert research["research_run_id"] == "r-1"
+        assert research["selector_invoked"] is False
+
+    def test_top_runtime_missing_control_is_stale(self, tmp_path):
+        from scripts.system_health import _check_top_runtime
+
+        result = _check_top_runtime(tmp_path)
+        assert result["status"] == "STALE"
+        assert result["ownership_verified"] is False

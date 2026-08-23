@@ -10,6 +10,7 @@ import json
 import math
 import os
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,9 +20,12 @@ from zoneinfo import ZoneInfo
 
 from src.utils.market_calendar import market_session_context, required_selection_date
 from src.data.fetcher import PriceFetcher
+from src.config.runtime_paths import resolve_artifacts_dir
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-PREFLIGHT_ARTIFACT_DIR = PROJECT_DIR / "artifacts" / "selection"
+
+def _artifact_dir() -> Path:
+    return resolve_artifacts_dir(PROJECT_DIR) / "selection"
 
 
 def _utc_now_iso() -> str:
@@ -71,6 +75,8 @@ class PreflightReport:
     ohlcv_available: int = 0
     quote_coverage_pct: float = 0.0
     ohlcv_coverage_pct: float = 0.0
+    scan_elapsed_seconds: float = 0.0
+    scan_errors: int = 0
 
     generated_at: str = field(default_factory=_utc_now_iso)
 
@@ -91,6 +97,8 @@ class PreflightReport:
             "ohlcv_available": self.ohlcv_available,
             "quote_coverage_pct": self.quote_coverage_pct,
             "ohlcv_coverage_pct": self.ohlcv_coverage_pct,
+            "scan_elapsed_seconds": self.scan_elapsed_seconds,
+            "scan_errors": self.scan_errors,
             "generated_at": self.generated_at,
         }
 
@@ -103,7 +111,7 @@ def _scan_data_availability(
     symbols: list[str],
     *,
     max_symbols: int = 20,
-) -> dict[str, int]:
+    ) -> dict[str, Any]:
     """Check quote and OHLCV availability for a sample of symbols.
 
     Returns {"quotes": N, "ohlcv": M, "checked": len(sample)}
@@ -111,6 +119,8 @@ def _scan_data_availability(
     sample = symbols[:max(1, min(max_symbols, len(symbols)))]
     quotes_ok = 0
     ohlcv_ok = 0
+    errors = 0
+    started = time.monotonic()
 
     for sym in sample:
         fetcher = PriceFetcher(sym, poll_interval=0)
@@ -119,7 +129,7 @@ def _scan_data_availability(
             if quote is not None and getattr(quote, "price", 0) > 0:
                 quotes_ok += 1
         except Exception:
-            pass
+            errors += 1
         try:
             candles = fetcher.get_ohlcv(period="5d", interval="1d")
             if len(candles) >= 3:
@@ -127,14 +137,20 @@ def _scan_data_availability(
                 if any(c > 0 for c in closes):
                     ohlcv_ok += 1
         except Exception:
-            pass
+            errors += 1
         finally:
             try:
                 fetcher.close()
             except Exception:
                 pass
 
-    return {"quotes": quotes_ok, "ohlcv": ohlcv_ok, "checked": len(sample)}
+    return {
+        "quotes": quotes_ok,
+        "ohlcv": ohlcv_ok,
+        "checked": len(sample),
+        "errors": errors,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -184,6 +200,8 @@ def run_preflight(
         report.symbols_checked = availability["checked"]
         report.quotes_available = availability["quotes"]
         report.ohlcv_available = availability["ohlcv"]
+        report.scan_elapsed_seconds = float(availability.get("elapsed_seconds") or 0.0)
+        report.scan_errors = int(availability.get("errors") or 0)
         if availability["checked"] > 0:
             report.quote_coverage_pct = round(
                 availability["quotes"] / availability["checked"] * 100.0, 1
@@ -222,10 +240,11 @@ def run_preflight(
 
 def _write_report(report: PreflightReport) -> Path | None:
     try:
-        PREFLIGHT_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-        path = PREFLIGHT_ARTIFACT_DIR / "preflight.json"
+        artifact_dir = _artifact_dir()
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        path = artifact_dir / "preflight.json"
         fd, tmp = tempfile.mkstemp(
-            prefix=".preflight.", suffix=".tmp", dir=str(PREFLIGHT_ARTIFACT_DIR)
+            prefix=".preflight.", suffix=".tmp", dir=str(artifact_dir)
         )
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(report.to_dict(), f, ensure_ascii=False, indent=2, sort_keys=True, default=str)
