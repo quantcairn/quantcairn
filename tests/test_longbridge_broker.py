@@ -286,10 +286,21 @@ def test_trading_engine_passes_longbridge_fields(monkeypatch=None):
 def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
+            def __init__(self):
+                self._originals = {}
+
             def setattr(self, target, value):
                 module_name, attr_name = target.rsplit(".", 1)
                 module = __import__(module_name, fromlist=[attr_name])
+                key = (module_name, attr_name)
+                if key not in self._originals:
+                    self._originals[key] = getattr(module, attr_name)
                 setattr(module, attr_name, value)
+
+            def restore(self):
+                for (module_name, attr_name), original in self._originals.items():
+                    module = __import__(module_name, fromlist=[attr_name])
+                    setattr(module, attr_name, original)
 
         monkeypatch = SimpleMonkeyPatch()
 
@@ -401,6 +412,8 @@ def test_longbridge_broker_audit_log_records_trade(tmp_path, monkeypatch=None):
     assert records[-1]["action"] == "place_order"
     assert records[-1]["ok"] is True
     assert records[-1]["response"]["order_id"] == "LB-12345"
+    if hasattr(monkeypatch, "restore"):
+        monkeypatch.restore()
 
 
 def test_longbridge_order_query_exposes_limit_price_from_sdk_price_field(tmp_path, monkeypatch=None):
@@ -595,10 +608,21 @@ def test_longbridge_active_orders_include_limit_price_in_snapshot(tmp_path, monk
 def test_longbridge_sandbox_buy_is_not_blocked_by_reduce_only(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
+            def __init__(self):
+                self._originals = {}
+
             def setattr(self, target, value):
                 module_name, attr_name = target.rsplit(".", 1)
                 module = __import__(module_name, fromlist=[attr_name])
+                key = (module_name, attr_name)
+                if key not in self._originals:
+                    self._originals[key] = getattr(module, attr_name)
                 setattr(module, attr_name, value)
+
+            def restore(self):
+                for (module_name, attr_name), original in self._originals.items():
+                    module = __import__(module_name, fromlist=[attr_name])
+                    setattr(module, attr_name, original)
 
         monkeypatch = SimpleMonkeyPatch()
 
@@ -693,6 +717,8 @@ def test_longbridge_sandbox_buy_is_not_blocked_by_reduce_only(tmp_path, monkeypa
     assert order.status == module.OrderStatus.PENDING
     assert broker._trade_ctx.submit_kwargs is not None
     assert broker._trade_ctx.submit_kwargs["side"] == module.lb.OrderSide.Buy
+    if hasattr(monkeypatch, "restore"):
+        monkeypatch.restore()
 
 
 def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, monkeypatch):
@@ -1255,10 +1281,32 @@ def test_longbridge_broker_uses_safer_default_cache_and_backoff(monkeypatch=None
 def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_path, monkeypatch=None):
     if monkeypatch is None:
         class SimpleMonkeyPatch:
+            def __init__(self):
+                self._env = {}
+
             def setattr(self, target, value):
                 module_name, attr_name = target.rsplit(".", 1)
                 module = __import__(module_name, fromlist=[attr_name])
                 setattr(module, attr_name, value)
+
+            def setenv(self, key, value):
+                if key not in self._env:
+                    self._env[key] = os.environ.get(key)
+                os.environ[key] = value
+
+            def delenv(self, key, raising=True):
+                if key not in self._env:
+                    self._env[key] = os.environ.get(key)
+                if raising and key not in os.environ:
+                    raise KeyError(key)
+                os.environ.pop(key, None)
+
+            def restore(self):
+                for key, value in self._env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
         monkeypatch = SimpleMonkeyPatch()
 
@@ -1349,6 +1397,8 @@ def test_longbridge_broker_place_order_survives_unserializable_sdk_response(tmp_
     assert records[-1]["action"] == "place_order"
     assert records[-1]["ok"] is True
     assert records[-1]["response"]["order_id"] == "LB-99999"
+    if hasattr(monkeypatch, "restore"):
+        monkeypatch.restore()
 
 
 def test_positions_failure_marks_snapshot_unreliable(tmp_path):
