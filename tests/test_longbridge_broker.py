@@ -792,6 +792,11 @@ def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, 
 
     monkeypatch.setattr("src.broker.longbridge_broker.lb", fake_lb)
     monkeypatch.setenv("SOXS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("QUANTCAIRN_EXECUTION_MODE", "LIVE_EXECUTION")
+    monkeypatch.setenv("QUANTCAIRN_LIVE_ARMED", "YES")
+    kill_switch = tmp_path / "kill-switch.json"
+    kill_switch.write_text(json.dumps({"state": "OPEN"}), encoding="utf-8")
+    monkeypatch.setenv("QUANTCAIRN_LIVE_KILL_SWITCH_FILE", str(kill_switch))
 
     broker = module.LongBridgeBroker(
         app_key="k",
@@ -803,6 +808,7 @@ def test_longbridge_sandbox_first_run_requires_read_only_confirmation(tmp_path, 
         quote_ws_url="wss://openapi-quote.longbridge.com/v2",
         trade_ws_url="wss://openapi-trade.longbridge.com/v2",
         audit_dir=str(tmp_path / "logs"),
+        execution_mode="LIVE_EXECUTION",
     )
 
     assert broker.connect() is True
