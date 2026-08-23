@@ -34,6 +34,7 @@ from src.outcome.weight_advisor import (
     MODEL_VERSION,
     run_weight_advisor,
 )
+from src.config.runtime_paths import resolve_artifacts_dir
 
 try:
     import fcntl
@@ -41,7 +42,7 @@ except Exception:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-LEARNING_DIR = PROJECT_DIR / "artifacts" / "learning"
+LEARNING_DIR = resolve_artifacts_dir(PROJECT_DIR) / "learning"
 GOVERNANCE_AUDIT_PATH = LEARNING_DIR / "governance_audit.jsonl"
 WEIGHTS_PATH = LEARNING_DIR / "suggested_weights.json"
 PROPOSAL_REGISTRY_DIR = PROJECT_DIR / "config" / "candidate_models"
