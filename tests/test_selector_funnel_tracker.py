@@ -113,3 +113,37 @@ def test_data_quality_drop_records_have_reason_codes():
         assert r["reason"] != "unknown", (
             f"Dropped row has unknown reason — quality filter should set a specific reason"
         )
+
+
+def test_quality_budget_marks_remaining_candidates_not_evaluated(monkeypatch):
+    from src.openalpha import selector as selector_module
+    from src.openalpha.selector import _apply_quality_filters_with_report
+    import time
+
+    class Context:
+        calls = 0
+
+        def history_metrics(self, _symbol):
+            self.calls += 1
+            if self.calls == 2:
+                time.sleep(0.01)
+            return (1_000_000, 0.0, 50.0)
+
+        def quote_metrics(self, _symbol):
+            return (50.0, 49.95, 50.05, True)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(selector_module, "_QualityFilterContext", Context)
+    candidates = [{"ticker": symbol, "score": 80.0} for symbol in ["A", "B", "C", "D"]]
+    filtered, report = _apply_quality_filters_with_report(
+        candidates, run_mode="FULL", max_seconds=0.005
+    )
+
+    assert report["timed_out"] is True
+    assert [item["ticker"] for item in filtered] == ["A", "B"]
+    skipped = [row for row in report["rows"] if row.get("not_evaluated")]
+    assert {row["symbol"] for row in skipped} == {"C", "D"}
+    assert all(row["reason"] == "quality_evaluation_budget_exhausted" for row in skipped)
+    assert all(row["evaluation_status"] == "NOT_EVALUATED" for row in skipped)

@@ -480,6 +480,24 @@ def _apply_quality_filters_with_report(
             )
             if not removed:
                 filtered.append(item)
+        if timed_out:
+            evaluated_symbols = {
+                str(row.get("symbol") or "").strip().upper() for row in rows
+            }
+            for raw in candidates:
+                symbol = _normalize_ticker(raw.get("ticker"))
+                if not symbol or symbol in evaluated_symbols:
+                    continue
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "removed": True,
+                        "reason": "quality_evaluation_budget_exhausted",
+                        "not_evaluated": True,
+                        "evaluation_status": "NOT_EVALUATED",
+                    }
+                )
+                evaluated_symbols.add(symbol)
     finally:
         close_fn = getattr(context, "close", None)
         if callable(close_fn):
