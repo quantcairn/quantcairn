@@ -259,6 +259,7 @@ class TradingEngine:
                 trade_ws_url=config.broker.longbridge.trade_ws_url,
                 log_path=config.broker.longbridge.log_path,
                 allow_live_order=config.broker.longbridge.allow_live_order,
+                execution_mode=("LIVE_EXECUTION" if config.mode == "live" else "LIVE_OBSERVE_ONLY"),
             )
             logger.info("Using Long Bridge (%s) broker", config.mode.upper())
         else:
