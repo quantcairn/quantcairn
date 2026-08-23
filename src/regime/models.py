@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.config.runtime_paths import resolve_artifacts_dir
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-REGIME_ARTIFACT_DIR = PROJECT_DIR / "artifacts" / "regime"
+REGIME_ARTIFACT_DIR = resolve_artifacts_dir(PROJECT_DIR) / "regime"
 
 REGIME_TYPES = ("BULL", "SIDEWAYS", "BEAR", "RISK_OFF")
 
