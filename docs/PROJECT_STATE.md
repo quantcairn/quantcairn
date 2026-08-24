@@ -2,7 +2,38 @@
 
 > Baseline created from the read-only Project Management Audit on 2026-08-23.
 
-## Canonical Source Candidate
+## Governance Workspace Baseline
+
+```text
+ROLE=GOVERNANCE_WORKTREE
+PATH=/Users/chenwei/quantcairn-persistent
+BRANCH=codex/paper-broker-hardening
+HEAD=837e40ae8ec04274b0c6b13a394ea2341cfaad79
+UPSTREAM=origin/codex/paper-broker-hardening
+WORKTREE_CLEAN=YES
+REMOTE_ALIGNED=YES
+DEVELOPMENT_ALLOWED=NO
+RUNTIME_CHANGED=NO
+DEPLOYMENT_PERFORMED=NO
+```
+
+This worktree is the permanent governance context for project state,
+decisions, release/runtime evidence, audits, and risks. It is not the default
+location for product development or production operations.
+
+## Workspace Role Model
+
+| Role | Path / scope | Responsibility |
+|---|---|---|
+| `GOVERNANCE_WORKTREE` | `/Users/chenwei/quantcairn-persistent` | Governance and evidence only |
+| `DEVELOPMENT_WORKTREE` | `/Users/chenwei/quantcairn` | Feature development, fixes, tests, and commits |
+| `PRODUCTION_RUNTIME` | Immutable releases and runtime roots | Explicit production operations only |
+
+The development worktree never receives automatic production authority merely
+because tests pass. The governance worktree never receives development
+authority by default.
+
+## Historical Source Candidate
 
 - Path: `/Users/chenwei/quantcairn`
 - Branch: `codex/runtime-hardening-integration`

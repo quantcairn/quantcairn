@@ -2,6 +2,23 @@
 
 > Read-only baseline from the 2026-08-23 project management audit.
 
+## Governance Boundary
+
+The permanent governance context is:
+
+```text
+role=GOVERNANCE_WORKTREE
+path=/Users/chenwei/quantcairn-persistent
+branch=codex/paper-broker-hardening
+head=837e40ae8ec04274b0c6b13a394ea2341cfaad79
+development_allowed=NO
+```
+
+This source identity is evidence context only. It does not imply that the
+active release, launchd services, or runtime processes are aligned to this
+HEAD. Production operations require a separate explicit role and must verify
+the full identity chain below.
+
 ## Identity Chain
 
 ```text
@@ -13,6 +30,20 @@ canonical source
 ```
 
 All links must be checked before a runtime result is considered authoritative.
+
+## Role Separation
+
+```text
+GOVERNANCE_WORKTREE
+  → records identity and evidence
+DEVELOPMENT_WORKTREE
+  → changes code and tests
+PRODUCTION_RUNTIME
+  → runs approved immutable releases
+```
+
+No role transition is implicit. A passing development test does not authorize
+deployment or runtime mutation.
 
 ## Source
 

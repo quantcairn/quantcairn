@@ -15,6 +15,72 @@ This standard exists to:
 - preserve safety boundaries across research, paper, and live-capable paths
 - keep changes small, reviewable, and auditable
 
+## Workspace Roles and Authority
+
+QuantCairn uses separate workspaces for governance, development, and
+production operations. An AI assistant must not infer a role from the current
+directory or cross these boundaries implicitly.
+
+### GOVERNANCE_WORKTREE
+
+```text
+/Users/chenwei/quantcairn-persistent
+```
+
+Responsibilities are project state, architecture and decision records,
+release/runtime evidence, audits, and risk tracking. The default contract is:
+
+```text
+DEVELOPMENT_ALLOWED=NO
+```
+
+Do not use this worktree for product code, bug fixes, broker operations,
+selector execution, launchd mutation, deployment, runtime restart, mode
+changes, or secrets changes unless a later task explicitly changes the role.
+
+### DEVELOPMENT_WORKTREE
+
+```text
+/Users/chenwei/quantcairn
+```
+
+This worktree is for feature development, bug fixes, runtime hardening, tests,
+candidate validation, focused commits, and integration preparation. Passing
+tests never authorizes production changes.
+
+### PRODUCTION_RUNTIME
+
+Production operations cover immutable releases, runtime roots, launchd,
+selector/research jobs, TOP supervisor, dashboard, and PAPER broker runtime.
+They require an explicit task with:
+
+```text
+TARGET_ROLE=PRODUCTION_OPERATIONS
+```
+
+Governance and development worktrees must not mutate production by default.
+
+### Explicit Prompt Role
+
+Every QuantCairn Codex task must declare one of:
+
+```text
+TARGET_ROLE=GOVERNANCE
+TARGET_WORKTREE=/Users/chenwei/quantcairn-persistent
+```
+
+```text
+TARGET_ROLE=DEVELOPMENT
+TARGET_WORKTREE=/Users/chenwei/quantcairn
+```
+
+```text
+TARGET_ROLE=PRODUCTION_OPERATIONS
+```
+
+If the role or target is missing, perform read-only identity discovery and do
+not cross a workspace boundary.
+
 ## 2. Project Principles
 
 ### Research First
@@ -99,6 +165,28 @@ Commit
 Acceptance
 ```
 
+For approved changes, the full cross-role flow is:
+
+```text
+Analysis / Governance
+        ↓
+Development Worktree
+        ↓
+Tests / Validation
+        ↓
+Commit
+        ↓
+Governance Evidence Sync
+        ↓
+Explicit Production Authorization
+        ↓
+Deployment / Runtime Mutation
+        ↓
+Post-deploy Verification
+        ↓
+Governance Final Sync
+```
+
 Rules:
 
 - analyze before changing code
@@ -106,6 +194,13 @@ Rules:
 - run tests that directly cover the changed behavior
 - verify git status before commit
 - do not push unless explicitly asked
+
+The following flows are prohibited:
+
+```text
+Governance Worktree → direct code change → direct deployment
+Development Worktree → tests pass → automatic production mutation
+```
 
 ## 5. Safety Boundary
 

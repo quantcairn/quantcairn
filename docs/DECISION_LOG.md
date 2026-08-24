@@ -40,3 +40,22 @@ This file records project-management decisions and audit conclusions. It does no
 - Whether the secondary paper-broker worktree contributes any changes to the canonical source.
 - Whether selection history is formal mainline capability or historical implementation.
 - How and when the stale LIVE orphan-monitor configuration is removed or formally retired.
+
+## 2026-08-25 — Formalize Workspace Role Boundaries
+
+- Decision: Establish `/Users/chenwei/quantcairn-persistent` as the permanent
+  `GOVERNANCE_WORKTREE` for project state, decisions, audits, and release/runtime
+  evidence.
+- Decision: Use `/Users/chenwei/quantcairn` as the primary
+  `DEVELOPMENT_WORKTREE` for feature work, tests, focused commits, and
+  integration preparation.
+- Decision: Treat immutable releases, runtime roots, launchd, selector/research
+  jobs, TOP supervisor, dashboard, and PAPER broker execution as the separate
+  `PRODUCTION_OPERATIONS` role.
+- Constraint: Governance keeps `DEVELOPMENT_ALLOWED=NO`; no Codex task may
+  cross roles without explicit `TARGET_ROLE` and target scope.
+- Workflow: Analysis/governance → development → validation → commit →
+  governance evidence sync → explicit production authorization → deployment /
+  runtime mutation → post-deploy verification → governance final sync.
+- Safety: A passing test never authorizes production mutation, and governance
+  or development worktrees must not directly deploy or restart runtime.
