@@ -25,6 +25,7 @@ REQUIRED_PLACEHOLDERS = {
 
 RUNTIME_ROOT_PLACEHOLDERS = {
     "SOXS_PROJECT_DIR": "REPLACE_WITH_PROJECT_ROOT",
+    "SOXS_RELEASE_SHA": "REPLACE_WITH_RELEASE_SHA",
     "SOXS_STATE_DIR": "REPLACE_WITH_STATE_ROOT",
     "SOXS_REPORTS_DIR": "REPLACE_WITH_REPORTS_ROOT",
     "SOXS_ARTIFACTS_DIR": "REPLACE_WITH_ARTIFACTS_ROOT",
@@ -38,6 +39,7 @@ KNOWN_SERVICES = {
     "com.quantcairn.orphan-monitor",
     "com.quantcairn.research",
     "com.quantcairn.top-engines",
+    "com.quantcairn.daily-runtime-snapshot",
 }
 
 FORBIDDEN_PATTERNS = [

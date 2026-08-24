@@ -10,6 +10,7 @@ Templates for running QuantCairn services under macOS `launchd` (LaunchAgent).
 | `com.quantcairn.ai-selector` | `scripts/ai_selector_wrapper.py` | AI selection pipeline scheduler | 21:35 / 21:45 / 22:00 / 22:15 / 22:30 Beijing time |
 | `com.quantcairn.candidate-validation` | `scripts/run_candidate_validation_scheduler.py --apply` | Candidate validation scheduler (`com.quantcairn.candidate-validation.plist.template`) | 21:40 / 21:50 / 22:05 / 22:20 / 22:35 Beijing time |
 | `com.quantcairn.research` | `scripts/run_daily_research.py --mode independent` | Committed-bundle Research scheduler | 22:50 Beijing time |
+| `com.quantcairn.daily-runtime-snapshot` | `scripts/generate_daily_runtime_snapshot.py` | Read-only daily runtime evidence snapshot | 23:30 local machine time |
 | `com.quantcairn.top-engines` | `scripts/start_top_engines.sh` | TOP paper trading engines (ports 8080/8081/8082) | Long-lived (KeepAlive) |
 | `com.quantcairn.orphan-monitor` | `scripts/start_orphan_monitor.py` | Disabled PAPER-safe orphan monitor template | Long-lived (KeepAlive) |
 
@@ -32,6 +33,7 @@ STATE_ROOT="/Users/chenwei/soxs-range-arbitrage/state"
 REPORTS_ROOT="/Users/chenwei/soxs-range-arbitrage/reports"
 ARTIFACTS_ROOT="/Users/chenwei/soxs-range-arbitrage/artifacts"
 LOGS_ROOT="/Users/chenwei/soxs-range-arbitrage/logs"
+RELEASE_SHA="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
 
 # Copy and substitute
 for tmpl in deploy/launchd/*.plist.template; do
@@ -42,6 +44,7 @@ for tmpl in deploy/launchd/*.plist.template; do
         -e "s|REPLACE_WITH_REPORTS_ROOT|$REPORTS_ROOT|g" \
         -e "s|REPLACE_WITH_ARTIFACTS_ROOT|$ARTIFACTS_ROOT|g" \
         -e "s|REPLACE_WITH_LOGS_ROOT|$LOGS_ROOT|g" \
+        -e "s|REPLACE_WITH_RELEASE_SHA|$RELEASE_SHA|g" \
         "$tmpl" > ~/Library/LaunchAgents/"$name"
 done
 ```
@@ -142,6 +145,7 @@ Follow the Quick Start steps above. The new labels use `com.quantcairn.*` to mat
 | `REPLACE_WITH_REPORTS_ROOT` | Persistent reports root | `/Users/chenwei/soxs-range-arbitrage/reports` |
 | `REPLACE_WITH_ARTIFACTS_ROOT` | Persistent artifacts root | `/Users/chenwei/soxs-range-arbitrage/artifacts` |
 | `REPLACE_WITH_LOGS_ROOT` | Persistent logs root | `/Users/chenwei/soxs-range-arbitrage/logs` |
+| `REPLACE_WITH_RELEASE_SHA` | Immutable release Git SHA | `402af842...` |
 
 ### Common Python Paths
 
@@ -169,6 +173,7 @@ Set in the plist `EnvironmentVariables` dict:
 | `SOXS_OPENALPHA_TELEGRAM_CHAT_ID` | Telegram chat/channel ID loaded from the local secrets file | (none) |
 | `QUANTCAIRN_ADMIN_CHAT_ID` | Optional admin chat ID loaded from the local secrets file | (none) |
 | `SOXS_PROJECT_DIR` | Code/source root | `<PROJECT_ROOT>` |
+| `SOXS_RELEASE_SHA` | Immutable release Git SHA | `<RELEASE_SHA>` |
 | `SOXS_STATE_DIR` | Override state directory | `<STATE_ROOT>` |
 | `SOXS_REPORTS_DIR` | Override reports directory | `<REPORTS_ROOT>` |
 | `SOXS_ARTIFACTS_DIR` | Override artifacts directory | `<ARTIFACTS_ROOT>` |
@@ -224,5 +229,6 @@ deploy/
     ├── com.quantcairn.candidate-validation.plist.template  # Candidate validation scheduler
     ├── com.quantcairn.research.plist.template      # Independent Research scheduler
     ├── com.quantcairn.top-engines.plist.template    # TOP paper trading engines
-    └── com.quantcairn.orphan-monitor.plist.template  # Orphan position monitor
+    ├── com.quantcairn.orphan-monitor.plist.template  # Orphan position monitor
+    └── com.quantcairn.daily-runtime-snapshot.plist.template  # Daily runtime evidence
 ```

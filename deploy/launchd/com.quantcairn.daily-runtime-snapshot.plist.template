@@ -1,39 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- QuantCairn independent Research scheduler. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.quantcairn.research</string>
-
+    <string>com.quantcairn.daily-runtime-snapshot</string>
     <key>ProgramArguments</key>
     <array>
         <string>REPLACE_WITH_PYTHON_PATH</string>
-        <string>REPLACE_WITH_PROJECT_ROOT/scripts/run_daily_research.py</string>
-        <string>--mode</string>
-        <string>independent</string>
+        <string>REPLACE_WITH_PROJECT_ROOT/scripts/generate_daily_runtime_snapshot.py</string>
     </array>
-
     <key>WorkingDirectory</key>
     <string>REPLACE_WITH_PROJECT_ROOT</string>
-
     <key>StandardOutPath</key>
-    <string>REPLACE_WITH_LOGS_ROOT/research.out.log</string>
+    <string>REPLACE_WITH_LOGS_ROOT/daily-runtime-snapshot.out.log</string>
     <key>StandardErrorPath</key>
-    <string>REPLACE_WITH_LOGS_ROOT/research.err.log</string>
-
+    <string>REPLACE_WITH_LOGS_ROOT/daily-runtime-snapshot.err.log</string>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>22</integer>
+        <integer>23</integer>
         <key>Minute</key>
-        <integer>50</integer>
+        <integer>30</integer>
     </dict>
-
     <key>RunAtLoad</key>
     <false/>
-
+    <key>KeepAlive</key>
+    <false/>
     <key>EnvironmentVariables</key>
     <dict>
         <key>QUANTCAIRN_HOME</key>
@@ -48,12 +40,12 @@
         <string>REPLACE_WITH_REPORTS_ROOT</string>
         <key>SOXS_ARTIFACTS_DIR</key>
         <string>REPLACE_WITH_ARTIFACTS_ROOT</string>
+        <key>SOXS_LOG_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>SOXS_LOGS_DIR</key>
         <string>REPLACE_WITH_LOGS_ROOT</string>
         <key>QUANTCAIRN_EXECUTION_MODE</key>
         <string>PAPER</string>
-        <key>YF_DISABLE_CURL_CFFI</key>
-        <string>1</string>
     </dict>
 </dict>
 </plist>
