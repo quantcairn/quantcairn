@@ -74,14 +74,14 @@ def test_preflight_universe_bundle_and_refinement_paths_switch_at_operation_time
     assert refinement._current_manifest_path() == (roots_b["state"] / "selection_bundle_manifest.json").resolve()
 
 
-def test_runtime_paths_are_cwd_independent_and_unset_defaults_are_explicit(tmp_path, monkeypatch):
+def test_runtime_paths_are_cwd_independent_and_unset_defaults_are_external(tmp_path, monkeypatch):
     original_cwd = Path.cwd()
     monkeypatch.chdir(tmp_path)
     for key in ("SOXS_PROJECT_DIR", "SOXS_STATE_DIR", "SOXS_REPORTS_DIR", "SOXS_ARTIFACTS_DIR", "SOXS_LOG_DIR", "SOXS_LOGS_DIR"):
         monkeypatch.delenv(key, raising=False)
     module = importlib.import_module("src.config.runtime_paths")
     assert module.resolve_project_dir() == module.CODE_ROOT.resolve()
-    assert module.resolve_logs_dir() == (module.CODE_ROOT / "logs").resolve()
+    assert module.resolve_logs_dir() == (Path.home() / ".quantcairn" / "runtime" / "logs").resolve()
     monkeypatch.chdir(original_cwd)
 
 

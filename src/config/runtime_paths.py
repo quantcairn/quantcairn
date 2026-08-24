@@ -14,6 +14,11 @@ from pathlib import Path
 CODE_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _default_runtime_root() -> Path:
+    """Return a persistent runtime root outside the immutable source tree."""
+    return (_env_path("QUANTCAIRN_HOME") or Path.home() / ".quantcairn" / "runtime").resolve()
+
+
 def _env_path(name: str) -> Path | None:
     raw = str(os.environ.get(name, "") or "").strip()
     return Path(raw).expanduser().resolve() if raw else None
@@ -24,19 +29,19 @@ def resolve_project_dir(default: Path | None = None) -> Path:
 
 
 def resolve_state_dir(project_dir: Path | None = None) -> Path:
-    return (_env_path("SOXS_STATE_DIR") or resolve_project_dir(project_dir) / "state").resolve()
+    return (_env_path("SOXS_STATE_DIR") or _default_runtime_root() / "state").resolve()
 
 
 def resolve_reports_dir(project_dir: Path | None = None) -> Path:
-    return (_env_path("SOXS_REPORTS_DIR") or resolve_project_dir(project_dir) / "reports").resolve()
+    return (_env_path("SOXS_REPORTS_DIR") or _default_runtime_root() / "reports").resolve()
 
 
 def resolve_artifacts_dir(project_dir: Path | None = None) -> Path:
-    return (_env_path("SOXS_ARTIFACTS_DIR") or resolve_project_dir(project_dir) / "artifacts").resolve()
+    return (_env_path("SOXS_ARTIFACTS_DIR") or _default_runtime_root() / "artifacts").resolve()
 
 
 def resolve_logs_dir(project_dir: Path | None = None) -> Path:
-    return (_env_path("SOXS_LOG_DIR") or _env_path("SOXS_LOGS_DIR") or resolve_project_dir(project_dir) / "logs").resolve()
+    return (_env_path("SOXS_LOGS_DIR") or _env_path("SOXS_LOG_DIR") or _default_runtime_root() / "logs").resolve()
 
 
 @dataclass(frozen=True)

@@ -145,6 +145,7 @@ def test_restart_compensation_does_not_rerun_selector(monkeypatch, tmp_path):
     _setup_base_mocks(monkeypatch, tmp_path)
     monkeypatch.delenv("SOXS_PROJECT_DIR", raising=False)
     monkeypatch.delenv("SOXS_STATE_DIR", raising=False)
+    monkeypatch.setenv("SOXS_STATE_DIR", str(Path(tmp_path) / "state"))
     _mock_selector_failure(monkeypatch, code=6)
     status_path = Path(tmp_path) / "state" / "top_restart_status.json"
     status_path.parent.mkdir(parents=True, exist_ok=True)

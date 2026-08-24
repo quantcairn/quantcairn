@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import random
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +24,7 @@ from urllib.parse import urlparse
 import longbridge.openapi as lb
 
 from ..config.runtime_values import get_runtime_env
+from ..config.runtime_paths import resolve_logs_dir, resolve_state_dir
 from ..safety.execution_authorizer import authorize_mutation
 from .base import (
     AccountInfo,
@@ -181,10 +181,7 @@ def _is_rate_limit_error(error: Exception | str) -> bool:
 
 def _global_reduce_only_enabled() -> bool:
     try:
-        state_dir = Path(
-            os.environ.get("SOXS_STATE_DIR", "").strip()
-            or (Path(__file__).resolve().parents[2] / "state")
-        )
+        state_dir = resolve_state_dir(Path(__file__).resolve().parents[2])
         flags_path = state_dir / "trading_flags.json"
         flags = json.loads(flags_path.read_text(encoding="utf-8"))
         return bool(flags.get("reduce_only_all", False))
@@ -249,11 +246,11 @@ class LongBridgeBroker(BrokerBase):
         if audit_dir_value:
             self._audit_dir = Path(audit_dir_value)
         else:
-            self._audit_dir = Path.cwd() / "logs"
+            self._audit_dir = resolve_logs_dir(Path(__file__).resolve().parents[2])
         try:
             self._audit_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
-            fallback = Path(tempfile.gettempdir()) / "soxs-range-arbitrage" / "logs"
+            fallback = resolve_logs_dir(Path(__file__).resolve().parents[2])
             fallback.mkdir(parents=True, exist_ok=True)
             self._audit_dir = fallback
         self._connected = False
@@ -290,10 +287,7 @@ class LongBridgeBroker(BrokerBase):
                 max(self._account_cache_ttl_seconds, self._positions_cache_ttl_seconds),
             ),
         )
-        state_root = Path(
-            os.environ.get("SOXS_STATE_DIR", "").strip()
-            or (Path(__file__).resolve().parents[2] / "state")
-        )
+        state_root = resolve_state_dir(Path(__file__).resolve().parents[2])
         self._shared_snapshot_dir = state_root / "broker_cache"
         self._shared_snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._shared_positions_path = self._shared_snapshot_dir / "longbridge_positions.json"
