@@ -970,11 +970,18 @@ class TestSelectorHandlesMissingPriceFetcher:
         assert result is None
 
     def test_scorer_load_history_returns_empty_on_import_error(self, monkeypatch):
-        """When PriceFetcher raises ImportError, _load_history returns empty."""
+        """When history providers are unavailable, _load_history returns empty."""
         import src.scoring.scorer as scorer_mod
         from src.scoring.scorer import Scorer
 
         monkeypatch.setattr(fetcher_mod, "_YF_AVAILABLE", False)
+        monkeypatch.setattr(
+            Scorer,
+            "_fetch_chart_daily",
+            lambda self, symbol: (_ for _ in ()).throw(
+                ImportError("requests unavailable")
+            ),
+        )
         monkeypatch.setenv("OPENALPHA_ALLOW_YFINANCE_FALLBACK", "0")
         monkeypatch.delenv("OPENALPHA_USE_YFINANCE", raising=False)
 
