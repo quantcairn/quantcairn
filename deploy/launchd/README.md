@@ -33,6 +33,8 @@ STATE_ROOT="/Users/chenwei/soxs-range-arbitrage/state"
 REPORTS_ROOT="/Users/chenwei/soxs-range-arbitrage/reports"
 ARTIFACTS_ROOT="/Users/chenwei/soxs-range-arbitrage/artifacts"
 LOGS_ROOT="/Users/chenwei/soxs-range-arbitrage/logs"
+CONFIG_ROOT="/Users/chenwei/soxs-range-arbitrage/state"
+TOP_CONFIG_ROOT="/Users/chenwei/soxs-range-arbitrage/state/top_configs_paper"
 RELEASE_SHA="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
 
 # Copy and substitute
@@ -44,6 +46,8 @@ for tmpl in deploy/launchd/*.plist.template; do
         -e "s|REPLACE_WITH_REPORTS_ROOT|$REPORTS_ROOT|g" \
         -e "s|REPLACE_WITH_ARTIFACTS_ROOT|$ARTIFACTS_ROOT|g" \
         -e "s|REPLACE_WITH_LOGS_ROOT|$LOGS_ROOT|g" \
+        -e "s|REPLACE_WITH_CONFIG_ROOT|$CONFIG_ROOT|g" \
+        -e "s|REPLACE_WITH_TOP_CONFIG_ROOT|$TOP_CONFIG_ROOT|g" \
         -e "s|REPLACE_WITH_RELEASE_SHA|$RELEASE_SHA|g" \
         "$tmpl" > ~/Library/LaunchAgents/"$name"
 done
@@ -145,6 +149,8 @@ Follow the Quick Start steps above. The new labels use `com.quantcairn.*` to mat
 | `REPLACE_WITH_REPORTS_ROOT` | Persistent reports root | `/Users/chenwei/soxs-range-arbitrage/reports` |
 | `REPLACE_WITH_ARTIFACTS_ROOT` | Persistent artifacts root | `/Users/chenwei/soxs-range-arbitrage/artifacts` |
 | `REPLACE_WITH_LOGS_ROOT` | Persistent logs root | `/Users/chenwei/soxs-range-arbitrage/logs` |
+| `REPLACE_WITH_CONFIG_ROOT` | External configuration/state root | `/Users/chenwei/soxs-range-arbitrage/state` |
+| `REPLACE_WITH_TOP_CONFIG_ROOT` | External PAPER TOP config root | `/Users/chenwei/soxs-range-arbitrage/state/top_configs_paper` |
 | `REPLACE_WITH_RELEASE_SHA` | Immutable release Git SHA | `402af842...` |
 
 ### Common Python Paths
@@ -174,6 +180,12 @@ Set in the plist `EnvironmentVariables` dict:
 | `QUANTCAIRN_ADMIN_CHAT_ID` | Optional admin chat ID loaded from the local secrets file | (none) |
 | `SOXS_PROJECT_DIR` | Code/source root | `<PROJECT_ROOT>` |
 | `SOXS_RELEASE_SHA` | Immutable release Git SHA | `<RELEASE_SHA>` |
+| `SOXS_PYTHON_BIN` | Explicit approved Python runtime for TOP | `<PYTHON_PATH>` |
+| `SOXS_CONFIG_DIR` | External configuration/state root | `<CONFIG_ROOT>` |
+| `SOXS_TOP_CONFIG_DIR` | External PAPER TOP config root | `<TOP_CONFIG_ROOT>` |
+| `SOXS_LOG_DIR` | Explicit operational log root | `<LOGS_ROOT>` |
+| `SOXS_DISABLE_LIVE_CREDENTIALS` | Prevent live credential use in PAPER TOP | `1` |
+| `PYTHONDONTWRITEBYTECODE` | Prevent runtime bytecode in immutable release | `1` |
 | `SOXS_STATE_DIR` | Override state directory | `<STATE_ROOT>` |
 | `SOXS_REPORTS_DIR` | Override reports directory | `<REPORTS_ROOT>` |
 | `SOXS_ARTIFACTS_DIR` | Override artifacts directory | `<ARTIFACTS_ROOT>` |

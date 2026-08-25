@@ -165,6 +165,19 @@ def check_operational_contract(path: Path, root: ET.Element) -> list[str]:
     if label == "com.quantcairn.orphan-monitor" and env.get("SOXS_DISABLE_ORPHAN_MONITOR") != "1":
         violations.append("  FAIL: orphan monitor template must be disabled by default in PAPER")
 
+    if label == "com.quantcairn.top-engines":
+        top_requirements = {
+            "SOXS_CONFIG_DIR": "REPLACE_WITH_CONFIG_ROOT",
+            "SOXS_TOP_CONFIG_DIR": "REPLACE_WITH_TOP_CONFIG_ROOT",
+            "SOXS_LOG_DIR": "REPLACE_WITH_LOGS_ROOT",
+            "SOXS_DISABLE_LIVE_CREDENTIALS": "1",
+            "SOXS_PYTHON_BIN": "REPLACE_WITH_PYTHON_PATH",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        for key, expected in top_requirements.items():
+            if env.get(key) != expected:
+                violations.append(f"  FAIL: {label} requires {key}={expected}")
+
     for key in ("StandardOutPath", "StandardErrorPath"):
         value = get_dict_value(root, key) or ""
         if "REPLACE_WITH_LOGS_ROOT/" not in value:

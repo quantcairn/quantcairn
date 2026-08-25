@@ -13,7 +13,8 @@
   the combined dashboard (port 8090).
 
   Prerequisites:
-    - AI selector has been run at least once to produce configs/TOP{1,2,3}.yaml
+    - AI selector has been run at least once to produce external TOP{1,2,3}.yaml
+      files under REPLACE_WITH_TOP_CONFIG_ROOT
     - Dashboard (com.quantcairn.combined) is running for status display
 
   Installation:
@@ -60,6 +61,12 @@
         <string>REPLACE_WITH_PROJECT_ROOT</string>
         <key>SOXS_RELEASE_SHA</key>
         <string>REPLACE_WITH_RELEASE_SHA</string>
+        <key>SOXS_PYTHON_BIN</key>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
+        <key>SOXS_CONFIG_DIR</key>
+        <string>REPLACE_WITH_CONFIG_ROOT</string>
+        <key>SOXS_TOP_CONFIG_DIR</key>
+        <string>REPLACE_WITH_TOP_CONFIG_ROOT</string>
         <key>SOXS_STATE_DIR</key>
         <string>REPLACE_WITH_STATE_ROOT</string>
         <key>SOXS_REPORTS_DIR</key>
@@ -68,8 +75,14 @@
         <string>REPLACE_WITH_ARTIFACTS_ROOT</string>
         <key>SOXS_LOGS_DIR</key>
         <string>REPLACE_WITH_LOGS_ROOT</string>
+        <key>SOXS_LOG_DIR</key>
+        <string>REPLACE_WITH_LOGS_ROOT</string>
+        <key>SOXS_DISABLE_LIVE_CREDENTIALS</key>
+        <string>1</string>
         <key>QUANTCAIRN_EXECUTION_MODE</key>
         <string>PAPER</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
         <key>YF_DISABLE_CURL_CFFI</key>
         <string>1</string>
     </dict>
