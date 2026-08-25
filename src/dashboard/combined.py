@@ -22,7 +22,7 @@ from src.openalpha.universe_filter import load_universe_rules
 from src.openalpha.selection_state import configured_top_count, current_top_config_disabled_slots, current_top_config_slots, current_top_config_symbols, has_live_top_configs, load_selection_state, verify_selection_state
 from src.config.loader import load_config
 from src.config.runtime_values import get_runtime_env, has_longbridge_runtime_credentials
-from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_state_dir
+from src.config.runtime_paths import resolve_artifacts_dir, resolve_logs_dir, resolve_reports_dir, resolve_state_dir, resolve_top_config_dir
 from src.broker.paper_portfolio_state import default_paper_portfolio_state_path, read_paper_portfolio_state
 from src.reports import daily_report as daily_report_module
 from src.reports.trade_audit import latest_trade_activity_day, latest_trade_log_day, load_trade_records, summarize_trade_log
@@ -69,6 +69,11 @@ def _artifacts_dir() -> Path:
 
 def _logs_dir() -> Path:
     return resolve_logs_dir(PROJECT_DIR)
+
+
+def _top_config_dir() -> Path:
+    """Resolve TOP configs from the same external runtime contract as engines."""
+    return resolve_top_config_dir(PROJECT_DIR)
 
 
 COMBINED_PID_FILE = RUNTIME_DIR / "combined.pid"
@@ -510,7 +515,7 @@ def _current_top_config_slots_cached(limit: int | None = None, request_cache: di
             slot_limit = 3
         slots: list[dict[str, object]] = []
         for index in range(1, slot_limit + 1):
-            path = PROJECT_DIR / "configs" / f"TOP{index}.yaml"
+            path = _top_config_dir() / f"TOP{index}.yaml"
             exists = path.exists()
             config = _load_top_config_cached(path, request_cache=request_cache) if exists else {}
             selection = config.get("selection") if isinstance(config.get("selection"), dict) else {}
@@ -4963,7 +4968,7 @@ def _desired_audit_mode() -> str:
 def _load_top_modes(request_cache: dict[str, object] | None = None) -> list[str]:
     modes: list[str] = []
     for item in TICKERS:
-        cfg_path = PROJECT_DIR / "configs" / item["config"]
+        cfg_path = _top_config_dir() / item["config"]
         if not cfg_path.exists():
             modes.append("disabled")
             continue
@@ -4974,7 +4979,7 @@ def _load_top_modes(request_cache: dict[str, object] | None = None) -> list[str]
 
 
 def _top_config_exists(config_name: str) -> bool:
-    return (PROJECT_DIR / "configs" / config_name).exists()
+    return (_top_config_dir() / config_name).exists()
 
 
 def _load_top_ai_selector_flags(request_cache: dict[str, object] | None = None) -> tuple[bool | None, bool | None]:
@@ -4983,7 +4988,7 @@ def _load_top_ai_selector_flags(request_cache: dict[str, object] | None = None) 
     live_flags: list[bool] = []
     seen_any = False
     for item in TICKERS:
-        cfg_path = PROJECT_DIR / "configs" / item["config"]
+        cfg_path = _top_config_dir() / item["config"]
         data = _load_top_config_cached(cfg_path, request_cache=request_cache)
         ai_selector = data.get("ai_selector") if isinstance(data.get("ai_selector"), dict) else {}
         if "allow_fallback_live_entries" in ai_selector:
@@ -8611,7 +8616,7 @@ def _combined_process_count() -> int:
 def _top_engine_status(item: dict, rank: int, ticker: str | None, mode: str | None, request_cache: dict[str, object] | None = None) -> dict:
     port = int(item.get("port", 0) or 0)
     config_name = str(item.get("config") or "")
-    config_path = PROJECT_DIR / "configs" / config_name if config_name else None
+    config_path = _top_config_dir() / config_name if config_name else None
     configured = bool(ticker) or _top_config_exists(config_name)
     status = _fetch_status(port) if configured and port else None
     if status is not None and not isinstance(status, dict):
@@ -9129,7 +9134,7 @@ def api_status():
 
 def _load_config_defaults(config_name):
     """Read display defaults from YAML so offline engines do not show $0 capital."""
-    cfg_path = PROJECT_DIR / "configs" / config_name
+    cfg_path = _top_config_dir() / config_name
     defaults = {
         "ticker": config_name.replace(".yaml", ""),
         "configured": cfg_path.exists(),

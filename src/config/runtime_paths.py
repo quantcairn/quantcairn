@@ -39,6 +39,17 @@ def resolve_logs_dir(project_dir: Path | None = None) -> Path:
     return (_env_path("SOXS_LOG_DIR") or _env_path("SOXS_LOGS_DIR") or resolve_project_dir(project_dir) / "logs").resolve()
 
 
+def resolve_top_config_dir(project_dir: Path | None = None) -> Path:
+    """Resolve mutable TOP configuration independently from the code root."""
+    explicit = _env_path("SOXS_TOP_CONFIG_DIR")
+    if explicit is not None:
+        return explicit
+    config_root = _env_path("SOXS_CONFIG_DIR")
+    if config_root is not None:
+        return (config_root / "top_configs").resolve()
+    return (Path(project_dir or CODE_ROOT) / "configs").expanduser().resolve()
+
+
 @dataclass(frozen=True)
 class RuntimePaths:
     """Resolved paths; construction never creates directories."""
