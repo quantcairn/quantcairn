@@ -17,6 +17,7 @@ RESTART_LOCK_DIR="$CONTROL_DIR/restart.lock"
 REQUEST_FILE="$CONTROL_DIR/restart.request"
 STATUS_FILE="$CONTROL_DIR/status"
 OWNER_FILE="$CONTROL_DIR/owner"
+CHILD_EVIDENCE_DIR="$CONTROL_DIR/children"
 REDIRECT="${SOXS_TOP_ENGINE_REDIRECT_STDIO:-1}"
 MODE="${1:-start}"
 PORT_OFFSET="${SOXS_TOP_PORT_OFFSET:-0}"
@@ -45,6 +46,37 @@ ENGINES=(
 )
 
 mkdir -p "$CONTROL_DIR"
+mkdir -p "$CHILD_EVIDENCE_DIR"
+
+write_child_start_evidence() {
+  local slot="$1" pid="$2" cfg="$3" port="$4"
+  local path="$CHILD_EVIDENCE_DIR/${slot}.status"
+  {
+    printf 'slot=%s\n' "$slot"
+    printf 'pid=%s\n' "$pid"
+    printf 'config=%s\n' "$cfg"
+    printf 'port=%s\n' "$port"
+    printf 'state=running\n'
+    printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$path.tmp-$$"
+  mv -f "$path.tmp-$$" "$path"
+}
+
+write_child_exit_evidence() {
+  local slot="$1" pid="$2" exit_code="$3" exit_signal="$4" cfg="$5" port="$6"
+  local path="$CHILD_EVIDENCE_DIR/${slot}.status"
+  {
+    printf 'slot=%s\n' "$slot"
+    printf 'pid=%s\n' "$pid"
+    printf 'config=%s\n' "$cfg"
+    printf 'port=%s\n' "$port"
+    printf 'state=exited\n'
+    printf 'exit_code=%s\n' "$exit_code"
+    printf 'exit_signal=%s\n' "$exit_signal"
+    printf 'exit_timestamp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$path.tmp-$$"
+  mv -f "$path.tmp-$$" "$path"
+}
 
 write_status() {
   local state="$1" request_id="$2" detail="$3" generation="$4"
@@ -235,6 +267,7 @@ start_engines() {
     PIDS_CFG+=("$cfg")
     PIDS_PORT+=("$port")
     PIDS_NAME+=("$name")
+    write_child_start_evidence "$name" "$pid" "$cfg" "$port"
     started=$((started + 1))
   done
   echo "[top-supervisor] Launched $started TOP engines (supervisor PID $$ waiting)"
@@ -366,6 +399,16 @@ while :; do
       fi
     done
     if [ "$live_children" -eq 0 ]; then
+      for index in "${!PIDS[@]}"; do
+        pid="${PIDS[$index]}"
+        exit_code=0
+        wait "$pid" 2>/dev/null || exit_code=$?
+        exit_signal=0
+        if [ "$exit_code" -ge 128 ]; then
+          exit_signal=$((exit_code - 128))
+        fi
+        write_child_exit_evidence "${PIDS_NAME[$index]}" "$pid" "$exit_code" "$exit_signal" "${PIDS_CFG[$index]}" "${PIDS_PORT[$index]}"
+      done
       write_status "supervisor_degraded" "" "all_owned_engines_exited" "$GENERATION"
       exit 11
     fi

@@ -5,6 +5,7 @@
 #   pip install quantcairn[research]        → core + yfinance, requests, ta, bs4, lxml
 #   pip install quantcairn[broker]          → research + longbridge
 #   pip install quantcairn[dashboard]       → research + flask, werkzeug
+#   pip install quantcairn[paper-runtime]   → broker + dashboard runtime
 #   pip install quantcairn[dev]             → everything
 #   pip install quantcairn[test]            → research + pytest
 

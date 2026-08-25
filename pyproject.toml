@@ -71,6 +71,13 @@ dashboard = [
     "werkzeug>=3.0",            # WSGI server (bundled with flask)
 ]
 
+# PAPER TOP runtime: complete imports required by run.py and the dashboard,
+# without pulling in pytest or other development-only tooling.
+#   pip install quantcairn[paper-runtime]
+paper-runtime = [
+    "quantcairn[broker,dashboard]",
+]
+
 # Full development install.
 #   pip install quantcairn[dev]
 dev = [

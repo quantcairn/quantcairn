@@ -20,6 +20,8 @@ Templates for running QuantCairn services under macOS `launchd` (LaunchAgent).
 
 - macOS with Python 3.12+ and a venv at `<PROJECT_ROOT>/.venv`
 - Project cloned and `pip install -e ".[demo,test]"` completed
+- Production TOP runtime: install `quantcairn[paper-runtime]` into a
+  release-associated venv; do not use an editable development install.
 
 ### 2. Install Templates
 
@@ -88,6 +90,11 @@ bash health_check.sh
 
 # The health report also shows orphan monitor install/load/run status
 # and the freshness of its log files.
+
+# Validate the exact interpreter selected for an immutable TOP release.
+SOXS_RELEASE_SHA="$RELEASE_SHA" \
+SOXS_PROJECT_DIR="$PROJECT_ROOT" \
+  "$PYTHON_PATH" "$PROJECT_ROOT/scripts/validate_top_runtime.py" --json
 ```
 
 ### 5. View Logs
