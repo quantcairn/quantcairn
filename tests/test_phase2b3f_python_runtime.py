@@ -3,10 +3,15 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import sysconfig
 import tomllib
 from pathlib import Path
 
-from scripts.validate_top_runtime import validate
+from scripts.validate_top_runtime import (
+    RuntimeTrustRoots,
+    _classify_import_origin,
+    validate,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +64,100 @@ def test_gate_cli_reports_missing_dependency_without_side_effects(tmp_path: Path
     assert result.returncode != 0
     assert '"status": "BLOCKED"' in result.stdout
     assert not (project / "state").exists()
+
+
+def test_import_origin_classes_allow_release_venv_and_standard_library(tmp_path: Path) -> None:
+    release = tmp_path / "releases" / "sha-a"
+    venv_site = tmp_path / "venvs" / "sha-a" / "lib" / "python3.14" / "site-packages"
+    stdlib = Path(sysconfig.get_paths()["stdlib"]).resolve()
+    roots = RuntimeTrustRoots(
+        project_root=release,
+        python_bin=tmp_path / "venvs" / "sha-a" / "bin" / "python",
+        python_prefix=tmp_path / "venvs" / "sha-a",
+        site_package_roots=(venv_site,),
+        standard_library_roots=(stdlib,),
+    )
+
+    assert _classify_import_origin(str(release / "src" / "module.py"), roots) == "PROJECT_RELEASE"
+    assert _classify_import_origin(str(venv_site / "yaml" / "__init__.py"), roots) == "APPROVED_VENV"
+    assert _classify_import_origin(str(stdlib / "json" / "__init__.py"), roots) == "STANDARD_LIBRARY"
+    assert _classify_import_origin("BUILTIN", roots) == "STANDARD_LIBRARY"
+
+
+def test_validate_accepts_release_and_associated_venv_origins(monkeypatch, tmp_path: Path) -> None:
+    release = tmp_path / "releases" / "sha-a"
+    venv = tmp_path / "venvs" / "sha-a"
+    site_packages = venv / "lib" / "python3.14" / "site-packages"
+    site_packages.mkdir(parents=True)
+    (release / "src").mkdir(parents=True)
+    python_bin = venv / "bin" / "python"
+    monkeypatch.setenv("SOXS_PYTHON_BIN", str(python_bin))
+    monkeypatch.setenv("SOXS_RELEASE_SHA", "sha-a")
+
+    def fake_import(names, project_root):
+        locations = {
+            name: str(site_packages / f"{name}.py") if name in {"yaml", "numpy", "pandas", "flask", "longbridge"}
+            else str(release / f"{name.replace('.', '/')}.py")
+            for name in names
+        }
+        return list(names), locations, []
+
+    monkeypatch.setattr("scripts.validate_top_runtime._import_modules", fake_import)
+    monkeypatch.setattr("scripts.validate_top_runtime._editable_install", lambda project_root: False)
+
+    result = validate(release)
+
+    assert result["status"] == "PASS"
+    assert result["imports_outside_release"] == {}
+    assert set(result["import_origin_classes"].values()) == {"PROJECT_RELEASE", "APPROVED_VENV"}
+    assert result["release_venv_identity"]["status"] == "PASS"
+
+
+def test_validate_rejects_development_source_and_venv_origins(monkeypatch, tmp_path: Path) -> None:
+    release = tmp_path / "releases" / "sha-a"
+    venv = tmp_path / "venvs" / "sha-a"
+    development = tmp_path / "quantcairn"
+    development_venv = development / ".venv" / "lib" / "python3.14" / "site-packages"
+    monkeypatch.setenv("SOXS_PYTHON_BIN", str(venv / "bin" / "python"))
+    monkeypatch.setenv("SOXS_RELEASE_SHA", "sha-a")
+
+    def fake_import(names, project_root):
+        locations = {
+            name: str(development / "src" / f"{name.replace('.', '/')}.py")
+            if index == 0
+            else str(development_venv / f"{name}.py")
+            for index, name in enumerate(names)
+        }
+        return list(names), locations, []
+
+    monkeypatch.setattr("scripts.validate_top_runtime._import_modules", fake_import)
+    monkeypatch.setattr("scripts.validate_top_runtime._editable_install", lambda project_root: False)
+
+    result = validate(release)
+
+    assert result["status"] == "BLOCKED"
+    assert set(result["import_origin_classes"].values()) == {"FORBIDDEN_EXTERNAL"}
+    assert result["imports_outside_release"]
+
+
+def test_validate_rejects_mismatched_release_associated_venv(monkeypatch, tmp_path: Path) -> None:
+    release = tmp_path / "releases" / "sha-a"
+    venv = tmp_path / "venvs" / "sha-b"
+    site_packages = venv / "lib" / "python3.14" / "site-packages"
+    site_packages.mkdir(parents=True)
+    monkeypatch.setenv("SOXS_PYTHON_BIN", str(venv / "bin" / "python"))
+    monkeypatch.setenv("SOXS_RELEASE_SHA", "sha-a")
+
+    def fake_import(names, project_root):
+        return list(names), {name: str(site_packages / f"{name}.py") for name in names}, []
+
+    monkeypatch.setattr("scripts.validate_top_runtime._import_modules", fake_import)
+    monkeypatch.setattr("scripts.validate_top_runtime._editable_install", lambda project_root: False)
+
+    result = validate(release)
+
+    assert result["status"] == "BLOCKED"
+    assert result["release_venv_identity"]["status"] == "FAIL"
 
 
 def test_supervisor_records_child_exit_evidence(tmp_path: Path) -> None:
