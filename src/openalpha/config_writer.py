@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from src.config.runtime_values import has_longbridge_runtime_credentials
 from src.portfolio.risk_allocator import RiskAllocator
 from src.utils.market_calendar import market_session_context, required_selection_date
-from src.config.runtime_paths import resolve_state_dir
+from src.config.runtime_paths import resolve_state_dir, resolve_top_config_dir
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 TOP_INITIAL_CAPITAL = 700.0
@@ -36,7 +36,7 @@ def _default_top_mode() -> str:
 
 
 def _load_existing_mode(index: int, fallback: str) -> str:
-    path = os.path.join(BASE, f"configs/TOP{index}.yaml")
+    path = os.path.join(_runtime_top_dir(), f"TOP{index}.yaml")
     try:
         with open(path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
@@ -248,7 +248,7 @@ def _write_yaml_atomic(path: str, payload: dict) -> None:
 
 
 def _runtime_top_dir() -> str:
-    return os.path.join(BASE, "configs")
+    return str(resolve_top_config_dir(Path(BASE)))
 
 
 def _top_config_dir(output_dir: str | os.PathLike[str] | None = None) -> str:
@@ -339,6 +339,7 @@ def write_top_configs(
     writes: list[tuple[str, dict]] = []
 
     top_dir = _top_config_dir(output_dir)
+    os.makedirs(top_dir, exist_ok=True)
     runtime_top_dir = _is_runtime_top_dir(top_dir)
     formally_empty_selection = len(items) == 0
     for i in range(1, slot_count + 1):
@@ -594,4 +595,5 @@ def clear_top_configs(max_slots: int = 5) -> list[str]:
         slot_limit=max_slots,
     )
     slot_count = max(3, int(max_slots or 0), _load_configured_top_count())
-    return [os.path.join(BASE, f"configs/TOP{i}.yaml") for i in range(1, slot_count + 1)]
+    top_dir = _top_config_dir()
+    return [os.path.join(top_dir, f"TOP{i}.yaml") for i in range(1, slot_count + 1)]
